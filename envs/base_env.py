@@ -53,3 +53,10 @@ class BaseEnv(ABC):
 
     def __getattr__(self, name):
         return getattr(super(), name)
+
+
+def get_inner_env(env):
+    """Unwrap through LogWrapper and OvercookedWrapper to the underlying environment."""
+    inner = env._env if hasattr(env, '_env') else env
+    inner = inner.env if hasattr(inner, 'env') else inner
+    return inner

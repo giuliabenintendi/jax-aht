@@ -24,6 +24,7 @@ import hydra
 from flax.training.train_state import TrainState
 
 from agents.population_interface import AgentPopulation
+from envs.base_env import get_inner_env
 from agents.ja_utils import jsd_divergence, inferred_attention
 from common.run_episodes import run_episodes
 from common.plot_utils import get_stats, get_metric_names
@@ -528,8 +529,7 @@ def run_ego_training(config, wandb_logger):
 
     # Populate JA grid dimensions from environment (needed when USE_JA=True)
     if algorithm_config.get("USE_JA", False):
-        inner_env = env._env if hasattr(env, '_env') else env
-        inner_env = inner_env.env if hasattr(inner_env, 'env') else inner_env
+        inner_env = get_inner_env(env)
         algorithm_config["JA_OBS_HEIGHT"] = inner_env.obs_shape[1]
         algorithm_config["JA_OBS_WIDTH"] = inner_env.obs_shape[0]
 

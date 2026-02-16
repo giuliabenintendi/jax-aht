@@ -7,6 +7,7 @@ import numpy as np
 import hydra
 
 from envs import make_env
+from envs.base_env import get_inner_env
 from envs.log_wrapper import LogWrapper
 
 from ego_agent_training.ppo_ego import train_ppo_ego_agent
@@ -31,8 +32,7 @@ def train_ego_agent(config, logger, partner_params, partner_population):
 
     # Populate JA grid dimensions from environment (needed when USE_JA=True)
     if algorithm_config.get("USE_JA", False):
-        inner_env = env._env if hasattr(env, '_env') else env
-        inner_env = inner_env.env if hasattr(inner_env, 'env') else inner_env
+        inner_env = get_inner_env(env)
         algorithm_config["JA_OBS_HEIGHT"] = inner_env.obs_shape[1]
         algorithm_config["JA_OBS_WIDTH"] = inner_env.obs_shape[0]
 

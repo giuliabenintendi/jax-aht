@@ -6,6 +6,7 @@ from agents.mlp_actor_critic_agent import MLPActorCriticPolicy, ActorWithDoubleC
 from agents.rnn_actor_critic_agent import RNNActorCriticPolicy
 from agents.s5_actor_critic_agent import S5ActorCriticPolicy
 from agents.ja_actor_critic_agent import JAActorCriticPolicy
+from envs.base_env import get_inner_env
 from agents.liam_agent import LIAMPolicy, initialize_liam_encoder_decoder
 from agents.meliba_agent import MeLIBAPolicy, initialize_meliba_encoder_decoder
 
@@ -86,11 +87,8 @@ def initialize_ja_agent(config, env, rng):
         GRU_HIDDEN_DIM: 64
         ACTIVATION: "tanh"
     """
-    # Extract grid dimensions from the underlying Overcooked environment.
-    # env may be wrapped (LogWrapper -> OvercookedWrapper -> OvercookedV1).
     # obs_shape is (width, height, channels) but the actual array is (height, width, channels).
-    inner_env = env._env if hasattr(env, '_env') else env
-    inner_env = inner_env.env if hasattr(inner_env, 'env') else inner_env
+    inner_env = get_inner_env(env)
     obs_width = inner_env.obs_shape[0]
     obs_height = inner_env.obs_shape[1]
     obs_channels = inner_env.obs_shape[2]
