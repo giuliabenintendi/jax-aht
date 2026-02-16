@@ -5,8 +5,9 @@ Provides:
 - Inferred attention map from an agent's (position, direction)
 - Spatial basis generation for positional encoding
 """
-import jax
 import jax.numpy as jnp
+
+from envs.overcooked.po_utils import cone_forward_lateral
 
 
 def jsd_divergence(p: jnp.ndarray, q: jnp.ndarray, eps: float = 1e-8) -> jnp.ndarray:
@@ -24,45 +25,6 @@ def jsd_divergence(p: jnp.ndarray, q: jnp.ndarray, eps: float = 1e-8) -> jnp.nda
     kl_pm = jnp.sum(p * (jnp.log(p + eps) - jnp.log(m + eps)), axis=(-2, -1))
     kl_qm = jnp.sum(q * (jnp.log(q + eps) - jnp.log(m + eps)), axis=(-2, -1))
     return 0.5 * kl_pm + 0.5 * kl_qm
-
-
-def _cone_forward_lateral(h: int, w: int, pos_xy: jnp.ndarray, dir_idx: jnp.ndarray):
-    """Compute forward and lateral distances for every cell in an (H, W) grid.
-
-    Uses the same convention as overcooked_po_wrapper._cone_forward_lateral.
-
-    Args:
-        h: grid height (number of rows)
-        w: grid width (number of columns)
-        pos_xy: agent position as (x, y)
-        dir_idx: facing direction index (0=N, 1=S, 2=E, 3=W)
-
-    Returns:
-        (forward, lateral) arrays of shape (H, W)
-    """
-    x0, y0 = pos_xy[0], pos_xy[1]
-    xs = jnp.arange(w)[None, :]   # columns = x
-    ys = jnp.arange(h)[:, None]   # rows = y
-    dx = xs - x0
-    dy = ys - y0
-
-    # DIR_TO_VEC: 0=NORTH(0,-1), 1=SOUTH(0,1), 2=EAST(1,0), 3=WEST(-1,0)
-    f_n, l_n = -dy, dx
-    f_s, l_s = dy, dx
-    f_e, l_e = dx, dy
-    f_w, l_w = -dx, dy
-
-    forward = jnp.select(
-        [dir_idx == 0, dir_idx == 1, dir_idx == 2, dir_idx == 3],
-        [f_n, f_s, f_e, f_w],
-        default=f_e,
-    )
-    lateral = jnp.select(
-        [dir_idx == 0, dir_idx == 1, dir_idx == 2, dir_idx == 3],
-        [l_n, l_s, l_e, l_w],
-        default=l_e,
-    )
-    return forward, lateral
 
 
 def inferred_attention(
@@ -90,7 +52,7 @@ def inferred_attention(
     Returns:
         Normalized attention map of shape (H, W), sums to 1.
     """
-    forward, lateral = _cone_forward_lateral(h, w, pos_xy, dir_idx)
+    forward, lateral = cone_forward_lateral(h, w, pos_xy, dir_idx)
 
     forward_pos = jnp.maximum(forward, 0.0)
     # Distance weight: stronger close, decays with forward distance

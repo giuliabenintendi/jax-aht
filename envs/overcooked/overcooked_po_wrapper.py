@@ -8,6 +8,7 @@ from jaxmarl.environments.overcooked.overcooked import State as OvercookedState
 from jaxmarl.environments import spaces
 
 from envs.overcooked.overcooked_v1 import OvercookedV1
+from envs.overcooked.po_utils import cone_forward_lateral
 
 from ..base_env import BaseEnv
 from ..base_env import WrappedEnvState
@@ -64,36 +65,6 @@ class OvercookedWrapper(BaseEnv):
     def action_space(self, agent: str):
         return self.env.action_space()
 
-    def _cone_forward_lateral(self, h: int, w: int, pos_xy: jnp.ndarray, dir_idx: jnp.ndarray):
-        """Return (forward, lateral) arrays of shape (H, W)."""
-        x0, y0 = pos_xy[0], pos_xy[1]
-        xs = jnp.arange(w)[None, :]
-        ys = jnp.arange(h)[:, None]
-        dx = xs - x0
-        dy = ys - y0
-
-        # DIR_TO_VEC mapping:
-        # 0=NORTH: forward=-dy, lateral= dx
-        # 1=SOUTH: forward= dy, lateral= dx
-        # 2=EAST:  forward= dx, lateral= dy
-        # 3=WEST:  forward=-dx, lateral= dy
-        f_n, l_n = -dy, dx
-        f_s, l_s = dy, dx
-        f_e, l_e = dx, dy
-        f_w, l_w = -dx, dy
-
-        forward = jnp.select(
-            [dir_idx == 0, dir_idx == 1, dir_idx == 2, dir_idx == 3],
-            [f_n, f_s, f_e, f_w],
-            default=f_e,
-        )
-        lateral = jnp.select(
-            [dir_idx == 0, dir_idx == 1, dir_idx == 2, dir_idx == 3],
-            [l_n, l_s, l_e, l_w],
-            default=l_e,
-        )
-        return forward, lateral
-
     def _occlusion_mask(self, env_state: OvercookedState, agent_index: int, h: int, w: int) -> jnp.ndarray:
         """Return visibility mask with line-of-sight blocking by wall/counter tiles."""
         pos_xy = env_state.agent_pos[agent_index].astype(jnp.int32)
@@ -127,7 +98,7 @@ class OvercookedWrapper(BaseEnv):
 
         pos_xy = env_state.agent_pos[agent_index]
         dir_idx = env_state.agent_dir_idx[agent_index]
-        forward, lateral = self._cone_forward_lateral(h, w, pos_xy, dir_idx)
+        forward, lateral = cone_forward_lateral(h, w, pos_xy, dir_idx)
 
         in_front = forward >= 0
         in_range = forward <= self.fov_range
@@ -143,7 +114,7 @@ class OvercookedWrapper(BaseEnv):
         """Float weights in [0, 1] inside FOV."""
         pos_xy = env_state.agent_pos[agent_index]
         dir_idx = env_state.agent_dir_idx[agent_index]
-        forward, lateral = self._cone_forward_lateral(h, w, pos_xy, dir_idx)
+        forward, lateral = cone_forward_lateral(h, w, pos_xy, dir_idx)
 
         forward_pos = jnp.maximum(forward, 0)
         w_dist = jnp.exp(-forward_pos / jnp.maximum(self.dist_sigma, 1e-6))
