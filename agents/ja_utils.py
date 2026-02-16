@@ -21,8 +21,8 @@ def jsd_divergence(p: jnp.ndarray, q: jnp.ndarray, eps: float = 1e-8) -> jnp.nda
         JSD value (scalar or batch), non-negative. 0 when p == q.
     """
     m = 0.5 * (p + q)
-    kl_pm = jnp.sum(p * jnp.log(p / (m + eps) + eps), axis=(-2, -1))
-    kl_qm = jnp.sum(q * jnp.log(q / (m + eps) + eps), axis=(-2, -1))
+    kl_pm = jnp.sum(p * (jnp.log(p + eps) - jnp.log(m + eps)), axis=(-2, -1))
+    kl_qm = jnp.sum(q * (jnp.log(q + eps) - jnp.log(m + eps)), axis=(-2, -1))
     return 0.5 * kl_pm + 0.5 * kl_qm
 
 
