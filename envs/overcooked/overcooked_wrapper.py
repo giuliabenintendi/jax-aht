@@ -14,9 +14,9 @@ from ..base_env import BaseEnv
 from ..base_env import WrappedEnvState
 
 class OvercookedWrapper(BaseEnv):
-    '''Wrapper for the Overcooked-v1 environment to ensure that it follows a common interface 
+    '''Wrapper for the Overcooked-v1 environment to ensure that it follows a common interface
     with other environments provided in this library.
-    
+
     Main features:
     - Randomized agent order
     - Flattened observations
@@ -29,7 +29,7 @@ class OvercookedWrapper(BaseEnv):
 
         self.observation_spaces = {agent: self.observation_space(agent) for agent in self.agents}
         self.action_spaces = {agent: self.action_space(agent) for agent in self.agents}
-        
+
         # exposing some variables from underlying environment
         self.agent_view_size = self.env.agent_view_size
 
@@ -41,9 +41,14 @@ class OvercookedWrapper(BaseEnv):
 
     def action_space(self, agent: str):
         return self.env.action_space()
-    
+
+    def _filter_obs(self, obs: Dict[str, jnp.ndarray], env_state: OvercookedState) -> Dict[str, jnp.ndarray]:
+        """Hook for subclasses to filter observations before flattening. No-op by default."""
+        return obs
+
     def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], WrappedEnvState]:
         obs, env_state = self.env.reset(key)
+        obs = self._filter_obs(obs, env_state)
         flat_obs = {agent: obs[agent].flatten() for agent in self.agents} # flatten obs
         return flat_obs, WrappedEnvState(env_state, jnp.zeros(self.num_agents), jnp.zeros(self.num_agents), jnp.empty((), dtype=jnp.int32))
 
@@ -52,7 +57,7 @@ class OvercookedWrapper(BaseEnv):
         """Returns the available actions for each agent."""
         num_actions = len(self.env.action_set)
         return {agent: jnp.ones(num_actions) for agent in self.agents}
-    
+
     @partial(jax.jit, static_argnums=(0,))
     def get_step_count(self, state: WrappedEnvState) -> jnp.array:
         """Returns the step count for the environment."""
@@ -66,18 +71,18 @@ class OvercookedWrapper(BaseEnv):
         actions: Dict[str, chex.Array],
         reset_state: Optional[WrappedEnvState] = None,
     ) -> Tuple[Dict[str, chex.Array], WrappedEnvState, Dict[str, float], Dict[str, bool], Dict]:
-        '''Wrapped step function. The base return is 
+        '''Wrapped step function. The base return is
         tracked in the info dictionary, so that the return can be obtained from the final info.
         '''
         obs, env_state, rewards, dones, infos = self.env.step(key, state.env_state, actions, reset_state)
+        obs = self._filter_obs(obs, env_state)
         flat_obs = {agent: obs[agent].flatten() for agent in self.agents} # flatten obs
         # log the base return in the info
         base_reward = infos['base_reward']
         base_return_so_far = base_reward + state.base_return_so_far
         new_info = {**infos, 'base_return': base_return_so_far}
-        
+
         # handle auto-resetting the base return upon episode termination
         base_return_so_far = jax.lax.select(dones['__all__'], jnp.zeros(self.num_agents), base_return_so_far)
         new_state = WrappedEnvState(env_state=env_state, base_return_so_far=base_return_so_far, avail_actions=jnp.zeros(self.num_agents), step=jnp.empty((), dtype=jnp.int32))
         return flat_obs, new_state, rewards, dones, new_info
-

@@ -1,46 +1,40 @@
-from functools import partial
-from typing import Dict, Tuple, Optional
+"""Partial observability wrapper for Overcooked-v1.
 
-import chex
-import jax
+Extends the base OvercookedWrapper with cone-shaped FOV masking,
+optional occlusion, and soft distance/angular weighting.
+"""
+from typing import Dict
+
 import jax.numpy as jnp
 from jaxmarl.environments.overcooked.overcooked import State as OvercookedState
-from jaxmarl.environments import spaces
 
-from envs.overcooked.overcooked_v1 import OvercookedV1
+from envs.overcooked.overcooked_wrapper import OvercookedWrapper
 from envs.overcooked.po_utils import cone_forward_lateral
 
-from ..base_env import BaseEnv
-from ..base_env import WrappedEnvState
 
-class OvercookedWrapper(BaseEnv):
-    '''Wrapper for the Overcooked-v1 environment to ensure that it follows a common interface 
-    with other environments provided in this library.
-    
-    Main features:
-    - Randomized agent order
-    - Flattened observations
-    - Base return tracking
-    - Optional partial observability with forward cones and occlusion
+class OvercookedPOWrapper(OvercookedWrapper):
+    '''OvercookedWrapper with partial observability via forward cone FOV.
+
+    Observations outside the agent's field of view are zeroed out.
+    When soft_view is enabled, visible cells are weighted by distance
+    and angular proximity to the agent's facing direction.
     '''
     def __init__(
         self,
         *args,
-        po_mode: str = "none",          # "none" | "cone"
-        fov_range: int = 5,             # max forward distance
-        fov_slope: float = 0.7,         # cone width: abs(lateral) <= slope * forward
-        use_occlusion: bool = False,    # if True, block visibility behind walls/counters
-        soft_view: bool = True,         # if True, apply soft weights inside FOV
-        dist_sigma: float = 3.0,        # softness vs distance (bigger = less decay)
-        ang_sigma: float = 1.5,         # softness vs off-axis (bigger = less decay)
+        po_mode: str = "cone",
+        fov_range: int = 5,
+        fov_slope: float = 0.7,
+        use_occlusion: bool = False,
+        soft_view: bool = True,
+        dist_sigma: float = 3.0,
+        ang_sigma: float = 1.5,
         **kwargs,
     ):
         if po_mode not in {"none", "cone"}:
             raise ValueError(f"Unsupported po_mode '{po_mode}'. Expected one of: 'none', 'cone'.")
 
-        self.env = OvercookedV1(*args, **kwargs)
-        self.agents = self.env.agents
-        self.num_agents = len(self.agents)
+        super().__init__(*args, **kwargs)
 
         self.po_mode = po_mode
         self.fov_range = fov_range
@@ -49,21 +43,6 @@ class OvercookedWrapper(BaseEnv):
         self.soft_view = soft_view
         self.dist_sigma = dist_sigma
         self.ang_sigma = ang_sigma
-
-        self.observation_spaces = {agent: self.observation_space(agent) for agent in self.agents}
-        self.action_spaces = {agent: self.action_space(agent) for agent in self.agents}
-        
-        # exposing some variables from underlying environment
-        self.agent_view_size = self.env.agent_view_size
-
-    def observation_space(self, agent: str):
-        """Returns the flattened observation space."""
-        # Calculate flattened observation shape
-        flat_obs_shape = (self.env.obs_shape[0] * self.env.obs_shape[1] * self.env.obs_shape[2],)
-        return spaces.Box(0, 255, flat_obs_shape)
-
-    def action_space(self, agent: str):
-        return self.env.action_space()
 
     def _occlusion_mask(self, env_state: OvercookedState, agent_index: int, h: int, w: int) -> jnp.ndarray:
         """Return visibility mask with line-of-sight blocking by wall/counter tiles."""
@@ -122,7 +101,7 @@ class OvercookedWrapper(BaseEnv):
         w_ang = jnp.exp(-(lat_norm * lat_norm) / jnp.maximum(self.ang_sigma * self.ang_sigma, 1e-6))
         return jnp.clip(w_dist * w_ang, 0.0, 1.0)
 
-    def _perception_filter(self, obs: Dict[str, jnp.ndarray], env_state: OvercookedState) -> Dict[str, jnp.ndarray]:
+    def _filter_obs(self, obs: Dict[str, jnp.ndarray], env_state: OvercookedState) -> Dict[str, jnp.ndarray]:
         """Apply FOV mask and optional soft weighting per agent."""
         h, w, _ = obs[self.agents[0]].shape
         filtered_obs = {}
@@ -136,44 +115,3 @@ class OvercookedWrapper(BaseEnv):
                 filtered_obs[agent] = obs[agent] * mask[..., None].astype(obs[agent].dtype)
 
         return filtered_obs
-    
-    def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], WrappedEnvState]:
-        obs, env_state = self.env.reset(key)
-        obs = self._perception_filter(obs, env_state)
-        flat_obs = {agent: obs[agent].flatten() for agent in self.agents} # flatten obs
-        return flat_obs, WrappedEnvState(env_state, jnp.zeros(self.num_agents), jnp.zeros(self.num_agents), jnp.empty((), dtype=jnp.int32))
-
-    @partial(jax.jit, static_argnums=(0,))
-    def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
-        """Returns the available actions for each agent."""
-        num_actions = len(self.env.action_set)
-        return {agent: jnp.ones(num_actions) for agent in self.agents}
-    
-    @partial(jax.jit, static_argnums=(0,))
-    def get_step_count(self, state: WrappedEnvState) -> jnp.array:
-        """Returns the step count for the environment."""
-        return state.env_state.time
-
-    @partial(jax.jit, static_argnums=(0,))
-    def step(
-        self,
-        key: chex.PRNGKey,
-        state: WrappedEnvState,
-        actions: Dict[str, chex.Array],
-        reset_state: Optional[WrappedEnvState] = None,
-    ) -> Tuple[Dict[str, chex.Array], WrappedEnvState, Dict[str, float], Dict[str, bool], Dict]:
-        '''Wrapped step function. The base return is 
-        tracked in the info dictionary, so that the return can be obtained from the final info.
-        '''
-        obs, env_state, rewards, dones, infos = self.env.step(key, state.env_state, actions, reset_state)
-        obs = self._perception_filter(obs, env_state)
-        flat_obs = {agent: obs[agent].flatten() for agent in self.agents} # flatten obs
-        # log the base return in the info
-        base_reward = infos['base_reward']
-        base_return_so_far = base_reward + state.base_return_so_far
-        new_info = {**infos, 'base_return': base_return_so_far}
-        
-        # handle auto-resetting the base return upon episode termination
-        base_return_so_far = jax.lax.select(dones['__all__'], jnp.zeros(self.num_agents), base_return_so_far)
-        new_state = WrappedEnvState(env_state=env_state, base_return_so_far=base_return_so_far, avail_actions=jnp.zeros(self.num_agents), step=jnp.empty((), dtype=jnp.int32))
-        return flat_obs, new_state, rewards, dones, new_info

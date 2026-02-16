@@ -82,16 +82,14 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         po_mode = env_kwargs_copy.pop("po_mode", "none")
         po_keys = ("fov_range", "fov_slope", "use_occlusion", "soft_view", "dist_sigma", "ang_sigma")
         if po_mode != "none":
-            from envs.overcooked.overcooked_po_wrapper import OvercookedWrapper
-            # Re-insert po_mode so the PO wrapper receives it
+            from envs.overcooked.overcooked_po_wrapper import OvercookedPOWrapper
             env_kwargs_copy["po_mode"] = po_mode
+            env = OvercookedPOWrapper(**env_kwargs_copy)
         else:
             from envs.overcooked.overcooked_wrapper import OvercookedWrapper
-            # Strip PO-specific keys so the non-PO wrapper doesn't choke
             for k in po_keys:
                 env_kwargs_copy.pop(k, None)
-
-        env = OvercookedWrapper(**env_kwargs_copy)
+            env = OvercookedWrapper(**env_kwargs_copy)
     
     elif env_name == 'hanabi':
         default_env_kwargs = {
