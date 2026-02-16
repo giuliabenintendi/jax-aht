@@ -79,11 +79,17 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         layout = augmented_layouts[env_kwargs['layout']]
         env_kwargs_copy["layout"] = layout
 
-        po_mode = env_kwargs_copy.get("po_mode", "none")
+        po_mode = env_kwargs_copy.pop("po_mode", "none")
+        po_keys = ("fov_range", "fov_slope", "use_occlusion", "soft_view", "dist_sigma", "ang_sigma")
         if po_mode != "none":
             from envs.overcooked.overcooked_po_wrapper import OvercookedWrapper
+            # Re-insert po_mode so the PO wrapper receives it
+            env_kwargs_copy["po_mode"] = po_mode
         else:
             from envs.overcooked.overcooked_wrapper import OvercookedWrapper
+            # Strip PO-specific keys so the non-PO wrapper doesn't choke
+            for k in po_keys:
+                env_kwargs_copy.pop(k, None)
 
         env = OvercookedWrapper(**env_kwargs_copy)
     
