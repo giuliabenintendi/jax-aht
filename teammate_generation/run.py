@@ -77,7 +77,7 @@ def run_training(cfg):
     # Render and log videos to WandB
     if cfg["train_ego"] and cfg["task"]["ENV_NAME"] == "overcooked-v1":
         from envs import make_env
-        raw_env = make_env(cfg["algorithm"]["ENV_NAME"], cfg["algorithm"]["ENV_KWARGS"])
+        raw_env = make_env(cfg["task"]["ENV_NAME"], cfg["algorithm"]["ENV_KWARGS"])
         # partner_params shape: (num_seeds, pop_size, ...) — pick first seed, first partner
         single_partner = jax.tree.map(lambda x: x[0, 0], partner_params)
         log_videos_to_wandb(cfg, wandb_logger, raw_env, ego_policy, ego_params,
