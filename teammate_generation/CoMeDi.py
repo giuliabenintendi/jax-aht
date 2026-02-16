@@ -673,7 +673,7 @@ def train_comedi_partners(train_rng, env, config):
                                     aux_obs=aux_obs_xp
                                 )
 
-                                aux_obs_sp = jnp.repeat(xp_one_hot_id, traj_batch_sp.obs.shape[1], axis=1)
+                                aux_obs_sp = jnp.repeat(sp_one_hot_id, traj_batch_sp.obs.shape[1], axis=1)
                                 aux_obs_sp = jnp.repeat(aux_obs_sp, traj_batch_sp.obs.shape[0], axis=0)
                                 _, value_sp, pi_sp, _ = policy.get_action_value_policy(
                                     params=params,

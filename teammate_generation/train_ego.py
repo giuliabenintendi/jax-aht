@@ -29,6 +29,13 @@ def train_ego_agent(config, logger, partner_params, partner_population):
     env = make_env(algorithm_config["ENV_NAME"], algorithm_config["ENV_KWARGS"])
     env = LogWrapper(env)
 
+    # Populate JA grid dimensions from environment (needed when USE_JA=True)
+    if algorithm_config.get("USE_JA", False):
+        inner_env = env._env if hasattr(env, '_env') else env
+        inner_env = inner_env.env if hasattr(inner_env, 'env') else inner_env
+        algorithm_config["JA_OBS_HEIGHT"] = inner_env.obs_shape[1]
+        algorithm_config["JA_OBS_WIDTH"] = inner_env.obs_shape[0]
+
     num_seeds = jax.tree.leaves(partner_params)[0].shape[0]
 
     rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])

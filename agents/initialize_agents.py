@@ -5,6 +5,7 @@ from agents.mlp_actor_critic_agent import MLPActorCriticPolicy, ActorWithDoubleC
     PseudoActorWithConditionalCriticPolicy
 from agents.rnn_actor_critic_agent import RNNActorCriticPolicy
 from agents.s5_actor_critic_agent import S5ActorCriticPolicy
+from agents.ja_actor_critic_agent import JAActorCriticPolicy
 from agents.liam_agent import LIAMPolicy, initialize_liam_encoder_decoder
 from agents.meliba_agent import MeLIBAPolicy, initialize_meliba_encoder_decoder
 
@@ -62,6 +63,48 @@ def initialize_rnn_agent(config, env, rng):
         action_dim=env.action_space(env.agents[0]).n,
         obs_dim=config.get("POLICY_INPUT_DIM", env.observation_space(env.agents[0]).shape[0]),
         activation=config.get("ACTIVATION", "tanh"),
+        fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
+        gru_hidden_dim=config.get("GRU_HIDDEN_DIM", 64),
+    )
+
+    rng, init_rng = jax.random.split(rng)
+    init_params = policy.init_params(init_rng)
+
+    return policy, init_params
+
+def initialize_ja_agent(config, env, rng):
+    """Initialize a Joint Attention agent with the given config.
+
+    Requires the environment to expose obs_shape so we can determine the
+    grid dimensions (height, width) for the spatial attention module.
+
+    Config keys (with defaults):
+        JA_CONV_FILTERS: 32
+        JA_NUM_HEADS: 4
+        JA_HEAD_FEATURES: 16
+        FC_HIDDEN_DIM: 64
+        GRU_HIDDEN_DIM: 64
+        ACTIVATION: "tanh"
+    """
+    # Extract grid dimensions from the underlying Overcooked environment.
+    # env may be wrapped (LogWrapper -> OvercookedWrapper -> OvercookedV1).
+    # obs_shape is (width, height, channels) but the actual array is (height, width, channels).
+    inner_env = env._env if hasattr(env, '_env') else env
+    inner_env = inner_env.env if hasattr(inner_env, 'env') else inner_env
+    obs_width = inner_env.obs_shape[0]
+    obs_height = inner_env.obs_shape[1]
+    obs_channels = inner_env.obs_shape[2]
+
+    policy = JAActorCriticPolicy(
+        action_dim=env.action_space(env.agents[0]).n,
+        obs_dim=config.get("POLICY_INPUT_DIM", env.observation_space(env.agents[0]).shape[0]),
+        obs_height=obs_height,
+        obs_width=obs_width,
+        obs_channels=obs_channels,
+        activation=config.get("ACTIVATION", "tanh"),
+        conv_filters=config.get("JA_CONV_FILTERS", 32),
+        num_heads=config.get("JA_NUM_HEADS", 4),
+        head_features=config.get("JA_HEAD_FEATURES", 16),
         fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
         gru_hidden_dim=config.get("GRU_HIDDEN_DIM", 64),
     )

@@ -43,6 +43,10 @@ dependencies = [
     "omegaconf",
     "hydra-core",
     "huggingface-hub",
+    # Pinned to avoid arch/pandas/setuptools compatibility issues
+    "setuptools<71",
+    "arch>=8.0",
+    "pandas<3.0",
     # Environment dependencies
     "jumanji==1.1.0",
     "jaxmarl==0.0.7",

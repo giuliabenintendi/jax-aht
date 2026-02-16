@@ -24,6 +24,7 @@ import hydra
 from flax.training.train_state import TrainState
 
 from agents.population_interface import AgentPopulation
+from agents.ja_utils import jsd_divergence, inferred_attention
 from common.run_episodes import run_episodes
 from common.plot_utils import get_stats, get_metric_names
 from common.save_load_utils import save_train_run
@@ -100,14 +101,23 @@ def train_ppo_ego_agent(config, env, train_rng,
             init_ego_hstate = ego_policy.init_hstate(config["NUM_CONTROLLED_ACTORS"])
             init_partner_hstate = partner_population.init_hstate(config["NUM_UNCONTROLLED_ACTORS"])
             
+            # --- Joint Attention config ---
+            use_ja = config.get("USE_JA", False)
+            ja_beta_max = config.get("JA_BETA_MAX", 0.1)
+            ja_warmup_steps = config.get("JA_WARMUP_STEPS", 50)
+            # Grid dimensions for inferred partner attention (only needed when USE_JA=True)
+            ja_obs_height = config.get("JA_OBS_HEIGHT", 0)
+            ja_obs_width = config.get("JA_OBS_WIDTH", 0)
+
             def _env_step(runner_state, unused):
                 """
                 One step of the environment:
                 1. Get observations, sample actions from all agents
                 2. Step environment using sampled actions
-                3. Return state, reward, ...
+                3. (If USE_JA) Compute JA intrinsic reward and augment env reward
+                4. Return state, reward, ...
                 """
-                train_state, env_state, prev_obs, prev_done, ego_hstate, partner_hstate, partner_indices, rng = runner_state
+                train_state, env_state, prev_obs, prev_done, ego_hstate, partner_hstate, partner_indices, ja_beta, rng = runner_state
                 rng, actor_rng, partner_rng, step_rng = jax.random.split(rng, 4)
 
                  # Get available actions for agent 0 from environment state
@@ -116,7 +126,7 @@ def train_ppo_ego_agent(config, env, train_rng,
                 avail_actions_0 = avail_actions["agent_0"].astype(jnp.float32)
                 avail_actions_1 = avail_actions["agent_1"].astype(jnp.float32)
 
-                # Conditionally resample partners based on prev_done["__all__"]                
+                # Conditionally resample partners based on prev_done["__all__"]
                 needs_resample = prev_done["__all__"] # shape (NUM_ENVS,) bool
                 sampled_indices_all = partner_population.sample_agent_indices(config["NUM_CONTROLLED_ACTORS"], partner_rng)
 
@@ -129,9 +139,9 @@ def train_ppo_ego_agent(config, env, train_rng,
 
                 # Note that we do not need to reset the hiden states for both the ego and partner agents
                 # as the recurrent states are automatically reset when done is True, and the partner indices are only reset when done is True.
-                
+
                 # Agent_0 (ego) action, value, log_prob
-                act_0, val_0, pi_0, new_ego_hstate = ego_policy.get_action_value_policy(
+                ego_output = ego_policy.get_action_value_policy(
                     params=train_state.params,
                     obs=prev_obs["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"], -1),
                     done=prev_done["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"]),
@@ -139,6 +149,12 @@ def train_ppo_ego_agent(config, env, train_rng,
                     hstate=ego_hstate,
                     rng=actor_rng
                 )
+                # JA policy returns 5 values, standard returns 4
+                if use_ja:
+                    act_0, val_0, pi_0, new_ego_hstate, ego_attn_map = ego_output
+                else:
+                    act_0, val_0, pi_0, new_ego_hstate = ego_output
+
                 logp_0 = pi_0.log_prob(act_0)
 
                 act_0 = act_0.squeeze()
@@ -172,19 +188,45 @@ def train_ppo_ego_agent(config, env, train_rng,
                 # note that num_actors = num_envs * num_agents
                 info_0 = jax.tree.map(lambda x: x[:, 0], info)
 
+                # --- Joint Attention intrinsic reward ---
+                if use_ja:
+                    # Extract partner's position and facing direction from env state
+                    # State nesting: LogEnvState -> WrappedEnvState -> OvercookedState
+                    overcooked_state = env_state_next.env_state.env_state
+                    partner_pos = overcooked_state.agent_pos[:, 1, :]      # (NUM_ENVS, 2)
+                    partner_dir = overcooked_state.agent_dir_idx[:, 1]     # (NUM_ENVS,)
+
+                    # Compute inferred partner attention from (pos, dir)
+                    a_partner = jax.vmap(
+                        lambda p, d: inferred_attention(p, d, ja_obs_height, ja_obs_width)
+                    )(partner_pos, partner_dir)  # (NUM_ENVS, H, W)
+
+                    # Ego attention: squeeze the time dim (seq_len=1), shape -> (NUM_ENVS, H, W)
+                    a_ego = ego_attn_map.squeeze(0)
+
+                    # JA reward = -JSD(ego_attention, partner_inferred_attention)
+                    r_ja = -jsd_divergence(a_ego, a_partner)  # (NUM_ENVS,)
+                    r_ja = jax.lax.stop_gradient(r_ja)
+
+                    # Beta curriculum: scale up from 0 over warmup period
+                    # update_steps is available in the outer _update_step scope
+                    ego_reward = reward["agent_0"] + ja_beta * r_ja
+                else:
+                    ego_reward = reward["agent_0"]
+
                 # Store agent_0 data in transition
                 transition = Transition(
                     done=done_next["agent_0"],
                     action=act_0,
                     value=val_0,
-                    reward=reward["agent_0"],
+                    reward=ego_reward,
                     log_prob=logp_0,
                     obs=prev_obs["agent_0"],
                     info=info_0,
                     avail_actions=avail_actions_0
                 )
-                new_runner_state = (train_state, env_state_next, obs_next, done_next, 
-                                    new_ego_hstate, new_partner_hstate, updated_partner_indices, rng)
+                new_runner_state = (train_state, env_state_next, obs_next, done_next,
+                                    new_ego_hstate, new_partner_hstate, updated_partner_indices, ja_beta, rng)
                 return new_runner_state, transition
 
             def _calculate_gae(traj_batch, last_val):
@@ -215,14 +257,18 @@ def train_ppo_ego_agent(config, env, train_rng,
             def _update_minbatch(train_state, batch_info):
                 init_ego_hstate, traj_batch, advantages, returns = batch_info
                 def _loss_fn(params, init_ego_hstate, traj_batch, gae, target_v):
-                    _, value, pi, _ = ego_policy.get_action_value_policy(
-                        params=params, 
+                    # JA policy returns 5 values (extra attn_map); discard extras beyond value, pi
+                    policy_out = ego_policy.get_action_value_policy(
+                        params=params,
                         obs=traj_batch.obs,
                         done=traj_batch.done,
                         avail_actions=traj_batch.avail_actions,
                         hstate=init_ego_hstate,
                         rng=jax.random.PRNGKey(0) # only used for action sampling, which is unused here
                     )
+                    # Unpack: action(0), value(1), pi(2), hstate(3), [attn_map(4) if JA]
+                    value = policy_out[1]
+                    pi = policy_out[2]
                     log_prob = pi.log_prob(traj_batch.action)
 
                     # Value loss
@@ -282,6 +328,14 @@ def train_ppo_ego_agent(config, env, train_rng,
                 3. PPO updates
                 """
                 (train_state, rng, update_steps) = update_runner_state
+
+                # JA beta curriculum: ramp from 0 to ja_beta_max over warmup
+                ja_beta = jnp.where(
+                    use_ja,
+                    jnp.minimum(ja_beta_max, ja_beta_max * update_steps / jnp.maximum(ja_warmup_steps, 1.0)),
+                    0.0,
+                )
+
                 # Init envs & partner indices
                 rng, reset_rng, p_rng = jax.random.split(rng, 3)
                 reset_rngs = jax.random.split(reset_rng, config["NUM_ENVS"])
@@ -290,25 +344,26 @@ def train_ppo_ego_agent(config, env, train_rng,
                 new_partner_indices = partner_population.sample_agent_indices(config["NUM_UNCONTROLLED_ACTORS"], p_rng)
 
                 # 1) rollout
-                runner_state = (train_state, init_env_state, init_obs, init_done, init_ego_hstate, init_partner_hstate, new_partner_indices, rng)
+                runner_state = (train_state, init_env_state, init_obs, init_done, init_ego_hstate, init_partner_hstate, new_partner_indices, ja_beta, rng)
 
                 runner_state, traj_batch = jax.lax.scan(
                     _env_step, runner_state, None, config["ROLLOUT_LENGTH"])
-                (train_state, env_state, obs, done, ego_hstate, partner_hstate, partner_indices, rng) = runner_state
+                (train_state, env_state, obs, done, ego_hstate, partner_hstate, partner_indices, _, rng) = runner_state
 
                 # 2) advantage
                 # Get available actions for agent 0 from environment state
                 avail_actions_0 = jax.vmap(env.get_avail_actions)(env_state.env_state)["agent_0"].astype(jnp.float32)
                                 
                 # Get final value estimate for completed trajectory
-                _, last_val, _, _ = ego_policy.get_action_value_policy(
-                    params=train_state.params, 
+                last_val_out = ego_policy.get_action_value_policy(
+                    params=train_state.params,
                     obs=obs["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"], -1),
                     done=done["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"]),
                     avail_actions=jax.lax.stop_gradient(avail_actions_0),
                     hstate=ego_hstate,
                     rng=jax.random.PRNGKey(0)  # Dummy key since we're just extracting the value
                 )
+                last_val = last_val_out[1]  # index 1 = value, works for both 4-tuple and 5-tuple
                 last_val = last_val.squeeze()
                 advantages, targets = _calculate_gae(traj_batch, last_val)
 
@@ -470,7 +525,14 @@ def run_ego_training(config, wandb_logger):
     
     # Initialize ego agent
     ego_policy, init_ego_params = initialize_ego_agent(algorithm_config, env, init_ego_rng)
-    
+
+    # Populate JA grid dimensions from environment (needed when USE_JA=True)
+    if algorithm_config.get("USE_JA", False):
+        inner_env = env._env if hasattr(env, '_env') else env
+        inner_env = inner_env.env if hasattr(inner_env, 'env') else inner_env
+        algorithm_config["JA_OBS_HEIGHT"] = inner_env.obs_shape[1]
+        algorithm_config["JA_OBS_WIDTH"] = inner_env.obs_shape[0]
+
     log.info("Starting ego agent training...")
     start_time = time.time()
     

@@ -75,10 +75,16 @@ def make_env(env_name: str, env_kwargs: dict = {}):
                 env_kwargs_copy[key] = default_env_kwargs[key]
 
         from envs.overcooked.augmented_layouts import augmented_layouts
-        from envs.overcooked.overcooked_wrapper import OvercookedWrapper
 
         layout = augmented_layouts[env_kwargs['layout']]
         env_kwargs_copy["layout"] = layout
+
+        po_mode = env_kwargs_copy.get("po_mode", "none")
+        if po_mode != "none":
+            from envs.overcooked.overcooked_po_wrapper import OvercookedWrapper
+        else:
+            from envs.overcooked.overcooked_wrapper import OvercookedWrapper
+
         env = OvercookedWrapper(**env_kwargs_copy)
     
     elif env_name == 'hanabi':
