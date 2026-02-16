@@ -103,8 +103,8 @@ def train_ppo_ego_agent(config, env, train_rng,
             
             # --- Joint Attention config ---
             use_ja = config.get("USE_JA", False)
-            ja_beta_max = config.get("JA_BETA_MAX", 0.1)
-            ja_warmup_steps = config.get("JA_WARMUP_STEPS", 50)
+            ja_beta_max = config.get("JA_BETA_MAX", 0.5)
+            ja_warmup_steps = config.get("JA_WARMUP_STEPS", 5000)
             # Grid dimensions for inferred partner attention (only needed when USE_JA=True)
             ja_obs_height = config.get("JA_OBS_HEIGHT", 0)
             ja_obs_width = config.get("JA_OBS_WIDTH", 0)
