@@ -137,7 +137,8 @@ class JAScannedRNN(nn.Module):
 
         # --- 5. Multi-head spatial attention ---
         # Attention logits: (batch, HW, m) = einsum(batch,HW,m,cm ; batch,m,cm)
-        attn_logits = jnp.einsum("bnmc,bmc->bnm", keys, queries)
+        # Scale by sqrt(d_k) to prevent softmax saturation
+        attn_logits = jnp.einsum("bnmc,bmc->bnm", keys, queries) / jnp.sqrt(cm).astype(jnp.float32)
         # Softmax over spatial locations (n = H*W) per head
         attn_weights = jax.nn.softmax(attn_logits, axis=1)  # (batch, HW, m)
 
