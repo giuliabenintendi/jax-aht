@@ -23,7 +23,7 @@ class OvercookedPOWrapper(OvercookedWrapper):
         self,
         *args,
         po_mode: str = "cone",
-        fov_range: int = 5,
+        fov_range: int | None = None,
         fov_slope: float = 0.7,
         use_occlusion: bool = False,
         soft_view: bool = True,
@@ -37,6 +37,9 @@ class OvercookedPOWrapper(OvercookedWrapper):
         super().__init__(*args, **kwargs)
 
         self.po_mode = po_mode
+        if fov_range is None:
+            h, w = self.env.obs_shape[1], self.env.obs_shape[0]
+            fov_range = max(h, w) // 2
         self.fov_range = fov_range
         self.fov_slope = fov_slope
         self.use_occlusion = use_occlusion
