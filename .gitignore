@@ -15,6 +15,9 @@ eval_teammates/*
 **/__pycache__/
 **/*.pyc
 
+# Claude Code
+claude/
+
 # Python packaging artifacts
 *.egg-info/
 __pycache__/
