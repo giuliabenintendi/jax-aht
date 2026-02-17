@@ -26,6 +26,7 @@ from flax.training.train_state import TrainState
 from agents.population_interface import AgentPopulation
 from envs.base_env import get_inner_env
 from agents.ja_utils import jsd_divergence, inferred_attention
+from envs.overcooked.po_utils import fov_cone_mask
 from common.run_episodes import run_episodes
 from common.plot_utils import get_stats, get_metric_names
 from common.save_load_utils import save_train_run
@@ -109,6 +110,9 @@ def train_ppo_ego_agent(config, env, train_rng,
             # Grid dimensions for inferred partner attention (only needed when USE_JA=True)
             ja_obs_height = config.get("JA_OBS_HEIGHT", 0)
             ja_obs_width = config.get("JA_OBS_WIDTH", 0)
+            # FOV params for masking inferred attention to ego's visible region
+            ja_fov_range = config.get("JA_FOV_RANGE", 0)
+            ja_fov_slope = config.get("JA_FOV_SLOPE", 0.7)
 
             def _env_step(runner_state, unused):
                 """
@@ -191,9 +195,11 @@ def train_ppo_ego_agent(config, env, train_rng,
 
                 # --- Joint Attention intrinsic reward ---
                 if use_ja:
-                    # Extract partner's position and facing direction from env state
+                    # Extract agent positions and directions from env state
                     # State nesting: LogEnvState -> WrappedEnvState -> OvercookedState
                     overcooked_state = env_state_next.env_state.env_state
+                    ego_pos = overcooked_state.agent_pos[:, 0, :]          # (NUM_ENVS, 2)
+                    ego_dir = overcooked_state.agent_dir_idx[:, 0]         # (NUM_ENVS,)
                     partner_pos = overcooked_state.agent_pos[:, 1, :]      # (NUM_ENVS, 2)
                     partner_dir = overcooked_state.agent_dir_idx[:, 1]     # (NUM_ENVS,)
 
@@ -201,6 +207,15 @@ def train_ppo_ego_agent(config, env, train_rng,
                     a_partner = jax.vmap(
                         lambda p, d: inferred_attention(p, d, ja_obs_height, ja_obs_width)
                     )(partner_pos, partner_dir)  # (NUM_ENVS, H, W)
+
+                    # Mask partner attention to ego's FOV so the JSD only
+                    # compares over cells the ego can actually observe
+                    if ja_fov_range > 0:
+                        ego_fov = jax.vmap(
+                            lambda p, d: fov_cone_mask(ja_obs_height, ja_obs_width, p, d, ja_fov_range, ja_fov_slope)
+                        )(ego_pos, ego_dir)  # (NUM_ENVS, H, W)
+                        a_partner = a_partner * ego_fov.astype(jnp.float32)
+                        a_partner = a_partner / (jnp.sum(a_partner, axis=(-2, -1), keepdims=True) + 1e-8)
 
                     # Ego attention: squeeze the time dim (seq_len=1), shape -> (NUM_ENVS, H, W)
                     a_ego = ego_attn_map.squeeze(0)
@@ -527,11 +542,15 @@ def run_ego_training(config, wandb_logger):
     # Initialize ego agent
     ego_policy, init_ego_params = initialize_ego_agent(algorithm_config, env, init_ego_rng)
 
-    # Populate JA grid dimensions from environment (needed when USE_JA=True)
+    # Populate JA grid dimensions and FOV params from environment (needed when USE_JA=True)
     if algorithm_config.get("USE_JA", False):
         inner_env = get_inner_env(env)
         algorithm_config["JA_OBS_HEIGHT"] = inner_env.obs_shape[1]
         algorithm_config["JA_OBS_WIDTH"] = inner_env.obs_shape[0]
+        # FOV params come from the wrapper (one level above inner_env)
+        wrapper = env._env if hasattr(env, '_env') else env
+        algorithm_config["JA_FOV_RANGE"] = getattr(wrapper, 'fov_range', 0)
+        algorithm_config["JA_FOV_SLOPE"] = getattr(wrapper, 'fov_slope', 0.7)
 
     log.info("Starting ego agent training...")
     start_time = time.time()

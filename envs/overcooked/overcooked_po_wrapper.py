@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from jaxmarl.environments.overcooked.overcooked import State as OvercookedState
 
 from envs.overcooked.overcooked_wrapper import OvercookedWrapper
-from envs.overcooked.po_utils import cone_forward_lateral
+from envs.overcooked.po_utils import cone_forward_lateral, fov_cone_mask
 
 
 class OvercookedPOWrapper(OvercookedWrapper):
@@ -80,12 +80,7 @@ class OvercookedPOWrapper(OvercookedWrapper):
 
         pos_xy = env_state.agent_pos[agent_index]
         dir_idx = env_state.agent_dir_idx[agent_index]
-        forward, lateral = cone_forward_lateral(h, w, pos_xy, dir_idx)
-
-        in_front = forward >= 0
-        in_range = forward <= self.fov_range
-        in_cone = jnp.abs(lateral) <= (self.fov_slope * forward + 1.0)
-        geom_vis = in_front & in_range & in_cone
+        geom_vis = fov_cone_mask(h, w, pos_xy, dir_idx, self.fov_range, self.fov_slope)
 
         if not self.use_occlusion:
             return geom_vis
