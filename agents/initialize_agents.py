@@ -76,16 +76,12 @@ def initialize_rnn_agent(config, env, rng):
 def initialize_ja_agent(config, env, rng):
     """Initialize a Joint Attention agent with the given config.
 
-    Requires the environment to expose obs_shape so we can determine the
-    grid dimensions (height, width) for the spatial attention module.
-
-    Config keys (with defaults):
-        JA_CONV_FILTERS: 32
-        JA_NUM_HEADS: 4
-        JA_HEAD_FEATURES: 16
-        FC_HIDDEN_DIM: 64
-        GRU_HIDDEN_DIM: 64
-        ACTIVATION: "tanh"
+    Mirrors Lee et al. (2021) architecture exactly (Appendix A):
+      - Conv(3x3, 64) + spatial basis (depth 8) + 4 heads (depth 16)
+      - LSTM cell size 64
+      - Two FC layers hidden size 64 (per head)
+      - Actor and critic: identical architecture, no shared weights
+      - Scalar features: direction Dense(5), position Dense(5)
     """
     # obs_shape is (width, height, channels) but the actual array is (height, width, channels).
     inner_env = get_inner_env(env)
@@ -99,12 +95,14 @@ def initialize_ja_agent(config, env, rng):
         obs_height=obs_height,
         obs_width=obs_width,
         obs_channels=obs_channels,
-        activation=config.get("ACTIVATION", "tanh"),
-        conv_filters=config.get("JA_CONV_FILTERS", 32),
+        activation=config.get("ACTIVATION", "relu"),
+        conv_filters=config.get("JA_CONV_FILTERS", 64),
         num_heads=config.get("JA_NUM_HEADS", 4),
         head_features=config.get("JA_HEAD_FEATURES", 16),
         fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
-        gru_hidden_dim=config.get("GRU_HIDDEN_DIM", 64),
+        lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
+        spatial_basis_depth=config.get("JA_SPATIAL_BASIS_DEPTH", 8),
+        scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
     )
 
     rng, init_rng = jax.random.split(rng)

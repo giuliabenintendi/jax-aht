@@ -1,0 +1,6 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+TOTAL_TIMESTEPS: 5e5
+NUM_ENVS: 8
