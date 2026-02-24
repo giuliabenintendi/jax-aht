@@ -3,7 +3,8 @@ import hydra
 from omegaconf import OmegaConf
 
 from common.wandb_visualizations import Logger
-from ippo import run_ippo
+from marl.ippo import run_ippo
+from marl.ja_ippo import run_ja_ippo
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="base_config_marl")
@@ -13,6 +14,8 @@ def main(config):
 
     if config.algorithm["ALG"] == "ippo":
         run_ippo(config, wandb_logger)
+    elif config.algorithm["ALG"] == "ja_ippo":
+        run_ja_ippo(config, wandb_logger)
     else:
         raise NotImplementedError(f"Algorithm {config['ALG']} not implemented.")
         
