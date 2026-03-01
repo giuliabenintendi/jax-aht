@@ -422,28 +422,6 @@ def make_train(config, env):
             metric["advantages_std_0"] = advantages_0.std()
             metric["advantages_std_1"] = advantages_1.std()
 
-            # Live progress via jax.debug.print (prints during JIT execution)
-            num_updates = config["NUM_UPDATES"]
-            print_every = max(1, num_updates // 20)
-            jax.lax.cond(
-                (update_steps % print_every == 0) | (update_steps == num_updates - 1),
-                lambda: jax.debug.print(
-                    "[{pct:5.1f}%] update {step}/{total}  env_steps={es}  "
-                    "jsd={jsd:.4f}  beta={beta:.5f}  loss_0={l0:.4f}  "
-                    "env_r0={er0:.3f}  val_0={v0:.3f}",
-                    pct=metric["pct_complete"],
-                    step=update_steps,
-                    total=num_updates,
-                    es=metric["env_steps"],
-                    jsd=metric["jsd_mean"],
-                    beta=ja_beta,
-                    l0=metric["loss_total_0"],
-                    er0=metric["env_reward_0_mean"],
-                    v0=metric["value_mean_0"],
-                ),
-                lambda: None,
-            )
-
             update_steps += 1
             runner_state = (train_state_0, train_state_1, env_state, last_obs, last_done,
                            hstate_0, hstate_1, rng)
@@ -534,8 +512,12 @@ def run_ja_ippo(config, logger):
     rngs = jax.random.split(rng, algorithm_config["NUM_SEEDS"])
 
     with jax.disable_jit(False):
+        print(f"[ja_ippo] Compiling train fn (NUM_UPDATES={algorithm_config['NUM_UPDATES']}, "
+              f"NUM_SEEDS={algorithm_config['NUM_SEEDS']}, NUM_ENVS={algorithm_config['NUM_ENVS']})...")
         train_jit = jax.jit(jax.vmap(make_train(algorithm_config, env)))
+        print("[ja_ippo] Calling compiled fn (first call triggers XLA compilation)...")
         out = train_jit(rngs)
+        print("[ja_ippo] Training complete.")
 
     log_metrics(config, out, logger)
     return out
