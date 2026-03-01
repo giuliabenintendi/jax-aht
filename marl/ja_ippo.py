@@ -512,7 +512,8 @@ def run_ja_ippo(config, logger):
     rngs = jax.random.split(rng, algorithm_config["NUM_SEEDS"])
 
     with jax.disable_jit(False):
-        print(f"[ja_ippo] Compiling train fn (NUM_UPDATES={algorithm_config['NUM_UPDATES']}, "
+        num_updates = int(algorithm_config["TOTAL_TIMESTEPS"] // algorithm_config["ROLLOUT_LENGTH"] // algorithm_config["NUM_ENVS"])
+        print(f"[ja_ippo] Compiling train fn (NUM_UPDATES={num_updates}, "
               f"NUM_SEEDS={algorithm_config['NUM_SEEDS']}, NUM_ENVS={algorithm_config['NUM_ENVS']})...")
         train_jit = jax.jit(jax.vmap(make_train(algorithm_config, env)))
         print("[ja_ippo] Calling compiled fn (first call triggers XLA compilation)...")
