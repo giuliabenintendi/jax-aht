@@ -150,8 +150,11 @@ def make_train(config, env):
                     total_loss, grads = grad_fn(
                         train_state.params, traj_batch, advantages, targets
                     )
+                    grad_norm = jnp.sqrt(
+                        sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads))
+                    )
                     train_state = train_state.apply_gradients(grads=grads)
-                    return train_state, total_loss
+                    return train_state, (total_loss, grad_norm)
 
                 train_state, init_hstate, traj_batch, advantages, targets, rng = update_state
                 rng, perm_rng = jax.random.split(rng)
@@ -160,11 +163,11 @@ def make_train(config, env):
                 minibatches = _create_minibatches(traj_batch, advantages, targets, init_hstate,
                                                   num_envs, config["NUM_MINIBATCHES"], perm_rng)
 
-                train_state, total_loss = jax.lax.scan(
+                train_state, minibatch_info = jax.lax.scan(
                     _update_minbatch, train_state, minibatches
                 )
                 update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
-                return update_state, total_loss
+                return update_state, minibatch_info
 
             init_hstate = policy.init_hstate(num_envs)
             update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
@@ -336,18 +339,110 @@ def make_train(config, env):
 
             # PPO updates (independent per agent)
             rng, rng_0, rng_1 = jax.random.split(rng, 3)
-            train_state_0, loss_0 = _ppo_update(
+            train_state_0, loss_info_0 = _ppo_update(
                 policy_0, train_state_0, traj_batch_0, advantages_0, targets_0, rng_0)
-            train_state_1, loss_1 = _ppo_update(
+            train_state_1, loss_info_1 = _ppo_update(
                 policy_1, train_state_1, traj_batch_1, advantages_1, targets_1, rng_1)
 
-            # Metrics from agent 0's trajectory (LogWrapper metrics are per-env, identical)
+            # Unpack loss_info: (total_loss_tuple, grad_norm) with shape (epochs, minibatches)
+            # total_loss_tuple = (total_loss, (value_loss, policy_loss, entropy))
+            def _extract_loss_means(loss_info):
+                (total_loss, (value_loss, policy_loss, entropy)), grad_norm = loss_info
+                return {
+                    "total_loss": total_loss.mean(),
+                    "value_loss": value_loss.mean(),
+                    "policy_loss": policy_loss.mean(),
+                    "entropy": entropy.mean(),
+                    "grad_norm": grad_norm.mean(),
+                }
+            losses_0 = _extract_loss_means(loss_info_0)
+            losses_1 = _extract_loss_means(loss_info_1)
+
+            # --- Attention diagnostics ---
+            # Attention maps from the rollout: (ROLLOUT_LENGTH, 1, NUM_ENVS, H, W)
+            # We already have per-step attn in the transition. Recompute from the
+            # last env_step's attn (already in traj_batch via the scan). Instead,
+            # compute from the JA reward which was derived from attn maps.
+            # For entropy: compute from stored ja_reward (shape: ROLLOUT_LENGTH, NUM_ENVS)
+            ja_rew = traj_batch_0.ja_reward  # (ROLLOUT_LENGTH, NUM_ENVS)
+            jsd_values = -ja_rew  # JSD is non-negative
+
+            # --- Reward breakdown ---
+            env_reward_0 = traj_batch_0.reward - ja_beta * ja_rew
+            env_reward_1 = traj_batch_1.reward - ja_beta * ja_rew
+
+            # --- Build metric dict ---
             metric = traj_batch_0.info
             metric["update_steps"] = update_steps
-            # JA-specific scalar metrics (per update step)
+
+            # Progress tracking
+            metric["pct_complete"] = (update_steps + 1) / config["NUM_UPDATES"] * 100.0
+            metric["env_steps"] = (update_steps + 1) * env_steps_per_update
+
+            # JA intrinsic reward
             metric["ja_beta"] = ja_beta
-            metric["ja_reward_mean"] = traj_batch_0.ja_reward.mean()
-            metric["jsd_mean"] = -traj_batch_0.ja_reward.mean()
+            metric["ja_reward_mean"] = ja_rew.mean()
+            metric["ja_reward_std"] = ja_rew.std()
+            metric["ja_reward_min"] = ja_rew.min()
+            metric["ja_reward_max"] = ja_rew.max()
+            metric["jsd_mean"] = jsd_values.mean()
+            metric["jsd_std"] = jsd_values.std()
+            metric["jsd_max"] = jsd_values.max()
+
+            # Env reward (without JA bonus)
+            metric["env_reward_0_mean"] = env_reward_0.mean()
+            metric["env_reward_1_mean"] = env_reward_1.mean()
+            # Augmented reward (with JA bonus)
+            metric["aug_reward_0_mean"] = traj_batch_0.reward.mean()
+            metric["aug_reward_1_mean"] = traj_batch_1.reward.mean()
+
+            # PPO losses — agent 0
+            metric["loss_total_0"] = losses_0["total_loss"]
+            metric["loss_value_0"] = losses_0["value_loss"]
+            metric["loss_policy_0"] = losses_0["policy_loss"]
+            metric["entropy_0"] = losses_0["entropy"]
+            metric["grad_norm_0"] = losses_0["grad_norm"]
+
+            # PPO losses — agent 1
+            metric["loss_total_1"] = losses_1["total_loss"]
+            metric["loss_value_1"] = losses_1["value_loss"]
+            metric["loss_policy_1"] = losses_1["policy_loss"]
+            metric["entropy_1"] = losses_1["entropy"]
+            metric["grad_norm_1"] = losses_1["grad_norm"]
+
+            # Value function diagnostics
+            metric["value_mean_0"] = traj_batch_0.value.mean()
+            metric["value_mean_1"] = traj_batch_1.value.mean()
+            metric["value_std_0"] = traj_batch_0.value.std()
+            metric["value_std_1"] = traj_batch_1.value.std()
+
+            # GAE diagnostics
+            metric["advantages_mean_0"] = advantages_0.mean()
+            metric["advantages_mean_1"] = advantages_1.mean()
+            metric["advantages_std_0"] = advantages_0.std()
+            metric["advantages_std_1"] = advantages_1.std()
+
+            # Live progress via jax.debug.print (prints during JIT execution)
+            num_updates = config["NUM_UPDATES"]
+            print_every = max(1, num_updates // 20)
+            jax.lax.cond(
+                (update_steps % print_every == 0) | (update_steps == num_updates - 1),
+                lambda: jax.debug.print(
+                    "[{pct:5.1f}%] update {step}/{total}  env_steps={es}  "
+                    "jsd={jsd:.4f}  beta={beta:.5f}  loss_0={l0:.4f}  "
+                    "env_r0={er0:.3f}  val_0={v0:.3f}",
+                    pct=metric["pct_complete"],
+                    step=update_steps,
+                    total=num_updates,
+                    es=metric["env_steps"],
+                    jsd=metric["jsd_mean"],
+                    beta=ja_beta,
+                    l0=metric["loss_total_0"],
+                    er0=metric["env_reward_0_mean"],
+                    v0=metric["value_mean_0"],
+                ),
+                lambda: None,
+            )
 
             update_steps += 1
             runner_state = (train_state_0, train_state_1, env_state, last_obs, last_done,
@@ -447,26 +542,102 @@ def run_ja_ippo(config, logger):
 
 
 def log_metrics(config, out, logger):
-    '''Save train run output and log to wandb as artifact.'''
+    '''Save train run output and log all metrics to wandb.'''
     train_metrics = out["metrics"]
     metric_names = get_metric_names(config["ENV_NAME"])
     train_stats = get_stats(train_metrics, metric_names)
 
     train_stats = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
 
-    # JA-specific scalars: shape (NUM_SEEDS, NUM_UPDATES) — average over seeds
-    ja_scalars = {}
-    for key in ("ja_beta", "ja_reward_mean", "jsd_mean"):
+    # All scalar metrics to log, grouped by wandb panel section.
+    # Each entry: (metric_key_in_train_metrics, wandb_tag_prefix)
+    scalar_keys = [
+        # JA intrinsic reward
+        ("ja_beta", "JA"),
+        ("ja_reward_mean", "JA"),
+        ("ja_reward_std", "JA"),
+        ("ja_reward_min", "JA"),
+        ("ja_reward_max", "JA"),
+        ("jsd_mean", "JA"),
+        ("jsd_std", "JA"),
+        ("jsd_max", "JA"),
+        # Reward breakdown
+        ("env_reward_0_mean", "Rewards"),
+        ("env_reward_1_mean", "Rewards"),
+        ("aug_reward_0_mean", "Rewards"),
+        ("aug_reward_1_mean", "Rewards"),
+        # Losses — agent 0
+        ("loss_total_0", "Losses"),
+        ("loss_value_0", "Losses"),
+        ("loss_policy_0", "Losses"),
+        ("entropy_0", "Losses"),
+        ("grad_norm_0", "Losses"),
+        # Losses — agent 1
+        ("loss_total_1", "Losses"),
+        ("loss_value_1", "Losses"),
+        ("loss_policy_1", "Losses"),
+        ("entropy_1", "Losses"),
+        ("grad_norm_1", "Losses"),
+        # Value function
+        ("value_mean_0", "Values"),
+        ("value_mean_1", "Values"),
+        ("value_std_0", "Values"),
+        ("value_std_1", "Values"),
+        # GAE
+        ("advantages_mean_0", "Values"),
+        ("advantages_mean_1", "Values"),
+        ("advantages_std_0", "Values"),
+        ("advantages_std_1", "Values"),
+        # Progress
+        ("pct_complete", "Progress"),
+        ("env_steps", "Progress"),
+    ]
+
+    # Pre-compute: average over seeds, shape (NUM_UPDATES,) per key
+    scalar_data = {}
+    for key, _ in scalar_keys:
         if key in train_metrics:
-            ja_scalars[key] = np.mean(np.array(train_metrics[key]), axis=0)
+            scalar_data[key] = np.mean(np.array(train_metrics[key]), axis=0)
 
     num_updates = train_metrics["returned_episode"].shape[1]
+    print_interval = max(1, num_updates // 20)  # ~20 progress lines
+
     for step in range(num_updates):
+        # Standard return metrics
         for stat_name, stat_data in train_stats.items():
             stat_mean = stat_data[step, 0]
             logger.log_item(f"Train/{stat_name}", stat_mean, train_step=step, commit=False)
-        for key, vals in ja_scalars.items():
-            logger.log_item(f"Train/{key}", float(vals[step]), train_step=step, commit=True)
+
+        # All scalar metrics
+        for key, prefix in scalar_keys:
+            if key in scalar_data:
+                logger.log_item(
+                    f"{prefix}/{key}", float(scalar_data[key][step]),
+                    train_step=step, commit=False,
+                )
+
+        logger.log({}, step=step, commit=True)
+
+        # Console progress
+        if step % print_interval == 0 or step == num_updates - 1:
+            pct = scalar_data.get("pct_complete", [0] * num_updates)
+            env_s = scalar_data.get("env_steps", [0] * num_updates)
+            ret_str = ""
+            for sn, sd in train_stats.items():
+                ret_str += f"  {sn}={sd[step, 0]:.3f}"
+            jsd_val = scalar_data.get("jsd_mean", [0] * num_updates)
+            beta_val = scalar_data.get("ja_beta", [0] * num_updates)
+            loss_0 = scalar_data.get("loss_total_0", [0] * num_updates)
+            grad_0 = scalar_data.get("grad_norm_0", [0] * num_updates)
+            print(
+                f"[{float(pct[step]):5.1f}%] step={step}/{num_updates}"
+                f"  env_steps={int(float(env_s[step]))}"
+                f"{ret_str}"
+                f"  jsd={float(jsd_val[step]):.4f}"
+                f"  beta={float(beta_val[step]):.5f}"
+                f"  loss_0={float(loss_0[step]):.4f}"
+                f"  grad_0={float(grad_0[step]):.3f}"
+            )
 
     logger.commit()
 
