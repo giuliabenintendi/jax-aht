@@ -102,8 +102,7 @@ def test_ja_eval_episode():
         max_episode_steps=10,
     )
 
-    # run_single_episode returns the final info dict from LogWrapper
-    assert "returned_episode_returns" in info
+    assert "base_return" in info
 
 
 def test_ja_train_loop():
