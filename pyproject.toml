@@ -50,6 +50,17 @@ dependencies = [
     "jumanji==1.1.0",
     "jaxmarl==0.0.7",
     "pytest",
+    # Cap nvidia packages to match CUDA 12.4 driver (550.54.15)
+    "nvidia-cublas-cu12<12.5",
+    "nvidia-cuda-cupti-cu12<12.5",
+    "nvidia-cuda-nvcc-cu12<12.5",
+    "nvidia-cuda-runtime-cu12<12.5",
+    "nvidia-cudnn-cu12<9.5",
+    "nvidia-cufft-cu12<11.1",
+    "nvidia-cusolver-cu12<11.6",
+    "nvidia-cusparse-cu12<12.4",
+    "nvidia-nccl-cu12<2.21",
+    "nvidia-nvjitlink-cu12<12.5",
 ]
 
 [project.urls]
