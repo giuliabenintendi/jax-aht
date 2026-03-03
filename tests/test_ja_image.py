@@ -1,6 +1,8 @@
 """Tests for image-based JA pipeline: rendering, wrapper, network, training."""
+import numpy as np
 import jax
 import jax.numpy as jnp
+from PIL import Image
 
 from envs import make_env
 from envs.log_wrapper import LogWrapper
@@ -19,6 +21,32 @@ def test_render_state_shape():
     h, w = env.height, env.width
     assert img.shape == (h * TILE_PIXELS, w * TILE_PIXELS, 3)
     assert img.dtype == jnp.uint8
+
+
+def test_save_image_obs():
+    """Save a sample image observation as PNG for visual inspection."""
+    env = make_env("overcooked-v1", {"layout": "cramped_room", "obs_type": "image"})
+    rng = jax.random.PRNGKey(0)
+    obs, _ = env.reset(rng)
+
+    h = env.grid_height * TILE_PIXELS
+    w = env.grid_width * TILE_PIXELS
+    img_flat_dim = h * w * 3
+
+    obs_0 = np.array(obs["agent_0"])
+    img = (obs_0[:img_flat_dim] * 255).astype(np.uint8).reshape(h, w, 3)
+    scalars = obs_0[img_flat_dim:]
+
+    print(f"\nImage shape: ({h}, {w}, 3)")
+    print(f"Scalars (agent_0): ego_dir={scalars[0]:.0f} "
+          f"ego_pos=({scalars[1]:.0f},{scalars[2]:.0f}) "
+          f"partner_dir={scalars[3]:.0f} "
+          f"partner_pos=({scalars[4]:.0f},{scalars[5]:.0f})")
+
+    scale = 10
+    img_large = np.kron(img, np.ones((scale, scale, 1))).astype(np.uint8)
+    Image.fromarray(img_large).save("image_obs.png")
+    print(f"Saved image_obs.png ({img_large.shape[0]}x{img_large.shape[1]})")
 
 
 def test_image_wrapper():
