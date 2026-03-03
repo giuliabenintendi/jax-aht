@@ -22,7 +22,7 @@ import jax.numpy as jnp
 import optax
 from flax.training.train_state import TrainState
 
-from agents.initialize_agents import initialize_ja_agent
+from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent
 from agents.ja_utils import jsd_divergence
 from common.plot_utils import get_stats, get_metric_names
 from common.save_load_utils import save_train_run
@@ -66,11 +66,14 @@ def make_train(config, env):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
         return config["LR"] * frac
 
+    obs_type = config.get("OBS_TYPE", config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
+    init_fn = initialize_ja_image_agent if obs_type == "image" else initialize_ja_agent
+
     def train(rng):
         # INIT TWO INDEPENDENT NETWORKS (paper Section 6.1: "do not share parameters")
         rng, init_rng_0, init_rng_1 = jax.random.split(rng, 3)
-        policy_0, init_params_0 = initialize_ja_agent(config, env, init_rng_0)
-        policy_1, init_params_1 = initialize_ja_agent(config, env, init_rng_1)
+        policy_0, init_params_0 = init_fn(config, env, init_rng_0)
+        policy_1, init_params_1 = init_fn(config, env, init_rng_1)
 
         if config["ANNEAL_LR"]:
             tx = optax.chain(

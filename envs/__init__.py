@@ -79,9 +79,15 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         layout = augmented_layouts[env_kwargs['layout']]
         env_kwargs_copy["layout"] = layout
 
+        obs_type = env_kwargs_copy.pop("obs_type", "symbolic")
         po_mode = env_kwargs_copy.pop("po_mode", "none")
         po_keys = ("fov_range", "fov_slope", "use_occlusion", "soft_view", "dist_sigma", "ang_sigma")
-        if po_mode != "none":
+        if obs_type == "image":
+            from envs.overcooked.overcooked_image_wrapper import OvercookedImageWrapper
+            for k in po_keys:
+                env_kwargs_copy.pop(k, None)
+            env = OvercookedImageWrapper(**env_kwargs_copy)
+        elif po_mode != "none":
             from envs.overcooked.overcooked_po_wrapper import OvercookedPOWrapper
             env_kwargs_copy["po_mode"] = po_mode
             env = OvercookedPOWrapper(**env_kwargs_copy)
