@@ -18,6 +18,9 @@ eval_teammates/*
 # Claude Code
 claude/
 
+# Reference code (not part of this project)
+google-research/
+
 # Python packaging artifacts
 *.egg-info/
 __pycache__/

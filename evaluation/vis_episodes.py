@@ -68,28 +68,37 @@ def save_video(env, env_name,
     return savepath
 
 
-def run_episode_with_states(rng, env, agent_0_param, agent_0_policy, 
-                           agent_1_param, agent_1_policy, 
-                           max_episode_steps):
+def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
+                           agent_1_param, agent_1_policy,
+                           max_episode_steps, collect_attention=False):
     '''
     Run a single episode and collect states for rendering.
-    Returns a list of states.
+
+    Args:
+        collect_attention: if True and agents are JA, also return per-timestep
+            attention maps via get_action_and_attention.
+
+    Returns:
+        ep_states when collect_attention=False,
+        (ep_states, {"agent_0": [...], "agent_1": [...]}) when True.
     '''
+    _a0_is_ja = hasattr(agent_0_policy, '_extract_actor_h')
+    _a1_is_ja = hasattr(agent_1_policy, '_extract_actor_h')
+
     # Reset the env.
     rng, reset_rng = jax.random.split(rng)
 
-   
-
     obs, env_state = env.reset(reset_rng)
     done = {k: jnp.zeros((1), dtype=bool) for k in env.agents + ["__all__"]}
-    
+
     # Initialize hidden states
     hstate_0 = agent_0_policy.init_hstate(1)
     hstate_1 = agent_1_policy.init_hstate(1)
 
     # Collect states for rendering
     ep_states = [env_state]
-    
+    attn_maps = {"agent_0": [], "agent_1": []}
+
     # Run episode until done or max steps reached
     step = 0
     while not done["__all__"] and step < max_episode_steps:
@@ -102,38 +111,72 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         # Get agent obses
         obs_0, obs_1 = obs["agent_0"], obs["agent_1"]
         prev_done_0, prev_done_1 = done["agent_0"], done["agent_1"]
-        
+
         # Reshape inputs for policies
         obs_0_reshaped = obs_0.reshape(1, 1, -1)
         done_0_reshaped = prev_done_0.reshape(1, 1)
         obs_1_reshaped = obs_1.reshape(1, 1, -1)
         done_1_reshaped = prev_done_1.reshape(1, 1)
 
+        # Build partner_hstate kwargs for JA agents
+        a0_extra = {}
+        if _a0_is_ja and _a1_is_ja:
+            a0_extra['partner_hstate'] = agent_1_policy._extract_actor_h(hstate_1)
+        a1_extra = {}
+        if _a1_is_ja and _a0_is_ja:
+            a1_extra['partner_hstate'] = agent_0_policy._extract_actor_h(hstate_0)
+
         # Get actions for both agents
         rng, act_rng, part_rng, step_rng = jax.random.split(rng, 4)
-        
-        # Get ego action
-        act_0, hstate_0 = agent_0_policy.get_action(
-            agent_0_param,
-            obs_0_reshaped,
-            done_0_reshaped,
-            avail_actions_0,
-            hstate_0,
-            act_rng
-        )
+
+        # Get ego action (optionally with attention)
+        if collect_attention and _a0_is_ja:
+            act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
+                params=agent_0_param,
+                obs=obs_0_reshaped,
+                done=done_0_reshaped,
+                avail_actions=avail_actions_0,
+                hstate=hstate_0,
+                rng=act_rng,
+                **a0_extra
+            )
+            attn_maps["agent_0"].append(attn_0)
+        else:
+            act_0, hstate_0 = agent_0_policy.get_action(
+                params=agent_0_param,
+                obs=obs_0_reshaped,
+                done=done_0_reshaped,
+                avail_actions=avail_actions_0,
+                hstate=hstate_0,
+                rng=act_rng,
+                **a0_extra
+            )
         act_0 = act_0.squeeze()
 
-        # Get partner action
-        act_1, hstate_1 = agent_1_policy.get_action(
-            agent_1_param, 
-            obs_1_reshaped,
-            done_1_reshaped,
-            avail_actions_1,
-            hstate_1,
-            part_rng
-        )
+        # Get partner action (optionally with attention)
+        if collect_attention and _a1_is_ja:
+            act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
+                params=agent_1_param,
+                obs=obs_1_reshaped,
+                done=done_1_reshaped,
+                avail_actions=avail_actions_1,
+                hstate=hstate_1,
+                rng=part_rng,
+                **a1_extra
+            )
+            attn_maps["agent_1"].append(attn_1)
+        else:
+            act_1, hstate_1 = agent_1_policy.get_action(
+                params=agent_1_param,
+                obs=obs_1_reshaped,
+                done=done_1_reshaped,
+                avail_actions=avail_actions_1,
+                hstate=hstate_1,
+                rng=part_rng,
+                **a1_extra
+            )
         act_1 = act_1.squeeze()
-        
+
         # Take step in environment
         both_actions = [act_0, act_1]
         env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
@@ -141,10 +184,41 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
         # Add state to the list for rendering
         ep_states.append(env_state)
-        
+
         step += 1
-    
+
+    if collect_attention:
+        return ep_states, attn_maps
     return ep_states
+
+def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval"):
+    """Log attention heatmaps to wandb.
+
+    Logs first/middle/last frame attention maps as wandb.Image per agent.
+
+    Args:
+        attn_data: dict {"agent_0": [attn_map, ...], "agent_1": [...]},
+            where each attn_map is (1, H, W) from get_action_and_attention.
+        logger: wandb run object (or anything with a .log method).
+        step: global step for logging.
+        tag_prefix: prefix for wandb log keys.
+    """
+    import numpy as np
+    try:
+        import wandb
+    except ImportError:
+        return
+
+    for agent_name, maps in attn_data.items():
+        if not maps:
+            continue
+        n = len(maps)
+        indices = {"first": 0, "middle": n // 2, "last": n - 1}
+        for label, idx in indices.items():
+            attn = np.array(maps[idx]).squeeze()  # (H, W)
+            img = wandb.Image(attn, caption=f"{agent_name} t={idx}")
+            logger.log({f"{tag_prefix}/{agent_name}_attn_{label}": img}, step=step)
+
 
 if __name__ == "__main__":
     from envs import make_env

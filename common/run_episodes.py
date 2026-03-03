@@ -6,9 +6,20 @@ import jax
 import jax.numpy as jnp
 
 
+def _maybe_extract_partner_h(policy, hstate):
+    """Extract actor hidden state from a JA policy's packed hstate, or None."""
+    if hasattr(policy, '_extract_actor_h'):
+        return policy._extract_actor_h(hstate)
+    return None
+
+
 def run_single_episode(rng, env, agent_0_param, agent_0_policy,
                        agent_1_param, agent_1_policy,
                        max_episode_steps, agent_0_test_mode=False, agent_1_test_mode=False):
+    # Detect JA agents at trace time (Python-level, not runtime)
+    _a0_is_ja = hasattr(agent_0_policy, '_extract_actor_h')
+    _a1_is_ja = hasattr(agent_1_policy, '_extract_actor_h')
+
     # Reset the env.
     rng, reset_rng = jax.random.split(rng)
     init_obs, init_env_state = env.reset(reset_rng)
@@ -31,6 +42,14 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
     # Do one step to get a dummy info structure
     rng, act0_rng, act1_rng, step_rng = jax.random.split(rng, 4)
 
+    # Build partner_hstate kwargs for JA agents
+    a0_extra = {}
+    if _a0_is_ja and _a1_is_ja:
+        a0_extra['partner_hstate'] = agent_1_policy._extract_actor_h(init_hstate_1)
+    a1_extra = {}
+    if _a1_is_ja and _a0_is_ja:
+        a1_extra['partner_hstate'] = agent_0_policy._extract_actor_h(init_hstate_0)
+
     # Get ego action
     act_0, hstate_0 = agent_0_policy.get_action(
         params=agent_0_param,
@@ -41,7 +60,8 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
         rng=act0_rng,
         aux_obs=(init_act_onehot["agent_0"].reshape(1, 1, -1), init_joint_act_onehot, init_reward["agent_0"].reshape(1, 1, -1)),
         env_state=init_env_state,
-        test_mode=agent_0_test_mode
+        test_mode=agent_0_test_mode,
+        **a0_extra
     )
     act_0 = act_0.squeeze()
 
@@ -55,7 +75,8 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
         rng=act1_rng,
         aux_obs=None,
         env_state=init_env_state,
-        test_mode=agent_1_test_mode
+        test_mode=agent_1_test_mode,
+        **a1_extra
     )
     act_1 = act_1.squeeze()
 
@@ -81,6 +102,15 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
 
             # Get ego action
             rng, act0_rng, act1_rng, step_rng = jax.random.split(rng, 4)
+
+            # Build partner_hstate kwargs for JA agents
+            a0_extra_step = {}
+            if _a0_is_ja and _a1_is_ja:
+                a0_extra_step['partner_hstate'] = agent_1_policy._extract_actor_h(hstate_1)
+            a1_extra_step = {}
+            if _a1_is_ja and _a0_is_ja:
+                a1_extra_step['partner_hstate'] = agent_0_policy._extract_actor_h(hstate_0)
+
             act_0, hstate_0_next = agent_0_policy.get_action(
                 params=agent_0_param,
                 obs=obs["agent_0"].reshape(1, 1, -1),
@@ -90,7 +120,8 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
                 rng=act0_rng,
                 aux_obs=(act_onehot["agent_0"].reshape(1, 1, -1), joint_act_onehot, reward["agent_0"].reshape(1, 1, -1)),
                 env_state=env_state,
-                test_mode=agent_0_test_mode
+                test_mode=agent_0_test_mode,
+                **a0_extra_step
             )
             act_0 = act_0.squeeze()
 
@@ -103,7 +134,8 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_1,
                 rng=act1_rng,
                 env_state=env_state,
-                test_mode=agent_1_test_mode
+                test_mode=agent_1_test_mode,
+                **a1_extra_step
             )
             act_1 = act_1.squeeze()
 
