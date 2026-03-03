@@ -9,4 +9,4 @@ CUDA_VISIBLE_DEVICES="${device}" \
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
 LD_LIBRARY_PATH="" \
 nice -n 5 \
-python -m "$@"
+uv run python -m "$@"
