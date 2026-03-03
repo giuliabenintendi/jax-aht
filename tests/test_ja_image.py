@@ -58,7 +58,9 @@ def test_image_wrapper():
     for agent in env.agents:
         assert obs[agent].shape == (env.observation_space(agent).shape[0],)
         assert float(obs[agent].min()) >= 0.0
-        assert float(obs[agent].max()) <= 1.0
+        # Image portion is in [0,1]; scalars (dir, pos) can exceed 1.0
+        img_max = float(obs[agent][:env._img_flat_dim].max())
+        assert img_max <= 1.0
 
     # Step and check auto-reset works
     actions = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}
