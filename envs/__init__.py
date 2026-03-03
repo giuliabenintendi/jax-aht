@@ -1,7 +1,6 @@
 import copy
 import numpy as np
 
-import jaxmarl
 import jumanji
 from jumanji.environments.routing.lbf.generator import RandomGenerator as LbfGenerator
 
