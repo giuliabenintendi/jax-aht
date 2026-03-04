@@ -443,12 +443,25 @@ def make_train(config, env):
         ckpt_idx = 0
         update_with_ckpt_runner_state = (update_runner_state, checkpoint_array, ckpt_idx)
 
-        runner_state, metrics = jax.lax.scan(
-            _update_step_with_checkpoint,
-            update_with_ckpt_runner_state,
-            xs=None,
-            length=config["NUM_UPDATES"],
-        )
+        # Chunk the outer scan to avoid massive XLA compilation times.
+        # Each chunk compiles independently (~1-2 min) instead of all NUM_UPDATES at once.
+        CHUNK_SIZE = 20
+        num_chunks = int(config["NUM_UPDATES"]) // CHUNK_SIZE
+        remainder = int(config["NUM_UPDATES"]) % CHUNK_SIZE
+
+        runner_state = update_with_ckpt_runner_state
+        all_metrics = []
+        for _ in range(num_chunks):
+            runner_state, chunk_metrics = jax.lax.scan(
+                _update_step_with_checkpoint, runner_state, xs=None, length=CHUNK_SIZE,
+            )
+            all_metrics.append(chunk_metrics)
+        if remainder:
+            runner_state, chunk_metrics = jax.lax.scan(
+                _update_step_with_checkpoint, runner_state, xs=None, length=remainder,
+            )
+            all_metrics.append(chunk_metrics)
+        metrics = jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *all_metrics)
 
         update_runner_state, checkpoint_array, final_ckpt_idx = runner_state
 
@@ -475,7 +488,10 @@ def run_ja_ippo(config, logger):
 
     with jax.disable_jit(False):
         num_updates = int(algorithm_config["TOTAL_TIMESTEPS"] // algorithm_config["ROLLOUT_LENGTH"] // algorithm_config["NUM_ENVS"])
+        chunk_size = 20
+        num_chunks = num_updates // chunk_size + (1 if num_updates % chunk_size else 0)
         print(f"[ja_ippo] Compiling train fn (NUM_UPDATES={num_updates}, "
+              f"CHUNK_SIZE={chunk_size}, NUM_CHUNKS={num_chunks}, "
               f"NUM_SEEDS={algorithm_config['NUM_SEEDS']}, NUM_ENVS={algorithm_config['NUM_ENVS']})...")
         train_jit = jax.jit(jax.vmap(make_train(algorithm_config, env)))
         print("[ja_ippo] Calling compiled fn (first call triggers XLA compilation)...")
