@@ -46,8 +46,11 @@ class JATransition(NamedTuple):
 def _construct_partner_hstate(hstate, num_envs, lstm_dim):
     """Construct partner_hstate by swapping agent halves.
 
-    batchify layout: [a0_e0..a0_eN, a1_e0..a1_eN]
-    Partner swap: agent 0's partner is agent 1 at the same env index.
+    The JA cross-agent query needs each actor's partner hidden state at the
+    same env index. Because batchify concatenates agents contiguously
+    ([a0_e0..a0_eN, a1_e0..a1_eN]), swapping the two halves aligns each
+    position with its partner: position i in the first half (agent 0, env i)
+    maps to position i in the second half (agent 1, env i), and vice versa.
 
     Args:
         hstate: (1, NUM_ACTORS, 4*lstm_dim) packed LSTM states
@@ -58,7 +61,6 @@ def _construct_partner_hstate(hstate, num_envs, lstm_dim):
         partner_h: (1, NUM_ACTORS, lstm_dim) partner's actor h
     """
     actor_h = hstate[..., :lstm_dim]  # (1, NUM_ACTORS, lstm_dim)
-    # Swap halves: [a0_envs | a1_envs] -> [a1_envs | a0_envs]
     partner_h = jnp.concatenate([actor_h[:, num_envs:, :], actor_h[:, :num_envs, :]], axis=1)
     return partner_h
 
