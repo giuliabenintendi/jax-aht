@@ -7,8 +7,8 @@ Per-agent architecture:
   obs (flat) -> unpack image (H*7, W*7, 3) + scalars (6,)
   Image -> Stack(conv_filters//2) -> Stack(conv_filters) -> ReLU -> flatten
   Scalars: direction one_hot(4) x2 -> Dense(5), position (4,) -> Dense(5)
-  LSTM(concat(flat_features, dir_embed, pos_embed), (h, c)) -> h_t
-  Dense(64) -> act -> Dense(64) -> act -> output
+  concat(flat_features, dir_embed, pos_embed) -> Dense(64) -> ReLU -> Dense(64) -> ReLU
+  LSTM(fc_out, (h, c)) -> h_t -> projection head
 """
 import functools
 import math
@@ -29,6 +29,7 @@ class ImageScannedLSTM(nn.Module):
     img_width: int
     num_scalars: int = 6
     conv_filters: int = 64
+    fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     scalar_embed_dim: int = 5
 
@@ -95,8 +96,22 @@ class ImageScannedLSTM(nn.Module):
             name="pos_embed",
         )(pos_features)
 
-        # LSTM update
+        # FC layers before LSTM (reference code: input_fc_layer_params)
         lstm_input = jnp.concatenate([features_flat, dir_embed, pos_embed], axis=-1)
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc1",
+        )(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc2",
+        )(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+
+        # LSTM update
         new_carry, lstm_out = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
         )((lstm_h, lstm_c), lstm_input)
@@ -115,8 +130,9 @@ class ImageScannedLSTM(nn.Module):
 class ImageActorCritic(nn.Module):
     """Image Actor-Critic without attention.
 
-    Dual-path (actor LSTM + critic LSTM, no shared weights), each followed by
-    Dense(64) -> ReLU -> Dense(64) -> ReLU -> head.
+    Dual-path (actor LSTM + critic LSTM, no shared weights).
+    FC layers are inside the ScannedLSTM (before LSTM), matching the reference
+    code's input_fc_layer_params. LSTM output goes directly to projection head.
     Input tuple: (obs, dones, avail_actions) — no partner_hstate.
     """
     action_dim: int
@@ -127,11 +143,9 @@ class ImageActorCritic(nn.Module):
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     scalar_embed_dim: int = 5
-    activation: str = "relu"
 
     @nn.compact
     def __call__(self, hidden, x):
-        activation = nn.relu if self.activation == "relu" else nn.tanh
         obs, dones, avail_actions = x
 
         actor_lstm_state, critic_lstm_state = hidden
@@ -141,53 +155,34 @@ class ImageActorCritic(nn.Module):
             img_width=self.img_width,
             num_scalars=self.num_scalars,
             conv_filters=self.conv_filters,
+            fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             scalar_embed_dim=self.scalar_embed_dim,
         )
 
-        # Actor path
+        # Actor path (FC before LSTM, no FC after)
         actor_lstm_state, (actor_embed,) = ImageScannedLSTM(
             **rnn_kwargs, name="actor_lstm",
         )(actor_lstm_state, (obs, dones))
 
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="actor_fc1",
-        )(actor_embed)
-        actor_out = activation(actor_out)
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="actor_fc2",
-        )(actor_out)
-        actor_out = activation(actor_out)
         action_logits = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
             name="actor_proj",
-        )(actor_out)
+        )(actor_embed)
 
         unavail_actions = 1 - avail_actions
         action_logits = action_logits - (unavail_actions * 1e10)
         pi = distrax.Categorical(logits=action_logits)
 
-        # Critic path
+        # Critic path (FC before LSTM, no FC after)
         critic_lstm_state, (critic_embed,) = ImageScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
         )(critic_lstm_state, (obs, dones))
 
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="critic_fc1",
-        )(critic_embed)
-        critic_out = activation(critic_out)
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="critic_fc2",
-        )(critic_out)
-        critic_out = activation(critic_out)
         value = nn.Dense(
             1, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="critic_proj",
-        )(critic_out)
+        )(critic_embed)
 
         new_hidden = (actor_lstm_state, critic_lstm_state)
         return new_hidden, pi, jnp.squeeze(value, axis=-1)

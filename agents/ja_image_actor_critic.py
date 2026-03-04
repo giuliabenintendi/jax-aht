@@ -83,6 +83,7 @@ class JAImageScannedLSTM(nn.Module):
     conv_filters: int = 64
     num_heads: int = 4
     head_features: int = 16
+    fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
     scalar_embed_dim: int = 5
@@ -191,8 +192,22 @@ class JAImageScannedLSTM(nn.Module):
             name="pos_embed",
         )(pos_features)
 
-        # --- 7. LSTM update ---
+        # --- 7. FC layers before LSTM (reference code: input_fc_layer_params) ---
         lstm_input = jnp.concatenate([attended_flat, dir_embed, pos_embed], axis=-1)
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc1",
+        )(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc2",
+        )(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+
+        # --- 8. LSTM update ---
         new_carry, lstm_out = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
         )((lstm_h, lstm_c), lstm_input)
@@ -225,11 +240,9 @@ class JAImageActorCritic(nn.Module):
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
     scalar_embed_dim: int = 5
-    activation: str = "relu"
 
     @nn.compact
     def __call__(self, hidden, x):
-        activation = nn.relu if self.activation == "relu" else nn.tanh
         obs, dones, avail_actions, partner_hstate = x
 
         actor_lstm_state, critic_lstm_state = hidden
@@ -241,54 +254,35 @@ class JAImageActorCritic(nn.Module):
             conv_filters=self.conv_filters,
             num_heads=self.num_heads,
             head_features=self.head_features,
+            fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             spatial_basis_depth=self.spatial_basis_depth,
             scalar_embed_dim=self.scalar_embed_dim,
         )
 
-        # --- Actor path ---
+        # --- Actor path (FC before LSTM, no FC after) ---
         actor_lstm_state, (actor_embed, attn_map) = JAImageScannedLSTM(
             **rnn_kwargs, name="actor_lstm",
         )(actor_lstm_state, (obs, dones, partner_hstate))
 
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="actor_fc1",
-        )(actor_embed)
-        actor_out = activation(actor_out)
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="actor_fc2",
-        )(actor_out)
-        actor_out = activation(actor_out)
         action_logits = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
             name="actor_proj",
-        )(actor_out)
+        )(actor_embed)
 
         unavail_actions = 1 - avail_actions
         action_logits = action_logits - (unavail_actions * 1e10)
         pi = distrax.Categorical(logits=action_logits)
 
-        # --- Critic path ---
+        # --- Critic path (FC before LSTM, no FC after) ---
         critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
         )(critic_lstm_state, (obs, dones, partner_hstate))
 
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="critic_fc1",
-        )(critic_embed)
-        critic_out = activation(critic_out)
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="critic_fc2",
-        )(critic_out)
-        critic_out = activation(critic_out)
         value = nn.Dense(
             1, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="critic_proj",
-        )(critic_out)
+        )(critic_embed)
 
         new_hidden = (actor_lstm_state, critic_lstm_state)
         return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map

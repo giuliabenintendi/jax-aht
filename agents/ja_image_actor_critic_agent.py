@@ -16,7 +16,6 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         img_height: int,
         img_width: int,
         num_scalars: int = 6,
-        activation: str = "relu",
         conv_filters: int = 64,
         num_heads: int = 4,
         head_features: int = 16,
@@ -44,6 +43,5 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             lstm_hidden_dim=lstm_hidden_dim,
             spatial_basis_depth=spatial_basis_depth,
             scalar_embed_dim=scalar_embed_dim,
-            activation=activation,
         )
         self.lstm_hidden_dim = lstm_hidden_dim

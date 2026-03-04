@@ -27,7 +27,6 @@ class ImageActorCriticPolicy(AgentPolicy):
         img_height: int,
         img_width: int,
         num_scalars: int = 6,
-        activation: str = "relu",
         conv_filters: int = 64,
         fc_hidden_dim: int = 64,
         lstm_hidden_dim: int = 64,
@@ -45,7 +44,6 @@ class ImageActorCriticPolicy(AgentPolicy):
             fc_hidden_dim=fc_hidden_dim,
             lstm_hidden_dim=lstm_hidden_dim,
             scalar_embed_dim=scalar_embed_dim,
-            activation=activation,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
 

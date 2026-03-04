@@ -17,7 +17,6 @@ CLIP_EPS: 0.2
 ENT_COEF: 0.0
 
 # Network (same dimensions as JA-IPPO, minus attention-specific params)
-ACTIVATION: relu
 CONV_FILTERS: 64
 FC_HIDDEN_DIM: 64
 LSTM_HIDDEN_DIM: 64
