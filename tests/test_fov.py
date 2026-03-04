@@ -11,12 +11,12 @@ from envs.overcooked.overcooked_v1 import OvercookedV1
 from envs.overcooked.rendering import render_state
 from envs.overcooked.rendering.overcooked_rendering import TILE_PIXELS
 from envs.overcooked.overcooked_fov_wrapper import (
-    _crop_fov, _rotate_forward_up, fov_observation, OvercookedFOVWrapper,
+    _align_forward_up, fov_observation, OvercookedFOVWrapper,
 )
 
 
-def test_crop_fov_shape():
-    """_crop_fov returns (fov_px, fov_px, 3) regardless of agent position."""
+def test_fov_observation_shape():
+    """fov_observation returns (fov_px, fov_px, 3) regardless of agent position."""
     env = OvercookedV1()
     rng = jax.random.PRNGKey(0)
     _, state = env.reset(rng)
@@ -26,38 +26,37 @@ def test_crop_fov_shape():
     fov_px = fov_size * TILE_PIXELS
     for centered in (True, False):
         for agent_idx in range(2):
-            crop = _crop_fov(img, state.agent_pos[agent_idx], fov_size, TILE_PIXELS, centered)
-            assert crop.shape == (fov_px, fov_px, 3), f"agent {agent_idx}, centered={centered}"
+            obs = fov_observation(
+                img, state.agent_pos[agent_idx], state.agent_dir_idx[agent_idx],
+                fov_size, TILE_PIXELS, centered,
+            )
+            assert obs.shape == (fov_px, fov_px, 3), f"agent {agent_idx}, centered={centered}"
 
 
-def test_crop_fov_padding():
+def test_fov_edge_padding():
     """Crop near map edge should be zero-padded, not error."""
-    # Create a tiny 3x3 image
     img = jnp.ones((21, 21, 3), dtype=jnp.uint8) * 128
-    # Agent at corner (0, 0)
     pos = jnp.array([0, 0], dtype=jnp.uint32)
-    crop = _crop_fov(img, pos, fov_size=7, tile_size=TILE_PIXELS, centered=True)
-    assert crop.shape == (49, 49, 3)
+    dir_idx = jnp.int32(0)
+    obs = fov_observation(img, pos, dir_idx, fov_size=7, tile_size=TILE_PIXELS, centered=True)
+    assert obs.shape == (49, 49, 3)
     # Some pixels should be zero (padding)
-    assert float(crop.min()) == 0.0
+    assert float(obs.min()) == 0.0
 
 
-def test_rotate_forward_up():
-    """Each direction produces a distinct rotation."""
+def test_align_forward_up():
+    """Rotation mapping matches OGC: k = [2, 1, 0, 3][dir_idx]."""
     crop = jnp.arange(49 * 49 * 3).reshape(49, 49, 3).astype(jnp.float32)
     rotations = []
     for d in range(4):
-        rotated = _rotate_forward_up(crop, jnp.int32(d))
+        rotated = _align_forward_up(crop, jnp.int32(d))
         rotations.append(np.array(rotated))
 
-    # N (dir=0) should be identity
-    np.testing.assert_array_equal(rotations[0], np.array(crop))
-    # S (dir=1) should be 180 rotation
-    np.testing.assert_array_equal(rotations[1], np.rot90(np.array(crop), k=2))
-    # E (dir=2) should be 90 CCW
-    np.testing.assert_array_equal(rotations[2], np.rot90(np.array(crop), k=1))
-    # W (dir=3) should be 270 CCW
-    np.testing.assert_array_equal(rotations[3], np.rot90(np.array(crop), k=3))
+    # OGC mapping: N->k=2, S->k=1, E->k=0, W->k=3
+    np.testing.assert_array_equal(rotations[0], np.rot90(np.array(crop), k=2))  # N
+    np.testing.assert_array_equal(rotations[1], np.rot90(np.array(crop), k=1))  # S
+    np.testing.assert_array_equal(rotations[2], np.array(crop))                  # E
+    np.testing.assert_array_equal(rotations[3], np.rot90(np.array(crop), k=3))  # W
 
 
 def test_agents_see_different_crops():

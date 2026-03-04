@@ -1,8 +1,8 @@
 """FOV image observation wrapper for Overcooked.
 
-Each agent gets an egocentric RGB crop around itself, rotated so its
-forward direction faces up. No scalars are appended — position and
-direction are implicit in the egocentric view.
+Ported from OGC (ogc/ogc.py). Each agent gets an egocentric RGB crop around
+itself, rotated so its forward direction faces up. No scalars are appended —
+position and direction are implicit in the egocentric view.
 
 Observation per agent: flat float32 vector of length fov_px * fov_px * 3,
 where fov_px = fov_size * tile_size (default 7 * 7 = 49).
@@ -21,79 +21,79 @@ from envs.overcooked.rendering import render_state
 from envs.overcooked.rendering.overcooked_rendering import TILE_PIXELS
 from envs.base_env import BaseEnv, WrappedEnvState
 
+# Rotation lookup: direction index -> number of CCW 90° rotations.
+# Matches OGC's align_forward_up: k = [2, 1, 0, 3][dir_idx].
+_DIR_TO_ROT = jnp.array([2, 1, 0, 3], dtype=jnp.int32)
 
-def _crop_fov(
-    image: jnp.ndarray,
-    agent_pos_xy: jnp.ndarray,
-    fov_size: int,
-    tile_size: int,
-    centered: bool,
+
+def _crop_center(
+    padded: jnp.ndarray,
+    ax: jnp.ndarray,
+    ay: jnp.ndarray,
+    fov_h_px: int,
+    fov_w_px: int,
 ) -> jnp.ndarray:
-    """Crop a local FOV window around an agent from the full rendered image.
+    """Center-aligned crop (agent at center of window)."""
+    half_h = fov_h_px // 2
+    half_w = fov_w_px // 2
+    row = jnp.int32(ay - half_h)
+    col = jnp.int32(ax - half_w)
+    return jax.lax.dynamic_slice(padded, (row, col, jnp.int32(0)), (fov_h_px, fov_w_px, 3))
 
-    Args:
-        image: (H_px, W_px, 3) full rendered image.
-        agent_pos_xy: (2,) agent grid position (x, y).
-        fov_size: FOV radius in grid cells (total window = fov_size * tile_size px).
-        tile_size: pixels per grid cell.
-        centered: if True, agent is at center of crop; if False, agent is at
-            bottom-center (sees more ahead than behind).
 
-    Returns:
-        (fov_px, fov_px, 3) cropped image, zero-padded where off the map.
+def _crop_bottom(
+    padded: jnp.ndarray,
+    ax: jnp.ndarray,
+    ay: jnp.ndarray,
+    dir_idx: jnp.ndarray,
+    fov_h_px: int,
+    fov_w_px: int,
+    tile_size: int,
+) -> jnp.ndarray:
+    """Bottom-aligned crop (agent sees more ahead). Direction-dependent offset.
+
+    Matches OGC's crop_field_of_view_3d_bottom: the crop window shifts so
+    the agent is near the trailing edge relative to its facing direction.
     """
-    fov_px = fov_size * tile_size
-    # Agent pixel center (cast to int32 — agent_pos is uint32)
-    ax = jnp.int32(agent_pos_xy[0]) * tile_size + tile_size // 2
-    ay = jnp.int32(agent_pos_xy[1]) * tile_size + tile_size // 2
+    half_h = fov_h_px // 2
+    half_w = fov_w_px // 2
+    half_tile = tile_size // 2
 
-    if centered:
-        top = ay - fov_px // 2
-        left = ax - fov_px // 2
-    else:
-        # Bottom-aligned: agent near bottom of crop, sees more ahead (up)
-        top = ay - fov_px + tile_size // 2 + tile_size
-        left = ax - fov_px // 2
+    # Each direction places the agent near the trailing edge of the crop.
+    # Coordinates are in the padded image (ax, ay already include padding offset).
+    def L_up():
+        return (ay - fov_h_px + 1 + half_tile, ax - half_w, jnp.int32(0))
+    def L_right():
+        return (ay - half_h, ax - half_tile, jnp.int32(0))
+    def L_down():
+        return (ay - half_tile, ax - half_w, jnp.int32(0))
+    def L_left():
+        return (ay - half_h, ax - fov_w_px + 1 + half_tile, jnp.int32(0))
 
-    # Use dynamic_slice with zero-padding via pad + slice
-    pad_top = fov_px
-    pad_left = fov_px
-    padded = jnp.pad(
-        image,
-        ((pad_top, pad_top), (pad_left, pad_left), (0, 0)),
-        mode="constant",
-        constant_values=0,
-    )
-    # All indices must be the same dtype for dynamic_slice
-    row = jnp.int32(top + pad_top)
-    col = jnp.int32(left + pad_left)
-    crop = jax.lax.dynamic_slice(
-        padded,
-        (row, col, jnp.int32(0)),
-        (fov_px, fov_px, 3),
-    )
-    return crop
+    # OGC direction order: N=0->L_up(idx=2), S=1->L_down(idx=1), E=2->L_right(idx=0), W=3->L_left(idx=3)
+    # But lax.switch indexes 0,1,2,3 into the branch list, so we reorder:
+    # idx = [2,1,0,3][dir_idx] means dir 0(N)->idx 2, dir 1(S)->idx 1, dir 2(E)->idx 0, dir 3(W)->idx 3
+    # branch list at [0]=L_right, [1]=L_down, [2]=L_up, [3]=L_left
+    idx = _DIR_TO_ROT[dir_idx]
+    start = jax.lax.switch(idx, (L_right, L_down, L_up, L_left))
+    return jax.lax.dynamic_slice(padded, start, (fov_h_px, fov_w_px, 3))
 
 
-def _rotate_forward_up(
+def _align_forward_up(
     crop: jnp.ndarray, dir_idx: jnp.ndarray
 ) -> jnp.ndarray:
-    """Rotate crop so agent's forward direction faces up.
+    """Rotate crop so agent's forward direction faces up (negative y).
 
-    Direction convention: 0=N(up), 1=S(down), 2=E(right), 3=W(left).
-    N already up -> 0 rot. S -> 2 (180°). E -> 1 (CCW 90°). W -> 3 (CCW 270°).
+    Matches OGC's align_forward_up exactly: k = [2, 1, 0, 3][dir_idx].
     """
-    n_rot = jnp.array([0, 2, 1, 3])[dir_idx]
-    # jnp.rot90 with k argument; use lax.switch for JIT compatibility
-    def rot0(c):
-        return c
-    def rot1(c):
-        return jnp.rot90(c, k=1)
-    def rot2(c):
-        return jnp.rot90(c, k=2)
-    def rot3(c):
-        return jnp.rot90(c, k=3)
-    return jax.lax.switch(n_rot, [rot0, rot1, rot2, rot3], crop)
+    k = _DIR_TO_ROT[dir_idx]
+
+    def rot0(c): return c
+    def rot1(c): return jnp.rot90(c, k=1, axes=(0, 1))
+    def rot2(c): return jnp.rot90(c, k=2, axes=(0, 1))
+    def rot3(c): return jnp.rot90(c, k=3, axes=(0, 1))
+
+    return jax.lax.switch(k, (rot0, rot1, rot2, rot3), crop)
 
 
 def fov_observation(
@@ -106,10 +106,30 @@ def fov_observation(
 ) -> jnp.ndarray:
     """Crop + rotate: egocentric FOV observation for one agent.
 
-    Returns: (fov_px, fov_px, 3) uint8 image, forward=up.
+    Returns: (fov_px, fov_px, 3) image, forward=up.
     """
-    crop = _crop_fov(image, agent_pos_xy, fov_size, tile_size, centered)
-    return _rotate_forward_up(crop, agent_dir_idx)
+    fov_px = fov_size * tile_size
+
+    # Agent pixel position (tile center), cast to int32
+    ax = jnp.int32(agent_pos_xy[0]) * tile_size + tile_size // 2
+    ay = jnp.int32(agent_pos_xy[1]) * tile_size + tile_size // 2
+
+    # Pad image so crops near edges are zero-filled
+    padded = jnp.pad(
+        image,
+        ((fov_px, fov_px), (fov_px, fov_px), (0, 0)),
+        constant_values=0,
+    )
+    # Shift to padded coordinates
+    ax = ax + fov_px
+    ay = ay + fov_px
+
+    if centered:
+        crop = _crop_center(padded, ax, ay, fov_px, fov_px)
+    else:
+        crop = _crop_bottom(padded, ax, ay, agent_dir_idx, fov_px, fov_px, tile_size)
+
+    return _align_forward_up(crop, agent_dir_idx)
 
 
 class OvercookedFOVWrapper(BaseEnv):
