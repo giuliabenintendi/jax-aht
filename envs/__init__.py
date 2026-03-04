@@ -81,7 +81,12 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         obs_type = env_kwargs_copy.pop("obs_type", "symbolic")
         po_mode = env_kwargs_copy.pop("po_mode", "none")
         po_keys = ("fov_range", "fov_slope", "use_occlusion", "soft_view", "dist_sigma", "ang_sigma")
-        if obs_type == "image":
+        if obs_type == "fov":
+            from envs.overcooked.overcooked_fov_wrapper import OvercookedFOVWrapper
+            for k in po_keys:
+                env_kwargs_copy.pop(k, None)
+            env = OvercookedFOVWrapper(**env_kwargs_copy)
+        elif obs_type == "image":
             from envs.overcooked.overcooked_image_wrapper import OvercookedImageWrapper
             for k in po_keys:
                 env_kwargs_copy.pop(k, None)

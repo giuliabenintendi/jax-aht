@@ -60,9 +60,8 @@ class ImageScannedLSTM(nn.Module):
         lstm_h = jnp.where(dones[:, np.newaxis], zero_h, lstm_h)
         lstm_c = jnp.where(dones[:, np.newaxis], zero_c, lstm_c)
 
-        # Unpack flat obs -> image + scalars
+        # Unpack flat obs -> image (+ optional scalars)
         img_flat = obs_flat[:, :self._img_flat_dim]
-        scalars = obs_flat[:, self._img_flat_dim:]  # (batch, 6)
         image = img_flat.reshape(batch_size, self.img_height, self.img_width, 3)
 
         # ResNet encoder: two stacks
@@ -77,27 +76,31 @@ class ImageScannedLSTM(nn.Module):
         # Flatten spatial features
         features_flat = features.reshape(batch_size, fh * fw * self.conv_filters)
 
-        # Scalar features
-        ego_dir_idx = scalars[:, 0].astype(jnp.int32)
-        partner_dir_idx = scalars[:, 3].astype(jnp.int32)
-        ego_dir_onehot = jax.nn.one_hot(ego_dir_idx, 4)
-        partner_dir_onehot = jax.nn.one_hot(partner_dir_idx, 4)
-        direction = jnp.concatenate([ego_dir_onehot, partner_dir_onehot], axis=-1)
-        dir_embed = nn.Dense(
-            self.scalar_embed_dim,
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-            name="dir_embed",
-        )(direction)
+        # Scalar features (skipped when num_scalars == 0, e.g. FOV obs)
+        lstm_parts = [features_flat]
+        if self.num_scalars > 0:
+            scalars = obs_flat[:, self._img_flat_dim:]  # (batch, num_scalars)
+            ego_dir_idx = scalars[:, 0].astype(jnp.int32)
+            partner_dir_idx = scalars[:, 3].astype(jnp.int32)
+            ego_dir_onehot = jax.nn.one_hot(ego_dir_idx, 4)
+            partner_dir_onehot = jax.nn.one_hot(partner_dir_idx, 4)
+            direction = jnp.concatenate([ego_dir_onehot, partner_dir_onehot], axis=-1)
+            dir_embed = nn.Dense(
+                self.scalar_embed_dim,
+                kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                name="dir_embed",
+            )(direction)
 
-        pos_features = scalars[:, jnp.array([1, 2, 4, 5])]  # (batch, 4)
-        pos_embed = nn.Dense(
-            self.scalar_embed_dim,
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-            name="pos_embed",
-        )(pos_features)
+            pos_features = scalars[:, jnp.array([1, 2, 4, 5])]  # (batch, 4)
+            pos_embed = nn.Dense(
+                self.scalar_embed_dim,
+                kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                name="pos_embed",
+            )(pos_features)
+            lstm_parts.extend([dir_embed, pos_embed])
 
         # FC layers before LSTM (reference code: input_fc_layer_params)
-        lstm_input = jnp.concatenate([features_flat, dir_embed, pos_embed], axis=-1)
+        lstm_input = jnp.concatenate(lstm_parts, axis=-1)
         lstm_input = nn.Dense(
             self.fc_hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),

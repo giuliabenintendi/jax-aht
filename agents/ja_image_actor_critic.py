@@ -119,9 +119,8 @@ class JAImageScannedLSTM(nn.Module):
         lstm_h = jnp.where(dones[:, np.newaxis], zero_h, lstm_h)
         lstm_c = jnp.where(dones[:, np.newaxis], zero_c, lstm_c)
 
-        # --- 1. Unpack flat obs -> image + scalars ---
+        # --- 1. Unpack flat obs -> image (+ optional scalars) ---
         img_flat = obs_flat[:, :self._img_flat_dim]
-        scalars = obs_flat[:, self._img_flat_dim:]  # (batch, 6)
         image = img_flat.reshape(batch_size, self.img_height, self.img_width, 3)
 
         # --- 2. ResNet encoder: two stacks ---
@@ -171,28 +170,32 @@ class JAImageScannedLSTM(nn.Module):
 
         attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
 
-        # --- 6. Scalar features ---
-        # scalars: [ego_dir, ego_x, ego_y, partner_dir, partner_x, partner_y]
-        ego_dir_idx = scalars[:, 0].astype(jnp.int32)
-        partner_dir_idx = scalars[:, 3].astype(jnp.int32)
-        ego_dir_onehot = jax.nn.one_hot(ego_dir_idx, 4)
-        partner_dir_onehot = jax.nn.one_hot(partner_dir_idx, 4)
-        direction = jnp.concatenate([ego_dir_onehot, partner_dir_onehot], axis=-1)  # (batch, 8)
-        dir_embed = nn.Dense(
-            self.scalar_embed_dim,
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-            name="dir_embed",
-        )(direction)
+        # --- 6. Scalar features (skipped when num_scalars == 0, e.g. FOV obs) ---
+        lstm_parts = [attended_flat]
+        if self.num_scalars > 0:
+            scalars = obs_flat[:, self._img_flat_dim:]  # (batch, num_scalars)
+            # scalars: [ego_dir, ego_x, ego_y, partner_dir, partner_x, partner_y]
+            ego_dir_idx = scalars[:, 0].astype(jnp.int32)
+            partner_dir_idx = scalars[:, 3].astype(jnp.int32)
+            ego_dir_onehot = jax.nn.one_hot(ego_dir_idx, 4)
+            partner_dir_onehot = jax.nn.one_hot(partner_dir_idx, 4)
+            direction = jnp.concatenate([ego_dir_onehot, partner_dir_onehot], axis=-1)  # (batch, 8)
+            dir_embed = nn.Dense(
+                self.scalar_embed_dim,
+                kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                name="dir_embed",
+            )(direction)
 
-        pos_features = scalars[:, jnp.array([1, 2, 4, 5])]  # (batch, 4)
-        pos_embed = nn.Dense(
-            self.scalar_embed_dim,
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-            name="pos_embed",
-        )(pos_features)
+            pos_features = scalars[:, jnp.array([1, 2, 4, 5])]  # (batch, 4)
+            pos_embed = nn.Dense(
+                self.scalar_embed_dim,
+                kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                name="pos_embed",
+            )(pos_features)
+            lstm_parts.extend([dir_embed, pos_embed])
 
-        # --- 7. LSTM update (paper: Concat → LSTM directly, no FC in between) ---
-        lstm_input = jnp.concatenate([attended_flat, dir_embed, pos_embed], axis=-1)
+        # --- 7. LSTM update ---
+        lstm_input = jnp.concatenate(lstm_parts, axis=-1)
         new_carry, lstm_out = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
         )((lstm_h, lstm_c), lstm_input)

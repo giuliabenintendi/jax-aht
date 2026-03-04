@@ -84,7 +84,7 @@ def make_train(config, env):
         return config["LR"] * frac
 
     obs_type = config.get("OBS_TYPE", config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
-    init_fn = initialize_ja_image_agent if obs_type == "image" else initialize_ja_agent
+    init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
 
     def train(rng):
         # INIT SINGLE SHARED NETWORK
@@ -455,7 +455,7 @@ def log_eval_video(algorithm_config, env, out, logger):
 
     obs_type = algorithm_config.get("OBS_TYPE",
         algorithm_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
-    init_fn = initialize_ja_image_agent if obs_type == "image" else initialize_ja_agent
+    init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
 
     # Reconstruct policy (same for both agents — shared params)
     rng = jax.random.PRNGKey(0)

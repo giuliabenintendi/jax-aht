@@ -112,18 +112,33 @@ def initialize_ja_agent(config, env, rng):
 
     return policy, init_params
 
+def _get_image_dims(env):
+    """Extract image dimensions and scalar count from an image/FOV wrapper.
+
+    FOV wrapper (OvercookedFOVWrapper) has fov_px and no scalars.
+    Image wrapper (OvercookedImageWrapper) has grid_height * tile_size and 6 scalars.
+    """
+    wrapper = env._env if hasattr(env, '_env') else env
+    if hasattr(wrapper, 'fov_px'):
+        # FOV wrapper: square crop, no scalars
+        return wrapper.fov_px, wrapper.fov_px, 0
+    else:
+        # Full-image wrapper
+        img_h = wrapper.grid_height * wrapper.tile_size
+        img_w = wrapper.grid_width * wrapper.tile_size
+        return img_h, img_w, 6
+
+
 def initialize_ja_image_agent(config, env, rng):
     """Initialize a Joint Attention agent with image observations."""
-    # Unwrap LogWrapper only (not the image wrapper — we need its attributes)
-    image_wrapper = env._env if hasattr(env, '_env') else env
-    img_h = image_wrapper.grid_height * image_wrapper.tile_size
-    img_w = image_wrapper.grid_width * image_wrapper.tile_size
+    img_h, img_w, num_scalars = _get_image_dims(env)
 
     policy = JAImageActorCriticPolicy(
         action_dim=env.action_space(env.agents[0]).n,
         obs_dim=env.observation_space(env.agents[0]).shape[0],
         img_height=img_h,
         img_width=img_w,
+        num_scalars=num_scalars,
         conv_filters=config.get("JA_CONV_FILTERS", 64),
         num_heads=config.get("JA_NUM_HEADS", 4),
         head_features=config.get("JA_HEAD_FEATURES", 16),
@@ -140,15 +155,14 @@ def initialize_ja_image_agent(config, env, rng):
 
 def initialize_image_agent(config, env, rng):
     """Initialize an Image agent (ResNet+LSTM, no attention) with image observations."""
-    image_wrapper = env._env if hasattr(env, '_env') else env
-    img_h = image_wrapper.grid_height * image_wrapper.tile_size
-    img_w = image_wrapper.grid_width * image_wrapper.tile_size
+    img_h, img_w, num_scalars = _get_image_dims(env)
 
     policy = ImageActorCriticPolicy(
         action_dim=env.action_space(env.agents[0]).n,
         obs_dim=env.observation_space(env.agents[0]).shape[0],
         img_height=img_h,
         img_width=img_w,
+        num_scalars=num_scalars,
         conv_filters=config.get("CONV_FILTERS", 64),
         fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
