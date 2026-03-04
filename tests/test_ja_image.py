@@ -214,15 +214,15 @@ def test_network_architecture():
     scalar_embed_dim = 5
     fc_hidden_dim = 64
 
-    # -- 1. nn.tabulate on the full actor-critic --
-    network = JAImageActorCritic(
-        action_dim=action_dim,
+    # -- 1. nn.tabulate on the core module (ResNet + attention + LSTM) --
+    # Tabulate JAImageScannedLSTM directly — the full JAImageActorCritic
+    # can't be tabulated because distrax.Categorical isn't YAML-serializable.
+    lstm_module = JAImageScannedLSTM(
         img_height=img_h,
         img_width=img_w,
         conv_filters=conv_filters,
         num_heads=num_heads,
         head_features=head_features,
-        fc_hidden_dim=fc_hidden_dim,
         lstm_hidden_dim=lstm_hidden_dim,
         spatial_basis_depth=spatial_basis_depth,
         scalar_embed_dim=scalar_embed_dim,
@@ -230,21 +230,26 @@ def test_network_architecture():
 
     batch = 1
     seq = 1
-    actor_carry = JAImageScannedLSTM.initialize_carry(batch, lstm_hidden_dim)
-    critic_carry = JAImageScannedLSTM.initialize_carry(batch, lstm_hidden_dim)
-    hidden = (actor_carry, critic_carry)
+    carry = JAImageScannedLSTM.initialize_carry(batch, lstm_hidden_dim)
 
     dummy_obs = jnp.zeros((seq, batch, obs_dim))
     dummy_done = jnp.zeros((seq, batch))
-    dummy_avail = jnp.ones((seq, batch, action_dim))
     dummy_partner_h = jnp.zeros((seq, batch, lstm_hidden_dim))
-    x = (dummy_obs, dummy_done, dummy_avail, dummy_partner_h)
+    scan_input = (dummy_obs, dummy_done, dummy_partner_h)
 
     print("\n" + "=" * 80)
-    print("JAImageActorCritic — nn.tabulate()")
+    print("JAImageScannedLSTM — nn.tabulate()")
+    print("(this is the core module; actor/critic each have an identical copy)")
     print("=" * 80)
-    table_fn = nn.tabulate(network, jax.random.PRNGKey(0))
-    print(table_fn(hidden, x))
+    table_fn = nn.tabulate(lstm_module, jax.random.PRNGKey(0))
+    print(table_fn(carry, scan_input))
+
+    print("\nFC heads on top (per actor/critic, not shown in tabulate):")
+    print(f"  LSTM output ({lstm_hidden_dim},)")
+    print(f"  -> Dense({fc_hidden_dim}) -> ReLU")
+    print(f"  -> Dense({fc_hidden_dim}) -> ReLU")
+    print(f"  -> actor: Dense({action_dim}) -> Categorical logits")
+    print(f"  -> critic: Dense(1) -> scalar value")
 
     # -- 2. Concrete shapes at each stage --
     print("\n" + "=" * 80)
@@ -324,7 +329,24 @@ Actor/Critic              separate, no shared weights       separate, no shared 
 """)
 
     # -- 4. Parameter count --
-    params = network.init(jax.random.PRNGKey(0), hidden, x)
+    full_network = JAImageActorCritic(
+        action_dim=action_dim,
+        img_height=img_h,
+        img_width=img_w,
+        conv_filters=conv_filters,
+        num_heads=num_heads,
+        head_features=head_features,
+        fc_hidden_dim=fc_hidden_dim,
+        lstm_hidden_dim=lstm_hidden_dim,
+        spatial_basis_depth=spatial_basis_depth,
+        scalar_embed_dim=scalar_embed_dim,
+    )
+    actor_carry = JAImageScannedLSTM.initialize_carry(batch, lstm_hidden_dim)
+    critic_carry = JAImageScannedLSTM.initialize_carry(batch, lstm_hidden_dim)
+    full_hidden = (actor_carry, critic_carry)
+    dummy_avail = jnp.ones((seq, batch, action_dim))
+    full_x = (dummy_obs, dummy_done, dummy_avail, dummy_partner_h)
+    params = full_network.init(jax.random.PRNGKey(0), full_hidden, full_x)
     param_count = sum(p.size for p in jax.tree.leaves(params))
-    print(f"Total parameters: {param_count:,}")
+    print(f"Total parameters (full actor-critic): {param_count:,}")
     print()
