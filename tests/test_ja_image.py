@@ -32,17 +32,11 @@ def test_save_image_obs():
 
     h = env.grid_height * TILE_PIXELS
     w = env.grid_width * TILE_PIXELS
-    img_flat_dim = h * w * 3
 
     obs_0 = np.array(obs["agent_0"])
-    img = (obs_0[:img_flat_dim] * 255).astype(np.uint8).reshape(h, w, 3)
-    scalars = obs_0[img_flat_dim:]
+    img = (obs_0 * 255).astype(np.uint8).reshape(h, w, 3)
 
     print(f"\nImage shape: ({h}, {w}, 3)")
-    print(f"Scalars (agent_0): ego_dir={scalars[0]:.0f} "
-          f"ego_pos=({scalars[1]:.0f},{scalars[2]:.0f}) "
-          f"partner_dir={scalars[3]:.0f} "
-          f"partner_pos=({scalars[4]:.0f},{scalars[5]:.0f})")
 
     scale = 10
     img_large = np.kron(img, np.ones((scale, scale, 1))).astype(np.uint8)
@@ -59,9 +53,7 @@ def test_image_wrapper():
     for agent in env.agents:
         assert obs[agent].shape == (env.observation_space(agent).shape[0],)
         assert float(obs[agent].min()) >= 0.0
-        # Image portion is in [0,1]; scalars (dir, pos) can exceed 1.0
-        img_max = float(obs[agent][:env._img_flat_dim].max())
-        assert img_max <= 1.0
+        assert float(obs[agent].max()) <= 1.0
 
     # Step and check auto-reset works
     actions = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}
@@ -103,6 +95,7 @@ def test_ja_image_forward_pass():
         obs_dim=env.observation_space(env.agents[0]).shape[0],
         img_height=img_h,
         img_width=img_w,
+        num_scalars=0,
         conv_filters=4,
         num_heads=2,
         head_features=4,
@@ -184,8 +177,7 @@ def test_ja_image_train_loop():
 
     assert "final_params" in out
     assert "metrics" in out
-    assert "agent_0" in out["final_params"]
-    assert "agent_1" in out["final_params"]
+    assert "params" in out["final_params"]
     assert jnp.all(out["metrics"]["jsd_mean"] >= 0)
 
 
@@ -220,6 +212,7 @@ def test_network_architecture():
     lstm_module = JAImageScannedLSTM(
         img_height=img_h,
         img_width=img_w,
+        num_scalars=0,
         conv_filters=conv_filters,
         num_heads=num_heads,
         head_features=head_features,
@@ -257,7 +250,7 @@ def test_network_architecture():
     print("=" * 80)
     print(f"""
 Observation:
-  flat obs              : ({obs_dim},) = image pixels ({img_h}*{img_w}*3 = {img_h*img_w*3}) + 6 scalars
+  flat obs              : ({obs_dim},) = image pixels ({img_h}*{img_w}*3 = {img_h*img_w*3}), no scalars
 
 Image encoder (2 ResNet stacks, each: Conv3x3 -> MaxPool(stride=2) -> 2 ResBlocks):
   input image           : ({img_h}, {img_w}, 3)         = ({env.grid_height}x{TILE_PIXELS}, {env.grid_width}x{TILE_PIXELS}, RGB)
@@ -275,15 +268,8 @@ Spatial attention:
   attn weights          : ({feat_h*feat_w}, {num_heads})           softmax over spatial dim
   attended output       : ({num_heads}, {head_features}) -> flat ({num_heads * head_features},)
 
-Scalar features:
-  ego_dir one_hot       : (4,)
-  partner_dir one_hot   : (4,)
-  dir_embed (Dense)     : (8,) -> ({scalar_embed_dim},)
-  pos features          : (4,)              ego_xy + partner_xy
-  pos_embed (Dense)     : (4,) -> ({scalar_embed_dim},)
-
 LSTM input:
-  concat(attended, dir, pos) : ({num_heads * head_features} + {scalar_embed_dim} + {scalar_embed_dim},) = ({num_heads * head_features + 2 * scalar_embed_dim},)
+  attended features     : ({num_heads * head_features},)
   LSTM hidden dim       : {lstm_hidden_dim}
 
 FC heads (after LSTM):
@@ -316,8 +302,8 @@ V projection              Conv2D(conv_filters, 1x1)        Conv(m*c_m, 1x1)
 Attention heads           conv_filters // depth_per_head    {num_heads} heads x {head_features} features
 Attention computation     sum(Q*K, axis=-1) -> softmax      einsum(K, Q) -> softmax            [equivalent]
 
-Direction embed           one_hot(4) -> Dense(5)            one_hot(4)*2 -> Dense(5)           [+partner dir]
-Position embed            cast_and_scale -> Dense(5)        4 floats -> Dense(5)               [+partner pos]
+Direction embed           one_hot(4) -> Dense(5)            [none — no scalars]                [DIFFERENT]
+Position embed            cast_and_scale -> Dense(5)        [none — no scalars]                [DIFFERENT]
 
 FC BEFORE LSTM            Dense(200) -> Dense(100)          [none]                             [DIFFERENT]
 LSTM                      LSTM(128)                         LSTM({lstm_hidden_dim})
@@ -333,6 +319,7 @@ Actor/Critic              separate, no shared weights       separate, no shared 
         action_dim=action_dim,
         img_height=img_h,
         img_width=img_w,
+        num_scalars=0,
         conv_filters=conv_filters,
         num_heads=num_heads,
         head_features=head_features,

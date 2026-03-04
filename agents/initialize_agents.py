@@ -113,20 +113,17 @@ def initialize_ja_agent(config, env, rng):
     return policy, init_params
 
 def _get_image_dims(env):
-    """Extract image dimensions and scalar count from an image/FOV wrapper.
+    """Extract image dimensions from an image/FOV wrapper.
 
-    FOV wrapper (OvercookedFOVWrapper) has fov_px and no scalars.
-    Image wrapper (OvercookedImageWrapper) has grid_height * tile_size and 6 scalars.
+    Both wrappers now produce image-only obs (no appended scalars).
     """
     wrapper = env._env if hasattr(env, '_env') else env
     if hasattr(wrapper, 'fov_px'):
-        # FOV wrapper: square crop, no scalars
         return wrapper.fov_px, wrapper.fov_px, 0
     else:
-        # Full-image wrapper
         img_h = wrapper.grid_height * wrapper.tile_size
         img_w = wrapper.grid_width * wrapper.tile_size
-        return img_h, img_w, 6
+        return img_h, img_w, 0
 
 
 def initialize_ja_image_agent(config, env, rng):

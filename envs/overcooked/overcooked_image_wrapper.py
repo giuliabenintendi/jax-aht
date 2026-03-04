@@ -1,10 +1,8 @@
 """Image-based observation wrapper for Overcooked.
 
-Replaces the 26-channel symbolic observation with a flat vector containing:
-  - RGB image from render_state, normalized to [0,1], flattened
-  - 6 scalar values: ego_dir, ego_x, ego_y, partner_dir, partner_x, partner_y
-
-Both agents see the same image but with swapped ego/partner scalars.
+Replaces the 26-channel symbolic observation with a flat RGB image.
+Each agent sees the full grid with a magenta border drawn around its
+own tile, making the two observations distinct without appending scalars.
 """
 from functools import partial
 from typing import Dict, Tuple, Optional
@@ -20,16 +18,44 @@ from envs.overcooked.rendering import render_state
 from envs.overcooked.rendering.overcooked_rendering import TILE_PIXELS
 from envs.base_env import BaseEnv, WrappedEnvState
 
+# Magenta, distinct from all Overcooked tile colors
+_EGO_HIGHLIGHT_COLOR = jnp.array([255, 0, 255], dtype=jnp.uint8)
+
+
+def _draw_border(
+    img: jnp.ndarray,
+    pos_xy: jnp.ndarray,
+    tile_size: int,
+    color: jnp.ndarray,
+) -> jnp.ndarray:
+    """Draw a 1-pixel border around the tile at grid position pos_xy.
+
+    Uses dynamic_update_slice to overwrite border pixels in-place.
+    """
+    x = jnp.int32(pos_xy[0]) * tile_size
+    y = jnp.int32(pos_xy[1]) * tile_size
+
+    # Top edge
+    top_row = jnp.broadcast_to(color, (1, tile_size, 3))
+    img = jax.lax.dynamic_update_slice(img, top_row, (y, x, 0))
+    # Bottom edge
+    img = jax.lax.dynamic_update_slice(img, top_row, (y + tile_size - 1, x, 0))
+    # Left edge
+    left_col = jnp.broadcast_to(color, (tile_size, 1, 3))
+    img = jax.lax.dynamic_update_slice(img, left_col, (y, x, 0))
+    # Right edge
+    img = jax.lax.dynamic_update_slice(img, left_col, (y, x + tile_size - 1, 0))
+
+    return img
+
 
 class OvercookedImageWrapper(BaseEnv):
     """Wrapper that provides image-based observations for Overcooked.
 
-    Observation per agent: concat(image.flatten(), ego_dir, ego_x, ego_y,
-                                   partner_dir, partner_x, partner_y)
-    where image is (H*tile_size, W*tile_size, 3) float32 in [0,1].
+    Each agent sees the full rendered grid with a magenta border drawn
+    around its own tile. Observation is a flat float32 vector (image only,
+    no appended scalars).
     """
-
-    NUM_SCALARS = 6
 
     def __init__(self, *args, **kwargs):
         self.env = OvercookedV1(*args, **kwargs)
@@ -43,7 +69,7 @@ class OvercookedImageWrapper(BaseEnv):
         self._img_h = self.grid_height * self.tile_size
         self._img_w = self.grid_width * self.tile_size
         self._img_flat_dim = self._img_h * self._img_w * 3
-        self._obs_dim = self._img_flat_dim + self.NUM_SCALARS
+        self._obs_dim = self._img_flat_dim
 
         self.observation_spaces = {agent: self.observation_space(agent) for agent in self.agents}
         self.action_spaces = {agent: self.action_space(agent) for agent in self.agents}
@@ -57,29 +83,14 @@ class OvercookedImageWrapper(BaseEnv):
         return self.env.action_space()
 
     def _make_obs(self, env_state: OvercookedState) -> Dict[str, jnp.ndarray]:
-        """Render image and pack per-agent observations."""
+        """Render image with per-agent ego highlight."""
         img = render_state(env_state)  # (H*7, W*7, 3) uint8
-        img_flat = img.flatten().astype(jnp.float32) / 255.0
 
-        # Per-agent scalars: (dir_idx, pos_x, pos_y)
-        # agent_pos is (num_agents, 2) where [i] = (x, y)
-        # agent_dir_idx is (num_agents,)
-        dir_idx = env_state.agent_dir_idx.astype(jnp.float32)
-        pos = env_state.agent_pos.astype(jnp.float32)
+        img_0 = _draw_border(img, env_state.agent_pos[0], self.tile_size, _EGO_HIGHLIGHT_COLOR)
+        img_1 = _draw_border(img, env_state.agent_pos[1], self.tile_size, _EGO_HIGHLIGHT_COLOR)
 
-        # Agent 0: ego=0, partner=1
-        scalars_0 = jnp.array([
-            dir_idx[0], pos[0, 0], pos[0, 1],
-            dir_idx[1], pos[1, 0], pos[1, 1],
-        ])
-        # Agent 1: ego=1, partner=0
-        scalars_1 = jnp.array([
-            dir_idx[1], pos[1, 0], pos[1, 1],
-            dir_idx[0], pos[0, 0], pos[0, 1],
-        ])
-
-        obs_0 = jnp.concatenate([img_flat, scalars_0])
-        obs_1 = jnp.concatenate([img_flat, scalars_1])
+        obs_0 = img_0.flatten().astype(jnp.float32) / 255.0
+        obs_1 = img_1.flatten().astype(jnp.float32) / 255.0
 
         return {"agent_0": obs_0, "agent_1": obs_1}
 
