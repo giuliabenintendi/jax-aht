@@ -74,7 +74,7 @@ class JAImageScannedLSTM(nn.Module):
       4. Q = Dense(concat(h_ego, h_partner))
       5. Multi-head spatial attention -> attended O
       6. Scalars: direction one_hot(4) -> Dense(5), position -> Dense(5)
-      7. LSTM(concat(O, dir_embed, pos_embed)) -> (h_t, c_t)
+      7. Concat(O, dir_embed, pos_embed) -> LSTM -> (h_t, c_t)
       8. Return (h_t, c_t) and attention map (averaged over heads)
     """
     img_height: int   # H*tile_size (pixels)
@@ -83,7 +83,6 @@ class JAImageScannedLSTM(nn.Module):
     conv_filters: int = 64
     num_heads: int = 4
     head_features: int = 16
-    fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
     scalar_embed_dim: int = 5
@@ -192,22 +191,8 @@ class JAImageScannedLSTM(nn.Module):
             name="pos_embed",
         )(pos_features)
 
-        # --- 7. FC layers before LSTM (reference code: input_fc_layer_params) ---
+        # --- 7. LSTM update (paper: Concat → LSTM directly, no FC in between) ---
         lstm_input = jnp.concatenate([attended_flat, dir_embed, pos_embed], axis=-1)
-        lstm_input = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-            name="input_fc1",
-        )(lstm_input)
-        lstm_input = nn.relu(lstm_input)
-        lstm_input = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-            name="input_fc2",
-        )(lstm_input)
-        lstm_input = nn.relu(lstm_input)
-
-        # --- 8. LSTM update ---
         new_carry, lstm_out = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
         )((lstm_h, lstm_c), lstm_input)
@@ -254,7 +239,6 @@ class JAImageActorCritic(nn.Module):
             conv_filters=self.conv_filters,
             num_heads=self.num_heads,
             head_features=self.head_features,
-            fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             spatial_basis_depth=self.spatial_basis_depth,
             scalar_embed_dim=self.scalar_embed_dim,
