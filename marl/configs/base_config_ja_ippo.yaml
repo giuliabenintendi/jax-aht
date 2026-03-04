@@ -22,13 +22,14 @@ name: ${TASK_NAME}/${algorithm.ALG}/${label}
 # wandb settings
 logger:
   project: aht-benchmark
-  entity: aht-project
+  entity: g-benintendi-university-of-brescia
   tags:
     - ${algorithm.ALG}
     - ${TASK_NAME}
     - seed=${algorithm.TRAIN_SEED}
     - ${label}
   mode: online
+
   verbose: false
   log_train_out: true
   log_eval_out: true

@@ -2,6 +2,7 @@ ENV_NAME: overcooked-v1
 ROLLOUT_LENGTH: 400
 ENV_KWARGS:
   layout: cramped_room
+  obs_type: image
   random_obj_state: true
   do_reward_shaping: true
   reward_shaping_params:
