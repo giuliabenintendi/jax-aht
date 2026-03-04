@@ -160,29 +160,50 @@ class ImageActorCritic(nn.Module):
             scalar_embed_dim=self.scalar_embed_dim,
         )
 
-        # Actor path (FC before LSTM, no FC after)
+        # Actor path
         actor_lstm_state, (actor_embed,) = ImageScannedLSTM(
             **rnn_kwargs, name="actor_lstm",
         )(actor_lstm_state, (obs, dones))
 
+        # FFN after LSTM (paper diagram: LSTM → FFN → Action)
+        actor_out = nn.Dense(
+            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0), name="actor_fc1",
+        )(actor_embed)
+        actor_out = nn.relu(actor_out)
+        actor_out = nn.Dense(
+            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0), name="actor_fc2",
+        )(actor_out)
+        actor_out = nn.relu(actor_out)
         action_logits = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
             name="actor_proj",
-        )(actor_embed)
+        )(actor_out)
 
         unavail_actions = 1 - avail_actions
         action_logits = action_logits - (unavail_actions * 1e10)
         pi = distrax.Categorical(logits=action_logits)
 
-        # Critic path (FC before LSTM, no FC after)
+        # Critic path
         critic_lstm_state, (critic_embed,) = ImageScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
         )(critic_lstm_state, (obs, dones))
 
+        critic_out = nn.Dense(
+            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0), name="critic_fc1",
+        )(critic_embed)
+        critic_out = nn.relu(critic_out)
+        critic_out = nn.Dense(
+            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0), name="critic_fc2",
+        )(critic_out)
+        critic_out = nn.relu(critic_out)
         value = nn.Dense(
             1, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="critic_proj",
-        )(critic_embed)
+        )(critic_out)
 
         new_hidden = (actor_lstm_state, critic_lstm_state)
         return new_hidden, pi, jnp.squeeze(value, axis=-1)
