@@ -328,17 +328,24 @@ def run_image_ippo(config, logger):
     env = make_env(algorithm_config["ENV_NAME"], algorithm_config["ENV_KWARGS"])
     env = LogWrapper(env)
 
+    num_seeds = algorithm_config["NUM_SEEDS"]
     rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
-    rngs = jax.random.split(rng, algorithm_config["NUM_SEEDS"])
+    rngs = jax.random.split(rng, num_seeds)
 
-    with jax.disable_jit(False):
-        num_updates = int(algorithm_config["TOTAL_TIMESTEPS"] // algorithm_config["ROLLOUT_LENGTH"] // algorithm_config["NUM_ENVS"])
-        print(f"[image_ippo] Compiling train fn (NUM_UPDATES={num_updates}, "
-              f"NUM_SEEDS={algorithm_config['NUM_SEEDS']}, NUM_ENVS={algorithm_config['NUM_ENVS']})...")
-        train_jit = jax.jit(jax.vmap(make_train(algorithm_config, env)))
-        print("[image_ippo] Calling compiled fn (first call triggers XLA compilation)...")
-        out = train_jit(rngs)
-        print("[image_ippo] Training complete.")
+    num_updates = int(algorithm_config["TOTAL_TIMESTEPS"] // algorithm_config["ROLLOUT_LENGTH"] // algorithm_config["NUM_ENVS"])
+    print(f"[image_ippo] Compiling train fn (NUM_UPDATES={num_updates}, "
+          f"NUM_SEEDS={num_seeds}, NUM_ENVS={algorithm_config['NUM_ENVS']})...")
+    train_jit = jax.jit(make_train(algorithm_config, env))
+
+    # Run seeds sequentially to avoid vmap memory blowup with image obs
+    seed_outputs = []
+    for s in range(num_seeds):
+        print(f"[image_ippo] Running seed {s+1}/{num_seeds}...")
+        seed_outputs.append(train_jit(rngs[s]))
+    print("[image_ippo] Training complete.")
+
+    # Stack per-seed outputs to (NUM_SEEDS, ...) so log_metrics/log_eval_video work unchanged
+    out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
 
     log_metrics(config, out, logger)
     log_eval_video(algorithm_config, env, out, logger)
