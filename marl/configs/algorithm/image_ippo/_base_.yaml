@@ -1,0 +1,24 @@
+# @package algorithm
+# Image IPPO base config (no joint attention baseline)
+# Same architecture and PPO hyperparameters as JA-IPPO minus attention.
+ALG: image_ippo
+NUM_CHECKPOINTS: 5
+ANNEAL_LR: True
+MAX_GRAD_NORM: 1.0
+
+# PPO — same as JA-IPPO
+LR: 1e-4
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+VF_COEF: 0.5
+UPDATE_EPOCHS: 25
+NUM_MINIBATCHES: 1
+CLIP_EPS: 0.2
+ENT_COEF: 0.0
+
+# Network (same dimensions as JA-IPPO, minus attention-specific params)
+ACTIVATION: relu
+CONV_FILTERS: 64
+FC_HIDDEN_DIM: 64
+LSTM_HIDDEN_DIM: 64
+SCALAR_EMBED_DIM: 5

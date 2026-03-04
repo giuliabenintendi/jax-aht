@@ -7,6 +7,7 @@ from agents.rnn_actor_critic_agent import RNNActorCriticPolicy
 from agents.s5_actor_critic_agent import S5ActorCriticPolicy
 from agents.ja_actor_critic_agent import JAActorCriticPolicy
 from agents.ja_image_actor_critic_agent import JAImageActorCriticPolicy
+from agents.image_actor_critic_agent import ImageActorCriticPolicy
 from envs.base_env import get_inner_env
 from agents.liam_agent import LIAMPolicy, initialize_liam_encoder_decoder
 from agents.meliba_agent import MeLIBAPolicy, initialize_meliba_encoder_decoder
@@ -131,6 +132,29 @@ def initialize_ja_image_agent(config, env, rng):
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
         spatial_basis_depth=config.get("JA_SPATIAL_BASIS_DEPTH", 8),
         scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
+    )
+
+    rng, init_rng = jax.random.split(rng)
+    init_params = policy.init_params(init_rng)
+
+    return policy, init_params
+
+def initialize_image_agent(config, env, rng):
+    """Initialize an Image agent (ResNet+LSTM, no attention) with image observations."""
+    image_wrapper = env._env if hasattr(env, '_env') else env
+    img_h = image_wrapper.grid_height * image_wrapper.tile_size
+    img_w = image_wrapper.grid_width * image_wrapper.tile_size
+
+    policy = ImageActorCriticPolicy(
+        action_dim=env.action_space(env.agents[0]).n,
+        obs_dim=env.observation_space(env.agents[0]).shape[0],
+        img_height=img_h,
+        img_width=img_w,
+        activation=config.get("ACTIVATION", "relu"),
+        conv_filters=config.get("CONV_FILTERS", 64),
+        fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
+        lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
+        scalar_embed_dim=config.get("SCALAR_EMBED_DIM", 5),
     )
 
     rng, init_rng = jax.random.split(rng)
