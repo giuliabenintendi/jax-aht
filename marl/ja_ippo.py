@@ -345,6 +345,8 @@ def make_train(config, env):
             metric["jsd_mean"] = jsd_values.mean()
             metric["ja_reward_mean"] = ja_rew_0.mean()
             metric["loss_total"] = total_loss[0].mean()
+            metric["loss_value"] = value_loss[0].mean()
+            metric["loss_policy"] = policy_loss[0].mean()
             metric["entropy"] = entropy.mean()
             metric["grad_norm"] = grad_norm.mean()
             # Env reward (agent_0 half, without JA component)
@@ -507,6 +509,8 @@ def log_metrics(config, out, logger):
         ("jsd_mean", "JA"),
         ("env_reward_0_mean", "Rewards"),
         ("loss_total", "Losses"),
+        ("loss_value", "Losses"),
+        ("loss_policy", "Losses"),
         ("entropy", "Losses"),
         ("grad_norm", "Losses"),
         ("value_mean", "Values"),

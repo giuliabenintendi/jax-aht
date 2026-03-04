@@ -239,8 +239,18 @@ def make_train(config, env):
             )
             train_state = update_state[0]
 
+            # loss_info shape: (UPDATE_EPOCHS, NUM_MINIBATCHES, ...)
+            # total_loss = (total, (value_loss, policy_loss, entropy))
+            total_loss, (value_loss, policy_loss, entropy) = loss_info
+
             metric = traj_batch.info
             metric["update_steps"] = update_steps
+            metric["loss_total"] = total_loss.mean()
+            metric["loss_value"] = value_loss.mean()
+            metric["loss_policy"] = policy_loss.mean()
+            metric["entropy"] = entropy.mean()
+            metric["reward_mean"] = traj_batch.reward.mean()
+            metric["value_mean"] = traj_batch.value.mean()
 
             rng = update_state[-1]
             update_steps += 1
@@ -379,6 +389,20 @@ def log_metrics(config, out, logger):
 
     train_stats = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
 
+    scalar_keys = [
+        ("loss_total", "Losses"),
+        ("loss_value", "Losses"),
+        ("loss_policy", "Losses"),
+        ("entropy", "Losses"),
+        ("reward_mean", "Rewards"),
+        ("value_mean", "Values"),
+    ]
+
+    scalar_data = {}
+    for key, _ in scalar_keys:
+        if key in train_metrics:
+            scalar_data[key] = np.mean(np.array(train_metrics[key]), axis=0)
+
     num_updates = train_metrics["returned_episode"].shape[1]
     print_interval = max(1, num_updates // 20)
 
@@ -386,13 +410,21 @@ def log_metrics(config, out, logger):
         for stat_name, stat_data in train_stats.items():
             logger.log_item(f"Train/{stat_name}", stat_data[step, 0], train_step=step, commit=False)
 
+        for key, prefix in scalar_keys:
+            if key in scalar_data:
+                logger.log_item(f"{prefix}/{key}", float(scalar_data[key][step]),
+                                train_step=step, commit=False)
+
         logger.log({}, step=step, commit=True)
 
         if step % print_interval == 0 or step == num_updates - 1:
             env_steps = (step + 1) * int(config.algorithm["ROLLOUT_LENGTH"]) * int(config.algorithm["NUM_ENVS"])
             pct = (step + 1) / num_updates * 100
             ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in train_stats.items())
-            print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  {ret_str}")
+            loss = float(scalar_data.get("loss_total", np.zeros(num_updates))[step])
+            rew = float(scalar_data.get("reward_mean", np.zeros(num_updates))[step])
+            print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  "
+                  f"{ret_str}  loss={loss:.4f}  reward={rew:.4f}")
 
     logger.commit()
 
