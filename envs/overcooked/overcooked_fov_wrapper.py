@@ -43,9 +43,9 @@ def _crop_fov(
         (fov_px, fov_px, 3) cropped image, zero-padded where off the map.
     """
     fov_px = fov_size * tile_size
-    # Agent pixel center
-    ax = agent_pos_xy[0] * tile_size + tile_size // 2
-    ay = agent_pos_xy[1] * tile_size + tile_size // 2
+    # Agent pixel center (cast to int32 — agent_pos is uint32)
+    ax = jnp.int32(agent_pos_xy[0]) * tile_size + tile_size // 2
+    ay = jnp.int32(agent_pos_xy[1]) * tile_size + tile_size // 2
 
     if centered:
         top = ay - fov_px // 2
@@ -56,7 +56,6 @@ def _crop_fov(
         left = ax - fov_px // 2
 
     # Use dynamic_slice with zero-padding via pad + slice
-    h, w = image.shape[0], image.shape[1]
     pad_top = fov_px
     pad_left = fov_px
     padded = jnp.pad(
@@ -65,10 +64,12 @@ def _crop_fov(
         mode="constant",
         constant_values=0,
     )
-    # Shift indices to account for padding
+    # All indices must be the same dtype for dynamic_slice
+    row = jnp.int32(top + pad_top)
+    col = jnp.int32(left + pad_left)
     crop = jax.lax.dynamic_slice(
         padded,
-        (top + pad_top, left + pad_left, 0),
+        (row, col, jnp.int32(0)),
         (fov_px, fov_px, 3),
     )
     return crop
