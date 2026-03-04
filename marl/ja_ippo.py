@@ -66,8 +66,15 @@ def _construct_partner_hstate(hstate, num_envs, lstm_dim):
 
 
 def make_train(config, env):
+    """Build init and step functions for JA-IPPO training.
+
+    Returns (init_fn, step_fn) where:
+      - init_fn(rng) -> (runner_state, policy) sets up network, optimizer, env
+      - step_fn(runner_state, update_steps) -> (runner_state, update_steps, metric)
+        runs one rollout + PPO update
+    """
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
-    config["NUM_UPDATES"] = (
+    config["NUM_UPDATES"] = int(
         config["TOTAL_TIMESTEPS"] // config["ROLLOUT_LENGTH"] // config["NUM_ENVS"]
     )
     config["MINIBATCH_SIZE"] = (
@@ -88,8 +95,7 @@ def make_train(config, env):
     obs_type = config.get("OBS_TYPE", config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
     init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
 
-    def train(rng):
-        # INIT SINGLE SHARED NETWORK
+    def init(rng):
         rng, init_rng = jax.random.split(rng)
         policy, init_params = init_fn(config, env, init_rng)
         lstm_dim = policy.lstm_hidden_dim
@@ -108,19 +114,25 @@ def make_train(config, env):
             apply_fn=policy.network.apply, params=init_params, tx=tx,
         )
 
-        # INIT ENV
         rng, _rng = jax.random.split(rng)
         reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
 
-        # PPO update (single, batchified over both agents)
+        init_hstate = policy.init_hstate(num_actors)
+        init_done = {k: jnp.zeros((config["NUM_ENVS"]), dtype=bool) for k in env.agents + ["__all__"]}
+        runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
+
+        return runner_state, policy, lstm_dim
+
+    def make_step_fn(policy, lstm_dim):
+        """Create a JIT-compilable single update step."""
+
         def _ppo_update(train_state, traj_batch, advantages, targets, rng):
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
                     init_hstate, traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(params, traj_batch, gae, targets):
-                        # Rerun network with stored partner_hstate
                         _, value, pi, _, _ = policy.get_action_value_policy(
                             params=params,
                             obs=traj_batch.obs,
@@ -132,7 +144,6 @@ def make_train(config, env):
                         )
                         log_prob = pi.log_prob(traj_batch.action)
 
-                        # Value loss (clipped)
                         value_pred_clipped = traj_batch.value + (
                             value - traj_batch.value
                         ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
@@ -142,7 +153,6 @@ def make_train(config, env):
                             jnp.maximum(value_losses, value_losses_clipped).mean()
                         )
 
-                        # Policy gradient loss (clipped)
                         ratio = jnp.exp(log_prob - traj_batch.log_prob)
                         gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                         loss_actor1 = ratio * gae
@@ -193,11 +203,8 @@ def make_train(config, env):
             )
             return update_state[0], loss_info
 
-        # TRAIN LOOP
-        def _update_step(update_runner_state, unused):
-            runner_state, update_steps = update_runner_state
-
-            # Beta curriculum: linear ramp from 0 to ja_beta_max
+        @jax.jit
+        def step_fn(runner_state, update_steps):
             ja_beta = jnp.minimum(
                 ja_beta_max,
                 ja_beta_max * update_steps / jnp.maximum(ja_warmup_updates, 1.0),
@@ -208,7 +215,6 @@ def make_train(config, env):
 
                 rng, act_rng = jax.random.split(rng)
 
-                # Batchify observations (like IPPO)
                 last_obs_batch = batchify(last_obs, env.agents, num_actors)
                 last_done_batch = batchify(last_done, env.agents, num_actors)
 
@@ -216,10 +222,8 @@ def make_train(config, env):
                 avail_actions_batch = jax.lax.stop_gradient(
                     batchify(avail_actions, env.agents, num_actors).astype(jnp.float32))
 
-                # Cross-agent state routing: swap agent halves
                 partner_h = _construct_partner_hstate(hstate, num_envs, lstm_dim)
 
-                # Single forward pass for both agents
                 action, value, pi, new_hstate, attn_map = policy.get_action_value_policy(
                     params=train_state.params,
                     obs=last_obs_batch.reshape(1, num_actors, -1),
@@ -235,7 +239,6 @@ def make_train(config, env):
                 log_prob = log_prob.squeeze()
                 value = value.squeeze()
 
-                # Unbatchify actions for env step
                 env_act = unbatchify(action, env.agents, num_envs, env.num_agents)
                 env_act = {k: v.flatten() for k, v in env_act.items()}
 
@@ -248,17 +251,13 @@ def make_train(config, env):
 
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
 
-                # JA intrinsic reward: -JSD between agent_0 and agent_1 attention maps
-                # attn_map: (1, NUM_ACTORS, H, W) -> split into agent halves
-                attn_0 = attn_map[:, :num_envs, ...]   # (1, num_envs, H, W)
-                attn_1 = attn_map[:, num_envs:, ...]    # (1, num_envs, H, W)
-                r_ja = -jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))  # (num_envs,)
+                attn_0 = attn_map[:, :num_envs, ...]
+                attn_1 = attn_map[:, num_envs:, ...]
+                r_ja = -jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))
                 r_ja = jax.lax.stop_gradient(r_ja)
 
-                # Batchify rewards and add JA intrinsic reward
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
-                # r_ja is per-env, same for both agents -> tile to NUM_ACTORS
-                r_ja_batch = jnp.concatenate([r_ja, r_ja])  # (NUM_ACTORS,)
+                r_ja_batch = jnp.concatenate([r_ja, r_ja])
                 reward_with_ja = reward_batch + ja_beta * r_ja_batch
 
                 transition = JATransition(
@@ -270,7 +269,7 @@ def make_train(config, env):
                     obs=last_obs_batch,
                     info=info,
                     avail_actions=avail_actions_batch,
-                    partner_hstate=partner_h.squeeze(0),  # (NUM_ACTORS, lstm_dim)
+                    partner_hstate=partner_h.squeeze(0),
                     ja_reward=r_ja_batch,
                 )
                 runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
@@ -280,7 +279,6 @@ def make_train(config, env):
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
-            # Final value estimate
             (train_state, env_state, last_obs, last_done, hstate, rng) = runner_state
 
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
@@ -327,20 +325,15 @@ def make_train(config, env):
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
-            # Single PPO update (batchified over both agents)
             rng, ppo_rng = jax.random.split(rng)
             train_state, loss_info = _ppo_update(
                 train_state, traj_batch, advantages, targets, ppo_rng)
 
-            # Loss metrics
             (total_loss, (value_loss, policy_loss, entropy)), grad_norm = loss_info
 
-            # JA diagnostics from the rollout
-            # ja_reward: (ROLLOUT_LENGTH, NUM_ACTORS) — first half is agent_0
-            ja_rew_0 = traj_batch.ja_reward[:, :num_envs]  # (ROLLOUT_LENGTH, num_envs)
-            jsd_values = -ja_rew_0  # JSD is non-negative
+            ja_rew_0 = traj_batch.ja_reward[:, :num_envs]
+            jsd_values = -ja_rew_0
 
-            # Build metric dict
             metric = traj_batch.info
             metric["update_steps"] = update_steps
             metric["ja_beta"] = ja_beta
@@ -351,80 +344,17 @@ def make_train(config, env):
             metric["loss_policy"] = policy_loss[0].mean()
             metric["entropy"] = entropy.mean()
             metric["grad_norm"] = grad_norm.mean()
-            # Env reward (agent_0 half, without JA component)
             metric["env_reward_0_mean"] = (
                 traj_batch.reward[:, :num_envs] - ja_beta * ja_rew_0
             ).mean()
             metric["value_mean"] = traj_batch.value.mean()
 
-            update_steps += 1
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
-            return (runner_state, update_steps), metric
+            return runner_state, update_steps + 1, metric
 
-        ckpt_and_eval_interval = config["NUM_UPDATES"] // max(1, config["NUM_CHECKPOINTS"] - 1)
-        num_ckpts = config["NUM_CHECKPOINTS"]
+        return step_fn
 
-        def init_ckpt_array(params_pytree):
-            return jax.tree.map(
-                lambda x: jnp.zeros((num_ckpts,) + x.shape, x.dtype),
-                params_pytree
-            )
-
-        def _update_step_with_checkpoint(update_with_ckpt_runner_state, unused):
-            (update_runner_state, checkpoint_array, ckpt_idx) = update_with_ckpt_runner_state
-            update_runner_state, metric = _update_step(update_runner_state, None)
-            _, update_steps = update_runner_state
-            to_store = jnp.logical_or(
-                jnp.equal(jnp.mod(update_steps - 1, ckpt_and_eval_interval), 0),
-                jnp.equal(update_steps, config["NUM_UPDATES"]),
-            )
-
-            def store_ckpt_fn(args):
-                _checkpoint_array, _ckpt_idx = args
-                new_checkpoint_array = jax.tree.map(
-                    lambda c_arr, p: c_arr.at[_ckpt_idx].set(p),
-                    _checkpoint_array,
-                    update_runner_state[0][0].params,
-                )
-                return new_checkpoint_array, _ckpt_idx + 1
-
-            def skip_ckpt_fn(args):
-                return args
-
-            checkpoint_array, ckpt_idx = jax.lax.cond(
-                to_store, store_ckpt_fn, skip_ckpt_fn, (checkpoint_array, ckpt_idx),
-            )
-
-            runner_state = (update_runner_state, checkpoint_array, ckpt_idx)
-            return runner_state, metric
-
-        rng, _rng = jax.random.split(rng)
-        update_steps = 0
-        init_hstate = policy.init_hstate(num_actors)
-        init_done = {k: jnp.zeros((config["NUM_ENVS"]), dtype=bool) for k in env.agents + ["__all__"]}
-        runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
-        update_runner_state = (runner_state, update_steps)
-        checkpoint_array = init_ckpt_array(train_state.params)
-        ckpt_idx = 0
-        update_with_ckpt_runner_state = (update_runner_state, checkpoint_array, ckpt_idx)
-
-        runner_state, metrics = jax.lax.scan(
-            _update_step_with_checkpoint,
-            update_with_ckpt_runner_state,
-            xs=None,
-            length=config["NUM_UPDATES"],
-        )
-
-        update_runner_state, checkpoint_array, final_ckpt_idx = runner_state
-
-        return {
-            "final_params": update_runner_state[0][0].params,
-            "metrics": metrics,
-            "checkpoints": checkpoint_array,
-            "final_ckpt_idx": final_ckpt_idx,
-        }
-
-    return train
+    return init, make_step_fn
 
 
 def run_ja_ippo(config, logger):
@@ -433,19 +363,53 @@ def run_ja_ippo(config, logger):
     env = LogWrapper(env)
 
     num_seeds = algorithm_config["NUM_SEEDS"]
+    num_updates = int(algorithm_config["TOTAL_TIMESTEPS"] // algorithm_config["ROLLOUT_LENGTH"] // algorithm_config["NUM_ENVS"])
+    num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
+    ckpt_interval = num_updates // max(1, num_ckpts - 1)
+
     rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
     rngs = jax.random.split(rng, num_seeds)
 
-    num_updates = int(algorithm_config["TOTAL_TIMESTEPS"] // algorithm_config["ROLLOUT_LENGTH"] // algorithm_config["NUM_ENVS"])
-    print(f"[ja_ippo] Compiling train fn (NUM_UPDATES={num_updates}, "
-          f"NUM_SEEDS={num_seeds}, NUM_ENVS={algorithm_config['NUM_ENVS']})...")
-    train_jit = jax.jit(make_train(algorithm_config, env))
+    init_fn, make_step_fn = make_train(algorithm_config, env)
 
-    # Run seeds sequentially to avoid vmap memory blowup with image obs
+    print(f"[ja_ippo] NUM_UPDATES={num_updates}, NUM_SEEDS={num_seeds}, "
+          f"NUM_ENVS={algorithm_config['NUM_ENVS']}")
+
     seed_outputs = []
     for s in range(num_seeds):
-        print(f"[ja_ippo] Running seed {s+1}/{num_seeds}...")
-        seed_outputs.append(train_jit(rngs[s]))
+        print(f"[ja_ippo] Seed {s+1}/{num_seeds}: initializing...")
+        runner_state, policy, lstm_dim = init_fn(rngs[s])
+        step_fn = make_step_fn(policy, lstm_dim)
+
+        # Collect checkpoints and metrics in Python lists
+        checkpoints = []
+        all_metrics = []
+        update_steps = jnp.int32(0)
+
+        print(f"[ja_ippo] Seed {s+1}/{num_seeds}: compiling step fn...")
+        for step in range(num_updates):
+            runner_state, update_steps, metric = step_fn(runner_state, update_steps)
+            all_metrics.append(metric)
+
+            # Store checkpoint at intervals
+            should_ckpt = (step % ckpt_interval == 0) or (step == num_updates - 1)
+            if should_ckpt and len(checkpoints) < num_ckpts:
+                checkpoints.append(runner_state[0].params)
+
+            if step % max(1, num_updates // 10) == 0 or step == num_updates - 1:
+                print(f"[ja_ippo] Seed {s+1}/{num_seeds}: step {step+1}/{num_updates}")
+
+        # Stack metrics: list of dicts -> dict of arrays with shape (NUM_UPDATES, ...)
+        stacked_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *all_metrics)
+        stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *checkpoints)
+
+        seed_outputs.append({
+            "final_params": runner_state[0].params,
+            "metrics": stacked_metrics,
+            "checkpoints": stacked_ckpts,
+            "final_ckpt_idx": len(checkpoints),
+        })
+
     print("[ja_ippo] Training complete.")
 
     # Stack per-seed outputs to (NUM_SEEDS, ...) so log_metrics/log_eval_video work unchanged

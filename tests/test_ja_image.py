@@ -170,14 +170,20 @@ def test_ja_image_train_loop():
         "TRAIN_SEED": 0,
     }
 
-    train_fn = make_train(config, env)
+    init_fn, make_step_fn = make_train(config, env)
     rng = jax.random.PRNGKey(0)
-    out = jax.jit(train_fn)(rng)
+    runner_state, policy, lstm_dim = init_fn(rng)
+    step_fn = make_step_fn(policy, lstm_dim)
 
-    assert "final_params" in out
-    assert "metrics" in out
-    assert "params" in out["final_params"]
-    assert jnp.all(out["metrics"]["jsd_mean"] >= 0)
+    num_updates = int(config["TOTAL_TIMESTEPS"] // config["ROLLOUT_LENGTH"] // config["NUM_ENVS"])
+    update_steps = jnp.int32(0)
+    all_metrics = []
+    for _ in range(num_updates):
+        runner_state, update_steps, metric = step_fn(runner_state, update_steps)
+        all_metrics.append(metric)
+
+    assert len(all_metrics) == num_updates
+    assert jnp.all(all_metrics[-1]["jsd_mean"] >= 0)
 
 
 def test_network_architecture():

@@ -145,29 +145,24 @@ def test_ja_train_loop():
         "TRAIN_SEED": 0,
     }
 
-    train_fn = make_train(config, env)
+    init_fn, make_step_fn = make_train(config, env)
     rng = jax.random.PRNGKey(0)
-    out = jax.jit(train_fn)(rng)
+    runner_state, policy, lstm_dim = init_fn(rng)
+    step_fn = make_step_fn(policy, lstm_dim)
 
-    assert "final_params" in out
-    assert "metrics" in out
-    assert "checkpoints" in out
+    num_updates = int(config["TOTAL_TIMESTEPS"] // config["ROLLOUT_LENGTH"] // config["NUM_ENVS"])
+    update_steps = jnp.int32(0)
+    all_metrics = []
+    for _ in range(num_updates):
+        runner_state, update_steps, metric = step_fn(runner_state, update_steps)
+        all_metrics.append(metric)
 
-    # Independent params: both agents should have their own param trees
-    final_params = out["final_params"]
-    assert "agent_0" in final_params
-    assert "agent_1" in final_params
-    leaves_0 = jax.tree.leaves(final_params["agent_0"])
-    leaves_1 = jax.tree.leaves(final_params["agent_1"])
-    assert len(leaves_0) == len(leaves_1)
-    # Different values (independent initialization + training)
-    assert any(not bool(jnp.array_equal(a, b)) for a, b in zip(leaves_0, leaves_1))
+    assert len(all_metrics) == num_updates
 
-    metrics = out["metrics"]
     # Should have JA-specific metrics
-    assert "ja_beta" in metrics
-    assert "ja_reward_mean" in metrics
-    assert "jsd_mean" in metrics
+    assert "ja_beta" in all_metrics[-1]
+    assert "ja_reward_mean" in all_metrics[-1]
+    assert "jsd_mean" in all_metrics[-1]
 
     # JSD should be non-negative
-    assert jnp.all(metrics["jsd_mean"] >= 0)
+    assert jnp.all(all_metrics[-1]["jsd_mean"] >= 0)

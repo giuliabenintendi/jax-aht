@@ -23,8 +23,15 @@ from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
 
 
 def make_train(config, env):
+    """Build init and step functions for Image IPPO training.
+
+    Returns (init_fn, step_fn) where:
+      - init_fn(rng) -> (runner_state, policy) sets up network, optimizer, env
+      - step_fn(runner_state, update_steps) -> (runner_state, update_steps, metric)
+        runs one rollout + PPO update
+    """
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
-    config["NUM_UPDATES"] = (
+    config["NUM_UPDATES"] = int(
         config["TOTAL_TIMESTEPS"] // config["ROLLOUT_LENGTH"] // config["NUM_ENVS"]
     )
     config["MINIBATCH_SIZE"] = (
@@ -38,8 +45,7 @@ def make_train(config, env):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
         return config["LR"] * frac
 
-    def train(rng):
-        # INIT SINGLE SHARED NETWORK
+    def init(rng):
         rng, init_rng = jax.random.split(rng)
         policy, init_params = initialize_image_agent(config, env, init_rng)
 
@@ -57,15 +63,21 @@ def make_train(config, env):
             apply_fn=policy.network.apply, params=init_params, tx=tx,
         )
 
-        # INIT ENV
         rng, _rng = jax.random.split(rng)
         reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
 
-        # TRAIN LOOP
-        def _update_step(update_runner_state, unused):
-            runner_state, update_steps = update_runner_state
+        init_hstate = policy.init_hstate(num_actors)
+        init_done = {k: jnp.zeros((config["NUM_ENVS"]), dtype=bool) for k in env.agents + ["__all__"]}
+        runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
 
+        return runner_state, policy
+
+    def make_step_fn(policy):
+        """Create a JIT-compilable single update step."""
+
+        @jax.jit
+        def step_fn(runner_state, update_steps):
             def _env_step(runner_state, unused):
                 train_state, env_state, last_obs, last_done, hstate, rng = runner_state
 
@@ -121,7 +133,6 @@ def make_train(config, env):
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
-            # Final value estimate
             train_state, env_state, last_obs, last_done, hstate, rng = runner_state
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
@@ -165,7 +176,6 @@ def make_train(config, env):
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
-            # PPO update
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
                     init_hstate, traj_batch, advantages, targets = batch_info
@@ -181,7 +191,6 @@ def make_train(config, env):
                         )
                         log_prob = pi.log_prob(traj_batch.action)
 
-                        # Value loss (clipped)
                         value_pred_clipped = traj_batch.value + (
                             value - traj_batch.value
                         ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
@@ -191,7 +200,6 @@ def make_train(config, env):
                             jnp.maximum(value_losses, value_losses_clipped).mean()
                         )
 
-                        # Policy gradient loss (clipped)
                         ratio = jnp.exp(log_prob - traj_batch.log_prob)
                         gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                         loss_actor1 = ratio * gae
@@ -239,8 +247,6 @@ def make_train(config, env):
             )
             train_state = update_state[0]
 
-            # loss_info shape: (UPDATE_EPOCHS, NUM_MINIBATCHES, ...)
-            # total_loss = (total, (value_loss, policy_loss, entropy))
             total_loss, (value_loss, policy_loss, entropy) = loss_info
 
             metric = traj_batch.info
@@ -253,74 +259,12 @@ def make_train(config, env):
             metric["value_mean"] = traj_batch.value.mean()
 
             rng = update_state[-1]
-            update_steps += 1
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
-            return (runner_state, update_steps), metric
+            return runner_state, update_steps + 1, metric
 
-        ckpt_and_eval_interval = config["NUM_UPDATES"] // max(1, config["NUM_CHECKPOINTS"] - 1)
-        num_ckpts = config["NUM_CHECKPOINTS"]
+        return step_fn
 
-        def init_ckpt_array(params_pytree):
-            return jax.tree.map(
-                lambda x: jnp.zeros((num_ckpts,) + x.shape, x.dtype),
-                params_pytree
-            )
-
-        def _update_step_with_checkpoint(update_with_ckpt_runner_state, unused):
-            (update_runner_state, checkpoint_array, ckpt_idx) = update_with_ckpt_runner_state
-            update_runner_state, metric = _update_step(update_runner_state, None)
-            _, update_steps = update_runner_state
-            to_store = jnp.logical_or(
-                jnp.equal(jnp.mod(update_steps - 1, ckpt_and_eval_interval), 0),
-                jnp.equal(update_steps, config["NUM_UPDATES"]),
-            )
-
-            def store_ckpt_fn(args):
-                _checkpoint_array, _ckpt_idx = args
-                new_checkpoint_array = jax.tree.map(
-                    lambda c_arr, p: c_arr.at[_ckpt_idx].set(p),
-                    _checkpoint_array,
-                    update_runner_state[0][0].params,
-                )
-                return new_checkpoint_array, _ckpt_idx + 1
-
-            def skip_ckpt_fn(args):
-                return args
-
-            checkpoint_array, ckpt_idx = jax.lax.cond(
-                to_store, store_ckpt_fn, skip_ckpt_fn, (checkpoint_array, ckpt_idx),
-            )
-
-            runner_state = (update_runner_state, checkpoint_array, ckpt_idx)
-            return runner_state, metric
-
-        rng, _rng = jax.random.split(rng)
-        update_steps = 0
-        init_hstate = policy.init_hstate(num_actors)
-        init_done = {k: jnp.zeros((config["NUM_ENVS"]), dtype=bool) for k in env.agents + ["__all__"]}
-        runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
-        update_runner_state = (runner_state, update_steps)
-        checkpoint_array = init_ckpt_array(train_state.params)
-        ckpt_idx = 0
-        update_with_ckpt_runner_state = (update_runner_state, checkpoint_array, ckpt_idx)
-
-        runner_state, metrics = jax.lax.scan(
-            _update_step_with_checkpoint,
-            update_with_ckpt_runner_state,
-            xs=None,
-            length=config["NUM_UPDATES"],
-        )
-
-        update_runner_state, checkpoint_array, final_ckpt_idx = runner_state
-
-        return {
-            "final_params": update_runner_state[0][0].params,
-            "metrics": metrics,
-            "checkpoints": checkpoint_array,
-            "final_ckpt_idx": final_ckpt_idx,
-        }
-
-    return train
+    return init, make_step_fn
 
 
 def run_image_ippo(config, logger):
@@ -329,22 +273,52 @@ def run_image_ippo(config, logger):
     env = LogWrapper(env)
 
     num_seeds = algorithm_config["NUM_SEEDS"]
+    num_updates = int(algorithm_config["TOTAL_TIMESTEPS"] // algorithm_config["ROLLOUT_LENGTH"] // algorithm_config["NUM_ENVS"])
+    num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
+    ckpt_interval = num_updates // max(1, num_ckpts - 1)
+
     rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
     rngs = jax.random.split(rng, num_seeds)
 
-    num_updates = int(algorithm_config["TOTAL_TIMESTEPS"] // algorithm_config["ROLLOUT_LENGTH"] // algorithm_config["NUM_ENVS"])
-    print(f"[image_ippo] Compiling train fn (NUM_UPDATES={num_updates}, "
-          f"NUM_SEEDS={num_seeds}, NUM_ENVS={algorithm_config['NUM_ENVS']})...")
-    train_jit = jax.jit(make_train(algorithm_config, env))
+    init_fn, make_step_fn = make_train(algorithm_config, env)
 
-    # Run seeds sequentially to avoid vmap memory blowup with image obs
+    print(f"[image_ippo] NUM_UPDATES={num_updates}, NUM_SEEDS={num_seeds}, "
+          f"NUM_ENVS={algorithm_config['NUM_ENVS']}")
+
     seed_outputs = []
     for s in range(num_seeds):
-        print(f"[image_ippo] Running seed {s+1}/{num_seeds}...")
-        seed_outputs.append(train_jit(rngs[s]))
+        print(f"[image_ippo] Seed {s+1}/{num_seeds}: initializing...")
+        runner_state, policy = init_fn(rngs[s])
+        step_fn = make_step_fn(policy)
+
+        checkpoints = []
+        all_metrics = []
+        update_steps = jnp.int32(0)
+
+        print(f"[image_ippo] Seed {s+1}/{num_seeds}: compiling step fn...")
+        for step in range(num_updates):
+            runner_state, update_steps, metric = step_fn(runner_state, update_steps)
+            all_metrics.append(metric)
+
+            should_ckpt = (step % ckpt_interval == 0) or (step == num_updates - 1)
+            if should_ckpt and len(checkpoints) < num_ckpts:
+                checkpoints.append(runner_state[0].params)
+
+            if step % max(1, num_updates // 10) == 0 or step == num_updates - 1:
+                print(f"[image_ippo] Seed {s+1}/{num_seeds}: step {step+1}/{num_updates}")
+
+        stacked_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *all_metrics)
+        stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *checkpoints)
+
+        seed_outputs.append({
+            "final_params": runner_state[0].params,
+            "metrics": stacked_metrics,
+            "checkpoints": stacked_ckpts,
+            "final_ckpt_idx": len(checkpoints),
+        })
+
     print("[image_ippo] Training complete.")
 
-    # Stack per-seed outputs to (NUM_SEEDS, ...) so log_metrics/log_eval_video work unchanged
     out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
 
     log_metrics(config, out, logger)
