@@ -311,24 +311,12 @@ def make_train(config, env):
         ckpt_idx = 0
         update_with_ckpt_runner_state = (update_runner_state, checkpoint_array, ckpt_idx)
 
-        # Chunk the outer scan to avoid massive XLA compilation times.
-        CHUNK_SIZE = 20
-        num_chunks = int(config["NUM_UPDATES"]) // CHUNK_SIZE
-        remainder = int(config["NUM_UPDATES"]) % CHUNK_SIZE
-
-        runner_state = update_with_ckpt_runner_state
-        all_metrics = []
-        for _ in range(num_chunks):
-            runner_state, chunk_metrics = jax.lax.scan(
-                _update_step_with_checkpoint, runner_state, xs=None, length=CHUNK_SIZE,
-            )
-            all_metrics.append(chunk_metrics)
-        if remainder:
-            runner_state, chunk_metrics = jax.lax.scan(
-                _update_step_with_checkpoint, runner_state, xs=None, length=remainder,
-            )
-            all_metrics.append(chunk_metrics)
-        metrics = jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *all_metrics)
+        runner_state, metrics = jax.lax.scan(
+            _update_step_with_checkpoint,
+            update_with_ckpt_runner_state,
+            xs=None,
+            length=config["NUM_UPDATES"],
+        )
 
         update_runner_state, checkpoint_array, final_ckpt_idx = runner_state
 
