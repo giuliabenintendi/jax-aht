@@ -1,4 +1,5 @@
 """Tests for image-based JA pipeline: rendering, wrapper, network, training."""
+import math
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -186,3 +187,144 @@ def test_ja_image_train_loop():
     assert "agent_0" in out["final_params"]
     assert "agent_1" in out["final_params"]
     assert jnp.all(out["metrics"]["jsd_mean"] >= 0)
+
+
+def test_network_architecture():
+    """Print the full network architecture with nn.tabulate and compare to reference.
+
+    Run with: uv run pytest -s tests/test_ja_image.py::test_network_architecture
+    """
+    import flax.linen as nn
+    from agents.ja_image_actor_critic import JAImageActorCritic, JAImageScannedLSTM
+
+    # -- Setup: cramped_room with production-size hyperparams --
+    env = make_env("overcooked-v1", {"layout": "cramped_room", "obs_type": "image"})
+    img_h = env.grid_height * TILE_PIXELS  # 5*7 = 35
+    img_w = env.grid_width * TILE_PIXELS   # 5*7 = 35
+    obs_dim = env.observation_space(env.agents[0]).shape[0]
+    action_dim = env.action_space(env.agents[0]).n
+    feat_h = math.ceil(img_h / 4)  # after 2x MaxPool(stride=2)
+    feat_w = math.ceil(img_w / 4)
+
+    conv_filters = 64
+    num_heads = 4
+    head_features = 16
+    lstm_hidden_dim = 64
+    spatial_basis_depth = 8
+    scalar_embed_dim = 5
+    fc_hidden_dim = 64
+
+    # -- 1. nn.tabulate on the full actor-critic --
+    network = JAImageActorCritic(
+        action_dim=action_dim,
+        img_height=img_h,
+        img_width=img_w,
+        conv_filters=conv_filters,
+        num_heads=num_heads,
+        head_features=head_features,
+        fc_hidden_dim=fc_hidden_dim,
+        lstm_hidden_dim=lstm_hidden_dim,
+        spatial_basis_depth=spatial_basis_depth,
+        scalar_embed_dim=scalar_embed_dim,
+    )
+
+    batch = 1
+    seq = 1
+    actor_carry = JAImageScannedLSTM.initialize_carry(batch, lstm_hidden_dim)
+    critic_carry = JAImageScannedLSTM.initialize_carry(batch, lstm_hidden_dim)
+    hidden = (actor_carry, critic_carry)
+
+    dummy_obs = jnp.zeros((seq, batch, obs_dim))
+    dummy_done = jnp.zeros((seq, batch))
+    dummy_avail = jnp.ones((seq, batch, action_dim))
+    dummy_partner_h = jnp.zeros((seq, batch, lstm_hidden_dim))
+    x = (dummy_obs, dummy_done, dummy_avail, dummy_partner_h)
+
+    print("\n" + "=" * 80)
+    print("JAImageActorCritic — nn.tabulate()")
+    print("=" * 80)
+    table_fn = nn.tabulate(network, jax.random.PRNGKey(0))
+    print(table_fn(hidden, x))
+
+    # -- 2. Concrete shapes at each stage --
+    print("\n" + "=" * 80)
+    print("DATA FLOW — per agent, per timestep (cramped_room)")
+    print("=" * 80)
+    print(f"""
+Observation:
+  flat obs              : ({obs_dim},) = image pixels ({img_h}*{img_w}*3 = {img_h*img_w*3}) + 6 scalars
+
+Image encoder (2 ResNet stacks, each: Conv3x3 -> MaxPool(stride=2) -> 2 ResBlocks):
+  input image           : ({img_h}, {img_w}, 3)         = ({env.grid_height}x{TILE_PIXELS}, {env.grid_width}x{TILE_PIXELS}, RGB)
+  after Stack 0         : ({math.ceil(img_h/2)}, {math.ceil(img_w/2)}, {conv_filters//2})      filters={conv_filters//2}
+  after Stack 1         : ({feat_h}, {feat_w}, {conv_filters})       filters={conv_filters}
+  after ReLU            : ({feat_h}, {feat_w}, {conv_filters})       = features F
+
+Spatial attention:
+  spatial basis         : ({feat_h}, {feat_w}, {spatial_basis_depth})        sinusoidal positional encoding
+  F + basis concat      : ({feat_h}, {feat_w}, {conv_filters + spatial_basis_depth})
+  Keys (1x1 conv)       : ({feat_h}*{feat_w}, {num_heads}, {head_features})  = ({feat_h*feat_w}, {num_heads}, {head_features})
+  Values (1x1 conv)     : ({feat_h}*{feat_w}, {num_heads}, {head_features})  = ({feat_h*feat_w}, {num_heads}, {head_features})
+  Query (Dense)         : ({num_heads}, {head_features})            from concat(own_lstm_h, partner_lstm_h)
+  attn logits           : ({feat_h*feat_w}, {num_heads})           Q . K, no sqrt scaling
+  attn weights          : ({feat_h*feat_w}, {num_heads})           softmax over spatial dim
+  attended output       : ({num_heads}, {head_features}) -> flat ({num_heads * head_features},)
+
+Scalar features:
+  ego_dir one_hot       : (4,)
+  partner_dir one_hot   : (4,)
+  dir_embed (Dense)     : (8,) -> ({scalar_embed_dim},)
+  pos features          : (4,)              ego_xy + partner_xy
+  pos_embed (Dense)     : (4,) -> ({scalar_embed_dim},)
+
+LSTM input:
+  concat(attended, dir, pos) : ({num_heads * head_features} + {scalar_embed_dim} + {scalar_embed_dim},) = ({num_heads * head_features + 2 * scalar_embed_dim},)
+  LSTM hidden dim       : {lstm_hidden_dim}
+
+FC heads (after LSTM):
+  Dense -> ReLU         : ({fc_hidden_dim},)
+  Dense -> ReLU         : ({fc_hidden_dim},)
+  actor projection      : ({action_dim},) -> Categorical logits
+  critic projection     : (1,) -> scalar value
+
+Attention map output:
+  mean over {num_heads} heads    : ({feat_h}, {feat_w})    ~{feat_h/env.grid_height:.1f} feature px per grid cell
+""")
+
+    # -- 3. Comparison with reference code --
+    print("=" * 80)
+    print("COMPARISON: reference code (attention_networks.py) vs ours")
+    print("=" * 80)
+    print(f"""
+                          Reference (use_stacks=True)     Ours (JAImageActorCritic)
+                          ─────────────────────────────   ──────────────────────────────
+Image input               (H, W, C) structured grid       ({img_h}, {img_w}, 3) RGB pixels
+Encoder                   Stack(f//2) -> Stack(f) -> ReLU  Stack(f//2) -> Stack(f) -> ReLU   [SAME]
+Feature resolution        (H//4, W//4, f)                  ({feat_h}, {feat_w}, {conv_filters})
+conv_filters (default)    8                                64
+Spatial basis depth       16                               8
+Spatial basis             get_spatial_basis (0-indexed)     make_sinusoidal_spatial_basis      [SAME formula]
+
+Q input                   concat(all agents' h AND c)      concat(own_h, partner_h)           [h only, not c]
+K projection              Conv2D(conv_filters, 1x1)        Conv(m*c_m, 1x1)
+V projection              Conv2D(conv_filters, 1x1)        Conv(m*c_m, 1x1)
+Attention heads           conv_filters // depth_per_head    {num_heads} heads x {head_features} features
+Attention computation     sum(Q*K, axis=-1) -> softmax      einsum(K, Q) -> softmax            [equivalent]
+
+Direction embed           one_hot(4) -> Dense(5)            one_hot(4)*2 -> Dense(5)           [+partner dir]
+Position embed            cast_and_scale -> Dense(5)        4 floats -> Dense(5)               [+partner pos]
+
+FC BEFORE LSTM            Dense(200) -> Dense(100)          [none]                             [DIFFERENT]
+LSTM                      LSTM(128)                         LSTM({lstm_hidden_dim})
+FC AFTER LSTM             [none]                            Dense({fc_hidden_dim}) x2          [DIFFERENT]
+Actor output              CategoricalProjection             Dense({action_dim})
+
+Attn map for JSD          (H//4, W//4)                      ({feat_h}, {feat_w})
+Actor/Critic              separate, no shared weights       separate, no shared weights        [SAME]
+""")
+
+    # -- 4. Parameter count --
+    params = network.init(jax.random.PRNGKey(0), hidden, x)
+    param_count = sum(p.size for p in jax.tree.leaves(params))
+    print(f"Total parameters: {param_count:,}")
+    print()
