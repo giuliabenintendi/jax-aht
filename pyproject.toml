@@ -50,6 +50,8 @@ dependencies = [
     "jumanji==1.1.0",
     "jaxmarl==0.0.7",
     "pytest",
+    # cuDNN 9.19 is incompatible with V100 (sm_70); pin to 9.5
+    "nvidia-cudnn-cu12==9.5.1.17",
 ]
 
 [project.urls]
