@@ -305,7 +305,7 @@ def make_train(config, env):
         update_with_ckpt_runner_state = (update_runner_state, checkpoint_array, ckpt_idx)
 
         runner_state, metrics = jax.lax.scan(
-            _update_step_with_checkpoint,
+            jax.checkpoint(_update_step_with_checkpoint),
             update_with_ckpt_runner_state,
             xs=None,
             length=config["NUM_UPDATES"],
