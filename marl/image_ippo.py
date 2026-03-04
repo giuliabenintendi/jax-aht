@@ -118,7 +118,7 @@ def make_train(config, env):
                 return runner_state, transition
 
             runner_state, traj_batch = jax.lax.scan(
-                _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
+                jax.checkpoint(_env_step), runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
             # Final value estimate
