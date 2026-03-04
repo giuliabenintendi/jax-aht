@@ -483,7 +483,58 @@ def run_ja_ippo(config, logger):
         print("[ja_ippo] Training complete.")
 
     log_metrics(config, out, logger)
+    log_eval_video(algorithm_config, env, out, logger)
     return out
+
+
+def log_eval_video(algorithm_config, env, out, logger):
+    """Run one eval episode with final params (seed 0), log video + attention to wandb."""
+    import os
+    from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
+    from evaluation.vis_episodes import run_episode_with_states, log_attention_to_wandb
+
+    obs_type = algorithm_config.get("OBS_TYPE",
+        algorithm_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
+    init_fn = initialize_ja_image_agent if obs_type == "image" else initialize_ja_agent
+
+    # Reconstruct policies (only need the policy objects, not init params)
+    rng = jax.random.PRNGKey(0)
+    policy_0, _ = init_fn(algorithm_config, env, rng)
+    policy_1, _ = init_fn(algorithm_config, env, rng)
+
+    # Extract final params from seed 0
+    final_params_0 = jax.tree.map(lambda x: x[0], out["final_params"]["agent_0"])
+    final_params_1 = jax.tree.map(lambda x: x[0], out["final_params"]["agent_1"])
+
+    # Unwrap LogWrapper so run_episode_with_states collects WrappedEnvState
+    # (not LogEnvState), making s.env_state yield raw OvercookedState for rendering.
+    inner_env = env._env
+
+    # Run one eval episode collecting states + attention maps
+    max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
+    ep_states, attn_data = run_episode_with_states(
+        jax.random.PRNGKey(42), inner_env, final_params_0, policy_0,
+        final_params_1, policy_1, max_steps,
+        collect_attention=True,
+    )
+    print(f"[ja_ippo] Eval episode: {len(ep_states)} frames collected")
+
+    # Render video from collected states
+    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    video_dir = f"{savedir}/videos"
+    os.makedirs(video_dir, exist_ok=True)
+    video_path = f"{video_dir}/eval_final.mp4"
+
+    viz = AdHocOvercookedVisualizer()
+    viz.animate_mp4(
+        [s.env_state for s in ep_states], inner_env.agent_view_size,
+        filename=video_path, pixels_per_tile=32, fps=10,
+    )
+    logger.log_video("Eval/episode_video", video_path)
+
+    # Log attention heatmaps (first / middle / last frame)
+    num_updates = out["metrics"]["returned_episode"].shape[1]
+    log_attention_to_wandb(attn_data, logger, step=num_updates - 1, tag_prefix="Eval")
 
 
 def log_metrics(config, out, logger):
