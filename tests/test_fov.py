@@ -244,6 +244,5 @@ def test_ja_fov_train_loop():
 
     assert "final_params" in out
     assert "metrics" in out
-    assert "agent_0" in out["final_params"]
-    assert "agent_1" in out["final_params"]
+    assert "params" in out["final_params"]
     assert jnp.all(out["metrics"]["jsd_mean"] >= 0)
