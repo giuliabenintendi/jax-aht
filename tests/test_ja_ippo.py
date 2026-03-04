@@ -119,7 +119,7 @@ def test_ja_train_loop():
         "NUM_ENVS": 2,
         "TOTAL_TIMESTEPS": 40,  # 2 updates * 10 rollout * 2 envs
         "ROLLOUT_LENGTH": 10,
-        "NUM_MINIBATCHES": 2,
+        "NUM_MINIBATCHES": 1,
         "UPDATE_EPOCHS": 1,
         "NUM_CHECKPOINTS": 2,
         "LR": 1e-3,
