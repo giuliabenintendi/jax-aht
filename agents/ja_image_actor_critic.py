@@ -1,20 +1,21 @@
 """Joint Attention Actor-Critic network for image observations.
 
-Same architecture as ja_actor_critic.py but replaces the symbolic 26-channel
-observation path with a ResNet encoder, following the google-research
-`use_stacks=True` path.
+Same architecture as ja_actor_critic.py but operates on pixel observations
+(H_px, W_px, 3) instead of symbolic (H, W, 26) grids.
+
+Matches the google-research `use_stacks=False` default: a single Conv layer
+processes the image (no ResNet, no downsampling), then spatial attention + LSTM.
 
 Per-agent architecture:
-  obs (flat) -> unpack image (H*7, W*7, 3) + scalars (6,)
-  Image -> Stack(conv_filters//2) -> Stack(conv_filters) -> ReLU -> features F
+  obs (flat) -> unpack image (H_px, W_px, 3) + scalars (num_scalars,)
+  Image -> Conv(3x3, conv_filters, SAME) -> ReLU -> features F
   F + sinusoidal spatial basis -> 1x1 Conv -> Keys K, Values V
-  Q = Dense(h_partner) — cross-agent query from partner LSTM state
+  Q = Dense(concat(h, c)) — query from own LSTM state
   Multi-head attention: softmax(Q . K) -> attended O
   Scalars: direction one_hot(4) x2 -> Dense(5), position (4,) -> Dense(5)
   Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> projection
 """
 import functools
-import math
 
 import numpy as np
 import distrax
@@ -26,49 +27,12 @@ import jax.numpy as jnp
 from agents.ja_utils import make_sinusoidal_spatial_basis
 
 
-class _ResBlock(nn.Module):
-    """Single residual block: ReLU -> Conv(3x3) -> ReLU -> Conv(3x3) + skip."""
-    filters: int
-
-    @nn.compact
-    def __call__(self, x):
-        residual = x
-        y = nn.relu(x)
-        y = nn.Conv(
-            features=self.filters, kernel_size=(3, 3), padding="SAME",
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-        )(y)
-        y = nn.relu(y)
-        y = nn.Conv(
-            features=self.filters, kernel_size=(3, 3), padding="SAME",
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-        )(y)
-        return y + residual
-
-
-class _Stack(nn.Module):
-    """ResNet stack: Conv(3x3) -> MaxPool(3x3, stride=2) -> N residual blocks."""
-    filters: int
-    num_blocks: int = 2
-
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Conv(
-            features=self.filters, kernel_size=(3, 3), padding="SAME",
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-        )(x)
-        x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2), padding="SAME")
-        for i in range(self.num_blocks):
-            x = _ResBlock(filters=self.filters, name=f"res_{i}")(x)
-        return x
-
-
 class JAImageScannedLSTM(nn.Module):
-    """Scanned module: ResNet encoder + spatial attention + LSTM.
+    """Scanned module: Conv encoder + spatial attention + LSTM.
 
     At each timestep:
-      1. Unpack flat obs -> image (H*7, W*7, 3) + scalars (6,)
-      2. Image -> 2 ResNet stacks -> ReLU -> features F (H', W', conv_filters)
+      1. Unpack flat obs -> image (H_px, W_px, 3) + scalars
+      2. Image -> Conv(3x3, conv_filters) -> ReLU -> features F
       3. F + spatial basis -> 1x1 Conv -> Keys K, Values V
       4. Q = Dense(concat(h, c)) — query from own LSTM state
       5. Multi-head spatial attention -> attended O
@@ -76,8 +40,8 @@ class JAImageScannedLSTM(nn.Module):
       7. Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> (h_t, c_t)
       8. Return (h_t, c_t) and attention map (averaged over heads)
     """
-    img_height: int   # H*tile_size (pixels)
-    img_width: int    # W*tile_size (pixels)
+    img_height: int   # H_px (pixels)
+    img_width: int    # W_px (pixels)
     num_scalars: int = 6
     conv_filters: int = 64
     num_heads: int = 4
@@ -88,13 +52,11 @@ class JAImageScannedLSTM(nn.Module):
     scalar_embed_dim: int = 5
 
     def setup(self):
-        # Spatial dims after two MaxPool(stride=2): ceil(dim/4)
-        feat_h = math.ceil(self.img_height / 4)
-        feat_w = math.ceil(self.img_width / 4)
-        self.feat_h = feat_h
-        self.feat_w = feat_w
+        # No downsampling — feature map keeps original spatial dims
+        self.feat_h = self.img_height
+        self.feat_w = self.img_width
         self.spatial_basis = make_sinusoidal_spatial_basis(
-            feat_h, feat_w, self.spatial_basis_depth,
+            self.feat_h, self.feat_w, self.spatial_basis_depth,
         )
         self._img_flat_dim = self.img_height * self.img_width * 3
 
@@ -119,20 +81,22 @@ class JAImageScannedLSTM(nn.Module):
         lstm_h = jnp.where(dones[:, np.newaxis], zero_h, lstm_h)
         lstm_c = jnp.where(dones[:, np.newaxis], zero_c, lstm_c)
 
-        # --- 1. Unpack flat obs -> image (+ optional scalars) ---
+        # --- Unpack flat obs -> image (+ optional scalars) ---
         img_flat = obs_flat[:, :self._img_flat_dim]
         image = img_flat.reshape(batch_size, self.img_height, self.img_width, 3)
 
-        # --- 2. ResNet encoder: two stacks ---
-        features = _Stack(
-            filters=self.conv_filters // 2, num_blocks=2, name="stack_0",
+        # --- Single Conv encoder (matches google-research use_stacks=False) ---
+        features = nn.Conv(
+            features=self.conv_filters,
+            kernel_size=(3, 3),
+            padding="SAME",
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="feature_conv",
         )(image)
-        features = _Stack(
-            filters=self.conv_filters, num_blocks=2, name="stack_1",
-        )(features)
         features = nn.relu(features)  # (batch, fh, fw, conv_filters)
 
-        # --- 3. Append spatial basis, compute K and V via 1x1 conv ---
+        # --- Append spatial basis, compute K and V via 1x1 conv ---
         spatial = jnp.broadcast_to(
             self.spatial_basis[None, ...],
             (batch_size, fh, fw, self.spatial_basis_depth),
@@ -153,7 +117,7 @@ class JAImageScannedLSTM(nn.Module):
         )(features_with_pos)
         values = values.reshape(batch_size, fh * fw, m, cm)
 
-        # --- 4. Query from own LSTM state: Q = Dense(concat(h, c)) ---
+        # --- Query from own LSTM state: Q = Dense(concat(h, c)) ---
         own_state = jnp.concatenate([lstm_h, lstm_c], axis=-1)
         queries = nn.Dense(
             m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
@@ -161,7 +125,7 @@ class JAImageScannedLSTM(nn.Module):
         )(own_state)
         queries = queries.reshape(batch_size, m, cm)
 
-        # --- 5. Multi-head spatial attention (no sqrt scaling) ---
+        # --- Multi-head spatial attention (no sqrt scaling) ---
         attn_logits = jnp.einsum("bnmc,bmc->bnm", keys, queries)
         attn_weights = jax.nn.softmax(attn_logits, axis=1)  # (batch, HW, m)
 
@@ -170,7 +134,7 @@ class JAImageScannedLSTM(nn.Module):
 
         attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
 
-        # --- 6. Scalar features (skipped when num_scalars == 0, e.g. FOV obs) ---
+        # --- Scalar features (skipped when num_scalars == 0, e.g. FOV obs) ---
         lstm_parts = [attended_flat]
         if self.num_scalars > 0:
             scalars = obs_flat[:, self._img_flat_dim:]  # (batch, num_scalars)
@@ -194,7 +158,7 @@ class JAImageScannedLSTM(nn.Module):
             )(pos_features)
             lstm_parts.extend([dir_embed, pos_embed])
 
-        # --- 7. FC layers before LSTM (reference: input_fc_layer_params) ---
+        # --- FC layers before LSTM ---
         lstm_input = jnp.concatenate(lstm_parts, axis=-1)
         lstm_input = nn.Dense(
             self.fc_hidden_dim,
@@ -209,7 +173,7 @@ class JAImageScannedLSTM(nn.Module):
         )(lstm_input)
         lstm_input = nn.relu(lstm_input)
 
-        # --- 8. LSTM update ---
+        # --- LSTM update ---
         new_carry, lstm_out = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
         )((lstm_h, lstm_c), lstm_input)
@@ -229,7 +193,7 @@ class JAImageActorCritic(nn.Module):
     """Joint Attention Actor-Critic for image observations.
 
     Identical structure to JAActorCritic but uses JAImageScannedLSTM
-    (ResNet encoder) instead of JAScannedLSTM (Conv on symbolic channels).
+    (single Conv on pixel input) instead of JAScannedLSTM (Conv on symbolic channels).
     """
     action_dim: int
     img_height: int

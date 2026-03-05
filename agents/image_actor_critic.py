@@ -1,17 +1,16 @@
 """Image Actor-Critic network (no attention baseline).
 
-Same ResNet encoder as ja_image_actor_critic.py but replaces spatial attention
-with a simple flatten of ResNet features. No cross-agent hidden state routing.
+Same single-Conv encoder as ja_image_actor_critic.py but without spatial
+attention — features are flattened directly into the LSTM.
 
 Per-agent architecture:
-  obs (flat) -> unpack image (H*7, W*7, 3) + scalars (6,)
-  Image -> Stack(conv_filters//2) -> Stack(conv_filters) -> ReLU -> flatten
+  obs (flat) -> unpack image (H_px, W_px, 3) + scalars (num_scalars,)
+  Image -> Conv(3x3, conv_filters, SAME) -> ReLU -> flatten
   Scalars: direction one_hot(4) x2 -> Dense(5), position (4,) -> Dense(5)
   concat(flat_features, dir_embed, pos_embed) -> Dense(64) -> ReLU -> Dense(64) -> ReLU
   LSTM(fc_out, (h, c)) -> h_t -> projection head
 """
 import functools
-import math
 
 import numpy as np
 import distrax
@@ -20,11 +19,9 @@ from flax.linen.initializers import constant, orthogonal
 import jax
 import jax.numpy as jnp
 
-from agents.ja_image_actor_critic import _ResBlock, _Stack
-
 
 class ImageScannedLSTM(nn.Module):
-    """Scanned module: ResNet encoder + flatten + LSTM (no attention)."""
+    """Scanned module: Conv encoder + flatten + LSTM (no attention)."""
     img_height: int
     img_width: int
     num_scalars: int = 6
@@ -34,10 +31,9 @@ class ImageScannedLSTM(nn.Module):
     scalar_embed_dim: int = 5
 
     def setup(self):
-        feat_h = math.ceil(self.img_height / 4)
-        feat_w = math.ceil(self.img_width / 4)
-        self.feat_h = feat_h
-        self.feat_w = feat_w
+        # No downsampling — feature map keeps original spatial dims
+        self.feat_h = self.img_height
+        self.feat_w = self.img_width
         self._img_flat_dim = self.img_height * self.img_width * 3
 
     @functools.partial(
@@ -64,13 +60,15 @@ class ImageScannedLSTM(nn.Module):
         img_flat = obs_flat[:, :self._img_flat_dim]
         image = img_flat.reshape(batch_size, self.img_height, self.img_width, 3)
 
-        # ResNet encoder: two stacks
-        features = _Stack(
-            filters=self.conv_filters // 2, num_blocks=2, name="stack_0",
+        # Single Conv encoder (matches google-research use_stacks=False)
+        features = nn.Conv(
+            features=self.conv_filters,
+            kernel_size=(3, 3),
+            padding="SAME",
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="feature_conv",
         )(image)
-        features = _Stack(
-            filters=self.conv_filters, num_blocks=2, name="stack_1",
-        )(features)
         features = nn.relu(features)  # (batch, fh, fw, conv_filters)
 
         # Flatten spatial features
@@ -99,7 +97,7 @@ class ImageScannedLSTM(nn.Module):
             )(pos_features)
             lstm_parts.extend([dir_embed, pos_embed])
 
-        # FC layers before LSTM (reference code: input_fc_layer_params)
+        # FC layers before LSTM
         lstm_input = jnp.concatenate(lstm_parts, axis=-1)
         lstm_input = nn.Dense(
             self.fc_hidden_dim,
@@ -136,7 +134,7 @@ class ImageActorCritic(nn.Module):
     Dual-path (actor LSTM + critic LSTM, no shared weights).
     FC layers are inside the ScannedLSTM (before LSTM), matching the reference
     code's input_fc_layer_params. LSTM output goes directly to projection head.
-    Input tuple: (obs, dones, avail_actions) — no partner_hstate.
+    Input tuple: (obs, dones, avail_actions).
     """
     action_dim: int
     img_height: int
@@ -168,7 +166,7 @@ class ImageActorCritic(nn.Module):
             **rnn_kwargs, name="actor_lstm",
         )(actor_lstm_state, (obs, dones))
 
-        # FFN after LSTM (paper diagram: LSTM → FFN → Action)
+        # FFN after LSTM (paper diagram: LSTM -> FFN -> Action)
         actor_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0), name="actor_fc1",

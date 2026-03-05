@@ -7,7 +7,7 @@ Per-agent architecture (actor and critic are identical but share no weights):
   obs (flat) -> unflatten (H, W, 26)
   Agent positions (0-1) + terrain/objects (10-25) -> Conv(3x3, 64, SAME, ReLU) -> F
   F + sinusoidal spatial basis (depth 8) -> 1x1 Conv -> Keys K, Values V
-  Q = Dense(h_partner) — cross-agent query from partner LSTM state
+  Q = Dense(concat(h, c)) — query from own LSTM state
   Multi-head attention (4 heads, depth 16): softmax(Q . K) -> attended O
   Scalar features: direction (2-9) -> Dense(5),
                     ego+partner position (0-1) -> Dense(5)
