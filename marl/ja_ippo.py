@@ -4,12 +4,8 @@ JA-IPPO: Joint Attention IPPO with shared parameters (Lee et al. 2021).
 Both agents share a single network and optimizer (parameter sharing). Cross-agent
 coordination comes from:
 
-  1. Cross-agent state routing: each agent receives its partner's actor LSTM
-     hidden state h via batchified half-swap.
-  2. JA intrinsic reward: r_JA = -JSD(attn_agent_0, attn_agent_1), scaled by
+  1. JA intrinsic reward: r_JA = -JSD(attn_agent_0, attn_agent_1), scaled by
      a beta that ramps linearly from 0 to JA_BETA_MAX over JA_WARMUP_ENV_STEPS.
-  3. JATransition stores partner_hstate per timestep so it can be replayed
-     during PPO loss recomputation.
 '''
 import shutil
 from typing import NamedTuple
@@ -39,30 +35,7 @@ class JATransition(NamedTuple):
     obs: jnp.ndarray
     info: jnp.ndarray
     avail_actions: jnp.ndarray
-    partner_hstate: jnp.ndarray  # (NUM_ACTORS, lstm_dim) — stored per timestep
     ja_reward: jnp.ndarray       # (NUM_ACTORS,) — raw JA intrinsic reward (unscaled)
-
-
-def _construct_partner_hstate(hstate, num_envs, lstm_dim):
-    """Construct partner_hstate by swapping agent halves.
-
-    The JA cross-agent query needs each actor's partner hidden state at the
-    same env index. Because batchify concatenates agents contiguously
-    ([a0_e0..a0_eN, a1_e0..a1_eN]), swapping the two halves aligns each
-    position with its partner: position i in the first half (agent 0, env i)
-    maps to position i in the second half (agent 1, env i), and vice versa.
-
-    Args:
-        hstate: (1, NUM_ACTORS, 4*lstm_dim) packed LSTM states
-        num_envs: number of environments
-        lstm_dim: LSTM hidden dimension
-
-    Returns:
-        partner_h: (1, NUM_ACTORS, lstm_dim) partner's actor h
-    """
-    actor_h = hstate[..., :lstm_dim]  # (1, NUM_ACTORS, lstm_dim)
-    partner_h = jnp.concatenate([actor_h[:, num_envs:, :], actor_h[:, :num_envs, :]], axis=1)
-    return partner_h
 
 
 def make_train(config, env):
@@ -140,7 +113,6 @@ def make_train(config, env):
                             avail_actions=traj_batch.avail_actions,
                             hstate=init_hstate,
                             rng=jax.random.PRNGKey(0),
-                            partner_hstate=traj_batch.partner_hstate,
                         )
                         log_prob = pi.log_prob(traj_batch.action)
 
@@ -222,8 +194,6 @@ def make_train(config, env):
                 avail_actions_batch = jax.lax.stop_gradient(
                     batchify(avail_actions, env.agents, num_actors).astype(jnp.float32))
 
-                partner_h = _construct_partner_hstate(hstate, num_envs, lstm_dim)
-
                 action, value, pi, new_hstate, attn_map = policy.get_action_value_policy(
                     params=train_state.params,
                     obs=last_obs_batch.reshape(1, num_actors, -1),
@@ -231,7 +201,6 @@ def make_train(config, env):
                     avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
                     hstate=hstate,
                     rng=act_rng,
-                    partner_hstate=partner_h,
                 )
 
                 log_prob = pi.log_prob(action)
@@ -269,7 +238,6 @@ def make_train(config, env):
                     obs=last_obs_batch,
                     info=info,
                     avail_actions=avail_actions_batch,
-                    partner_hstate=partner_h.squeeze(0),
                     ja_reward=r_ja_batch,
                 )
                 runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
@@ -286,8 +254,6 @@ def make_train(config, env):
             last_avail = jax.vmap(env.get_avail_actions)(env_state.env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
-            last_partner_h = _construct_partner_hstate(hstate, num_envs, lstm_dim)
-
             _, last_val, _, _, _ = policy.get_action_value_policy(
                 params=train_state.params,
                 obs=last_obs_batch.reshape(1, num_actors, -1),
@@ -295,7 +261,6 @@ def make_train(config, env):
                 avail_actions=last_avail_batch.reshape(1, num_actors, -1),
                 hstate=hstate,
                 rng=jax.random.PRNGKey(0),
-                partner_hstate=last_partner_h,
             )
             last_val = last_val.squeeze()
 

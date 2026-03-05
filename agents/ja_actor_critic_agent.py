@@ -1,9 +1,9 @@
 """Policy wrapper for the Joint Attention Actor-Critic.
 
 Mirrors Lee et al. (2021). Key differences from standard RNNActorCriticPolicy:
-- get_action_value_policy takes partner_hstate and returns attention maps
-- Cross-agent state sharing: partner's LSTM hidden state is passed to the network
+- get_action_value_policy returns attention maps for the JA incentive
 - LSTM carry is ((actor_h, actor_c), (critic_h, critic_c))
+- Q queries come from the agent's own LSTM state, not the partner's
 """
 from functools import partial
 
@@ -77,32 +77,12 @@ class JAActorCriticPolicy(AgentPolicy):
         critic_c = flat[..., 3*d:4*d]
         return (actor_h, actor_c), (critic_h, critic_c)
 
-    def _extract_actor_h(self, hstate):
-        """Extract just the actor hidden state h from packed hstate.
-
-        This is what gets shared with the partner as partner_hstate.
-        hstate: (1, batch, 4*dim) -> actor_h: (1, batch, dim)
-        """
-        d = self.lstm_hidden_dim
-        return hstate[..., 0:d]  # (1, batch, dim)
-
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   partner_hstate=None, aux_obs=None, env_state=None, test_mode=False):
-        """Get actions for the JA policy.
-
-        Args:
-            hstate: (1, batch, 4*lstm_hidden_dim) packed LSTM states
-            partner_hstate: (1, batch, lstm_hidden_dim) partner's actor h.
-                If None, defaults to zeros.
-        """
-        batch_size = obs.shape[1]
-        if partner_hstate is None:
-            partner_hstate = jnp.zeros((1, batch_size, self.lstm_hidden_dim))
-
+                   aux_obs=None, env_state=None, test_mode=False):
         hidden = self._unpack_hstate(hstate)
         new_hidden, pi, _, _ = self.network.apply(
-            params, hidden, (obs, done, avail_actions, partner_hstate)
+            params, hidden, (obs, done, avail_actions)
         )
         action = jax.lax.cond(
             test_mode,
@@ -114,20 +94,16 @@ class JAActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action_and_attention(self, params, obs, done, avail_actions, hstate, rng,
-                                 partner_hstate=None, test_mode=False):
+                                 test_mode=False):
         """Like get_action, but also returns the attention map.
 
         Returns:
             (action, new_hstate, attn_map)
             attn_map shape: (1, batch, H, W)
         """
-        batch_size = obs.shape[1]
-        if partner_hstate is None:
-            partner_hstate = jnp.zeros((1, batch_size, self.lstm_hidden_dim))
-
         hidden = self._unpack_hstate(hstate)
         new_hidden, pi, _, attn_map = self.network.apply(
-            params, hidden, (obs, done, avail_actions, partner_hstate)
+            params, hidden, (obs, done, avail_actions)
         )
         action = jax.lax.cond(
             test_mode,
@@ -139,33 +115,16 @@ class JAActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action_value_policy(self, params, obs, done, avail_actions, hstate, rng,
-                                partner_hstate=None, aux_obs=None, env_state=None):
+                                aux_obs=None, env_state=None):
         """Get actions, values, policy, and attention map.
-
-        Args:
-            hstate: (1, batch, 4*lstm_hidden_dim) packed LSTM states
-            partner_hstate: (seq_len, batch, lstm_hidden_dim) or
-                            (1, batch, lstm_hidden_dim). Partner's actor h.
-                            If None, defaults to zeros.
 
         Returns:
             (action, value, pi, new_hstate, attn_map)
             attn_map shape: (seq_len, batch, H, W)
         """
-        batch_size = obs.shape[1]
-        seq_len = obs.shape[0]
-        if partner_hstate is None:
-            partner_hstate = jnp.zeros((seq_len, batch_size, self.lstm_hidden_dim))
-
-        # Broadcast partner_hstate to match sequence length if needed
-        if partner_hstate.shape[0] != seq_len:
-            partner_hstate = jnp.broadcast_to(
-                partner_hstate, (seq_len, batch_size, self.lstm_hidden_dim)
-            )
-
         hidden = self._unpack_hstate(hstate)
         new_hidden, pi, val, attn_map = self.network.apply(
-            params, hidden, (obs, done, avail_actions, partner_hstate)
+            params, hidden, (obs, done, avail_actions)
         )
         action = pi.sample(seed=rng)
         new_hstate = self._pack_hstate(*new_hidden)
@@ -186,7 +145,6 @@ class JAActorCriticPolicy(AgentPolicy):
         dummy_obs = jnp.zeros((seq_len, batch_size, self.obs_dim))
         dummy_done = jnp.zeros((seq_len, batch_size))
         dummy_avail = jnp.ones((seq_len, batch_size, self.action_dim))
-        dummy_partner_h = jnp.zeros((seq_len, batch_size, self.lstm_hidden_dim))
-        dummy_x = (dummy_obs, dummy_done, dummy_avail, dummy_partner_h)
+        dummy_x = (dummy_obs, dummy_done, dummy_avail)
 
         return self.network.init(rng, hidden, dummy_x)

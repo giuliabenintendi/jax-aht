@@ -82,9 +82,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         ep_states when collect_attention=False,
         (ep_states, {"agent_0": [...], "agent_1": [...]}) when True.
     '''
-    _a0_is_ja = hasattr(agent_0_policy, '_extract_actor_h')
-    _a1_is_ja = hasattr(agent_1_policy, '_extract_actor_h')
-
     # Reset the env.
     rng, reset_rng = jax.random.split(rng)
 
@@ -118,19 +115,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         obs_1_reshaped = obs_1.reshape(1, 1, -1)
         done_1_reshaped = prev_done_1.reshape(1, 1)
 
-        # Build partner_hstate kwargs for JA agents
-        a0_extra = {}
-        if _a0_is_ja and _a1_is_ja:
-            a0_extra['partner_hstate'] = agent_1_policy._extract_actor_h(hstate_1)
-        a1_extra = {}
-        if _a1_is_ja and _a0_is_ja:
-            a1_extra['partner_hstate'] = agent_0_policy._extract_actor_h(hstate_0)
-
         # Get actions for both agents
         rng, act_rng, part_rng, step_rng = jax.random.split(rng, 4)
 
         # Get ego action (optionally with attention)
-        if collect_attention and _a0_is_ja:
+        if collect_attention and hasattr(agent_0_policy, 'get_action_and_attention'):
             act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
                 params=agent_0_param,
                 obs=obs_0_reshaped,
@@ -138,7 +127,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_0,
                 hstate=hstate_0,
                 rng=act_rng,
-                **a0_extra
             )
             attn_maps["agent_0"].append(attn_0)
         else:
@@ -149,12 +137,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_0,
                 hstate=hstate_0,
                 rng=act_rng,
-                **a0_extra
             )
         act_0 = act_0.squeeze()
 
         # Get partner action (optionally with attention)
-        if collect_attention and _a1_is_ja:
+        if collect_attention and hasattr(agent_1_policy, 'get_action_and_attention'):
             act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
                 params=agent_1_param,
                 obs=obs_1_reshaped,
@@ -162,7 +149,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_1,
                 hstate=hstate_1,
                 rng=part_rng,
-                **a1_extra
             )
             attn_maps["agent_1"].append(attn_1)
         else:
@@ -173,7 +159,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_1,
                 hstate=hstate_1,
                 rng=part_rng,
-                **a1_extra
             )
         act_1 = act_1.squeeze()
 

@@ -51,17 +51,10 @@ def test_ja_policy_forward_pass():
     dummy_done = jnp.zeros((seq_len, batch_size))
     dummy_avail = jnp.ones((seq_len, batch_size, env.action_space(env.agents[0]).n))
 
-    # get_action without partner_hstate (defaults to zeros)
+    # get_action
     action, new_hstate = policy.get_action(params, dummy_obs, dummy_done, dummy_avail, hstate, act_rng)
     assert action.shape == (seq_len, batch_size)
     assert new_hstate.shape == hstate.shape
-
-    # get_action with explicit partner_hstate
-    partner_h = jnp.zeros((1, batch_size, policy.lstm_hidden_dim))
-    action2, new_hstate2 = policy.get_action(
-        params, dummy_obs, dummy_done, dummy_avail, hstate, act_rng, partner_hstate=partner_h
-    )
-    assert action2.shape == (seq_len, batch_size)
 
     # get_action_value_policy
     action3, val, pi, new_hstate3, attn_map = policy.get_action_value_policy(
@@ -107,7 +100,7 @@ def test_ja_eval_episode():
 
 def test_ja_train_loop():
     """Run make_train for 2 updates with tiny config — catches shape mismatches in
-    JSD computation, reward augmentation, and PPO loss rerun with stored partner_hstate.
+    JSD computation, reward augmentation, and PPO loss.
     """
     env = make_env("overcooked-v1", {"layout": "cramped_room", "max_steps": 10})
     env = LogWrapper(env)

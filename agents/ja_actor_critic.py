@@ -47,7 +47,7 @@ class JAScannedLSTM(nn.Module):
       1. Unflatten obs -> grid (H, W, 26)
       2. Agent positions (0-1) + terrain (10-25) -> Conv(3x3, 64) -> features F
       3. F + sinusoidal spatial basis (depth 8) -> 1x1 Conv -> Keys K, Values V
-      4. Q = Dense(h_partner) — cross-agent query from partner LSTM state
+      4. Q = Dense(concat(h, c)) — query from own LSTM state
       5. Multi-head attention (no sqrt scaling): A = softmax(Q . K), O = sum(A * V)
       6. Extract scalars: direction -> Dense(5), ego+partner pos -> Dense(5)
       7. Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> (h_t, c_t)
@@ -82,10 +82,9 @@ class JAScannedLSTM(nn.Module):
 
         Args:
             carry: LSTM state tuple (h, c), each (batch, lstm_hidden_dim)
-            x: (obs, dones, partner_hstate) where
+            x: (obs, dones) where
                obs is (batch, obs_flat_dim),
-               dones is (batch,),
-               partner_hstate is (batch, lstm_hidden_dim) — the partner's h
+               dones is (batch,)
 
         Returns:
             new_carry: updated LSTM state (h, c)
@@ -93,7 +92,7 @@ class JAScannedLSTM(nn.Module):
                 attention map averaged over heads (batch, H, W)
         """
         lstm_h, lstm_c = carry
-        obs_flat, dones, partner_hstate = x
+        obs_flat, dones = x
 
         batch_size = obs_flat.shape[0]
         h, w = self.obs_height, self.obs_width
@@ -144,11 +143,12 @@ class JAScannedLSTM(nn.Module):
         )(features_with_pos)
         values = values.reshape(batch_size, h * w, m, cm)
 
-        # --- 4. Cross-agent query: Q = Dense(h_partner) ---
+        # --- 4. Query from own LSTM state: Q = Dense(concat(h, c)) ---
+        own_state = jnp.concatenate([lstm_h, lstm_c], axis=-1)
         queries = nn.Dense(
             m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="query_ffn",
-        )(partner_hstate)
+        )(own_state)
         queries = queries.reshape(batch_size, m, cm)
 
         # --- 5. Multi-head spatial attention ---
@@ -255,13 +255,13 @@ class JAActorCritic(nn.Module):
         Args:
             hidden: tuple of (actor_lstm_state, critic_lstm_state)
                 each lstm_state is ((h, c), ) where h, c are (batch, lstm_dim)
-            x: (obs, dones, avail_actions, partner_hstate)
+            x: (obs, dones, avail_actions)
 
         Returns:
             new_hidden, pi, value, attn_map
         """
         activation = nn.relu if self.activation == "relu" else nn.tanh
-        obs, dones, avail_actions, partner_hstate = x
+        obs, dones, avail_actions = x
 
         actor_lstm_state, critic_lstm_state = hidden
 
@@ -281,7 +281,7 @@ class JAActorCritic(nn.Module):
         # --- Actor path (own conv, attention, LSTM) ---
         actor_lstm_state, (actor_embed, attn_map) = JAScannedLSTM(
             **rnn_kwargs, name="actor_lstm",
-        )(actor_lstm_state, (obs, dones, partner_hstate))
+        )(actor_lstm_state, (obs, dones))
 
         action_logits = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
@@ -295,7 +295,7 @@ class JAActorCritic(nn.Module):
         # --- Critic path (own conv, attention, LSTM — no shared weights) ---
         critic_lstm_state, (critic_embed, _) = JAScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
-        )(critic_lstm_state, (obs, dones, partner_hstate))
+        )(critic_lstm_state, (obs, dones))
 
         value = nn.Dense(
             1, kernel_init=orthogonal(1.0), bias_init=constant(0.0),

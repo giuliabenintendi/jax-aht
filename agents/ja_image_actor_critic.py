@@ -70,7 +70,7 @@ class JAImageScannedLSTM(nn.Module):
       1. Unpack flat obs -> image (H*7, W*7, 3) + scalars (6,)
       2. Image -> 2 ResNet stacks -> ReLU -> features F (H', W', conv_filters)
       3. F + spatial basis -> 1x1 Conv -> Keys K, Values V
-      4. Q = Dense(h_partner) — cross-agent query from partner LSTM state
+      4. Q = Dense(concat(h, c)) — query from own LSTM state
       5. Multi-head spatial attention -> attended O
       6. Scalars: direction one_hot(4) -> Dense(5), position -> Dense(5)
       7. Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> (h_t, c_t)
@@ -108,7 +108,7 @@ class JAImageScannedLSTM(nn.Module):
     @nn.compact
     def __call__(self, carry, x):
         lstm_h, lstm_c = carry
-        obs_flat, dones, partner_hstate = x
+        obs_flat, dones = x
 
         batch_size = obs_flat.shape[0]
         m, cm = self.num_heads, self.head_features
@@ -153,11 +153,12 @@ class JAImageScannedLSTM(nn.Module):
         )(features_with_pos)
         values = values.reshape(batch_size, fh * fw, m, cm)
 
-        # --- 4. Cross-agent query: Q = Dense(h_partner) ---
+        # --- 4. Query from own LSTM state: Q = Dense(concat(h, c)) ---
+        own_state = jnp.concatenate([lstm_h, lstm_c], axis=-1)
         queries = nn.Dense(
             m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="query_ffn",
-        )(partner_hstate)
+        )(own_state)
         queries = queries.reshape(batch_size, m, cm)
 
         # --- 5. Multi-head spatial attention (no sqrt scaling) ---
@@ -244,7 +245,7 @@ class JAImageActorCritic(nn.Module):
 
     @nn.compact
     def __call__(self, hidden, x):
-        obs, dones, avail_actions, partner_hstate = x
+        obs, dones, avail_actions = x
 
         actor_lstm_state, critic_lstm_state = hidden
 
@@ -264,7 +265,7 @@ class JAImageActorCritic(nn.Module):
         # --- Actor path ---
         actor_lstm_state, (actor_embed, attn_map) = JAImageScannedLSTM(
             **rnn_kwargs, name="actor_lstm",
-        )(actor_lstm_state, (obs, dones, partner_hstate))
+        )(actor_lstm_state, (obs, dones))
 
         action_logits = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
@@ -278,7 +279,7 @@ class JAImageActorCritic(nn.Module):
         # --- Critic path ---
         critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
-        )(critic_lstm_state, (obs, dones, partner_hstate))
+        )(critic_lstm_state, (obs, dones))
 
         value = nn.Dense(
             1, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
