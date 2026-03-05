@@ -679,14 +679,14 @@ def run_ja_ippo(config, logger):
     rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
     rngs = jax.random.split(rng, num_seeds)
 
-    if obs_type == "symbolic":
-        # Fast path: vmap over seeds, lax.scan over updates
+    if False:
+        # vmap/scan path — disabled for now, JA network too large for full scan
         train_fn = make_train_scan(algorithm_config, env)
         with jax.disable_jit(False):
             train_jit = jax.jit(jax.vmap(train_fn))
             out = train_jit(rngs)
     else:
-        # Image path: Python loop for memory efficiency
+        # Python loop with JIT'd steps (works for both symbolic and image)
         init_fn, make_step_fn = make_train_loop(algorithm_config, env)
 
         num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
