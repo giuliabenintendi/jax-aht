@@ -7,12 +7,11 @@ Per-agent architecture (actor and critic are identical but share no weights):
   obs (flat) -> unflatten (H, W, 26)
   Agent positions (0-1) + terrain/objects (10-25) -> Conv(3x3, 64, SAME, ReLU) -> F
   F + sinusoidal spatial basis (depth 8) -> 1x1 Conv -> Keys K, Values V
-  Queries Q = Dense(concat(h_ego, h_partner))  [top-down, cross-agent]
+  Q = Dense(h_partner) — cross-agent query from partner LSTM state
   Multi-head attention (4 heads, depth 16): softmax(Q . K) -> attended O
   Scalar features: direction (2-9) -> Dense(5),
                     ego+partner position (0-1) -> Dense(5)
-  LSTM(concat(O, dir_embed, pos_embed), (h, c)) -> h_t
-  Dense(64) -> act -> Dense(64) -> act -> output
+  Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> projection
 
 Actor output: action logits
 Critic output: scalar value
@@ -48,10 +47,10 @@ class JAScannedLSTM(nn.Module):
       1. Unflatten obs -> grid (H, W, 26)
       2. Agent positions (0-1) + terrain (10-25) -> Conv(3x3, 64) -> features F
       3. F + sinusoidal spatial basis (depth 8) -> 1x1 Conv -> Keys K, Values V
-      4. Q = Dense(concat(h_ego, h_partner)) — cross-agent, top-down query
+      4. Q = Dense(h_partner) — cross-agent query from partner LSTM state
       5. Multi-head attention (no sqrt scaling): A = softmax(Q . K), O = sum(A * V)
       6. Extract scalars: direction -> Dense(5), ego+partner pos -> Dense(5)
-      7. LSTM(concat(O, dir_embed, pos_embed), (h, c)) -> (h_t, c_t)
+      7. Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> (h_t, c_t)
       8. Return (h_t, c_t) and attention map (averaged over heads)
     """
     obs_height: int
@@ -60,6 +59,7 @@ class JAScannedLSTM(nn.Module):
     conv_filters: int = 64
     num_heads: int = 4
     head_features: int = 16
+    fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
     scalar_embed_dim: int = 5
@@ -144,14 +144,11 @@ class JAScannedLSTM(nn.Module):
         )(features_with_pos)
         values = values.reshape(batch_size, h * w, m, cm)
 
-        # --- 4. Cross-agent query: Q = Dense(concat(h_ego, h_partner)) ---
-        # Paper: Q_i = f_Q(c_θ^i, c_θ^j) where c_θ is the recurrent state.
-        # We use h (the LSTM output) as the recurrent state for both agents.
-        query_input = jnp.concatenate([lstm_h, partner_hstate], axis=-1)
+        # --- 4. Cross-agent query: Q = Dense(h_partner) ---
         queries = nn.Dense(
             m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="query_ffn",
-        )(query_input)
+        )(partner_hstate)
         queries = queries.reshape(batch_size, m, cm)
 
         # --- 5. Multi-head spatial attention ---
@@ -196,8 +193,22 @@ class JAScannedLSTM(nn.Module):
             name="pos_embed",
         )(pos_features)
 
-        # --- 7. LSTM update ---
+        # --- 7. FC layers before LSTM (reference: input_fc_layer_params) ---
         lstm_input = jnp.concatenate([attended_flat, dir_embed, pos_embed], axis=-1)
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc1",
+        )(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc2",
+        )(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+
+        # --- 8. LSTM update ---
         new_carry, lstm_out = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
         )((lstm_h, lstm_c), lstm_input)
@@ -221,7 +232,7 @@ class JAActorCritic(nn.Module):
     matching the paper: "The value network is identical to the policy
     network and shares no weights."
 
-    Each path: Conv -> Attention -> LSTM -> Dense(64) -> Dense(64) -> output
+    Each path: Conv -> Attention -> FC -> FC -> LSTM -> projection
     Only the actor path's attention map is returned for the JA incentive.
     """
     action_dim: int
@@ -261,6 +272,7 @@ class JAActorCritic(nn.Module):
             conv_filters=self.conv_filters,
             num_heads=self.num_heads,
             head_features=self.head_features,
+            fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             spatial_basis_depth=self.spatial_basis_depth,
             scalar_embed_dim=self.scalar_embed_dim,
@@ -271,20 +283,10 @@ class JAActorCritic(nn.Module):
             **rnn_kwargs, name="actor_lstm",
         )(actor_lstm_state, (obs, dones, partner_hstate))
 
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="actor_fc1",
-        )(actor_embed)
-        actor_out = activation(actor_out)
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="actor_fc2",
-        )(actor_out)
-        actor_out = activation(actor_out)
         action_logits = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
             name="actor_proj",
-        )(actor_out)
+        )(actor_embed)
 
         unavail_actions = 1 - avail_actions
         action_logits = action_logits - (unavail_actions * 1e10)
@@ -295,20 +297,10 @@ class JAActorCritic(nn.Module):
             **rnn_kwargs, name="critic_lstm",
         )(critic_lstm_state, (obs, dones, partner_hstate))
 
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="critic_fc1",
-        )(critic_embed)
-        critic_out = activation(critic_out)
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0),
-            name="critic_fc2",
-        )(critic_out)
-        critic_out = activation(critic_out)
         value = nn.Dense(
             1, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="critic_proj",
-        )(critic_out)
+        )(critic_embed)
 
         new_hidden = (actor_lstm_state, critic_lstm_state)
         return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map

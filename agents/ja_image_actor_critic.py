@@ -8,11 +8,10 @@ Per-agent architecture:
   obs (flat) -> unpack image (H*7, W*7, 3) + scalars (6,)
   Image -> Stack(conv_filters//2) -> Stack(conv_filters) -> ReLU -> features F
   F + sinusoidal spatial basis -> 1x1 Conv -> Keys K, Values V
-  Q = Dense(concat(h_ego, h_partner))
+  Q = Dense(h_partner) — cross-agent query from partner LSTM state
   Multi-head attention: softmax(Q . K) -> attended O
   Scalars: direction one_hot(4) x2 -> Dense(5), position (4,) -> Dense(5)
-  LSTM(concat(O, dir_embed, pos_embed), (h, c)) -> h_t
-  Dense(64) -> act -> Dense(64) -> act -> output
+  Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> projection
 """
 import functools
 import math
@@ -71,10 +70,10 @@ class JAImageScannedLSTM(nn.Module):
       1. Unpack flat obs -> image (H*7, W*7, 3) + scalars (6,)
       2. Image -> 2 ResNet stacks -> ReLU -> features F (H', W', conv_filters)
       3. F + spatial basis -> 1x1 Conv -> Keys K, Values V
-      4. Q = Dense(concat(h_ego, h_partner))
+      4. Q = Dense(h_partner) — cross-agent query from partner LSTM state
       5. Multi-head spatial attention -> attended O
       6. Scalars: direction one_hot(4) -> Dense(5), position -> Dense(5)
-      7. Concat(O, dir_embed, pos_embed) -> LSTM -> (h_t, c_t)
+      7. Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> (h_t, c_t)
       8. Return (h_t, c_t) and attention map (averaged over heads)
     """
     img_height: int   # H*tile_size (pixels)
@@ -83,6 +82,7 @@ class JAImageScannedLSTM(nn.Module):
     conv_filters: int = 64
     num_heads: int = 4
     head_features: int = 16
+    fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
     scalar_embed_dim: int = 5
@@ -153,12 +153,11 @@ class JAImageScannedLSTM(nn.Module):
         )(features_with_pos)
         values = values.reshape(batch_size, fh * fw, m, cm)
 
-        # --- 4. Cross-agent query ---
-        query_input = jnp.concatenate([lstm_h, partner_hstate], axis=-1)
+        # --- 4. Cross-agent query: Q = Dense(h_partner) ---
         queries = nn.Dense(
             m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="query_ffn",
-        )(query_input)
+        )(partner_hstate)
         queries = queries.reshape(batch_size, m, cm)
 
         # --- 5. Multi-head spatial attention (no sqrt scaling) ---
@@ -194,8 +193,22 @@ class JAImageScannedLSTM(nn.Module):
             )(pos_features)
             lstm_parts.extend([dir_embed, pos_embed])
 
-        # --- 7. LSTM update ---
+        # --- 7. FC layers before LSTM (reference: input_fc_layer_params) ---
         lstm_input = jnp.concatenate(lstm_parts, axis=-1)
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc1",
+        )(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc2",
+        )(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+
+        # --- 8. LSTM update ---
         new_carry, lstm_out = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
         )((lstm_h, lstm_c), lstm_input)
@@ -242,6 +255,7 @@ class JAImageActorCritic(nn.Module):
             conv_filters=self.conv_filters,
             num_heads=self.num_heads,
             head_features=self.head_features,
+            fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             spatial_basis_depth=self.spatial_basis_depth,
             scalar_embed_dim=self.scalar_embed_dim,
@@ -252,21 +266,10 @@ class JAImageActorCritic(nn.Module):
             **rnn_kwargs, name="actor_lstm",
         )(actor_lstm_state, (obs, dones, partner_hstate))
 
-        # FFN after LSTM (paper diagram: LSTM → FFN → Action)
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0), name="actor_fc1",
-        )(actor_embed)
-        actor_out = nn.relu(actor_out)
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0), name="actor_fc2",
-        )(actor_out)
-        actor_out = nn.relu(actor_out)
         action_logits = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
             name="actor_proj",
-        )(actor_out)
+        )(actor_embed)
 
         unavail_actions = 1 - avail_actions
         action_logits = action_logits - (unavail_actions * 1e10)
@@ -277,20 +280,10 @@ class JAImageActorCritic(nn.Module):
             **rnn_kwargs, name="critic_lstm",
         )(critic_lstm_state, (obs, dones, partner_hstate))
 
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0), name="critic_fc1",
-        )(critic_embed)
-        critic_out = nn.relu(critic_out)
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0), name="critic_fc2",
-        )(critic_out)
-        critic_out = nn.relu(critic_out)
         value = nn.Dense(
             1, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="critic_proj",
-        )(critic_out)
+        )(critic_embed)
 
         new_hidden = (actor_lstm_state, critic_lstm_state)
         return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map
