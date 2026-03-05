@@ -59,9 +59,11 @@ def make_train_scan(config, env):
     num_envs = config["NUM_ENVS"]
     num_actors = config["NUM_ACTORS"]
     ja_beta_max = config.get("JA_BETA_MAX", 0.01)
-    ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
+    ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 1_000_000)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
+    normalize_rewards = config.get("NORMALIZE_REWARDS", True)
+    reward_norm_clip = 10.0
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -287,6 +289,13 @@ def make_train_scan(config, env):
                 )
                 return advantages, advantages + traj_batch.value
 
+            # Normalize combined rewards before GAE (matches reference code)
+            if normalize_rewards:
+                rew = traj_batch.reward
+                normalized = (rew - rew.mean()) / (rew.std() + 1e-8)
+                normalized = jnp.clip(normalized, -reward_norm_clip, reward_norm_clip)
+                traj_batch = traj_batch._replace(reward=normalized)
+
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
             rng, ppo_rng = jax.random.split(rng)
@@ -400,9 +409,11 @@ def make_train_loop(config, env):
     num_envs = config["NUM_ENVS"]
     num_actors = config["NUM_ACTORS"]
     ja_beta_max = config.get("JA_BETA_MAX", 0.01)
-    ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
+    ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 1_000_000)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
+    normalize_rewards = config.get("NORMALIZE_REWARDS", True)
+    reward_norm_clip = 10.0
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -628,6 +639,13 @@ def make_train_loop(config, env):
                     unroll=16,
                 )
                 return advantages, advantages + traj_batch.value
+
+            # Normalize combined rewards before GAE (matches reference code)
+            if normalize_rewards:
+                rew = traj_batch.reward
+                normalized = (rew - rew.mean()) / (rew.std() + 1e-8)
+                normalized = jnp.clip(normalized, -reward_norm_clip, reward_norm_clip)
+                traj_batch = traj_batch._replace(reward=normalized)
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
