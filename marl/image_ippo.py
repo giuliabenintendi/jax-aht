@@ -321,8 +321,8 @@ def run_image_ippo(config, logger):
 
     out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
 
-    log_metrics(config, out, logger)
     log_eval_video(algorithm_config, env, out, logger)
+    log_metrics(config, out, logger)
     return out
 
 
@@ -359,7 +359,7 @@ def log_eval_video(algorithm_config, env, out, logger):
         [s.env_state for s in ep_states], inner_env.agent_view_size,
         filename=video_path, pixels_per_tile=32, fps=10,
     )
-    logger.log_video("Eval/episode_video", video_path)
+    logger.log_video("Eval/episode_video", video_path, commit=False)
 
 
 def log_metrics(config, out, logger):

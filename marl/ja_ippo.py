@@ -415,8 +415,8 @@ def run_ja_ippo(config, logger):
     # Stack per-seed outputs to (NUM_SEEDS, ...) so log_metrics/log_eval_video work unchanged
     out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
 
-    log_metrics(config, out, logger)
     log_eval_video(algorithm_config, env, out, logger)
+    log_metrics(config, out, logger)
     return out
 
 
@@ -460,11 +460,10 @@ def log_eval_video(algorithm_config, env, out, logger):
         [s.env_state for s in ep_states], inner_env.agent_view_size,
         filename=video_path, pixels_per_tile=32, fps=10,
     )
-    logger.log_video("Eval/episode_video", video_path)
+    logger.log_video("Eval/episode_video", video_path, commit=False)
 
-    # Log attention heatmaps (first / middle / last frame)
-    num_updates = out["metrics"]["returned_episode"].shape[1]
-    log_attention_to_wandb(attn_data, logger, step=num_updates - 1, tag_prefix="Eval")
+    # Log attention heatmaps (no explicit step — these are one-time eval artifacts)
+    log_attention_to_wandb(attn_data, logger, step=None, tag_prefix="Eval", commit=False)
 
 
 def log_metrics(config, out, logger):

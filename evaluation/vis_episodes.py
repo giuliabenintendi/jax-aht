@@ -191,7 +191,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         return ep_states, attn_maps
     return ep_states
 
-def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval"):
+def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval", commit=True):
     """Log attention heatmaps to wandb.
 
     Logs first/middle/last frame attention maps as wandb.Image per agent.
@@ -217,7 +217,7 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval"):
         for label, idx in indices.items():
             attn = np.array(maps[idx]).squeeze()  # (H, W)
             img = wandb.Image(attn, caption=f"{agent_name} t={idx}")
-            logger.log({f"{tag_prefix}/{agent_name}_attn_{label}": img}, step=step)
+            logger.log({f"{tag_prefix}/{agent_name}_attn_{label}": img}, step=step, commit=commit)
 
 
 if __name__ == "__main__":
