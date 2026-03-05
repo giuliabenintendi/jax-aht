@@ -5,17 +5,17 @@
 ALG: ja_ippo
 NUM_CHECKPOINTS: 5
 ANNEAL_LR: True
-MAX_GRAD_NORM: 1.0
+MAX_GRAD_NORM: 0.5
 
-# PPO — paper Appendix A where specified, reference code defaults otherwise
-LR: 1e-4                       # paper: "Adam with learning rate 10^{-4}"
+# PPO — tuned for Overcooked (JaxMARL CNN baseline)
+LR: 5e-4
 GAMMA: 0.99
 GAE_LAMBDA: 0.95
 VF_COEF: 0.5
-UPDATE_EPOCHS: 25               # reference code: num_epochs=25
-NUM_MINIBATCHES: 1              # reference code: no minibatching
-CLIP_EPS: 0.2                   # reference code: importance_ratio_clipping=0.2
-ENT_COEF: 0.0                   # reference code: entropy_regularization=0.0
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 16
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
 
 # JA network (paper Appendix A)
 ACTIVATION: relu

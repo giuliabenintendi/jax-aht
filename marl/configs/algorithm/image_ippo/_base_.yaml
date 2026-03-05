@@ -4,17 +4,17 @@
 ALG: image_ippo
 NUM_CHECKPOINTS: 5
 ANNEAL_LR: True
-MAX_GRAD_NORM: 1.0
+MAX_GRAD_NORM: 0.5
 
-# PPO — same as JA-IPPO
-LR: 1e-4
+# PPO — tuned for Overcooked (JaxMARL CNN baseline)
+LR: 5e-4
 GAMMA: 0.99
 GAE_LAMBDA: 0.95
 VF_COEF: 0.5
-UPDATE_EPOCHS: 25
-NUM_MINIBATCHES: 1
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 16
 CLIP_EPS: 0.2
-ENT_COEF: 0.0
+ENT_COEF: 0.01
 
 # Network (same dimensions as JA-IPPO, minus attention-specific params)
 CONV_FILTERS: 64
