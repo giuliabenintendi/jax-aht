@@ -2,5 +2,5 @@ defaults:
   - image_ippo/_base_
   - _self_
 
-TOTAL_TIMESTEPS: 5e5
+TOTAL_TIMESTEPS: 2e6
 NUM_ENVS: 32
