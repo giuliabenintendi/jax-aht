@@ -482,3 +482,33 @@ def render_state(state, highlight=False, tile_size=TILE_PIXELS, agent_view_size=
     )
 
     return img
+
+
+def render_tiles_at_positions(static_bg, grid, positions, agent_dir_idx, agent_inv,
+                              tile_size=TILE_PIXELS):
+    """Render only tiles at given (row, col) positions and composite onto static_bg.
+
+    Args:
+        static_bg: (H_px, W_px, 3) pre-rendered background image
+        grid: (H, W, C) current maze_map grid (without padding)
+        positions: (N, 2) int array of (row, col) grid positions to re-render
+        agent_dir_idx: (num_agents,) direction indices
+        agent_inv: (num_agents,) inventory indices
+    """
+    rows, cols = positions[:, 0], positions[:, 1]
+    objs = grid[rows, cols]  # (N, C)
+
+    def render_one(obj):
+        agent_id = jnp.where(obj[1] == 2, 1, 0)
+        return render_tile(obj, False, agent_dir_idx[agent_id],
+                           agent_inv[agent_id], tile_size).astype(jnp.uint8)
+
+    tiles = jax.vmap(render_one)(objs)  # (N, tile_size, tile_size, 3)
+
+    def paste_one(img, i):
+        y = positions[i, 0] * tile_size
+        x = positions[i, 1] * tile_size
+        return jax.lax.dynamic_update_slice(img, tiles[i], (y, x, 0)), None
+
+    img, _ = jax.lax.scan(paste_one, static_bg, jnp.arange(positions.shape[0]))
+    return img

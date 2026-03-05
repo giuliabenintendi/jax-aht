@@ -3,10 +3,15 @@
 Replaces the 26-channel symbolic observation with a flat RGB image.
 Each agent sees the full grid with a magenta border drawn around its
 own tile, making the two observations distinct without appending scalars.
+
+Static tiles (walls, dispensers, goals) are pre-rendered once in __init__
+and only dynamic tiles (agents, pots, counters with objects) are re-rendered
+each step for efficiency.
 """
 from functools import partial
 from typing import Dict, Tuple, Optional
 
+import numpy as np
 import chex
 import jax
 import jax.numpy as jnp
@@ -14,7 +19,7 @@ from jaxmarl.environments.overcooked.overcooked import State as OvercookedState
 from jaxmarl.environments import spaces
 
 from envs.overcooked.overcooked_v1 import OvercookedV1
-from envs.overcooked.rendering import render_state
+from envs.overcooked.rendering import render_state, render_tiles_at_positions
 from envs.overcooked.rendering.overcooked_rendering import TILE_PIXELS
 from envs.base_env import BaseEnv, WrappedEnvState
 
@@ -76,6 +81,53 @@ class OvercookedImageWrapper(BaseEnv):
 
         self.agent_view_size = self.env.agent_view_size
 
+        # Pre-render static background and identify dynamic tile positions
+        self._static_bg, self._dynamic_pos = self._precompute_static_rendering()
+
+    def _precompute_static_rendering(self):
+        """Pre-render static tiles (interior walls, dispensers, goals).
+
+        Dynamic positions = walkable tiles + pots + counter walls (adjacent
+        to walkable space, where objects can be placed/removed).
+        """
+        h, w = self.grid_height, self.grid_width
+        layout = self.env.layout
+        wall_map = np.array(layout["wall_map"])  # (h, w) bool — True for walls
+
+        # Walkable positions (not walls)
+        walkable = ~wall_map  # (h, w)
+
+        # Counter walls: wall tiles adjacent to at least one walkable tile
+        # (objects can be placed on these by agents)
+        padded = np.pad(walkable, 1, constant_values=False)
+        adjacent_to_walkable = (
+            padded[:-2, 1:-1] | padded[2:, 1:-1] |  # up, down
+            padded[1:-1, :-2] | padded[1:-1, 2:]     # left, right
+        )
+        counter_walls = wall_map & adjacent_to_walkable
+
+        # Pot positions are counters too, but already covered by counter_walls.
+        # Mark all dynamic positions: walkable + counter walls
+        dynamic_mask = walkable | counter_walls  # (h, w)
+
+        dynamic_pos = np.argwhere(dynamic_mask)  # (N, 2) — (row, col)
+        dynamic_pos = jnp.array(dynamic_pos, dtype=jnp.int32)
+
+        # Render full grid from a dummy state to get the static background
+        _, dummy_state = self.env.reset(jax.random.PRNGKey(0))
+        static_bg = render_state(dummy_state)  # (H_px, W_px, 3) uint8
+        # Eagerly evaluate so it's a concrete array, not a traced value
+        static_bg = jax.device_get(static_bg)
+        static_bg = jnp.array(static_bg)
+
+        n_total = h * w
+        n_dynamic = dynamic_pos.shape[0]
+        n_static = n_total - n_dynamic
+        print(f"[ImageWrapper] {n_static}/{n_total} tiles cached as static, "
+              f"{n_dynamic} re-rendered per step")
+
+        return static_bg, dynamic_pos
+
     def observation_space(self, agent: str):
         return spaces.Box(0.0, 1.0, (self._obs_dim,))
 
@@ -83,8 +135,17 @@ class OvercookedImageWrapper(BaseEnv):
         return self.env.action_space()
 
     def _make_obs(self, env_state: OvercookedState) -> Dict[str, jnp.ndarray]:
-        """Render image with per-agent ego highlight."""
-        img = render_state(env_state)  # (H*7, W*7, 3) uint8
+        """Render image with per-agent ego highlight.
+
+        Uses cached static background — only dynamic tiles are re-rendered.
+        """
+        padding = 4
+        grid = env_state.maze_map[padding:-padding, padding:-padding, :]
+
+        img = render_tiles_at_positions(
+            self._static_bg, grid, self._dynamic_pos,
+            env_state.agent_dir_idx, env_state.agent_inv,
+        )
 
         img_0 = _draw_border(img, env_state.agent_pos[0], self.tile_size, _EGO_HIGHLIGHT_COLOR)
         img_1 = _draw_border(img, env_state.agent_pos[1], self.tile_size, _EGO_HIGHLIGHT_COLOR)

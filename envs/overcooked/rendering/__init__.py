@@ -1,1 +1,1 @@
-from envs.overcooked.rendering.overcooked_rendering import render_state
+from envs.overcooked.rendering.overcooked_rendering import render_state, render_tiles_at_positions
