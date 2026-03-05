@@ -727,8 +727,8 @@ def run_ja_ippo(config, logger):
         print("[ja_ippo] Training complete.")
         out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
 
-    log_eval_video(algorithm_config, env, out, logger)
     log_metrics(config, out, logger)
+    log_eval_video(algorithm_config, env, out, logger)
     return out
 
 

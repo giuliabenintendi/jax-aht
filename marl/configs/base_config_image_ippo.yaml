@@ -1,0 +1,40 @@
+defaults:
+  - task: lbf
+  - algorithm@algorithm: image_ippo/${task}
+  - hydra: hydra_simple
+  - _self_
+
+ENV_NAME: ${task.ENV_NAME}
+ENV_KWARGS: ${task.ENV_KWARGS}
+ROLLOUT_LENGTH: ${task.ROLLOUT_LENGTH}
+TASK_NAME: ${task.TASK_NAME}
+
+algorithm:
+  NUM_SEEDS: 1
+  TRAIN_SEED: 20374
+  ENV_NAME: ${ENV_NAME}
+  ENV_KWARGS: ${ENV_KWARGS}
+  ROLLOUT_LENGTH: ${ROLLOUT_LENGTH}
+
+label: "default_label"
+name: ${TASK_NAME}/${algorithm.ALG}/${label}
+
+# wandb settings
+logger:
+  project: aht-benchmark
+  entity: g-benintendi-university-of-brescia
+  tags:
+    - ${algorithm.ALG}
+    - ${TASK_NAME}
+    - seed=${algorithm.TRAIN_SEED}
+    - ${label}
+  mode: online
+
+  verbose: false
+  log_train_out: true
+  log_eval_out: true
+
+# Local logger
+local_logger:
+  save_train_out: true
+  save_eval_out: true
