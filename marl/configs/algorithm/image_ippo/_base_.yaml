@@ -17,8 +17,8 @@ CLIP_EPS: 0.2
 ENT_COEF: 0.01
 
 # Network
-FC_HIDDEN_DIM: 64
-LSTM_HIDDEN_DIM: 64
+FC_HIDDEN_DIM: 256
+LSTM_HIDDEN_DIM: 128
 
 # ResNet CNN encoder (following Forkel et al. 2025)
 CONV_FILTERS: 32
