@@ -36,5 +36,5 @@ CONV_PADDING: SAME
 
 # JA intrinsic reward (paper Appendix A)
 JA_BETA_MAX: 1
-JA_WARMUP_ENV_STEPS: 200000    # paper: 200K
+JA_WARMUP_ENV_STEPS: 700000
 NORMALIZE_REWARDS: true         # streaming reward normalization (reference code default)
