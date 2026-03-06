@@ -29,5 +29,5 @@ LSTM_HIDDEN_DIM: 64
 
 # JA intrinsic reward (paper Appendix A)
 JA_BETA_MAX: 0.01              # paper: 1e-2 (searched [1e-4, 1e-1])
-JA_WARMUP_ENV_STEPS: 500000    # paper: 200K, conservative with tile-level attention
+JA_WARMUP_ENV_STEPS: 1000000   # paper: 200K, slower ramp to avoid beta saturating too early
 NORMALIZE_REWARDS: true         # per-batch reward normalization before GAE
