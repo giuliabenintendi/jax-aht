@@ -4,11 +4,11 @@ Same architecture as ja_actor_critic.py but operates on pixel observations
 (H_px, W_px, 3) instead of symbolic (H, W, 26) grids.
 
 Matches the google-research `use_stacks=False` default: a single Conv layer
-processes the image (no ResNet, no downsampling), then spatial attention + LSTM.
+processes the image and downsamples to tile resolution, then spatial attention + LSTM.
 
 Per-agent architecture:
   obs (flat) -> unpack image (H_px, W_px, 3) + scalars (num_scalars,)
-  Image -> Conv(3x3, conv_filters, SAME) -> ReLU -> features F
+  Image -> Conv(tile_size, stride=tile_size, VALID) -> ReLU -> features F  (H_tiles, W_tiles)
   F + sinusoidal spatial basis -> 1x1 Conv -> Keys K, Values V
   Q = Dense(concat(h, c)) — query from own LSTM state
   Multi-head attention: softmax(Q . K) -> attended O
@@ -52,9 +52,12 @@ class JAImageScannedLSTM(nn.Module):
     scalar_embed_dim: int = 5
 
     def setup(self):
-        # No downsampling — feature map keeps original spatial dims
-        self.feat_h = self.img_height
-        self.feat_w = self.img_width
+        # Tile size is inferred from image dims / grid dims.
+        # img_height and img_width are in pixels; we assume TILE_PIXELS=7.
+        self.tile_size = 7
+        # Feature map at tile resolution (one position per grid cell)
+        self.feat_h = self.img_height // self.tile_size
+        self.feat_w = self.img_width // self.tile_size
         self.spatial_basis = make_sinusoidal_spatial_basis(
             self.feat_h, self.feat_w, self.spatial_basis_depth,
         )
@@ -85,16 +88,19 @@ class JAImageScannedLSTM(nn.Module):
         img_flat = obs_flat[:, :self._img_flat_dim]
         image = img_flat.reshape(batch_size, self.img_height, self.img_width, 3)
 
-        # --- Single Conv encoder (matches google-research use_stacks=False) ---
+        # --- Conv encoder: tile_size kernel+stride maps pixels to tile grid ---
+        # (batch, H_px, W_px, 3) -> (batch, H_tiles, W_tiles, conv_filters)
+        ts = self.tile_size
         features = nn.Conv(
             features=self.conv_filters,
-            kernel_size=(3, 3),
-            padding="SAME",
+            kernel_size=(ts, ts),
+            strides=(ts, ts),
+            padding="VALID",
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
             name="feature_conv",
         )(image)
-        features = nn.relu(features)  # (batch, fh, fw, conv_filters)
+        features = nn.relu(features)  # (batch, feat_h, feat_w, conv_filters)
 
         # --- Append spatial basis, compute K and V via 1x1 conv ---
         spatial = jnp.broadcast_to(

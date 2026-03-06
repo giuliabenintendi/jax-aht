@@ -206,15 +206,16 @@ def _overlay_attention(frame, attn):
     h_px, w_px = frame.shape[:2]
     attn_resized = np.array(
         Image.fromarray(attn_norm.astype(np.float32), mode='F').resize(
-            (w_px, h_px), resample=Image.NEAREST))
+            (w_px, h_px), resample=Image.BILINEAR))
 
     # Apply colormap (jet: blue -> green -> yellow -> red)
     heatmap_rgba = cm.jet(attn_resized)  # (H_px, W_px, 4) float [0,1]
     heatmap_rgb = (heatmap_rgba[..., :3] * 255).astype(np.uint8)
 
-    # Per-pixel alpha: attention value controls blend strength
-    # Low attention → show game, high attention → show heatmap color
-    alpha = (attn_resized * 0.7)[..., None]  # cap at 0.7 so game is always somewhat visible
+    # Per-pixel alpha: sqrt stretches low values so moderate attention is visible,
+    # base_alpha ensures the heatmap is always faintly visible for context.
+    base_alpha = 0.15
+    alpha = (base_alpha + (1 - base_alpha) * np.sqrt(attn_resized) * 0.7)[..., None]
     blended = (alpha * heatmap_rgb.astype(np.float32)
                + (1 - alpha) * frame.astype(np.float32))
     return np.clip(blended, 0, 255).astype(np.uint8)
