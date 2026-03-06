@@ -176,14 +176,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         return ep_states, attn_maps
     return ep_states
 
-def _render_single_frame(state, agent_view_size):
-    """Render one env state to an RGB numpy array (H_px, W_px, 3)."""
-    import numpy as np
-    from envs.overcooked.rendering.overcooked_rendering import render_state
-    img = render_state(state, agent_view_size=agent_view_size)
-    return np.asarray(img)
-
-
 def _overlay_attention(frame, attn, alpha=0.5):
     """Overlay attention heatmap on a rendered frame.
 
@@ -224,8 +216,41 @@ def _overlay_attention(frame, attn, alpha=0.5):
     return np.clip(blended, 0, 255).astype(np.uint8)
 
 
+def render_episode_frames(ep_states, agent_view_size, pixels_per_tile=32):
+    """Render all episode states to a list of RGB numpy arrays.
+
+    Uses the non-JAX OvercookedVisualizer renderer (fast, no JIT overhead).
+
+    Args:
+        ep_states: list of WrappedEnvState from run_episode_with_states.
+        agent_view_size: env.agent_view_size.
+        pixels_per_tile: tile size for rendering.
+
+    Returns:
+        list of (H_px, W_px, 3) uint8 numpy arrays.
+    """
+    import numpy as np
+    from jaxmarl.viz.overcooked_visualizer import OvercookedVisualizer
+
+    frames = []
+    for ws in ep_states:
+        state = ws.env_state
+        padding = agent_view_size - 2
+        grid = np.asarray(state.maze_map[padding:-padding, padding:-padding, :])
+        highlight_mask = np.zeros(grid.shape[:2], dtype=bool)
+        frame = OvercookedVisualizer._render_grid(
+            grid,
+            tile_size=pixels_per_tile,
+            highlight_mask=highlight_mask,
+            agent_dir_idx=state.agent_dir_idx,
+            agent_inv=state.agent_inv,
+        )
+        frames.append(np.asarray(frame))
+    return frames
+
+
 def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
-                           commit=True, ep_states=None, agent_view_size=None):
+                           commit=True, frames=None):
     """Log attention heatmaps overlaid on rendered env frames to wandb.
 
     Args:
@@ -234,9 +259,8 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
         logger: wandb run object (or anything with a .log method).
         step: global step for logging.
         tag_prefix: prefix for wandb log keys.
-        ep_states: list of env states (WrappedEnvState) for rendering frames.
+        frames: list of pre-rendered RGB frames (from render_episode_frames).
             If None, falls back to raw attention images.
-        agent_view_size: env.agent_view_size, needed for rendering.
     """
     import numpy as np
     try:
@@ -262,13 +286,10 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
         for label, idx in indices.items():
             attn = np.array(maps[idx]).squeeze()  # (H, W)
 
-            # Overlay on rendered frame if states are available
-            if ep_states is not None and agent_view_size is not None:
-                # idx+1 because ep_states[0] is the initial reset state
-                state_idx = min(idx + 1, len(ep_states) - 1)
-                frame = _render_single_frame(
-                    ep_states[state_idx].env_state, agent_view_size)
-                overlay = _overlay_attention(frame, attn)
+            if frames is not None:
+                # idx+1 because frames[0] is the initial reset state
+                frame_idx = min(idx + 1, len(frames) - 1)
+                overlay = _overlay_attention(frames[frame_idx], attn)
                 img = wandb.Image(overlay, caption=f"{agent_name} t={idx}")
             else:
                 # Fallback: normalize raw attention for visibility
@@ -281,14 +302,13 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
                        step=step, commit=commit)
 
 
-def make_attention_video(ep_states, attn_data, agent_view_size, filename,
+def make_attention_video(frames, attn_data, filename,
                          fps=10, agent_name="agent_1"):
-    """Render an MP4 with attention heatmap overlaid on each frame.
+    """Create an MP4 with attention heatmap overlaid on pre-rendered frames.
 
     Args:
-        ep_states: list of WrappedEnvState from run_episode_with_states.
+        frames: list of pre-rendered RGB frames (from render_episode_frames).
         attn_data: dict with per-agent attention maps list.
-        agent_view_size: env.agent_view_size.
         filename: output .mp4 path.
         fps: frames per second.
         agent_name: which agent's attention to overlay.
@@ -301,20 +321,18 @@ def make_attention_video(ep_states, attn_data, agent_view_size, filename,
         print(f"[attn video] No attention maps for {agent_name}, skipping.")
         return
 
-    frames = []
+    overlay_frames = []
     for i, attn in enumerate(maps):
-        # ep_states[0] is reset, attention maps start from step 0
-        state_idx = min(i + 1, len(ep_states) - 1)
-        frame = _render_single_frame(
-            ep_states[state_idx].env_state, agent_view_size)
-        overlay = _overlay_attention(frame, attn)
-        frames.append(overlay)
+        # frames[0] is reset, attention maps start from step 0
+        frame_idx = min(i + 1, len(frames) - 1)
+        overlay = _overlay_attention(frames[frame_idx], attn)
+        overlay_frames.append(overlay)
 
     os.makedirs(os.path.dirname(filename), exist_ok=True)
-    clip = ImageSequenceClip(frames, fps=fps)
+    clip = ImageSequenceClip(overlay_frames, fps=fps)
     clip.write_videofile(filename, fps=fps, codec='libx264', audio=False,
                          bitrate='8000k', preset='slow')
-    print(f"[attn video] Saved {filename} ({len(frames)} frames)")
+    print(f"[attn video] Saved {filename} ({len(overlay_frames)} frames)")
 
 
 if __name__ == "__main__":

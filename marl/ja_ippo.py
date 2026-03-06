@@ -789,8 +789,10 @@ def run_ja_ippo(config, logger):
 def log_eval_video(algorithm_config, env, out, logger):
     """Run one eval episode with final params (seed 0), log video + attention to wandb."""
     import os
-    from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
-    from evaluation.vis_episodes import run_episode_with_states, log_attention_to_wandb, make_attention_video
+    from evaluation.vis_episodes import (
+        run_episode_with_states, log_attention_to_wandb, make_attention_video,
+        render_episode_frames,
+    )
 
     obs_type = _get_obs_type(algorithm_config)
     init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
@@ -814,29 +816,31 @@ def log_eval_video(algorithm_config, env, out, logger):
     )
     print(f"[ja_ippo] Eval episode: {len(ep_states)} frames collected")
 
-    # Render video from collected states
+    # Render frames once (non-JAX, fast) and reuse for video + attention overlay
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     video_dir = f"{savedir}/videos"
     os.makedirs(video_dir, exist_ok=True)
-    video_path = f"{video_dir}/eval_final.mp4"
 
-    viz = AdHocOvercookedVisualizer()
-    viz.animate_mp4(
-        [s.env_state for s in ep_states], inner_env.agent_view_size,
-        filename=video_path, pixels_per_tile=32, fps=10,
-    )
+    frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
+
+    # Save plain eval video
+    from moviepy import ImageSequenceClip
+    video_path = f"{video_dir}/eval_final.mp4"
+    clip = ImageSequenceClip(frames, fps=10)
+    clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
+                         bitrate='8000k', preset='slow')
     logger.log_video("Eval/episode_video", video_path, commit=False)
 
     # Log attention heatmaps overlaid on rendered frames
     log_attention_to_wandb(
         attn_data, logger, step=None, tag_prefix="Eval", commit=False,
-        ep_states=ep_states, agent_view_size=inner_env.agent_view_size,
+        frames=frames,
     )
 
     # Save attention overlay video
     attn_video_path = f"{video_dir}/eval_attention.mp4"
     make_attention_video(
-        ep_states, attn_data, inner_env.agent_view_size,
+        frames, attn_data,
         filename=attn_video_path, fps=10, agent_name="agent_1",
     )
     logger.log_video("Eval/attention_video", attn_video_path, commit=False)
