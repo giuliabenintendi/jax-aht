@@ -16,8 +16,13 @@ NUM_MINIBATCHES: 16
 CLIP_EPS: 0.2
 ENT_COEF: 0.01
 
-# Network (same dimensions as JA-IPPO, minus attention-specific params)
-CONV_FILTERS: 64
+# Network
 FC_HIDDEN_DIM: 64
 LSTM_HIDDEN_DIM: 64
-SCALAR_EMBED_DIM: 5
+
+# ResNet CNN encoder (following Forkel et al. 2025)
+CONV_FILTERS: 32
+CONV_NUM_BLOCKS: 4
+CONV_KERNEL_SIZE: 3
+CONV_STRIDE: 2
+CONV_PADDING: SAME

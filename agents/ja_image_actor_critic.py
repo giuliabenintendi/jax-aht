@@ -1,19 +1,12 @@
 """Joint Attention Actor-Critic network for image observations.
 
-Same architecture as ja_actor_critic.py but operates on pixel observations
-(H_px, W_px, 3) instead of symbolic (H, W, 26) grids.
-
-Matches the google-research `use_stacks=False` default: a single Conv layer
-processes the image and downsamples to tile resolution, then spatial attention + LSTM.
-
 Per-agent architecture:
-  obs (flat) -> unpack image (H_px, W_px, 3) + scalars (num_scalars,)
-  Image -> Conv(tile_size, stride=tile_size, VALID) -> ReLU -> features F  (H_tiles, W_tiles)
+  obs (flat) -> unpack image (H_px, W_px, 3)
+  Image -> ResNet encoder -> features F  (H_out, W_out, filters)
   F + sinusoidal spatial basis -> 1x1 Conv -> Keys K, Values V
   Q = Dense(concat(h, c)) — query from own LSTM state
   Multi-head attention: softmax(Q . K) -> attended O
-  Scalars: direction one_hot(4) x2 -> Dense(5), position (4,) -> Dense(5)
-  Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> projection
+  Concat(O) -> FC -> FC -> LSTM -> projection
 """
 import functools
 
@@ -25,39 +18,42 @@ import jax
 import jax.numpy as jnp
 
 from agents.ja_utils import make_sinusoidal_spatial_basis
+from agents.resnet_encoder import ResNetEncoder
+
+
+def _compute_resnet_output_dims(h, w, stride, kernel_size, padding, num_blocks):
+    """Compute spatial dims after ResNet encoder (initial conv + first block downsample)."""
+    for _ in range(1 + min(1, num_blocks)):
+        if padding == "SAME":
+            h = int(np.ceil(h / stride))
+            w = int(np.ceil(w / stride))
+        else:
+            h = (h - kernel_size) // stride + 1
+            w = (w - kernel_size) // stride + 1
+    return h, w
 
 
 class JAImageScannedLSTM(nn.Module):
-    """Scanned module: Conv encoder + spatial attention + LSTM.
-
-    At each timestep:
-      1. Unpack flat obs -> image (H_px, W_px, 3) + scalars
-      2. Image -> Conv(3x3, conv_filters) -> ReLU -> features F
-      3. F + spatial basis -> 1x1 Conv -> Keys K, Values V
-      4. Q = Dense(concat(h, c)) — query from own LSTM state
-      5. Multi-head spatial attention -> attended O
-      6. Scalars: direction one_hot(4) -> Dense(5), position -> Dense(5)
-      7. Concat(O, dir_embed, pos_embed) -> FC -> FC -> LSTM -> (h_t, c_t)
-      8. Return (h_t, c_t) and attention map (averaged over heads)
-    """
-    img_height: int   # H_px (pixels)
-    img_width: int    # W_px (pixels)
-    num_scalars: int = 6
-    conv_filters: int = 64
+    """Scanned module: ResNet encoder + spatial attention + LSTM."""
+    img_height: int
+    img_width: int
+    conv_filters: int = 32
+    conv_num_blocks: int = 4
+    conv_kernel_size: int = 3
+    conv_stride: int = 2
+    conv_padding: str = "SAME"
     num_heads: int = 4
     head_features: int = 16
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
-    scalar_embed_dim: int = 5
 
     def setup(self):
-        # Tile size is inferred from image dims / grid dims.
-        # img_height and img_width are in pixels; we assume TILE_PIXELS=7.
-        self.tile_size = 7
-        # Feature map at tile resolution (one position per grid cell)
-        self.feat_h = self.img_height // self.tile_size
-        self.feat_w = self.img_width // self.tile_size
+        self.feat_h, self.feat_w = _compute_resnet_output_dims(
+            self.img_height, self.img_width,
+            self.conv_stride, self.conv_kernel_size,
+            self.conv_padding, self.conv_num_blocks,
+        )
         self.spatial_basis = make_sinusoidal_spatial_basis(
             self.feat_h, self.feat_w, self.spatial_basis_depth,
         )
@@ -84,25 +80,21 @@ class JAImageScannedLSTM(nn.Module):
         lstm_h = jnp.where(dones[:, np.newaxis], zero_h, lstm_h)
         lstm_c = jnp.where(dones[:, np.newaxis], zero_c, lstm_c)
 
-        # --- Unpack flat obs -> image (+ optional scalars) ---
+        # Unpack flat obs -> image
         img_flat = obs_flat[:, :self._img_flat_dim]
         image = img_flat.reshape(batch_size, self.img_height, self.img_width, 3)
 
-        # --- Conv encoder: tile_size kernel+stride maps pixels to tile grid ---
-        # (batch, H_px, W_px, 3) -> (batch, H_tiles, W_tiles, conv_filters)
-        ts = self.tile_size
-        features = nn.Conv(
-            features=self.conv_filters,
-            kernel_size=(ts, ts),
-            strides=(ts, ts),
-            padding="VALID",
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="feature_conv",
+        # ResNet encoder -> (batch, feat_h, feat_w, conv_filters)
+        features = ResNetEncoder(
+            num_blocks=self.conv_num_blocks,
+            filters=self.conv_filters,
+            kernel_size=self.conv_kernel_size,
+            stride=self.conv_stride,
+            padding=self.conv_padding,
+            name="resnet_encoder",
         )(image)
-        features = nn.relu(features)  # (batch, feat_h, feat_w, conv_filters)
 
-        # --- Append spatial basis, compute K and V via 1x1 conv ---
+        # Append spatial basis, compute K and V via 1x1 conv
         spatial = jnp.broadcast_to(
             self.spatial_basis[None, ...],
             (batch_size, fh, fw, self.spatial_basis_depth),
@@ -123,7 +115,7 @@ class JAImageScannedLSTM(nn.Module):
         )(features_with_pos)
         values = values.reshape(batch_size, fh * fw, m, cm)
 
-        # --- Query from own LSTM state: Q = Dense(concat(h, c)) ---
+        # Query from own LSTM state
         own_state = jnp.concatenate([lstm_h, lstm_c], axis=-1)
         queries = nn.Dense(
             m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
@@ -131,46 +123,21 @@ class JAImageScannedLSTM(nn.Module):
         )(own_state)
         queries = queries.reshape(batch_size, m, cm)
 
-        # --- Multi-head spatial attention (no sqrt scaling) ---
+        # Multi-head spatial attention
         attn_logits = jnp.einsum("bnmc,bmc->bnm", keys, queries)
-        attn_weights = jax.nn.softmax(attn_logits, axis=1)  # (batch, HW, m)
+        attn_weights = jax.nn.softmax(attn_logits, axis=1)
 
         attended = jnp.einsum("bnm,bnmc->bmc", attn_weights, values)
         attended_flat = attended.reshape(batch_size, m * cm)
 
         attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
 
-        # --- Scalar features (skipped when num_scalars == 0, e.g. FOV obs) ---
-        lstm_parts = [attended_flat]
-        if self.num_scalars > 0:
-            scalars = obs_flat[:, self._img_flat_dim:]  # (batch, num_scalars)
-            # scalars: [ego_dir, ego_x, ego_y, partner_dir, partner_x, partner_y]
-            ego_dir_idx = scalars[:, 0].astype(jnp.int32)
-            partner_dir_idx = scalars[:, 3].astype(jnp.int32)
-            ego_dir_onehot = jax.nn.one_hot(ego_dir_idx, 4)
-            partner_dir_onehot = jax.nn.one_hot(partner_dir_idx, 4)
-            direction = jnp.concatenate([ego_dir_onehot, partner_dir_onehot], axis=-1)  # (batch, 8)
-            dir_embed = nn.Dense(
-                self.scalar_embed_dim,
-                kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                name="dir_embed",
-            )(direction)
-
-            pos_features = scalars[:, jnp.array([1, 2, 4, 5])]  # (batch, 4)
-            pos_embed = nn.Dense(
-                self.scalar_embed_dim,
-                kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                name="pos_embed",
-            )(pos_features)
-            lstm_parts.extend([dir_embed, pos_embed])
-
-        # --- FC layers before LSTM ---
-        lstm_input = jnp.concatenate(lstm_parts, axis=-1)
+        # FC layers before LSTM
         lstm_input = nn.Dense(
             self.fc_hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
             name="input_fc1",
-        )(lstm_input)
+        )(attended_flat)
         lstm_input = nn.relu(lstm_input)
         lstm_input = nn.Dense(
             self.fc_hidden_dim,
@@ -179,7 +146,7 @@ class JAImageScannedLSTM(nn.Module):
         )(lstm_input)
         lstm_input = nn.relu(lstm_input)
 
-        # --- LSTM update ---
+        # LSTM update
         new_carry, lstm_out = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
         )((lstm_h, lstm_c), lstm_input)
@@ -196,22 +163,20 @@ class JAImageScannedLSTM(nn.Module):
 
 
 class JAImageActorCritic(nn.Module):
-    """Joint Attention Actor-Critic for image observations.
-
-    Identical structure to JAActorCritic but uses JAImageScannedLSTM
-    (single Conv on pixel input) instead of JAScannedLSTM (Conv on symbolic channels).
-    """
+    """Joint Attention Actor-Critic for image observations with ResNet encoder."""
     action_dim: int
     img_height: int
     img_width: int
-    num_scalars: int = 6
-    conv_filters: int = 64
+    conv_filters: int = 32
+    conv_num_blocks: int = 4
+    conv_kernel_size: int = 3
+    conv_stride: int = 2
+    conv_padding: str = "SAME"
     num_heads: int = 4
     head_features: int = 16
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
-    scalar_embed_dim: int = 5
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -222,17 +187,19 @@ class JAImageActorCritic(nn.Module):
         rnn_kwargs = dict(
             img_height=self.img_height,
             img_width=self.img_width,
-            num_scalars=self.num_scalars,
             conv_filters=self.conv_filters,
+            conv_num_blocks=self.conv_num_blocks,
+            conv_kernel_size=self.conv_kernel_size,
+            conv_stride=self.conv_stride,
+            conv_padding=self.conv_padding,
             num_heads=self.num_heads,
             head_features=self.head_features,
             fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             spatial_basis_depth=self.spatial_basis_depth,
-            scalar_embed_dim=self.scalar_embed_dim,
         )
 
-        # --- Actor path ---
+        # Actor path
         actor_lstm_state, (actor_embed, attn_map) = JAImageScannedLSTM(
             **rnn_kwargs, name="actor_lstm",
         )(actor_lstm_state, (obs, dones))
@@ -246,7 +213,7 @@ class JAImageActorCritic(nn.Module):
         action_logits = action_logits - (unavail_actions * 1e10)
         pi = distrax.Categorical(logits=action_logits)
 
-        # --- Critic path ---
+        # Critic path
         critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
         )(critic_lstm_state, (obs, dones))

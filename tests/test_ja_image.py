@@ -94,14 +94,16 @@ def test_ja_image_forward_pass():
         obs_dim=env.observation_space(env.agents[0]).shape[0],
         img_height=img_h,
         img_width=img_w,
-        num_scalars=0,
         conv_filters=4,
+        conv_num_blocks=2,
+        conv_kernel_size=3,
+        conv_stride=2,
+        conv_padding="SAME",
         num_heads=2,
         head_features=4,
         fc_hidden_dim=4,
         lstm_hidden_dim=4,
         spatial_basis_depth=4,
-        scalar_embed_dim=2,
     )
 
     rng = jax.random.PRNGKey(3)
@@ -158,11 +160,14 @@ def test_ja_image_train_loop():
         "VF_COEF": 0.5,
         "MAX_GRAD_NORM": 1.0,
         "ACTIVATION": "relu",
-        "JA_CONV_FILTERS": 4,
+        "CONV_FILTERS": 4,
+        "CONV_NUM_BLOCKS": 2,
+        "CONV_KERNEL_SIZE": 3,
+        "CONV_STRIDE": 2,
+        "CONV_PADDING": "SAME",
         "JA_NUM_HEADS": 2,
         "JA_HEAD_FEATURES": 4,
         "JA_SPATIAL_BASIS_DEPTH": 4,
-        "JA_SCALAR_EMBED_DIM": 2,
         "FC_HIDDEN_DIM": 4,
         "LSTM_HIDDEN_DIM": 4,
         "JA_BETA_MAX": 0.01,
@@ -203,12 +208,14 @@ def test_network_architecture():
     feat_h = math.ceil(img_h / 4)  # after 2x MaxPool(stride=2)
     feat_w = math.ceil(img_w / 4)
 
-    conv_filters = 64
+    conv_filters = 32
+    conv_num_blocks = 4
+    conv_kernel_size = 3
+    conv_stride = 2
     num_heads = 4
     head_features = 16
     lstm_hidden_dim = 64
     spatial_basis_depth = 8
-    scalar_embed_dim = 5
     fc_hidden_dim = 64
 
     # -- 1. nn.tabulate on the core module (ResNet + attention + LSTM) --
@@ -217,13 +224,14 @@ def test_network_architecture():
     lstm_module = JAImageScannedLSTM(
         img_height=img_h,
         img_width=img_w,
-        num_scalars=0,
         conv_filters=conv_filters,
+        conv_num_blocks=conv_num_blocks,
+        conv_kernel_size=conv_kernel_size,
+        conv_stride=conv_stride,
         num_heads=num_heads,
         head_features=head_features,
         lstm_hidden_dim=lstm_hidden_dim,
         spatial_basis_depth=spatial_basis_depth,
-        scalar_embed_dim=scalar_embed_dim,
     )
 
     batch = 1
@@ -232,8 +240,7 @@ def test_network_architecture():
 
     dummy_obs = jnp.zeros((seq, batch, obs_dim))
     dummy_done = jnp.zeros((seq, batch))
-    dummy_partner_h = jnp.zeros((seq, batch, lstm_hidden_dim))
-    scan_input = (dummy_obs, dummy_done, dummy_partner_h)
+    scan_input = (dummy_obs, dummy_done)
 
     print("\n" + "=" * 80)
     print("JAImageScannedLSTM — nn.tabulate()")
@@ -257,7 +264,7 @@ def test_network_architecture():
 Observation:
   flat obs              : ({obs_dim},) = image pixels ({img_h}*{img_w}*3 = {img_h*img_w*3}), no scalars
 
-Image encoder (2 ResNet stacks, each: Conv3x3 -> MaxPool(stride=2) -> 2 ResBlocks):
+Image encoder (ResNet: initial Conv + {conv_num_blocks} residual blocks, stride={conv_stride}):
   input image           : ({img_h}, {img_w}, 3)         = ({env.grid_height}x{TILE_PIXELS}, {env.grid_width}x{TILE_PIXELS}, RGB)
   after Stack 0         : ({math.ceil(img_h/2)}, {math.ceil(img_w/2)}, {conv_filters//2})      filters={conv_filters//2}
   after Stack 1         : ({feat_h}, {feat_w}, {conv_filters})       filters={conv_filters}
@@ -268,7 +275,7 @@ Spatial attention:
   F + basis concat      : ({feat_h}, {feat_w}, {conv_filters + spatial_basis_depth})
   Keys (1x1 conv)       : ({feat_h}*{feat_w}, {num_heads}, {head_features})  = ({feat_h*feat_w}, {num_heads}, {head_features})
   Values (1x1 conv)     : ({feat_h}*{feat_w}, {num_heads}, {head_features})  = ({feat_h*feat_w}, {num_heads}, {head_features})
-  Query (Dense)         : ({num_heads}, {head_features})            from concat(own_lstm_h, partner_lstm_h)
+  Query (Dense)         : ({num_heads}, {head_features})            from concat(own_lstm_h, own_lstm_c)
   attn logits           : ({feat_h*feat_w}, {num_heads})           Q . K, no sqrt scaling
   attn weights          : ({feat_h*feat_w}, {num_heads})           softmax over spatial dim
   attended output       : ({num_heads}, {head_features}) -> flat ({num_heads * head_features},)
@@ -297,11 +304,11 @@ Attention map output:
 Image input               (H, W, C) structured grid       ({img_h}, {img_w}, 3) RGB pixels
 Encoder                   Stack(f//2) -> Stack(f) -> ReLU  Stack(f//2) -> Stack(f) -> ReLU   [SAME]
 Feature resolution        (H//4, W//4, f)                  ({feat_h}, {feat_w}, {conv_filters})
-conv_filters (default)    8                                64
+conv_filters (default)    8                                {conv_filters}
 Spatial basis depth       16                               8
 Spatial basis             get_spatial_basis (0-indexed)     make_sinusoidal_spatial_basis      [SAME formula]
 
-Q input                   concat(all agents' h AND c)      concat(own_h, partner_h)           [h only, not c]
+Q input                   concat(all agents' h AND c)      concat(own_h, own_c)
 K projection              Conv2D(conv_filters, 1x1)        Conv(m*c_m, 1x1)
 V projection              Conv2D(conv_filters, 1x1)        Conv(m*c_m, 1x1)
 Attention heads           conv_filters // depth_per_head    {num_heads} heads x {head_features} features
@@ -324,20 +331,21 @@ Actor/Critic              separate, no shared weights       separate, no shared 
         action_dim=action_dim,
         img_height=img_h,
         img_width=img_w,
-        num_scalars=0,
         conv_filters=conv_filters,
+        conv_num_blocks=conv_num_blocks,
+        conv_kernel_size=conv_kernel_size,
+        conv_stride=conv_stride,
         num_heads=num_heads,
         head_features=head_features,
         fc_hidden_dim=fc_hidden_dim,
         lstm_hidden_dim=lstm_hidden_dim,
         spatial_basis_depth=spatial_basis_depth,
-        scalar_embed_dim=scalar_embed_dim,
     )
     actor_carry = JAImageScannedLSTM.initialize_carry(batch, lstm_hidden_dim)
     critic_carry = JAImageScannedLSTM.initialize_carry(batch, lstm_hidden_dim)
     full_hidden = (actor_carry, critic_carry)
     dummy_avail = jnp.ones((seq, batch, action_dim))
-    full_x = (dummy_obs, dummy_done, dummy_avail, dummy_partner_h)
+    full_x = (dummy_obs, dummy_done, dummy_avail)
     params = full_network.init(jax.random.PRNGKey(0), full_hidden, full_x)
     param_count = sum(p.size for p in jax.tree.leaves(params))
     print(f"Total parameters (full actor-critic): {param_count:,}")

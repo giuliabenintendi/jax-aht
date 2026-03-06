@@ -15,14 +15,16 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         obs_dim: int,
         img_height: int,
         img_width: int,
-        num_scalars: int = 6,
-        conv_filters: int = 64,
+        conv_filters: int = 32,
+        conv_num_blocks: int = 4,
+        conv_kernel_size: int = 3,
+        conv_stride: int = 2,
+        conv_padding: str = "SAME",
         num_heads: int = 4,
         head_features: int = 16,
         fc_hidden_dim: int = 64,
         lstm_hidden_dim: int = 64,
         spatial_basis_depth: int = 8,
-        scalar_embed_dim: int = 5,
     ):
         # Skip JAActorCriticPolicy.__init__ — we set self.network directly
         # but still call AgentPolicy.__init__ for action_dim/obs_dim
@@ -35,13 +37,15 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             action_dim=action_dim,
             img_height=img_height,
             img_width=img_width,
-            num_scalars=num_scalars,
             conv_filters=conv_filters,
+            conv_num_blocks=conv_num_blocks,
+            conv_kernel_size=conv_kernel_size,
+            conv_stride=conv_stride,
+            conv_padding=conv_padding,
             num_heads=num_heads,
             head_features=head_features,
             fc_hidden_dim=fc_hidden_dim,
             lstm_hidden_dim=lstm_hidden_dim,
             spatial_basis_depth=spatial_basis_depth,
-            scalar_embed_dim=scalar_embed_dim,
         )
         self.lstm_hidden_dim = lstm_hidden_dim

@@ -26,11 +26,13 @@ class ImageActorCriticPolicy(AgentPolicy):
         obs_dim: int,
         img_height: int,
         img_width: int,
-        num_scalars: int = 6,
-        conv_filters: int = 64,
+        conv_filters: int = 32,
+        conv_num_blocks: int = 4,
+        conv_kernel_size: int = 3,
+        conv_stride: int = 2,
+        conv_padding: str = "SAME",
         fc_hidden_dim: int = 64,
         lstm_hidden_dim: int = 64,
-        scalar_embed_dim: int = 5,
     ):
         super().__init__(action_dim, obs_dim)
         self.img_height = img_height
@@ -39,11 +41,13 @@ class ImageActorCriticPolicy(AgentPolicy):
             action_dim=action_dim,
             img_height=img_height,
             img_width=img_width,
-            num_scalars=num_scalars,
             conv_filters=conv_filters,
+            conv_num_blocks=conv_num_blocks,
+            conv_kernel_size=conv_kernel_size,
+            conv_stride=conv_stride,
+            conv_padding=conv_padding,
             fc_hidden_dim=fc_hidden_dim,
             lstm_hidden_dim=lstm_hidden_dim,
-            scalar_embed_dim=scalar_embed_dim,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
 

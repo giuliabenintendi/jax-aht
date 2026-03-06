@@ -135,14 +135,16 @@ def initialize_ja_image_agent(config, env, rng):
         obs_dim=env.observation_space(env.agents[0]).shape[0],
         img_height=img_h,
         img_width=img_w,
-        num_scalars=num_scalars,
-        conv_filters=config.get("JA_CONV_FILTERS", 64),
+        conv_filters=config.get("CONV_FILTERS", 32),
+        conv_num_blocks=config.get("CONV_NUM_BLOCKS", 4),
+        conv_kernel_size=config.get("CONV_KERNEL_SIZE", 3),
+        conv_stride=config.get("CONV_STRIDE", 2),
+        conv_padding=config.get("CONV_PADDING", "SAME"),
         num_heads=config.get("JA_NUM_HEADS", 4),
         head_features=config.get("JA_HEAD_FEATURES", 16),
         fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
         spatial_basis_depth=config.get("JA_SPATIAL_BASIS_DEPTH", 8),
-        scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
     )
 
     rng, init_rng = jax.random.split(rng)
@@ -159,11 +161,13 @@ def initialize_image_agent(config, env, rng):
         obs_dim=env.observation_space(env.agents[0]).shape[0],
         img_height=img_h,
         img_width=img_w,
-        num_scalars=num_scalars,
-        conv_filters=config.get("CONV_FILTERS", 64),
+        conv_filters=config.get("CONV_FILTERS", 32),
+        conv_num_blocks=config.get("CONV_NUM_BLOCKS", 4),
+        conv_kernel_size=config.get("CONV_KERNEL_SIZE", 3),
+        conv_stride=config.get("CONV_STRIDE", 2),
+        conv_padding=config.get("CONV_PADDING", "SAME"),
         fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
-        scalar_embed_dim=config.get("SCALAR_EMBED_DIM", 5),
     )
 
     rng, init_rng = jax.random.split(rng)
