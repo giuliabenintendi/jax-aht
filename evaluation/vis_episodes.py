@@ -176,17 +176,66 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         return ep_states, attn_maps
     return ep_states
 
-def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval", commit=True):
-    """Log attention heatmaps to wandb.
+def _render_single_frame(state, agent_view_size, tile_size=32):
+    """Render one env state to an RGB numpy array (H_px, W_px, 3)."""
+    from envs.overcooked.rendering.overcooked_rendering import render_grid
+    padding = agent_view_size - 2
+    grid = np.asarray(state.maze_map[padding:-padding, padding:-padding, :])
+    highlight_mask = np.zeros(grid.shape[:2], dtype=bool)
+    img = render_grid(grid, highlight_mask, state.agent_dir_idx, state.agent_inv, tile_size=tile_size)
+    return np.asarray(img)
 
-    Logs first/middle/last frame attention maps as wandb.Image per agent.
+
+def _overlay_attention(frame, attn, tile_size=32, alpha=0.5):
+    """Overlay attention heatmap on a rendered frame.
+
+    Args:
+        frame: (H_px, W_px, 3) uint8 RGB image.
+        attn: (H, W) float attention weights (softmax output).
+        tile_size: pixels per grid cell.
+        alpha: blend factor for the heatmap overlay.
+
+    Returns:
+        (H_px, W_px, 3) uint8 RGB image with heatmap overlay.
+    """
+    import matplotlib.cm as cm
+
+    attn = np.array(attn).squeeze()
+    # Normalize to [0, 1] for colormap
+    a_min, a_max = attn.min(), attn.max()
+    if a_max - a_min > 1e-8:
+        attn_norm = (attn - a_min) / (a_max - a_min)
+    else:
+        attn_norm = np.zeros_like(attn)
+
+    # Upscale to pixel resolution via nearest-neighbor
+    attn_px = np.repeat(np.repeat(attn_norm, tile_size, axis=0), tile_size, axis=1)
+
+    # Apply colormap (hot: black -> red -> yellow -> white)
+    heatmap_rgba = cm.hot(attn_px)  # (H_px, W_px, 4) float [0,1]
+    heatmap_rgb = (heatmap_rgba[..., :3] * 255).astype(np.uint8)
+
+    # Alpha blend
+    blended = (alpha * heatmap_rgb.astype(np.float32)
+               + (1 - alpha) * frame.astype(np.float32))
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
+                           commit=True, ep_states=None, agent_view_size=None,
+                           tile_size=32):
+    """Log attention heatmaps overlaid on rendered env frames to wandb.
 
     Args:
         attn_data: dict {"agent_0": [attn_map, ...], "agent_1": [...]},
-            where each attn_map is (1, H, W) from get_action_and_attention.
+            where each attn_map is (1, batch, H, W) from get_action_and_attention.
         logger: wandb run object (or anything with a .log method).
         step: global step for logging.
         tag_prefix: prefix for wandb log keys.
+        ep_states: list of env states (WrappedEnvState) for rendering frames.
+            If None, falls back to raw attention images.
+        agent_view_size: env.agent_view_size, needed for rendering.
+        tile_size: pixels per grid cell for rendering.
     """
     import numpy as np
     try:
@@ -198,11 +247,74 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval", commit=Tr
         if not maps:
             continue
         n = len(maps)
+
+        # Print attention stats for diagnostics
+        all_attn = np.array([np.array(m).squeeze() for m in maps])  # (T, H, W)
+        h, w = all_attn.shape[1], all_attn.shape[2]
+        uniform_ent = np.log(h * w)
+        per_step_ent = -np.sum(all_attn * np.log(all_attn + 1e-10), axis=(1, 2))
+        print(f"[attn] {agent_name}: shape=({h},{w}), "
+              f"min={all_attn.min():.4f}, max={all_attn.max():.4f}, "
+              f"mean_entropy={per_step_ent.mean():.3f} / {uniform_ent:.3f} (uniform)")
+
         indices = {"first": 0, "middle": n // 2, "last": n - 1}
         for label, idx in indices.items():
             attn = np.array(maps[idx]).squeeze()  # (H, W)
-            img = wandb.Image(attn, caption=f"{agent_name} t={idx}")
-            logger.log({f"{tag_prefix}/{agent_name}_attn_{label}": img}, step=step, commit=commit)
+
+            # Overlay on rendered frame if states are available
+            if ep_states is not None and agent_view_size is not None:
+                # idx+1 because ep_states[0] is the initial reset state
+                state_idx = min(idx + 1, len(ep_states) - 1)
+                frame = _render_single_frame(
+                    ep_states[state_idx].env_state, agent_view_size, tile_size)
+                overlay = _overlay_attention(frame, attn, tile_size)
+                img = wandb.Image(overlay, caption=f"{agent_name} t={idx}")
+            else:
+                # Fallback: normalize raw attention for visibility
+                a_min, a_max = attn.min(), attn.max()
+                if a_max - a_min > 1e-8:
+                    attn = (attn - a_min) / (a_max - a_min)
+                img = wandb.Image(attn, caption=f"{agent_name} t={idx}")
+
+            logger.log({f"{tag_prefix}/{agent_name}_attn_{label}": img},
+                       step=step, commit=commit)
+
+
+def make_attention_video(ep_states, attn_data, agent_view_size, filename,
+                         tile_size=32, fps=10, agent_name="agent_1"):
+    """Render an MP4 with attention heatmap overlaid on each frame.
+
+    Args:
+        ep_states: list of WrappedEnvState from run_episode_with_states.
+        attn_data: dict with per-agent attention maps list.
+        agent_view_size: env.agent_view_size.
+        filename: output .mp4 path.
+        tile_size: pixels per grid cell.
+        fps: frames per second.
+        agent_name: which agent's attention to overlay.
+    """
+    import os
+    from moviepy import ImageSequenceClip
+
+    maps = attn_data.get(agent_name, [])
+    if not maps:
+        print(f"[attn video] No attention maps for {agent_name}, skipping.")
+        return
+
+    frames = []
+    for i, attn in enumerate(maps):
+        # ep_states[0] is reset, attention maps start from step 0
+        state_idx = min(i + 1, len(ep_states) - 1)
+        frame = _render_single_frame(
+            ep_states[state_idx].env_state, agent_view_size, tile_size)
+        overlay = _overlay_attention(frame, attn, tile_size)
+        frames.append(overlay)
+
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    clip = ImageSequenceClip(frames, fps=fps)
+    clip.write_videofile(filename, fps=fps, codec='libx264', audio=False,
+                         bitrate='8000k', preset='slow')
+    print(f"[attn video] Saved {filename} ({len(frames)} frames)")
 
 
 if __name__ == "__main__":

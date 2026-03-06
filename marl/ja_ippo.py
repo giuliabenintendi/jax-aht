@@ -38,6 +38,45 @@ class JATransition(NamedTuple):
     ja_reward: jnp.ndarray       # (NUM_ACTORS,) — raw JA intrinsic reward (unscaled)
 
 
+class RewardNormState(NamedTuple):
+    """Running mean/variance for streaming reward normalization (Welford's algorithm)."""
+    mean: jnp.ndarray
+    var: jnp.ndarray
+    count: jnp.ndarray
+
+
+def reward_norm_init() -> RewardNormState:
+    return RewardNormState(
+        mean=jnp.zeros(()),
+        var=jnp.ones(()),
+        count=jnp.zeros(()),
+    )
+
+
+def reward_norm_update(state: RewardNormState, batch: jnp.ndarray) -> RewardNormState:
+    """Update running stats with a new batch of rewards."""
+    batch_mean = batch.mean()
+    batch_var = batch.var()
+    batch_count = jnp.array(batch.size, dtype=jnp.float32)
+
+    delta = batch_mean - state.mean
+    total_count = state.count + batch_count
+    new_mean = state.mean + delta * batch_count / jnp.maximum(total_count, 1.0)
+    m_a = state.var * state.count
+    m_b = batch_var * batch_count
+    m2 = m_a + m_b + delta ** 2 * state.count * batch_count / jnp.maximum(total_count, 1.0)
+    new_var = m2 / jnp.maximum(total_count, 1.0)
+
+    return RewardNormState(mean=new_mean, var=new_var, count=total_count)
+
+
+def reward_norm_apply(state: RewardNormState, rewards: jnp.ndarray, clip: float = 10.0) -> jnp.ndarray:
+    """Normalize rewards using running stats, clip to [-clip, clip]."""
+    std = jnp.sqrt(state.var + 1e-8)
+    normalized = (rewards - state.mean) / std
+    return jnp.clip(normalized, -clip, clip)
+
+
 def _get_obs_type(config):
     return config.get("OBS_TYPE", config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
 
@@ -59,11 +98,10 @@ def make_train_scan(config, env):
     num_envs = config["NUM_ENVS"]
     num_actors = config["NUM_ACTORS"]
     ja_beta_max = config.get("JA_BETA_MAX", 0.01)
-    ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 1_000_000)
+    ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
-    reward_norm_clip = 10.0
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -176,7 +214,7 @@ def make_train_scan(config, env):
 
         # SINGLE UPDATE STEP (rollout + PPO)
         def _update_step(update_runner_state, unused):
-            (runner_state, update_steps) = update_runner_state
+            (runner_state, update_steps, rew_norm_state) = update_runner_state
 
             ja_beta = jnp.minimum(
                 ja_beta_max,
@@ -289,11 +327,10 @@ def make_train_scan(config, env):
                 )
                 return advantages, advantages + traj_batch.value
 
-            # Normalize combined rewards before GAE (matches reference code)
+            # Streaming reward normalization (Welford's, matching reference code)
             if normalize_rewards:
-                rew = traj_batch.reward
-                normalized = (rew - rew.mean()) / (rew.std() + 1e-8)
-                normalized = jnp.clip(normalized, -reward_norm_clip, reward_norm_clip)
+                rew_norm_state = reward_norm_update(rew_norm_state, traj_batch.reward)
+                normalized = reward_norm_apply(rew_norm_state, traj_batch.reward)
                 traj_batch = traj_batch._replace(reward=normalized)
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
@@ -324,7 +361,7 @@ def make_train_scan(config, env):
 
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
             update_steps += 1
-            return (runner_state, update_steps), metric
+            return (runner_state, update_steps, rew_norm_state), metric
 
         # CHECKPOINT LOGIC (same pattern as ippo.py)
         ckpt_and_eval_interval = config["NUM_UPDATES"] // max(1, config["NUM_CHECKPOINTS"] - 1)
@@ -339,7 +376,7 @@ def make_train_scan(config, env):
         def _update_step_with_checkpoint(update_with_ckpt_runner_state, unused):
             (update_runner_state, checkpoint_array, ckpt_idx) = update_with_ckpt_runner_state
             update_runner_state, metric = _update_step(update_runner_state, None)
-            _, update_steps = update_runner_state
+            _, update_steps, _ = update_runner_state
 
             to_store = jnp.logical_or(
                 jnp.equal(jnp.mod(update_steps - 1, ckpt_and_eval_interval), 0),
@@ -368,7 +405,7 @@ def make_train_scan(config, env):
         # RUN TRAINING
         rng, _rng = jax.random.split(rng)
         init_hstate = policy.init_hstate(num_actors)
-        update_runner_state = ((train_state, env_state, obsv, init_done, init_hstate, _rng), 0)
+        update_runner_state = ((train_state, env_state, obsv, init_done, init_hstate, _rng), 0, reward_norm_init())
         checkpoint_array = init_ckpt_array(train_state.params)
         ckpt_idx = 0
         update_with_ckpt_runner_state = (update_runner_state, checkpoint_array, ckpt_idx)
@@ -409,11 +446,10 @@ def make_train_loop(config, env):
     num_envs = config["NUM_ENVS"]
     num_actors = config["NUM_ACTORS"]
     ja_beta_max = config.get("JA_BETA_MAX", 0.01)
-    ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 1_000_000)
+    ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
-    reward_norm_clip = 10.0
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -528,7 +564,7 @@ def make_train_loop(config, env):
             return update_state[0], loss_info
 
         @jax.jit
-        def step_fn(runner_state, update_steps):
+        def step_fn(runner_state, update_steps, rew_norm_state):
             ja_beta = jnp.minimum(
                 ja_beta_max,
                 ja_beta_max * update_steps / jnp.maximum(ja_warmup_updates, 1.0),
@@ -640,11 +676,10 @@ def make_train_loop(config, env):
                 )
                 return advantages, advantages + traj_batch.value
 
-            # Normalize combined rewards before GAE (matches reference code)
+            # Streaming reward normalization (Welford's, matching reference code)
             if normalize_rewards:
-                rew = traj_batch.reward
-                normalized = (rew - rew.mean()) / (rew.std() + 1e-8)
-                normalized = jnp.clip(normalized, -reward_norm_clip, reward_norm_clip)
+                rew_norm_state = reward_norm_update(rew_norm_state, traj_batch.reward)
+                normalized = reward_norm_apply(rew_norm_state, traj_batch.reward)
                 traj_batch = traj_batch._replace(reward=normalized)
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
@@ -674,7 +709,7 @@ def make_train_loop(config, env):
             metric["value_mean"] = traj_batch.value.mean()
 
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
-            return runner_state, update_steps + 1, metric
+            return runner_state, update_steps + 1, rew_norm_state, metric
 
         return step_fn
 
@@ -719,10 +754,11 @@ def run_ja_ippo(config, logger):
             checkpoints = []
             all_metrics = []
             update_steps = jnp.int32(0)
+            rew_norm_state = reward_norm_init()
 
             print(f"[ja_ippo] Seed {s+1}/{num_seeds}: compiling step fn...")
             for step in range(num_updates):
-                runner_state, update_steps, metric = step_fn(runner_state, update_steps)
+                runner_state, update_steps, rew_norm_state, metric = step_fn(runner_state, update_steps, rew_norm_state)
                 all_metrics.append(metric)
 
                 should_ckpt = (step % ckpt_interval == 0) or (step == num_updates - 1)
@@ -754,7 +790,7 @@ def log_eval_video(algorithm_config, env, out, logger):
     """Run one eval episode with final params (seed 0), log video + attention to wandb."""
     import os
     from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
-    from evaluation.vis_episodes import run_episode_with_states, log_attention_to_wandb
+    from evaluation.vis_episodes import run_episode_with_states, log_attention_to_wandb, make_attention_video
 
     obs_type = _get_obs_type(algorithm_config)
     init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
@@ -791,8 +827,19 @@ def log_eval_video(algorithm_config, env, out, logger):
     )
     logger.log_video("Eval/episode_video", video_path, commit=False)
 
-    # Log attention heatmaps
-    log_attention_to_wandb(attn_data, logger, step=None, tag_prefix="Eval", commit=False)
+    # Log attention heatmaps overlaid on rendered frames
+    log_attention_to_wandb(
+        attn_data, logger, step=None, tag_prefix="Eval", commit=False,
+        ep_states=ep_states, agent_view_size=inner_env.agent_view_size, tile_size=32,
+    )
+
+    # Save attention overlay video
+    attn_video_path = f"{video_dir}/eval_attention.mp4"
+    make_attention_video(
+        ep_states, attn_data, inner_env.agent_view_size,
+        filename=attn_video_path, tile_size=32, fps=10, agent_name="agent_1",
+    )
+    logger.log_video("Eval/attention_video", attn_video_path, commit=False)
 
 
 def log_metrics(config, out, logger):
