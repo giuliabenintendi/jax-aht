@@ -28,6 +28,6 @@ FC_HIDDEN_DIM: 64
 LSTM_HIDDEN_DIM: 64
 
 # JA intrinsic reward (paper Appendix A)
-JA_BETA_MAX: 10.0
+JA_BETA_MAX: 0.01              # paper: 1e-2 (searched [1e-4, 1e-1])
 JA_WARMUP_ENV_STEPS: 200000    # paper: 200K
 NORMALIZE_REWARDS: true         # streaming reward normalization (reference code default)
