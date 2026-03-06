@@ -196,6 +196,7 @@ def _overlay_attention(frame, attn, alpha=0.5):
     Returns:
         (H_px, W_px, 3) uint8 RGB image with heatmap overlay.
     """
+    import numpy as np
     import matplotlib.cm as cm
     from PIL import Image
 
