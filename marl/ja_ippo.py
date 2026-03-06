@@ -830,14 +830,14 @@ def log_eval_video(algorithm_config, env, out, logger):
     # Log attention heatmaps overlaid on rendered frames
     log_attention_to_wandb(
         attn_data, logger, step=None, tag_prefix="Eval", commit=False,
-        ep_states=ep_states, agent_view_size=inner_env.agent_view_size, tile_size=32,
+        ep_states=ep_states, agent_view_size=inner_env.agent_view_size,
     )
 
     # Save attention overlay video
     attn_video_path = f"{video_dir}/eval_attention.mp4"
     make_attention_video(
         ep_states, attn_data, inner_env.agent_view_size,
-        filename=attn_video_path, tile_size=32, fps=10, agent_name="agent_1",
+        filename=attn_video_path, fps=10, agent_name="agent_1",
     )
     logger.log_video("Eval/attention_video", attn_video_path, commit=False)
 

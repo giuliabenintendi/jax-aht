@@ -176,30 +176,28 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         return ep_states, attn_maps
     return ep_states
 
-def _render_single_frame(state, agent_view_size, tile_size=32):
+def _render_single_frame(state, agent_view_size):
     """Render one env state to an RGB numpy array (H_px, W_px, 3)."""
     import numpy as np
-    from envs.overcooked.rendering.overcooked_rendering import render_grid
-    padding = agent_view_size - 2
-    grid = np.asarray(state.maze_map[padding:-padding, padding:-padding, :])
-    highlight_mask = np.zeros(grid.shape[:2], dtype=bool)
-    img = render_grid(grid, highlight_mask, state.agent_dir_idx, state.agent_inv, tile_size=tile_size)
+    from envs.overcooked.rendering.overcooked_rendering import render_state
+    img = render_state(state, agent_view_size=agent_view_size)
     return np.asarray(img)
 
 
-def _overlay_attention(frame, attn, tile_size=32, alpha=0.5):
+def _overlay_attention(frame, attn, alpha=0.5):
     """Overlay attention heatmap on a rendered frame.
 
     Args:
         frame: (H_px, W_px, 3) uint8 RGB image.
         attn: (H, W) float attention weights (softmax output).
-        tile_size: pixels per grid cell.
+            May differ in spatial dims from frame — resized to match.
         alpha: blend factor for the heatmap overlay.
 
     Returns:
         (H_px, W_px, 3) uint8 RGB image with heatmap overlay.
     """
     import matplotlib.cm as cm
+    from PIL import Image
 
     attn = np.array(attn).squeeze()
     # Normalize to [0, 1] for colormap
@@ -209,11 +207,14 @@ def _overlay_attention(frame, attn, tile_size=32, alpha=0.5):
     else:
         attn_norm = np.zeros_like(attn)
 
-    # Upscale to pixel resolution via nearest-neighbor
-    attn_px = np.repeat(np.repeat(attn_norm, tile_size, axis=0), tile_size, axis=1)
+    # Resize attention to match frame pixel dimensions
+    h_px, w_px = frame.shape[:2]
+    attn_resized = np.array(
+        Image.fromarray(attn_norm.astype(np.float32), mode='F').resize(
+            (w_px, h_px), resample=Image.NEAREST))
 
     # Apply colormap (hot: black -> red -> yellow -> white)
-    heatmap_rgba = cm.hot(attn_px)  # (H_px, W_px, 4) float [0,1]
+    heatmap_rgba = cm.hot(attn_resized)  # (H_px, W_px, 4) float [0,1]
     heatmap_rgb = (heatmap_rgba[..., :3] * 255).astype(np.uint8)
 
     # Alpha blend
@@ -223,8 +224,7 @@ def _overlay_attention(frame, attn, tile_size=32, alpha=0.5):
 
 
 def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
-                           commit=True, ep_states=None, agent_view_size=None,
-                           tile_size=32):
+                           commit=True, ep_states=None, agent_view_size=None):
     """Log attention heatmaps overlaid on rendered env frames to wandb.
 
     Args:
@@ -236,7 +236,6 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
         ep_states: list of env states (WrappedEnvState) for rendering frames.
             If None, falls back to raw attention images.
         agent_view_size: env.agent_view_size, needed for rendering.
-        tile_size: pixels per grid cell for rendering.
     """
     import numpy as np
     try:
@@ -267,8 +266,8 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
                 # idx+1 because ep_states[0] is the initial reset state
                 state_idx = min(idx + 1, len(ep_states) - 1)
                 frame = _render_single_frame(
-                    ep_states[state_idx].env_state, agent_view_size, tile_size)
-                overlay = _overlay_attention(frame, attn, tile_size)
+                    ep_states[state_idx].env_state, agent_view_size)
+                overlay = _overlay_attention(frame, attn)
                 img = wandb.Image(overlay, caption=f"{agent_name} t={idx}")
             else:
                 # Fallback: normalize raw attention for visibility
@@ -282,7 +281,7 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
 
 
 def make_attention_video(ep_states, attn_data, agent_view_size, filename,
-                         tile_size=32, fps=10, agent_name="agent_1"):
+                         fps=10, agent_name="agent_1"):
     """Render an MP4 with attention heatmap overlaid on each frame.
 
     Args:
@@ -290,7 +289,6 @@ def make_attention_video(ep_states, attn_data, agent_view_size, filename,
         attn_data: dict with per-agent attention maps list.
         agent_view_size: env.agent_view_size.
         filename: output .mp4 path.
-        tile_size: pixels per grid cell.
         fps: frames per second.
         agent_name: which agent's attention to overlay.
     """
@@ -307,8 +305,8 @@ def make_attention_video(ep_states, attn_data, agent_view_size, filename,
         # ep_states[0] is reset, attention maps start from step 0
         state_idx = min(i + 1, len(ep_states) - 1)
         frame = _render_single_frame(
-            ep_states[state_idx].env_state, agent_view_size, tile_size)
-        overlay = _overlay_attention(frame, attn, tile_size)
+            ep_states[state_idx].env_state, agent_view_size)
+        overlay = _overlay_attention(frame, attn)
         frames.append(overlay)
 
     os.makedirs(os.path.dirname(filename), exist_ok=True)
