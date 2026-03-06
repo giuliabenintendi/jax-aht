@@ -226,19 +226,22 @@ def make_train(config, env):
                     total_loss, grads = grad_fn(
                         train_state.params, traj_batch, advantages, targets
                     )
+                    grad_norm = jnp.sqrt(
+                        sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads))
+                    )
                     train_state = train_state.apply_gradients(grads=grads)
-                    return train_state, total_loss
+                    return train_state, (total_loss, grad_norm)
 
                 train_state, init_hstate, traj_batch, advantages, targets, rng = update_state
                 rng, perm_rng = jax.random.split(rng)
                 minibatches = _create_minibatches(traj_batch, advantages, targets, init_hstate,
                                                   num_actors, config["NUM_MINIBATCHES"], perm_rng)
 
-                train_state, total_loss = jax.lax.scan(
+                train_state, (total_loss, grad_norm) = jax.lax.scan(
                     _update_minbatch, train_state, minibatches
                 )
                 update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
-                return update_state, total_loss
+                return update_state, (total_loss, grad_norm)
 
             init_hstate = policy.init_hstate(num_actors)
             update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
@@ -247,7 +250,7 @@ def make_train(config, env):
             )
             train_state = update_state[0]
 
-            total_loss, (value_loss, policy_loss, entropy) = loss_info
+            (total_loss, (value_loss, policy_loss, entropy)), grad_norm = loss_info
 
             metric = traj_batch.info
             metric["update_steps"] = update_steps
@@ -255,7 +258,7 @@ def make_train(config, env):
             metric["loss_value"] = value_loss.mean()
             metric["loss_policy"] = policy_loss.mean()
             metric["entropy"] = entropy.mean()
-            metric["reward_mean"] = traj_batch.reward.mean()
+            metric["grad_norm"] = grad_norm.mean()
             metric["value_mean"] = traj_batch.value.mean()
 
             rng = update_state[-1]
@@ -375,7 +378,7 @@ def log_metrics(config, out, logger):
         ("loss_value", "Losses"),
         ("loss_policy", "Losses"),
         ("entropy", "Losses"),
-        ("reward_mean", "Rewards"),
+        ("grad_norm", "Losses"),
         ("value_mean", "Values"),
     ]
 
@@ -407,9 +410,9 @@ def log_metrics(config, out, logger):
             ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in train_stats.items())
             soups = train_stats["base_return"][step, 0] / 20.0 if "base_return" in train_stats else 0
             loss = float(scalar_data.get("loss_total", np.zeros(num_updates))[step])
-            rew = float(scalar_data.get("reward_mean", np.zeros(num_updates))[step])
+            grad = float(scalar_data.get("grad_norm", np.zeros(num_updates))[step])
             print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  "
-                  f"{ret_str}  soups={soups:.1f}  loss={loss:.4f}  reward={rew:.4f}")
+                  f"{ret_str}  soups={soups:.1f}  loss={loss:.4f}  grad={grad:.3f}")
 
     logger.commit()
 
