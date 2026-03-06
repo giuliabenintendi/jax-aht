@@ -2,7 +2,6 @@ ENV_NAME: overcooked-v1
 ROLLOUT_LENGTH: 400 # rollout length must be greater than episode length
 ENV_KWARGS:
   layout: forced_coord
-  obs_type: image
   random_obj_state: true
   do_reward_shaping: true
   reward_shaping_params:
