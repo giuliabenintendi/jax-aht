@@ -839,10 +839,7 @@ def log_eval_video(algorithm_config, env, out, logger):
 
     # Save attention overlay video
     attn_video_path = f"{video_dir}/eval_attention.mp4"
-    make_attention_video(
-        frames, attn_data,
-        filename=attn_video_path, fps=10, agent_name="agent_1",
-    )
+    make_attention_video(frames, attn_data, filename=attn_video_path, fps=10)
     logger.log_video("Eval/attention_video", attn_video_path, commit=False)
 
 

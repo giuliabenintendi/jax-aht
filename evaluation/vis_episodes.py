@@ -176,49 +176,101 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         return ep_states, attn_maps
     return ep_states
 
-def _overlay_attention(frame, attn):
-    """Overlay attention heatmap on a rendered frame.
+def _overlay_attention_dual(frame, attn_0, attn_1):
+    """Overlay both agents' attention on a rendered frame.
 
-    Uses per-pixel alpha: high-attention cells are colored (red/yellow),
-    low-attention cells are transparent so the game remains visible.
+    Agent 0 → blue channel, Agent 1 → red channel. Overlap appears magenta.
 
     Args:
         frame: (H_px, W_px, 3) uint8 RGB image.
-        attn: (H, W) float attention weights (softmax output).
-            May differ in spatial dims from frame — resized to match.
+        attn_0: (H, W) float attention weights for agent 0.
+        attn_1: (H, W) float attention weights for agent 1.
 
     Returns:
-        (H_px, W_px, 3) uint8 RGB image with heatmap overlay.
+        (H_px, W_px, 3) uint8 RGB image with dual heatmap overlay.
     """
     import numpy as np
-    import matplotlib.cm as cm
     from PIL import Image
 
-    attn = np.array(attn).squeeze()
-    # Normalize to [0, 1] for colormap
-    a_min, a_max = attn.min(), attn.max()
-    if a_max - a_min > 1e-8:
-        attn_norm = (attn - a_min) / (a_max - a_min)
-    else:
-        attn_norm = np.zeros_like(attn)
+    def _resize_attn(attn, h_px, w_px):
+        attn = np.array(attn).squeeze()
+        a_min, a_max = attn.min(), attn.max()
+        if a_max - a_min > 1e-8:
+            attn = (attn - a_min) / (a_max - a_min)
+        else:
+            attn = np.zeros_like(attn)
+        return np.array(
+            Image.fromarray(attn.astype(np.float32), mode='F').resize(
+                (w_px, h_px), resample=Image.NEAREST))
 
-    # Resize attention to match frame pixel dimensions
     h_px, w_px = frame.shape[:2]
-    attn_resized = np.array(
-        Image.fromarray(attn_norm.astype(np.float32), mode='F').resize(
-            (w_px, h_px), resample=Image.BILINEAR))
+    a0 = _resize_attn(attn_0, h_px, w_px)
+    a1 = _resize_attn(attn_1, h_px, w_px)
 
-    # Apply colormap (jet: blue -> green -> yellow -> red)
-    heatmap_rgba = cm.jet(attn_resized)  # (H_px, W_px, 4) float [0,1]
-    heatmap_rgb = (heatmap_rgba[..., :3] * 255).astype(np.uint8)
+    # Build color overlay: agent_0=blue, agent_1=red
+    overlay = np.zeros((h_px, w_px, 3), dtype=np.float32)
+    overlay[..., 2] = a0  # blue
+    overlay[..., 0] = a1  # red
 
-    # Per-pixel alpha: sqrt stretches low values so moderate attention is visible,
-    # base_alpha ensures the heatmap is always faintly visible for context.
-    base_alpha = 0.15
-    alpha = (base_alpha + (1 - base_alpha) * np.sqrt(attn_resized) * 0.7)[..., None]
-    blended = (alpha * heatmap_rgb.astype(np.float32)
-               + (1 - alpha) * frame.astype(np.float32))
+    alpha = np.maximum(a0, a1)[..., None] * 0.6
+    blended = (alpha * overlay * 255 + (1 - alpha) * frame.astype(np.float32))
     return np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def _make_heatmap_figure(attn_maps, labels, cmaps, title=None, figsize=(4, 3.5)):
+    """Render attention heatmaps as a matplotlib figure and return as RGB array.
+
+    Args:
+        attn_maps: list of (H, W) arrays to plot as panels.
+        labels: list of panel titles.
+        cmaps: list of matplotlib colormap names per panel.
+        title: optional super-title.
+        figsize: (w, h) per panel.
+
+    Returns:
+        (H_px, W_px, 3) uint8 RGB numpy array.
+    """
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    n = len(attn_maps)
+    fig, axes = plt.subplots(1, n, figsize=(figsize[0] * n, figsize[1]))
+    if n == 1:
+        axes = [axes]
+
+    for ax, attn, label, cmap in zip(axes, attn_maps, labels, cmaps):
+        attn = np.array(attn).squeeze()
+        h, w = attn.shape
+        im = ax.imshow(attn, cmap=cmap, vmin=0, origin="upper", aspect="equal")
+        # Grid lines at cell boundaries
+        ax.set_xticks(np.arange(-0.5, w, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, h, 1), minor=True)
+        ax.grid(which="minor", color="gray", linewidth=0.5, alpha=0.7)
+        ax.tick_params(which="minor", size=0)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        # Weight numbers in cells
+        for r in range(h):
+            for c in range(w):
+                val = attn[r, c]
+                color = "white" if val > (attn.max() * 0.6) else "black"
+                ax.text(c, r, f"{val:.2f}", ha="center", va="center",
+                        fontsize=max(4, 36 // max(h, w)), color=color)
+        ax.set_title(label, fontsize=10)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    if title:
+        fig.suptitle(title, fontsize=12)
+    fig.tight_layout()
+
+    # Render to RGB array
+    fig.canvas.draw()
+    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    buf = buf.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    plt.close(fig)
+    return buf
 
 
 def render_episode_frames(ep_states, agent_view_size, pixels_per_tile=32):
@@ -256,7 +308,7 @@ def render_episode_frames(ep_states, agent_view_size, pixels_per_tile=32):
 
 def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
                            commit=True, frames=None):
-    """Log attention heatmaps overlaid on rendered env frames to wandb.
+    """Log three-panel attention heatmaps to wandb: agent_0 (blue), agent_1 (red), overlap.
 
     Args:
         attn_data: dict {"agent_0": [attn_map, ...], "agent_1": [...]},
@@ -265,7 +317,6 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
         step: global step for logging.
         tag_prefix: prefix for wandb log keys.
         frames: list of pre-rendered RGB frames (from render_episode_frames).
-            If None, falls back to raw attention images.
     """
     import numpy as np
     try:
@@ -273,13 +324,16 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
     except ImportError:
         return
 
-    for agent_name, maps in attn_data.items():
-        if not maps:
-            continue
-        n = len(maps)
+    maps_0 = attn_data.get("agent_0", [])
+    maps_1 = attn_data.get("agent_1", [])
+    if not maps_0 or not maps_1:
+        return
 
-        # Print attention stats for diagnostics
-        all_attn = np.array([np.array(m).squeeze() for m in maps])  # (T, H, W)
+    n = min(len(maps_0), len(maps_1))
+
+    # Print attention stats for diagnostics
+    for agent_name, maps in attn_data.items():
+        all_attn = np.array([np.array(m).squeeze() for m in maps])
         h, w = all_attn.shape[1], all_attn.shape[2]
         uniform_ent = np.log(h * w)
         per_step_ent = -np.sum(all_attn * np.log(all_attn + 1e-10), axis=(1, 2))
@@ -287,50 +341,47 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
               f"min={all_attn.min():.4f}, max={all_attn.max():.4f}, "
               f"mean_entropy={per_step_ent.mean():.3f} / {uniform_ent:.3f} (uniform)")
 
-        indices = {"first": 0, "middle": n // 2, "last": n - 1}
-        for label, idx in indices.items():
-            attn = np.array(maps[idx]).squeeze()  # (H, W)
+    indices = {"first": 0, "middle": n // 2, "last": n - 1}
+    for label, idx in indices.items():
+        attn_0 = np.array(maps_0[idx]).squeeze()
+        attn_1 = np.array(maps_1[idx]).squeeze()
+        attn_sum = attn_0 + attn_1
 
-            if frames is not None:
-                # idx+1 because frames[0] is the initial reset state
-                frame_idx = min(idx + 1, len(frames) - 1)
-                overlay = _overlay_attention(frames[frame_idx], attn)
-                img = wandb.Image(overlay, caption=f"{agent_name} t={idx}")
-            else:
-                # Fallback: normalize raw attention for visibility
-                a_min, a_max = attn.min(), attn.max()
-                if a_max - a_min > 1e-8:
-                    attn = (attn - a_min) / (a_max - a_min)
-                img = wandb.Image(attn, caption=f"{agent_name} t={idx}")
-
-            logger.log({f"{tag_prefix}/{agent_name}_attn_{label}": img},
-                       step=step, commit=commit)
+        panel = _make_heatmap_figure(
+            [attn_0, attn_1, attn_sum],
+            ["Agent 0", "Agent 1", "Combined"],
+            ["Blues", "Reds", "YlOrRd"],
+            title=f"Attention t={idx}",
+        )
+        img = wandb.Image(panel, caption=f"t={idx}")
+        logger.log({f"{tag_prefix}/attention_{label}": img},
+                   step=step, commit=commit)
 
 
-def make_attention_video(frames, attn_data, filename,
-                         fps=10, agent_name="agent_1"):
-    """Create an MP4 with attention heatmap overlaid on pre-rendered frames.
+def make_attention_video(frames, attn_data, filename, fps=10):
+    """Create an MP4 with both agents' attention overlaid (blue=agent_0, red=agent_1).
 
     Args:
         frames: list of pre-rendered RGB frames (from render_episode_frames).
         attn_data: dict with per-agent attention maps list.
         filename: output .mp4 path.
         fps: frames per second.
-        agent_name: which agent's attention to overlay.
     """
     import os
     from moviepy import ImageSequenceClip
 
-    maps = attn_data.get(agent_name, [])
-    if not maps:
-        print(f"[attn video] No attention maps for {agent_name}, skipping.")
+    maps_0 = attn_data.get("agent_0", [])
+    maps_1 = attn_data.get("agent_1", [])
+    if not maps_0 or not maps_1:
+        print("[attn video] Missing attention maps for one or both agents, skipping.")
         return
 
+    n = min(len(maps_0), len(maps_1))
     overlay_frames = []
-    for i, attn in enumerate(maps):
-        # frames[0] is reset, attention maps start from step 0
+    for i in range(n):
+        # frames[0] is reset state, attention maps start from step 0
         frame_idx = min(i + 1, len(frames) - 1)
-        overlay = _overlay_attention(frames[frame_idx], attn)
+        overlay = _overlay_attention_dual(frames[frame_idx], maps_0[i], maps_1[i])
         overlay_frames.append(overlay)
 
     os.makedirs(os.path.dirname(filename), exist_ok=True)
