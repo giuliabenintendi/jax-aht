@@ -190,6 +190,7 @@ def _overlay_attention_dual(frame, attn_0, attn_1):
         (H_px, W_px, 3) uint8 RGB image with dual heatmap overlay.
     """
     import numpy as np
+    import matplotlib.cm as cm
     from PIL import Image
 
     def _resize_attn(attn, h_px, w_px):
@@ -207,13 +208,16 @@ def _overlay_attention_dual(frame, attn_0, attn_1):
     a0 = _resize_attn(attn_0, h_px, w_px)
     a1 = _resize_attn(attn_1, h_px, w_px)
 
-    # Build color overlay: agent_0=blue, agent_1=red
-    overlay = np.zeros((h_px, w_px, 3), dtype=np.float32)
-    overlay[..., 2] = a0  # blue
-    overlay[..., 0] = a1  # red
+    # Apply Blues/Reds colormaps
+    blue_rgb = cm.Blues(a0)[..., :3]  # (H, W, 3) float [0,1]
+    red_rgb = cm.Reds(a1)[..., :3]
 
-    alpha = np.maximum(a0, a1)[..., None] * 0.6
-    blended = (alpha * overlay * 255 + (1 - alpha) * frame.astype(np.float32))
+    # Blend both heatmaps onto the frame
+    alpha_0 = (a0 * 0.6)[..., None]
+    alpha_1 = (a1 * 0.6)[..., None]
+    blended = frame.astype(np.float32)
+    blended = (1 - alpha_0) * blended + alpha_0 * blue_rgb * 255
+    blended = (1 - alpha_1) * blended + alpha_1 * red_rgb * 255
     return np.clip(blended, 0, 255).astype(np.uint8)
 
 
