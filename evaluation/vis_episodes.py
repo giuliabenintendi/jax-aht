@@ -178,6 +178,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
 def _render_single_frame(state, agent_view_size, tile_size=32):
     """Render one env state to an RGB numpy array (H_px, W_px, 3)."""
+    import numpy as np
     from envs.overcooked.rendering.overcooked_rendering import render_grid
     padding = agent_view_size - 2
     grid = np.asarray(state.maze_map[padding:-padding, padding:-padding, :])
