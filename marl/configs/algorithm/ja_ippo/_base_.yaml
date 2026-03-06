@@ -7,10 +7,10 @@ NUM_CHECKPOINTS: 5
 ANNEAL_LR: True
 MAX_GRAD_NORM: 0.5
 
-# PPO — tuned for Overcooked (JaxMARL CNN baseline)
-LR: 5e-4
+# PPO — aligned with Forkel et al. 2025 Overcooked baseline
+LR: 4e-4
 GAMMA: 0.99
-GAE_LAMBDA: 0.95
+GAE_LAMBDA: 0.8
 VF_COEF: 0.5
 UPDATE_EPOCHS: 4
 NUM_MINIBATCHES: 16
@@ -28,6 +28,6 @@ FC_HIDDEN_DIM: 64
 LSTM_HIDDEN_DIM: 64
 
 # JA intrinsic reward (paper Appendix A)
-JA_BETA_MAX: 0.01              # paper: 1e-2 (searched [1e-4, 1e-1])
+JA_BETA_MAX: 10.0
 JA_WARMUP_ENV_STEPS: 200000    # paper: 200K
 NORMALIZE_REWARDS: true         # streaming reward normalization (reference code default)

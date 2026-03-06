@@ -3,4 +3,4 @@ defaults:
   - _self_
 
 TOTAL_TIMESTEPS: 2e6
-NUM_ENVS: 32
+NUM_ENVS: 64

@@ -6,10 +6,10 @@ NUM_CHECKPOINTS: 5
 ANNEAL_LR: True
 MAX_GRAD_NORM: 0.5
 
-# PPO — tuned for Overcooked (JaxMARL CNN baseline)
-LR: 5e-4
+# PPO — aligned with Forkel et al. 2025 Overcooked baseline
+LR: 4e-4
 GAMMA: 0.99
-GAE_LAMBDA: 0.95
+GAE_LAMBDA: 0.8
 VF_COEF: 0.5
 UPDATE_EPOCHS: 4
 NUM_MINIBATCHES: 16
