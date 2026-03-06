@@ -176,14 +176,16 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         return ep_states, attn_maps
     return ep_states
 
-def _overlay_attention(frame, attn, alpha=0.5):
+def _overlay_attention(frame, attn):
     """Overlay attention heatmap on a rendered frame.
+
+    Uses per-pixel alpha: high-attention cells are colored (red/yellow),
+    low-attention cells are transparent so the game remains visible.
 
     Args:
         frame: (H_px, W_px, 3) uint8 RGB image.
         attn: (H, W) float attention weights (softmax output).
             May differ in spatial dims from frame — resized to match.
-        alpha: blend factor for the heatmap overlay.
 
     Returns:
         (H_px, W_px, 3) uint8 RGB image with heatmap overlay.
@@ -206,11 +208,13 @@ def _overlay_attention(frame, attn, alpha=0.5):
         Image.fromarray(attn_norm.astype(np.float32), mode='F').resize(
             (w_px, h_px), resample=Image.NEAREST))
 
-    # Apply colormap (hot: black -> red -> yellow -> white)
-    heatmap_rgba = cm.hot(attn_resized)  # (H_px, W_px, 4) float [0,1]
+    # Apply colormap (jet: blue -> green -> yellow -> red)
+    heatmap_rgba = cm.jet(attn_resized)  # (H_px, W_px, 4) float [0,1]
     heatmap_rgb = (heatmap_rgba[..., :3] * 255).astype(np.uint8)
 
-    # Alpha blend
+    # Per-pixel alpha: attention value controls blend strength
+    # Low attention → show game, high attention → show heatmap color
+    alpha = (attn_resized * 0.7)[..., None]  # cap at 0.7 so game is always somewhat visible
     blended = (alpha * heatmap_rgb.astype(np.float32)
                + (1 - alpha) * frame.astype(np.float32))
     return np.clip(blended, 0, 255).astype(np.uint8)
