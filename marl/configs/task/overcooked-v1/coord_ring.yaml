@@ -1,5 +1,5 @@
 ENV_NAME: overcooked-v1
-ROLLOUT_LENGTH: 256
+ROLLOUT_LENGTH: 400
 ENV_KWARGS:
   layout: coord_ring
   obs_type: image
