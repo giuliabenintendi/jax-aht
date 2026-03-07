@@ -96,6 +96,38 @@ def make_sinusoidal_spatial_basis(h: int, w: int, depth: int = 8) -> jnp.ndarray
     return jnp.concatenate([h_enc, w_enc], axis=-1)  # (H, W, depth)
 
 
+def wall_attention_penalty(
+    attn_map: jnp.ndarray,
+    wall_mask: jnp.ndarray,
+) -> jnp.ndarray:
+    """Compute penalty for attention on interior wall cells.
+
+    The attention map may be at a different resolution than the wall mask
+    (e.g. after ResNet downsampling). We upsample the attention to tile
+    resolution using nearest neighbor, then sum the attention mass on walls.
+
+    Args:
+        attn_map: (batch, fh, fw) attention weights summing to 1.
+        wall_mask: (H_tile, W_tile) boolean, True for interior walls.
+
+    Returns:
+        Per-sample penalty (batch,), in [0, 1]. Higher = more attention on walls.
+    """
+    batch, fh, fw = attn_map.shape
+    h_tile, w_tile = wall_mask.shape
+
+    # Upsample attention to tile resolution via repeat (nearest neighbor)
+    scale_h = h_tile // fh + (1 if h_tile % fh else 0)
+    scale_w = w_tile // fw + (1 if w_tile % fw else 0)
+    attn_up = jnp.repeat(jnp.repeat(attn_map, scale_h, axis=1), scale_w, axis=2)
+    attn_up = attn_up[:, :h_tile, :w_tile]
+    # Renormalize after cropping
+    attn_up = attn_up / (jnp.sum(attn_up, axis=(1, 2), keepdims=True) + 1e-8)
+
+    # Sum attention mass on wall cells
+    return jnp.sum(attn_up * wall_mask[None, :, :], axis=(1, 2))
+
+
 def inferred_attention(
     pos_xy: jnp.ndarray,
     dir_idx: jnp.ndarray,

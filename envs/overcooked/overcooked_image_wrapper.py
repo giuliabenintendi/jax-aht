@@ -84,6 +84,17 @@ class OvercookedImageWrapper(BaseEnv):
         # Pre-render static background and identify dynamic tile positions
         self._static_bg, self._dynamic_pos = self._precompute_static_rendering()
 
+        # Interior wall mask: walls not adjacent to walkable tiles (never meaningful)
+        wall_map = np.array(self.env.layout["wall_map"])
+        walkable = ~wall_map
+        padded = np.pad(walkable, 1, constant_values=False)
+        adjacent_to_walkable = (
+            padded[:-2, 1:-1] | padded[2:, 1:-1] |
+            padded[1:-1, :-2] | padded[1:-1, 2:]
+        )
+        counter_walls = wall_map & adjacent_to_walkable
+        self.interior_wall_mask = jnp.array(wall_map & ~counter_walls)
+
     def _precompute_static_rendering(self):
         """Pre-render static tiles (interior walls, dispensers, goals).
 

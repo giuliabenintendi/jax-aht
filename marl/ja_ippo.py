@@ -18,7 +18,7 @@ import optax
 from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent
-from agents.ja_utils import jsd_divergence
+from agents.ja_utils import jsd_divergence, wall_attention_penalty
 from common.plot_utils import get_stats, get_metric_names
 from common.save_load_utils import save_train_run
 from envs import make_env
@@ -102,6 +102,9 @@ def make_train_scan(config, env):
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
+    wall_beta = config.get("JA_WALL_BETA", 0.0)
+    _inner_env = env._env if hasattr(env, "_env") else env
+    interior_wall_mask = getattr(_inner_env, "interior_wall_mask", None)
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -267,6 +270,14 @@ def make_train_scan(config, env):
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
                 r_ja_batch = jnp.concatenate([r_ja, r_ja])
                 reward_with_ja = reward_batch + ja_beta * r_ja_batch
+
+                # Wall attention penalty: penalize attention on interior walls
+                if interior_wall_mask is not None and wall_beta > 0:
+                    wall_pen_0 = wall_attention_penalty(attn_0.squeeze(0), interior_wall_mask)
+                    wall_pen_1 = wall_attention_penalty(attn_1.squeeze(0), interior_wall_mask)
+                    wall_pen_batch = jnp.concatenate([wall_pen_0, wall_pen_1])
+                    wall_pen_batch = jax.lax.stop_gradient(wall_pen_batch)
+                    reward_with_ja = reward_with_ja - wall_beta * wall_pen_batch
 
                 transition = JATransition(
                     done=batchify(new_done, env.agents, num_actors).squeeze(),
@@ -450,6 +461,14 @@ def make_train_loop(config, env):
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
+    wall_beta = config.get("JA_WALL_BETA", 0.0)
+
+    # Get interior wall mask from env (unwrap LogWrapper if needed)
+    _inner_env = env._env if hasattr(env, "_env") else env
+    interior_wall_mask = getattr(_inner_env, "interior_wall_mask", None)
+    if interior_wall_mask is not None and wall_beta > 0:
+        print(f"[ja_ippo] Wall attention penalty enabled: beta_wall={wall_beta}, "
+              f"wall_cells={int(interior_wall_mask.sum())}")
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -616,6 +635,14 @@ def make_train_loop(config, env):
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
                 r_ja_batch = jnp.concatenate([r_ja, r_ja])
                 reward_with_ja = reward_batch + ja_beta * r_ja_batch
+
+                # Wall attention penalty: penalize attention on interior walls
+                if interior_wall_mask is not None and wall_beta > 0:
+                    wall_pen_0 = wall_attention_penalty(attn_0.squeeze(0), interior_wall_mask)
+                    wall_pen_1 = wall_attention_penalty(attn_1.squeeze(0), interior_wall_mask)
+                    wall_pen_batch = jnp.concatenate([wall_pen_0, wall_pen_1])
+                    wall_pen_batch = jax.lax.stop_gradient(wall_pen_batch)
+                    reward_with_ja = reward_with_ja - wall_beta * wall_pen_batch
 
                 transition = JATransition(
                     done=batchify(new_done, env.agents, num_actors).squeeze(),
