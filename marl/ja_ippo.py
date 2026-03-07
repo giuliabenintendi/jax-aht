@@ -837,10 +837,12 @@ def log_eval_video(algorithm_config, env, out, logger):
         frames=frames,
     )
 
-    # Save attention overlay video
-    attn_video_path = f"{video_dir}/eval_attention.mp4"
-    make_attention_video(frames, attn_data, filename=attn_video_path, fps=10)
-    logger.log_video("Eval/attention_video", attn_video_path, commit=False)
+    # Save attention overlay videos (one per agent + combined)
+    attn_video_base = f"{video_dir}/eval_attention.mp4"
+    make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
+    logger.log_video("Eval/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
+    logger.log_video("Eval/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
+    logger.log_video("Eval/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
 
 
 def log_metrics(config, out, logger):
