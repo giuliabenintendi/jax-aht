@@ -348,26 +348,59 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
                    step=step, commit=commit)
 
 
-def _make_overlay_video(frames, attn_maps, title, cmap, filename, fps):
-    """Create a single MP4 with a heatmap panel overlaid next to the game frame."""
+def _overlay_attention(frame, attn, cmap_name, alpha=0.6):
+    """Blend a single attention heatmap onto a game frame.
+
+    Args:
+        frame: (H_px, W_px, 3) uint8 RGB.
+        attn: (fh, fw) float attention weights.
+        cmap_name: matplotlib colormap name (e.g. 'Blues', 'Reds', 'jet').
+        alpha: max overlay opacity.
+
+    Returns:
+        (H_px, W_px, 3) uint8 blended frame.
+    """
+    import numpy as np
+    import matplotlib.cm as cm
+    from PIL import Image
+
+    attn = np.array(attn).squeeze()
+    a_min, a_max = attn.min(), attn.max()
+    if a_max - a_min > 1e-8:
+        attn_norm = (attn - a_min) / (a_max - a_min)
+    else:
+        attn_norm = np.zeros_like(attn)
+
+    h_px, w_px = frame.shape[:2]
+    attn_resized = np.array(
+        Image.fromarray(attn_norm.astype(np.float32), mode='F').resize(
+            (w_px, h_px), resample=Image.NEAREST))
+
+    cmap = getattr(cm, cmap_name)
+    heatmap_rgb = cmap(attn_resized)[..., :3]  # (H, W, 3) float [0,1]
+    a = (attn_resized * alpha)[..., None]
+    blended = (1 - a) * frame.astype(np.float32) + a * heatmap_rgb * 255
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def _make_overlay_video(frames, attn_maps, cmap_name, filename, fps):
+    """Create a single MP4 with a colormap heatmap overlaid on the game frame."""
     import os
     import numpy as np
     from moviepy import ImageSequenceClip
 
     n = min(len(attn_maps), len(frames) - 1)
-    composite_frames = []
+    overlay_frames = []
     for i in range(n):
         frame_idx = min(i + 1, len(frames) - 1)
-        game_frame = frames[frame_idx]
-        attn = np.array(attn_maps[i]).squeeze()
-        panel = _render_heatmap_panel(attn, title, cmap, game_frame.shape[0])
-        composite_frames.append(np.concatenate([game_frame, panel], axis=1))
+        overlay = _overlay_attention(frames[frame_idx], attn_maps[i], cmap_name)
+        overlay_frames.append(overlay)
 
     os.makedirs(os.path.dirname(filename), exist_ok=True)
-    clip = ImageSequenceClip(composite_frames, fps=fps)
+    clip = ImageSequenceClip(overlay_frames, fps=fps)
     clip.write_videofile(filename, fps=fps, codec='libx264', audio=False,
                          bitrate='8000k', preset='slow')
-    print(f"[attn video] Saved {filename} ({len(composite_frames)} frames)")
+    print(f"[attn video] Saved {filename} ({len(overlay_frames)} frames)")
 
 
 def make_attention_video(frames, attn_data, filename, fps=10):
@@ -398,9 +431,9 @@ def make_attention_video(frames, attn_data, filename, fps=10):
     combined = [np.minimum(np.array(maps_0[i]).squeeze(),
                            np.array(maps_1[i]).squeeze()) for i in range(n)]
 
-    _make_overlay_video(frames, maps_0, "Agent 0", "Blues", f"{base}_agent0.mp4", fps)
-    _make_overlay_video(frames, maps_1, "Agent 1", "Reds", f"{base}_agent1.mp4", fps)
-    _make_overlay_video(frames, combined, "Combined", "jet", f"{base}_combined.mp4", fps)
+    _make_overlay_video(frames, maps_0, "Blues", f"{base}_agent0.mp4", fps)
+    _make_overlay_video(frames, maps_1, "Reds", f"{base}_agent1.mp4", fps)
+    _make_overlay_video(frames, combined, "jet", f"{base}_combined.mp4", fps)
 
 
 if __name__ == "__main__":
