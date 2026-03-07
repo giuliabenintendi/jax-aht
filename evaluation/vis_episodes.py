@@ -282,7 +282,7 @@ def render_episode_frames(ep_states, agent_view_size, pixels_per_tile=32):
     frames = []
     for ws in ep_states:
         state = ws.env_state
-        padding = agent_view_size - 2
+        padding = 4  # must match OvercookedImageWrapper._make_obs
         grid = np.asarray(state.maze_map[padding:-padding, padding:-padding, :])
         highlight_mask = np.zeros(grid.shape[:2], dtype=bool)
         frame = OvercookedVisualizer._render_grid(
