@@ -4,9 +4,9 @@ JA-IPPO: Joint Attention IPPO with shared parameters (Lee et al. 2021).
 Both agents share a single network and optimizer (parameter sharing). Cross-agent
 coordination comes from:
 
-  1. JA intrinsic reward: r_JA = 1 - JSD/ln(2), range [0, 1], positive reward
-     for attention alignment, scaled by beta ramping from 0 to JA_BETA_MAX
-     over JA_WARMUP_ENV_STEPS.
+  1. JA intrinsic reward: r_JA = JSD(attn_agent_0, attn_agent_1), positive
+     reward for attention diversity, scaled by beta ramping from 0 to
+     JA_BETA_MAX over JA_WARMUP_ENV_STEPS.
 '''
 import shutil
 from typing import NamedTuple
@@ -266,7 +266,7 @@ def make_train_scan(config, env):
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
                 jsd = jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))
-                r_ja = 1.0 - jsd / jnp.log(2.0)
+                r_ja = jsd
                 r_ja = jax.lax.stop_gradient(r_ja)
 
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
@@ -359,7 +359,7 @@ def make_train_scan(config, env):
             (total_loss, (value_loss, policy_loss, entropy)), grad_norm = loss_info
 
             ja_rew_0 = traj_batch.ja_reward[:, :num_envs]
-            jsd_values = (1.0 - ja_rew_0) * jnp.log(2.0)
+            jsd_values = ja_rew_0
 
             metric = traj_batch.info
             metric["update_steps"] = update_steps
@@ -635,7 +635,7 @@ def make_train_loop(config, env):
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
                 jsd = jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))
-                r_ja = 1.0 - jsd / jnp.log(2.0)
+                r_ja = jsd
                 r_ja = jax.lax.stop_gradient(r_ja)
 
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
@@ -728,7 +728,7 @@ def make_train_loop(config, env):
             (total_loss, (value_loss, policy_loss, entropy)), grad_norm = loss_info
 
             ja_rew_0 = traj_batch.ja_reward[:, :num_envs]
-            jsd_values = (1.0 - ja_rew_0) * jnp.log(2.0)
+            jsd_values = ja_rew_0
 
             metric = traj_batch.info
             metric["update_steps"] = update_steps
