@@ -4,9 +4,9 @@ JA-IPPO: Joint Attention IPPO with shared parameters (Lee et al. 2021).
 Both agents share a single network and optimizer (parameter sharing). Cross-agent
 coordination comes from:
 
-  1. JA intrinsic reward: r_JA = JSD(attn_agent_0, attn_agent_1), positive
-     reward for attention diversity, scaled by beta ramping from 0 to
-     JA_BETA_MAX over JA_WARMUP_ENV_STEPS.
+  1. JA intrinsic reward: r_JA = -JSD(attn_agent_0, attn_agent_1), penalty
+     for attention divergence, scaled by beta ramping from 0 to JA_BETA_MAX
+     over JA_WARMUP_ENV_STEPS. Combined with env reward before normalization.
 '''
 import shutil
 from typing import NamedTuple
@@ -265,8 +265,7 @@ def make_train_scan(config, env):
 
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
-                jsd = jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))
-                r_ja = jsd
+                r_ja = -jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))
                 r_ja = jax.lax.stop_gradient(r_ja)
 
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
@@ -340,15 +339,14 @@ def make_train_scan(config, env):
                 )
                 return advantages, advantages + traj_batch.value
 
-            # Normalize env reward only, then add intrinsic (JA + wall) unnormalized
+            # Combined normalization (matching paper): add intrinsic to raw, normalize together
+            combined_raw = traj_batch.reward + intrinsic_batch
             if normalize_rewards:
-                rew_norm_state = reward_norm_update(rew_norm_state, traj_batch.reward)
-                normalized_env = reward_norm_apply(rew_norm_state, traj_batch.reward)
-                combined = normalized_env + intrinsic_batch
+                rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
+                combined = reward_norm_apply(rew_norm_state, combined_raw)
                 traj_batch = traj_batch._replace(reward=combined)
             else:
-                traj_batch = traj_batch._replace(
-                    reward=traj_batch.reward + intrinsic_batch)
+                traj_batch = traj_batch._replace(reward=combined_raw)
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
@@ -359,7 +357,7 @@ def make_train_scan(config, env):
             (total_loss, (value_loss, policy_loss, entropy)), grad_norm = loss_info
 
             ja_rew_0 = traj_batch.ja_reward[:, :num_envs]
-            jsd_values = ja_rew_0
+            jsd_values = -ja_rew_0
 
             metric = traj_batch.info
             metric["update_steps"] = update_steps
@@ -634,8 +632,7 @@ def make_train_loop(config, env):
 
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
-                jsd = jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))
-                r_ja = jsd
+                r_ja = -jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))
                 r_ja = jax.lax.stop_gradient(r_ja)
 
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
@@ -709,15 +706,14 @@ def make_train_loop(config, env):
                 )
                 return advantages, advantages + traj_batch.value
 
-            # Normalize env reward only, then add intrinsic (JA + wall) unnormalized
+            # Combined normalization (matching paper): add intrinsic to raw, normalize together
+            combined_raw = traj_batch.reward + intrinsic_batch
             if normalize_rewards:
-                rew_norm_state = reward_norm_update(rew_norm_state, traj_batch.reward)
-                normalized_env = reward_norm_apply(rew_norm_state, traj_batch.reward)
-                combined = normalized_env + intrinsic_batch
+                rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
+                combined = reward_norm_apply(rew_norm_state, combined_raw)
                 traj_batch = traj_batch._replace(reward=combined)
             else:
-                traj_batch = traj_batch._replace(
-                    reward=traj_batch.reward + intrinsic_batch)
+                traj_batch = traj_batch._replace(reward=combined_raw)
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
@@ -728,7 +724,7 @@ def make_train_loop(config, env):
             (total_loss, (value_loss, policy_loss, entropy)), grad_norm = loss_info
 
             ja_rew_0 = traj_batch.ja_reward[:, :num_envs]
-            jsd_values = ja_rew_0
+            jsd_values = -ja_rew_0
 
             metric = traj_batch.info
             metric["update_steps"] = update_steps
