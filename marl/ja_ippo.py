@@ -19,7 +19,7 @@ import optax
 from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent
-from agents.ja_utils import jsd_divergence, wall_attention_penalty
+from agents.ja_utils import jsd_divergence
 from common.plot_utils import get_stats, get_metric_names
 from common.save_load_utils import save_train_run
 from envs import make_env
@@ -103,10 +103,6 @@ def make_train_scan(config, env):
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
-    wall_beta = config.get("JA_WALL_BETA", 0.0)
-    _inner_env = env._env if hasattr(env, "_env") else env
-    interior_wall_mask = getattr(_inner_env, "interior_wall_mask", None)
-
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
         return config["LR"] * frac
@@ -271,14 +267,7 @@ def make_train_scan(config, env):
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
                 r_ja_batch = jnp.concatenate([r_ja, r_ja])
 
-                # Compute intrinsic reward (JA + wall penalty), kept separate for normalization
                 intrinsic = ja_beta * r_ja_batch
-                if interior_wall_mask is not None and wall_beta > 0:
-                    wall_pen_0 = wall_attention_penalty(attn_0.squeeze(0), interior_wall_mask)
-                    wall_pen_1 = wall_attention_penalty(attn_1.squeeze(0), interior_wall_mask)
-                    wall_pen_batch = jnp.concatenate([wall_pen_0, wall_pen_1])
-                    wall_pen_batch = jax.lax.stop_gradient(wall_pen_batch)
-                    intrinsic = intrinsic - wall_beta * wall_pen_batch
 
                 transition = JATransition(
                     done=batchify(new_done, env.agents, num_actors).squeeze(),
@@ -339,8 +328,11 @@ def make_train_scan(config, env):
                 )
                 return advantages, advantages + traj_batch.value
 
+            # Save raw env reward before combining
+            raw_env_reward = traj_batch.reward
+
             # Combined normalization (matching paper): add intrinsic to raw, normalize together
-            combined_raw = traj_batch.reward + intrinsic_batch
+            combined_raw = raw_env_reward + intrinsic_batch
             if normalize_rewards:
                 rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
                 combined = reward_norm_apply(rew_norm_state, combined_raw)
@@ -369,7 +361,9 @@ def make_train_scan(config, env):
             metric["loss_policy"] = policy_loss[0].mean()
             metric["entropy"] = entropy.mean()
             metric["grad_norm"] = grad_norm.mean()
-            metric["env_reward_0_mean"] = traj_batch.reward[:, :num_envs].mean()
+            metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
+            metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
+            metric["combined_reward_mean"] = traj_batch.reward[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
 
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
@@ -464,15 +458,6 @@ def make_train_loop(config, env):
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
-    wall_beta = config.get("JA_WALL_BETA", 0.0)
-
-    # Get interior wall mask from env (unwrap LogWrapper if needed)
-    _inner_env = env._env if hasattr(env, "_env") else env
-    interior_wall_mask = getattr(_inner_env, "interior_wall_mask", None)
-    if interior_wall_mask is not None and wall_beta > 0:
-        print(f"[ja_ippo] Wall attention penalty enabled: beta_wall={wall_beta}, "
-              f"wall_cells={int(interior_wall_mask.sum())}")
-
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
         return config["LR"] * frac
@@ -638,14 +623,7 @@ def make_train_loop(config, env):
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
                 r_ja_batch = jnp.concatenate([r_ja, r_ja])
 
-                # Compute intrinsic reward (JA + wall penalty), kept separate for normalization
                 intrinsic = ja_beta * r_ja_batch
-                if interior_wall_mask is not None and wall_beta > 0:
-                    wall_pen_0 = wall_attention_penalty(attn_0.squeeze(0), interior_wall_mask)
-                    wall_pen_1 = wall_attention_penalty(attn_1.squeeze(0), interior_wall_mask)
-                    wall_pen_batch = jnp.concatenate([wall_pen_0, wall_pen_1])
-                    wall_pen_batch = jax.lax.stop_gradient(wall_pen_batch)
-                    intrinsic = intrinsic - wall_beta * wall_pen_batch
 
                 transition = JATransition(
                     done=batchify(new_done, env.agents, num_actors).squeeze(),
@@ -706,8 +684,11 @@ def make_train_loop(config, env):
                 )
                 return advantages, advantages + traj_batch.value
 
+            # Save raw env reward before combining
+            raw_env_reward = traj_batch.reward
+
             # Combined normalization (matching paper): add intrinsic to raw, normalize together
-            combined_raw = traj_batch.reward + intrinsic_batch
+            combined_raw = raw_env_reward + intrinsic_batch
             if normalize_rewards:
                 rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
                 combined = reward_norm_apply(rew_norm_state, combined_raw)
@@ -736,7 +717,9 @@ def make_train_loop(config, env):
             metric["loss_policy"] = policy_loss[0].mean()
             metric["entropy"] = entropy.mean()
             metric["grad_norm"] = grad_norm.mean()
-            metric["env_reward_0_mean"] = traj_batch.reward[:, :num_envs].mean()
+            metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
+            metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
+            metric["combined_reward_mean"] = traj_batch.reward[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
 
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
@@ -889,7 +872,9 @@ def log_metrics(config, out, logger):
         ("ja_beta", "JA"),
         ("ja_reward_mean", "JA"),
         ("jsd_mean", "JA"),
-        ("env_reward_0_mean", "Rewards"),
+        ("raw_env_reward_mean", "Rewards"),
+        ("intrinsic_mean", "Rewards"),
+        ("combined_reward_mean", "Rewards"),
         ("loss_total", "Losses"),
         ("loss_value", "Losses"),
         ("loss_policy", "Losses"),
@@ -926,10 +911,11 @@ def log_metrics(config, out, logger):
             ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in train_stats.items())
             soups = train_stats["base_return"][step, 0] / 20.0 if "base_return" in train_stats else 0
             jsd = float(scalar_data.get("jsd_mean", np.zeros(num_updates))[step])
+            intrinsic = float(scalar_data.get("intrinsic_mean", np.zeros(num_updates))[step])
             loss = float(scalar_data.get("loss_total", np.zeros(num_updates))[step])
             grad = float(scalar_data.get("grad_norm", np.zeros(num_updates))[step])
             print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  "
-                  f"{ret_str}  soups={soups:.1f}  jsd={jsd:.4f}  loss={loss:.4f}  grad={grad:.3f}")
+                  f"{ret_str}  soups={soups:.1f}  jsd={jsd:.4f}  intrinsic={intrinsic:.4f}  loss={loss:.4f}  grad={grad:.3f}")
 
     logger.commit()
 
