@@ -37,6 +37,8 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         obs_type = env_kwargs_copy.pop("obs_type", "symbolic")
 
         generator_args, env_kwargs_copy = process_default_args(env_kwargs_copy, default_generator_args)
+        # Full observability: fov must equal grid_size
+        generator_args["fov"] = generator_args["grid_size"]
         viewer_args, env_kwargs_copy = process_default_args(env_kwargs_copy, default_viewer_args)
         jumanji_env = jumanji.make('LevelBasedForaging-v0',
                             generator=LbfGenerator(**generator_args),

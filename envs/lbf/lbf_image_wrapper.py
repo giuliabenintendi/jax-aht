@@ -55,8 +55,8 @@ class LBFImageWrapper(BaseEnv):
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
 
         # Extract grid params from generator
-        self._grid_size = self.env.generator.grid_size
-        self._num_food = self.env.generator.num_food
+        self._grid_size = self.env._generator.grid_size
+        self._num_food = self.env._generator.num_food
 
         # Image dimensions (exposed for initialize_agents._get_image_dims)
         self.grid_height = self._grid_size

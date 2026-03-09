@@ -3,7 +3,6 @@ ROLLOUT_LENGTH: 128
 ENV_KWARGS:
   obs_type: image
   grid_size: 7
-  fov: 7
   num_agents: 2
   num_food: 3
   max_agent_level: 2
