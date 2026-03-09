@@ -1,12 +1,15 @@
 """Joint Attention Actor-Critic network for image observations.
 
-Per-agent architecture:
-  obs (flat) -> unpack image (H_px, W_px, 3)
-  Image -> ResNet encoder -> features F  (H_out, W_out, filters)
-  F + sinusoidal spatial basis -> 1x1 Conv -> Keys K, Values V
-  Q = Dense(concat(h, c)) — query from own LSTM state
-  Multi-head attention: softmax(Q . K) -> attended O
-  Concat(O) -> FC -> FC -> LSTM -> projection
+Architecture:
+  Shared ResNet encoder extracts spatial features from the observation image.
+  Per-agent attention heads (K/V/Q projections, multi-head attention, FC, LSTM)
+  process these features independently, producing separate attention maps
+  and embeddings for each agent. Per-agent actor and critic projection heads
+  produce actions and values.
+
+  The batch dimension is split at the midpoint: first half = agent 0,
+  second half = agent 1. This matches the batchify layout used in training
+  (batchify stacks agent_0 envs first, then agent_1 envs).
 """
 import functools
 
@@ -33,8 +36,97 @@ def _compute_resnet_output_dims(h, w, stride, kernel_size, padding, num_blocks):
     return h, w
 
 
+class AgentAttentionHead(nn.Module):
+    """Per-agent attention head: K/V/Q projections, multi-head attention, FC, LSTM.
+
+    Takes shared ResNet features (with spatial basis) and the agent's LSTM state,
+    computes attention over spatial locations, and updates the LSTM.
+    """
+    num_heads: int
+    head_features: int
+    fc_hidden_dim: int
+    lstm_hidden_dim: int
+    feat_h: int
+    feat_w: int
+
+    @nn.compact
+    def __call__(self, features_with_pos, lstm_h, lstm_c):
+        m, cm = self.num_heads, self.head_features
+        fh, fw = self.feat_h, self.feat_w
+        batch = features_with_pos.shape[0]
+
+        keys = nn.Conv(
+            features=m * cm, kernel_size=(1, 1),
+            kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+            name="key_conv",
+        )(features_with_pos)
+        keys = keys.reshape(batch, fh * fw, m, cm)
+
+        values = nn.Conv(
+            features=m * cm, kernel_size=(1, 1),
+            kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+            name="value_conv",
+        )(features_with_pos)
+        values = values.reshape(batch, fh * fw, m, cm)
+
+        own_state = jnp.concatenate([lstm_h, lstm_c], axis=-1)
+        queries = nn.Dense(
+            m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+            name="query_ffn",
+        )(own_state)
+        queries = queries.reshape(batch, m, cm)
+
+        attn_logits = jnp.einsum("bnmc,bmc->bnm", keys, queries)
+        attn_weights = jax.nn.softmax(attn_logits, axis=1)
+        attended = jnp.einsum("bnm,bnmc->bmc", attn_weights, values)
+        attended_flat = attended.reshape(batch, m * cm)
+        attn_map = attn_weights.mean(axis=-1).reshape(batch, fh, fw)
+
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc1",
+        )(attended_flat)
+        lstm_input = nn.relu(lstm_input)
+        lstm_input = nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            name="input_fc2",
+        )(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+
+        (new_h, new_c), lstm_out = nn.OptimizedLSTMCell(
+            features=self.lstm_hidden_dim,
+        )((lstm_h, lstm_c), lstm_input)
+
+        return (new_h, new_c), lstm_out, attn_map
+
+
+class ProjectionHead(nn.Module):
+    """FC -> FC -> linear projection, used for per-agent actor/critic heads."""
+    fc_hidden_dim: int
+    output_dim: int
+    output_init_scale: float = 1.0
+
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Dense(self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
+                     bias_init=constant(0.0))(x)
+        x = nn.relu(x)
+        x = nn.Dense(self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
+                     bias_init=constant(0.0))(x)
+        x = nn.relu(x)
+        return nn.Dense(self.output_dim, kernel_init=orthogonal(self.output_init_scale),
+                        bias_init=constant(0.0))(x)
+
+
 class JAImageScannedLSTM(nn.Module):
-    """Scanned module: ResNet encoder + spatial attention + LSTM."""
+    """Scanned module: shared ResNet encoder + per-agent attention heads.
+
+    The batch is split at the midpoint: first half goes through agent 0's
+    attention head, second half through agent 1's. Each head has independent
+    K/V/Q projections, FC layers, and LSTM parameters.
+    """
     img_height: int
     img_width: int
     conv_filters: int = 32
@@ -72,7 +164,7 @@ class JAImageScannedLSTM(nn.Module):
         obs_flat, dones = x
 
         batch_size = obs_flat.shape[0]
-        m, cm = self.num_heads, self.head_features
+        n = batch_size // 2
         fh, fw = self.feat_h, self.feat_w
 
         # Reset LSTM state on episode boundaries
@@ -84,7 +176,7 @@ class JAImageScannedLSTM(nn.Module):
         img_flat = obs_flat[:, :self._img_flat_dim]
         image = img_flat.reshape(batch_size, self.img_height, self.img_width, 3)
 
-        # ResNet encoder -> (batch, feat_h, feat_w, conv_filters)
+        # Shared ResNet encoder -> (batch, feat_h, feat_w, conv_filters)
         features = ResNetEncoder(
             num_blocks=self.conv_num_blocks,
             filters=self.conv_filters,
@@ -94,63 +186,36 @@ class JAImageScannedLSTM(nn.Module):
             name="resnet_encoder",
         )(image)
 
-        # Append spatial basis, compute K and V via 1x1 conv
+        # Shared spatial basis
         spatial = jnp.broadcast_to(
             self.spatial_basis[None, ...],
             (batch_size, fh, fw, self.spatial_basis_depth),
         )
         features_with_pos = jnp.concatenate([features, spatial], axis=-1)
 
-        keys = nn.Conv(
-            features=m * cm, kernel_size=(1, 1),
-            kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-            name="key_conv",
-        )(features_with_pos)
-        keys = keys.reshape(batch_size, fh * fw, m, cm)
+        # Per-agent attention heads (batch split: [:n] = agent 0, [n:] = agent 1)
+        head_kwargs = dict(
+            num_heads=self.num_heads,
+            head_features=self.head_features,
+            fc_hidden_dim=self.fc_hidden_dim,
+            lstm_hidden_dim=self.lstm_hidden_dim,
+            feat_h=fh,
+            feat_w=fw,
+        )
 
-        values = nn.Conv(
-            features=m * cm, kernel_size=(1, 1),
-            kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-            name="value_conv",
-        )(features_with_pos)
-        values = values.reshape(batch_size, fh * fw, m, cm)
+        (new_h_0, new_c_0), out_0, attn_0 = AgentAttentionHead(
+            **head_kwargs, name="agent0_head",
+        )(features_with_pos[:n], lstm_h[:n], lstm_c[:n])
 
-        # Query from own LSTM state
-        own_state = jnp.concatenate([lstm_h, lstm_c], axis=-1)
-        queries = nn.Dense(
-            m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-            name="query_ffn",
-        )(own_state)
-        queries = queries.reshape(batch_size, m, cm)
+        (new_h_1, new_c_1), out_1, attn_1 = AgentAttentionHead(
+            **head_kwargs, name="agent1_head",
+        )(features_with_pos[n:], lstm_h[n:], lstm_c[n:])
 
-        # Multi-head spatial attention
-        attn_logits = jnp.einsum("bnmc,bmc->bnm", keys, queries)
-        attn_weights = jax.nn.softmax(attn_logits, axis=1)
-
-        attended = jnp.einsum("bnm,bnmc->bmc", attn_weights, values)
-        attended_flat = attended.reshape(batch_size, m * cm)
-
-        attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
-
-        # FC layers before LSTM
-        lstm_input = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-            name="input_fc1",
-        )(attended_flat)
-        lstm_input = nn.relu(lstm_input)
-        lstm_input = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-            name="input_fc2",
-        )(lstm_input)
-        lstm_input = nn.relu(lstm_input)
-
-        # LSTM update
-        new_carry, lstm_out = nn.OptimizedLSTMCell(
-            features=self.lstm_hidden_dim,
-        )((lstm_h, lstm_c), lstm_input)
-        new_h, new_c = new_carry
+        # Recombine along batch dimension
+        new_h = jnp.concatenate([new_h_0, new_h_1], axis=0)
+        new_c = jnp.concatenate([new_c_0, new_c_1], axis=0)
+        lstm_out = jnp.concatenate([out_0, out_1], axis=0)
+        attn_map = jnp.concatenate([attn_0, attn_1], axis=0)
 
         return (new_h, new_c), (lstm_out, attn_map)
 
@@ -163,7 +228,12 @@ class JAImageScannedLSTM(nn.Module):
 
 
 class JAImageActorCritic(nn.Module):
-    """Joint Attention Actor-Critic for image observations with ResNet encoder."""
+    """Joint Attention Actor-Critic with shared ResNet, per-agent heads.
+
+    Expects batch entries for agent 0 in the first half and agent 1 in the
+    second half. Each agent has independent attention, LSTM, and projection
+    parameters while sharing the ResNet backbone.
+    """
     action_dim: int
     img_height: int
     img_width: int
@@ -204,20 +274,17 @@ class JAImageActorCritic(nn.Module):
             **rnn_kwargs, name="actor_lstm",
         )(actor_lstm_state, (obs, dones))
 
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0), name="actor_fc1",
-        )(actor_embed)
-        actor_out = nn.relu(actor_out)
-        actor_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0), name="actor_fc2",
-        )(actor_out)
-        actor_out = nn.relu(actor_out)
-        action_logits = nn.Dense(
-            self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
-            name="actor_proj",
-        )(actor_out)
+        # Per-agent actor projections
+        n = actor_embed.shape[-2] // 2
+        embed_0, embed_1 = actor_embed[..., :n, :], actor_embed[..., n:, :]
+
+        logits_0 = ProjectionHead(
+            self.fc_hidden_dim, self.action_dim, 0.01, name="agent0_actor",
+        )(embed_0)
+        logits_1 = ProjectionHead(
+            self.fc_hidden_dim, self.action_dim, 0.01, name="agent1_actor",
+        )(embed_1)
+        action_logits = jnp.concatenate([logits_0, logits_1], axis=-2)
 
         unavail_actions = 1 - avail_actions
         action_logits = action_logits - (unavail_actions * 1e10)
@@ -228,20 +295,14 @@ class JAImageActorCritic(nn.Module):
             **rnn_kwargs, name="critic_lstm",
         )(critic_lstm_state, (obs, dones))
 
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0), name="critic_fc1",
-        )(critic_embed)
-        critic_out = nn.relu(critic_out)
-        critic_out = nn.Dense(
-            self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0), name="critic_fc2",
-        )(critic_out)
-        critic_out = nn.relu(critic_out)
-        value = nn.Dense(
-            1, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-            name="critic_proj",
-        )(critic_out)
+        cembed_0, cembed_1 = critic_embed[..., :n, :], critic_embed[..., n:, :]
+        val_0 = ProjectionHead(
+            self.fc_hidden_dim, 1, 1.0, name="agent0_critic",
+        )(cembed_0)
+        val_1 = ProjectionHead(
+            self.fc_hidden_dim, 1, 1.0, name="agent1_critic",
+        )(cembed_1)
+        value = jnp.concatenate([val_0, val_1], axis=-2)
 
         new_hidden = (actor_lstm_state, critic_lstm_state)
         return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map

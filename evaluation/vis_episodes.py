@@ -127,6 +127,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_0,
                 hstate=hstate_0,
                 rng=act_rng,
+                agent_id=0,
             )
             attn_maps["agent_0"].append(attn_0)
         else:
@@ -149,6 +150,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_1,
                 hstate=hstate_1,
                 rng=part_rng,
+                agent_id=1,
             )
             attn_maps["agent_1"].append(attn_1)
         else:

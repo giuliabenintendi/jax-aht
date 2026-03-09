@@ -79,7 +79,7 @@ class JAActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   aux_obs=None, env_state=None, test_mode=False):
+                   aux_obs=None, env_state=None, test_mode=False, agent_id=None):
         hidden = self._unpack_hstate(hstate)
         new_hidden, pi, _, _ = self.network.apply(
             params, hidden, (obs, done, avail_actions)
@@ -94,7 +94,7 @@ class JAActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action_and_attention(self, params, obs, done, avail_actions, hstate, rng,
-                                 test_mode=False):
+                                 test_mode=False, agent_id=None):
         """Like get_action, but also returns the attention map.
 
         Returns:
