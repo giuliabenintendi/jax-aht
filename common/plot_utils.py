@@ -7,7 +7,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 def get_metric_names(env_name):
-    if env_name == "lbf " or env_name == "lbf-reward-shaping":
+    if env_name in ("lbf", "lbf-reward-shaping", "lbf-image"):
         return ("percent_eaten", "returned_episode_returns")
     elif env_name == "overcooked-v1":
         return ("base_return", "returned_episode_returns")

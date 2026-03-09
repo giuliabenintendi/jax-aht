@@ -800,13 +800,35 @@ def run_ja_ippo(config, logger):
     return out
 
 
+def _render_lbf_eval_frames(inner_env, ep_states):
+    """Render LBF eval frames using the Jumanji matplotlib viewer for quality."""
+    import matplotlib
+    matplotlib.use("Agg")
+    from jumanji.environments.routing.lbf.viewer import LevelBasedForagingViewer
+
+    # Get grid_size from the wrapper or underlying jumanji env
+    wrapper = inner_env._env if hasattr(inner_env, '_env') else inner_env
+    jumanji_env = wrapper.env if hasattr(wrapper, 'env') else wrapper
+    grid_size = jumanji_env.generator.grid_size
+
+    viewer = LevelBasedForagingViewer(grid_size=grid_size, render_mode="rgb_array")
+    frames = []
+    for s in ep_states:
+        rgba = viewer.render(s.env_state)
+        # RGBA -> RGB
+        frames.append(rgba[:, :, :3])
+    viewer.close()
+    return frames
+
+
 def log_eval_video(algorithm_config, env, out, logger):
     """Run one eval episode with final params (seed 0), log video + attention to wandb."""
     import os
     from evaluation.vis_episodes import (
         run_episode_with_states, log_attention_to_wandb, make_attention_video,
-        render_episode_frames,
     )
+
+    env_name = algorithm_config["ENV_NAME"]
 
     obs_type = _get_obs_type(algorithm_config)
     init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
@@ -830,12 +852,16 @@ def log_eval_video(algorithm_config, env, out, logger):
     )
     print(f"[ja_ippo] Eval episode: {len(ep_states)} frames collected")
 
-    # Render frames once (non-JAX, fast) and reuse for video + attention overlay
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     video_dir = f"{savedir}/videos"
     os.makedirs(video_dir, exist_ok=True)
 
-    frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
+    # Render frames from episode states
+    if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
+        frames = _render_lbf_eval_frames(inner_env, ep_states)
+    else:
+        from evaluation.vis_episodes import render_episode_frames
+        frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
 
     # Save plain eval video
     from moviepy import ImageSequenceClip

@@ -18,12 +18,12 @@ def process_default_args(env_kwargs: dict, default_args: dict):
     return default_args_copy, env_kwargs_copy
 
 def make_env(env_name: str, env_kwargs: dict = {}):
-    if env_name in ['lbf', 'lbf-reward-shaping']:
+    if env_name in ['lbf', 'lbf-reward-shaping', 'lbf-image']:
         default_generator_args = {
             "grid_size": 7,
-            "fov": 7, 
+            "fov": 7,
             "num_agents": 2,
-            "num_food": 3, 
+            "num_food": 3,
             "max_agent_level": 2,
             "force_coop": True,
         }
@@ -33,18 +33,24 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         from envs.lbf.reward_shaping_lbf_wrapper import RewardShapingLBFWrapper
         from envs.lbf.adhoc_lbf_viewer import AdHocLBFViewer
 
-        generator_args, env_kwargs_copy = process_default_args(env_kwargs, default_generator_args)
+        env_kwargs_copy = dict(copy.deepcopy(env_kwargs))
+        obs_type = env_kwargs_copy.pop("obs_type", "symbolic")
+
+        generator_args, env_kwargs_copy = process_default_args(env_kwargs_copy, default_generator_args)
         viewer_args, env_kwargs_copy = process_default_args(env_kwargs_copy, default_viewer_args)
-        env = jumanji.make('LevelBasedForaging-v0', 
+        jumanji_env = jumanji.make('LevelBasedForaging-v0',
                             generator=LbfGenerator(**generator_args),
                             **env_kwargs_copy,
                             viewer=AdHocLBFViewer(grid_size=generator_args["grid_size"],
                                                   **viewer_args))
 
-        if env_name == 'lbf-reward-shaping':
-            env = RewardShapingLBFWrapper(env, share_rewards=True)
+        if env_name == 'lbf-image' or obs_type == 'image':
+            from envs.lbf.lbf_image_wrapper import LBFImageWrapper
+            env = LBFImageWrapper(jumanji_env, share_rewards=True)
+        elif env_name == 'lbf-reward-shaping':
+            env = RewardShapingLBFWrapper(jumanji_env, share_rewards=True)
         else:
-            env = LBFWrapper(env, share_rewards=True)
+            env = LBFWrapper(jumanji_env, share_rewards=True)
         
     elif env_name == 'overcooked-v1':
         default_env_kwargs = {

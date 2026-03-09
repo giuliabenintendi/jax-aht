@@ -116,6 +116,7 @@ def _get_image_dims(env):
     """Extract image dimensions from an image/FOV wrapper.
 
     Both wrappers now produce image-only obs (no appended scalars).
+    Works for OvercookedImageWrapper, OvercookedFOVWrapper, and LBFImageWrapper.
     """
     wrapper = env._env if hasattr(env, '_env') else env
     if hasattr(wrapper, 'fov_px'):
