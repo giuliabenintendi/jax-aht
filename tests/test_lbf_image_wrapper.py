@@ -1,7 +1,9 @@
 """Tests for LBF image observation wrapper and JAX renderer."""
+import numpy as np
 import jax
 import jax.numpy as jnp
 import pytest
+from PIL import Image
 
 from envs import make_env
 from envs.log_wrapper import LogWrapper
@@ -175,25 +177,53 @@ class TestLBFImageWrapper:
 class TestMakeEnv:
     def test_make_env_lbf_image(self):
         env = make_env('lbf-image', env_kwargs={
-            'grid_size': 5,
+            'grid_size': 8,
             'num_agents': 2,
             'num_food': 2,
             'force_coop': True,
         })
-        assert env.grid_height == 5
+        assert env.grid_height == 8
         obs, _ = env.reset(jax.random.PRNGKey(0))
-        expected_dim = 5 * TILE_PIXELS * 5 * TILE_PIXELS * 3
+        expected_dim = 8 * TILE_PIXELS * 8 * TILE_PIXELS * 3
         assert obs["agent_0"].shape == (expected_dim,)
 
     def test_make_env_lbf_obs_type_image(self):
         """obs_type='image' in ENV_KWARGS should also produce image wrapper."""
         env = make_env('lbf', env_kwargs={
             'obs_type': 'image',
-            'grid_size': 5,
+            'grid_size': 8,
             'num_agents': 2,
             'num_food': 2,
         })
         assert hasattr(env, 'grid_height')
         obs, _ = env.reset(jax.random.PRNGKey(0))
-        expected_dim = 5 * TILE_PIXELS * 5 * TILE_PIXELS * 3
+        expected_dim = 8 * TILE_PIXELS * 8 * TILE_PIXELS * 3
         assert obs["agent_0"].shape == (expected_dim,)
+
+
+class TestSaveImageObs:
+    def test_save_image_obs(self):
+        """Save sample LBF image observations as PNGs for visual inspection.
+
+        Run with: pytest -s tests/test_lbf_image_wrapper.py::TestSaveImageObs
+        """
+        env = make_env('lbf-image', env_kwargs={
+            'grid_size': GRID_SIZE,
+            'num_agents': NUM_AGENTS,
+            'num_food': NUM_FOOD,
+            'max_agent_level': 2,
+            'force_coop': True,
+        })
+        obs, _ = env.reset(jax.random.PRNGKey(0))
+
+        h = env.grid_height * TILE_PIXELS
+        w = env.grid_width * TILE_PIXELS
+        scale = 10
+
+        for agent in env.agents:
+            arr = np.array(obs[agent])
+            img = (arr * 255).astype(np.uint8).reshape(h, w, 3)
+            img_large = np.kron(img, np.ones((scale, scale, 1))).astype(np.uint8)
+            fname = f"lbf_image_obs_{agent}.png"
+            Image.fromarray(img_large).save(fname)
+            print(f"\nSaved {fname} ({img_large.shape[0]}x{img_large.shape[1]})")
