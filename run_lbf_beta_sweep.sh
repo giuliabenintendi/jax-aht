@@ -8,8 +8,8 @@
 set -e
 
 GPU="${1:-6}"
-TIMESTEPS=5e6
-WARMUP=3500000
+TIMESTEPS=2e6
+WARMUP=1400000
 BETAS=(1e-3 5e-3 8e-3 0.01)
 
 for BETA in "${BETAS[@]}"; do
