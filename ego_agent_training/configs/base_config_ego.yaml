@@ -29,10 +29,6 @@ name: ${TASK_NAME}/${algorithm.ALG}_${algorithm.EGO_ACTOR_TYPE}/${label}
 logger:
   project: aht-benchmark
   entity: aht-project
-  tags:
-    - ${algorithm.ALG}
-    - ${TASK_NAME}
-    - ${label}
   mode: offline # options: online, offline, disabled
   verbose: false
   log_train_out: true # whether to log the out dictionary

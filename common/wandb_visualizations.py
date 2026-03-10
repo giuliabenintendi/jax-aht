@@ -3,22 +3,79 @@ import wandb
 from omegaconf import OmegaConf
 
 
+def _format_timesteps(n: float) -> str:
+    """Format timestep count as human-readable string, e.g. 2e6 → '2M'."""
+    n = float(n)
+    if n >= 1e6 and n % 1e6 == 0:
+        return f"{int(n // 1e6)}M"
+    if n >= 1e6:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1e3 and n % 1e3 == 0:
+        return f"{int(n // 1e3)}K"
+    return str(int(n))
+
+
+def _build_run_string(alg_config: dict) -> str:
+    """Build the descriptive part of the run name from algorithm config."""
+    alg = alg_config["ALG"]
+    parts = [alg]
+    if "TOTAL_TIMESTEPS" in alg_config:
+        parts.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
+    if "JA_BETA_MAX" in alg_config:
+        parts.append(f"BETA{alg_config['JA_BETA_MAX']}")
+    return "_".join(parts)
+
+
+def _build_tags(config) -> list[str]:
+    """Build tags list from config for wandb filtering."""
+    alg_config = config["algorithm"]
+    tags = [
+        str(alg_config["ALG"]),
+        str(config["TASK_NAME"]),
+        f"seed={alg_config['TRAIN_SEED']}",
+        f"num_envs={alg_config['NUM_ENVS']}",
+    ]
+    label = config.get("label", "default_label")
+    if label != "default_label":
+        tags.append(str(label))
+    return tags
+
+
+def _build_group(config) -> str:
+    """Build group string: TASK_NAME/ALG."""
+    return f"{config['TASK_NAME']}/{config['algorithm']['ALG']}"
+
+
 class Logger:
     """
     Class to initialize logger object for writing experiment results to wandb.
     """
     def __init__(self, config):
         self.verbose = config["logger"].get("verbose", False)
+        tags = _build_tags(config)
+        group_string = _build_group(config)
+        run_string = _build_run_string(config["algorithm"])
+
+        if len(run_string) > 250:
+            raise ValueError("Run name exceeds file name length limit.")
+
         self.run = wandb.init(
             project=config["logger"]["project"],
             entity=config["logger"]["entity"],
             config=OmegaConf.to_container(config, resolve=True, throw_on_missing=True),
-            tags=config["logger"].get("tags", None),
+            tags=tags,
             notes=config["logger"].get("notes", None),
-            group=config["logger"].get("group", None),
+            group=group_string,
             mode=config["logger"].get("mode", None),
+            save_code=True,
             reinit=True,
-            )
+        )
+
+        if self.run.sweep_id is not None:
+            self.run.name = self.run.sweep_id + "___" + run_string
+        else:
+            self.run.name = str(self.run.name) + "___" + run_string
+
         self.define_metrics()
 
     def log(self, data, step=None, commit=False):
