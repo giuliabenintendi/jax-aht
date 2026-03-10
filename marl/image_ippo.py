@@ -343,7 +343,7 @@ def _render_lbf_eval_frames(inner_env, ep_states):
     frames = []
     for s in ep_states:
         rgba = viewer.render(s.env_state)
-        frames.append(rgba[:, :, :3])
+        frames.append(rgba[:, :, :3].copy())
     viewer.close()
     return frames
 
