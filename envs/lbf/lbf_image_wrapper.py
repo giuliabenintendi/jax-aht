@@ -57,6 +57,7 @@ class LBFImageWrapper(BaseEnv):
         # Extract grid params from generator
         self._grid_size = self.env._generator.grid_size
         self._num_food = self.env._generator.num_food
+        self._max_level = self.env._generator.max_agent_level
 
         # Image dimensions (exposed for initialize_agents._get_image_dims)
         self.grid_height = self._grid_size
@@ -87,6 +88,7 @@ class LBFImageWrapper(BaseEnv):
     def _render(self, env_state):
         return render_lbf_state(
             env_state, self._grid_size, self.num_agents, self._num_food,
+            self._max_level,
         )
 
     def _make_obs(self, env_state) -> Dict[str, jnp.ndarray]:

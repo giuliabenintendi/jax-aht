@@ -60,14 +60,14 @@ class TestRenderer:
         assert not jnp.array_equal(_SQUARE, _DIAMOND)
 
     def test_level_color_intensity(self):
-        low = _level_color(_FOOD_BASE_COLOR, 1)
-        high = _level_color(_FOOD_BASE_COLOR, 5)
+        low = _level_color(_FOOD_BASE_COLOR, 1, 5)
+        high = _level_color(_FOOD_BASE_COLOR, 5, 5)
         # Higher level = more saturated = further from black = higher mean value
         assert float(jnp.mean(low.astype(jnp.float32))) < float(jnp.mean(high.astype(jnp.float32)))
 
     def test_level_color_clamp(self):
         # Level 0 should still produce visible color (clamped to t=0.3)
-        color = _level_color(_FOOD_BASE_COLOR, 0)
+        color = _level_color(_FOOD_BASE_COLOR, 0, 5)
         assert not jnp.all(color == 0)  # not pure black
 
     def test_render_state_shape(self, jumanji_env):
@@ -86,8 +86,8 @@ class TestRenderer:
 
     def test_render_state_jittable(self, jumanji_env):
         state, _ = jumanji_env.reset(jax.random.PRNGKey(0))
-        jitted = jax.jit(render_lbf_state, static_argnums=(1, 2, 3))
-        img = jitted(state, GRID_SIZE, NUM_AGENTS, NUM_FOOD)
+        jitted = jax.jit(render_lbf_state, static_argnums=(1, 2, 3, 4))
+        img = jitted(state, GRID_SIZE, NUM_AGENTS, NUM_FOOD, 5)
         assert img.shape == (GRID_SIZE * TILE_PIXELS, GRID_SIZE * TILE_PIXELS, 3)
 
     def test_eaten_food_not_rendered(self, jumanji_env):
