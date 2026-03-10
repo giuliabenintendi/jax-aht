@@ -8,6 +8,7 @@ coordination comes from:
      for attention divergence, scaled by beta ramping from 0 to JA_BETA_MAX
      over JA_WARMUP_ENV_STEPS. Combined with env reward before normalization.
 '''
+import functools
 import shutil
 from typing import NamedTuple
 
@@ -570,8 +571,7 @@ def make_train_loop(config, env):
             )
             return update_state[0], loss_info
 
-        @jax.jit
-        def step_fn(runner_state, update_steps, rew_norm_state):
+        def _single_step(runner_state, update_steps, rew_norm_state):
             ja_beta = jnp.minimum(
                 ja_beta_max,
                 ja_beta_max * update_steps / jnp.maximum(ja_warmup_updates, 1.0),
@@ -725,7 +725,32 @@ def make_train_loop(config, env):
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
             return runner_state, update_steps + 1, rew_norm_state, metric
 
-        return step_fn
+        @functools.partial(jax.jit, donate_argnums=(0, 2))
+        def step_fn(runner_state, update_steps, rew_norm_state):
+            """Single-step wrapper (fallback, same as before)."""
+            return _single_step(runner_state, update_steps, rew_norm_state)
+
+        @functools.partial(jax.jit, static_argnums=(3,), donate_argnums=(0, 2))
+        def chunked_step_fn(runner_state, update_steps, rew_norm_state, chunk_size):
+            """Run chunk_size updates in a single JIT call via lax.scan.
+
+            chunk_size is static — JAX recompiles per distinct value, but there
+            are typically only 2-3 distinct sizes (regular + remainder at ckpts).
+            """
+            def _scan_body(carry, _):
+                rs, us, rns = carry
+                rs, us, rns, metric = _single_step(rs, us, rns)
+                return (rs, us, rns), metric
+
+            (runner_state, update_steps, rew_norm_state), metrics = jax.lax.scan(
+                _scan_body,
+                (runner_state, update_steps, rew_norm_state),
+                None,
+                length=chunk_size,
+            )
+            return runner_state, update_steps, rew_norm_state, metrics
+
+        return step_fn, chunked_step_fn
 
     return init, make_step_fn
 
@@ -753,36 +778,59 @@ def run_ja_ippo(config, logger):
             train_jit = jax.jit(jax.vmap(train_fn))
             out = train_jit(rngs)
     else:
-        # Python loop with JIT'd steps (works for both symbolic and image)
         init_fn, make_step_fn = make_train_loop(algorithm_config, env)
 
         num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
         ckpt_interval = num_updates // max(1, num_ckpts - 1)
+        scan_chunk = algorithm_config.get("SCAN_CHUNK_SIZE", 50)
+
+        # Build chunk schedule: equal chunks with a smaller remainder at the end.
+        # Checkpoints are saved whenever we cross a checkpoint boundary.
+        chunk_sizes = []
+        remaining = num_updates
+        while remaining > 0:
+            cs = min(scan_chunk, remaining)
+            chunk_sizes.append(cs)
+            remaining -= cs
 
         seed_outputs = []
         for s in range(num_seeds):
             print(f"[ja_ippo] Seed {s+1}/{num_seeds}: initializing...")
             runner_state, policy = init_fn(rngs[s])
-            step_fn = make_step_fn(policy)
+            step_fn, chunked_step_fn = make_step_fn(policy)
 
             checkpoints = []
             all_metrics = []
             update_steps = jnp.int32(0)
             rew_norm_state = reward_norm_init()
+            steps_done = 0
+            next_ckpt = 0
 
-            print(f"[ja_ippo] Seed {s+1}/{num_seeds}: compiling step fn...")
-            for step in range(num_updates):
-                runner_state, update_steps, rew_norm_state, metric = step_fn(runner_state, update_steps, rew_norm_state)
+            print(f"[ja_ippo] Seed {s+1}/{num_seeds}: training "
+                  f"({len(chunk_sizes)} chunks, max {scan_chunk} steps each)...")
+            for ci, cs in enumerate(chunk_sizes):
+                if cs == 1:
+                    runner_state, update_steps, rew_norm_state, metric = step_fn(
+                        runner_state, update_steps, rew_norm_state)
+                    metric = jax.tree.map(lambda x: x[None], metric)
+                else:
+                    runner_state, update_steps, rew_norm_state, metric = chunked_step_fn(
+                        runner_state, update_steps, rew_norm_state, cs)
                 all_metrics.append(metric)
+                steps_done += cs
 
-                should_ckpt = (step % ckpt_interval == 0) or (step == num_updates - 1)
-                if should_ckpt and len(checkpoints) < num_ckpts:
+                # Save checkpoint if we've crossed a checkpoint boundary
+                while next_ckpt < steps_done and len(checkpoints) < num_ckpts:
+                    checkpoints.append(runner_state[0].params)
+                    next_ckpt += ckpt_interval
+                # Always checkpoint at the very end
+                if steps_done == num_updates and len(checkpoints) < num_ckpts:
                     checkpoints.append(runner_state[0].params)
 
-                if step % max(1, num_updates // 10) == 0 or step == num_updates - 1:
-                    print(f"[ja_ippo] Seed {s+1}/{num_seeds}: step {step+1}/{num_updates}")
+                if ci == 0 or ci == len(chunk_sizes) - 1 or (ci + 1) % max(1, len(chunk_sizes) // 10) == 0:
+                    print(f"[ja_ippo] Seed {s+1}/{num_seeds}: step {steps_done}/{num_updates}")
 
-            stacked_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *all_metrics)
+            stacked_metrics = jax.tree.map(lambda *xs: jnp.concatenate(xs), *all_metrics)
             stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *checkpoints)
 
             seed_outputs.append({
