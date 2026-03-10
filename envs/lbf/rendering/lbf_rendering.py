@@ -56,8 +56,8 @@ def _point_in_circle(cx, cy, r):
 
 # --- Precomputed masks ---
 
-# Thin white grid lines at top and left edges
-_GRID_MASK = _point_in_rect(0, 1, 0, 0.031) | _point_in_rect(0, 0.031, 0, 1)
+# Thin white grid lines: first pixel row (top) and first pixel col (left)
+_GRID_MASK = _point_in_rect(0, 1, 0, 1 / TILE_PIXELS) | _point_in_rect(0, 1 / TILE_PIXELS, 0, 1)
 _GRID_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)
 
 # Agent: filled rectangle (inner region with margin)
