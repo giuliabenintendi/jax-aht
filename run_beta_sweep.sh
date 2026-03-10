@@ -36,7 +36,6 @@ run_gpu_jobs() {
             echo "[GPU ${gpu_device}] Job ${job_count}: ${LAYOUT} BETA=${BETA}"
             ./run_gpu.sh "$gpu_device" marl.run \
                 -cn base_config_ja_ippo \
-                algorithm=ja_ippo/overcooked-v1/$LAYOUT \
                 task=overcooked-v1/$LAYOUT \
                 algorithm.TOTAL_TIMESTEPS=$TIMESTEPS \
                 algorithm.JA_WARMUP_ENV_STEPS=$WARMUP \
@@ -51,8 +50,8 @@ if [ -n "$1" ]; then
     # Run a single GPU's jobs
     run_gpu_jobs "$1"
 else
-    # Launch all 3 GPUs in parallel
-    for gpu_idx in 0 1 2; do
+    # Launch all GPUs in parallel
+    for gpu_idx in $(seq 0 $((${#GPUS[@]} - 1))); do
         run_gpu_jobs "$gpu_idx" &
     done
     wait

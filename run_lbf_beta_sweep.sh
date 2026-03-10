@@ -16,7 +16,6 @@ for BETA in "${BETAS[@]}"; do
     echo "=== LBF-10food BETA=${BETA} ==="
     ./run_gpu.sh "$GPU" marl.run \
         -cn base_config_ja_ippo \
-        algorithm=ja_ippo/lbf-image-10food \
         task=lbf-image-10food \
         algorithm.TOTAL_TIMESTEPS=$TIMESTEPS \
         algorithm.JA_WARMUP_ENV_STEPS=$WARMUP \
