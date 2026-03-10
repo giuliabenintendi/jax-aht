@@ -1,0 +1,40 @@
+# @package algorithm
+# JA-IPPO without parameter sharing.
+# Same hyperparameters as ja_ippo, but each agent has its own parameters.
+ALG: ja_ippo_no_share
+NUM_CHECKPOINTS: 5
+ANNEAL_LR: True
+MAX_GRAD_NORM: 0.5
+
+# PPO — aligned with Forkel et al. 2025 Overcooked baseline
+LR: 4e-4
+GAMMA: 0.99
+GAE_LAMBDA: 0.8
+VF_COEF: 0.5
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 16
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+
+# JA network (paper Appendix A)
+ACTIVATION: relu
+JA_CONV_FILTERS: 64           # symbolic JA only
+JA_NUM_HEADS: 4
+JA_HEAD_FEATURES: 16
+JA_SPATIAL_BASIS_DEPTH: 8
+JA_SCALAR_EMBED_DIM: 5        # symbolic JA only
+FC_HIDDEN_DIM: 256
+LSTM_HIDDEN_DIM: 128
+
+# ResNet CNN encoder (image JA only, following Forkel et al. 2025)
+CONV_FILTERS: 32
+CONV_NUM_BLOCKS: 4
+CONV_KERNEL_SIZE: 3
+CONV_STRIDE: 2
+CONV_PADDING: SAME
+
+# JA intrinsic reward (paper Appendix A)
+JA_BETA_MAX: 0.05
+JA_WARMUP_ENV_STEPS: 700000
+JA_WALL_BETA: 0.0               # penalty for attending to interior walls (0 = disabled)
+NORMALIZE_REWARDS: true         # streaming reward normalization (reference code default)

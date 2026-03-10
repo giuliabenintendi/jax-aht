@@ -1,0 +1,6 @@
+defaults:
+  - ja_ippo_no_share/_base_
+  - _self_
+
+TOTAL_TIMESTEPS: 5e6
+NUM_ENVS: 64
