@@ -2,7 +2,7 @@ ENV_NAME: lbf-image
 ROLLOUT_LENGTH: 128
 ENV_KWARGS:
   obs_type: image
-  grid_size: 8
+  grid_size: 10
   num_agents: 2
   num_food: 10
   max_agent_level: 3
