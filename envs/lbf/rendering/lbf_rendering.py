@@ -43,8 +43,6 @@ def _make_coord_grid():
 
 _XF, _YF = _make_coord_grid()
 
-# Center of the interior area (pixels 1-6, excluding the grid line at pixel 0)
-_IC = (1 + TILE_PIXELS) / (2 * TILE_PIXELS)  # 4/7 ≈ 0.571
 
 
 def _point_in_rect(xmin, xmax, ymin, ymax):
@@ -61,11 +59,11 @@ def _point_in_circle(cx, cy, r):
 _GRID_MASK = _point_in_rect(0, 1, 0, 1 / TILE_PIXELS) | _point_in_rect(0, 1 / TILE_PIXELS, 0, 1)
 _GRID_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)
 
-# Agent: filled rectangle centered in interior (pixels 2-5, leaving 1px margin after grid)
-_RECT_MASK = _point_in_rect(0.25, 0.92, 0.25, 0.92)
+# Agent: 5x5 filled rectangle centered in tile (pixels 1-5)
+_RECT_MASK = _point_in_rect(0.15, 0.85, 0.15, 0.85)
 
-# Food: filled circle centered in interior
-_CIRCLE_MASK = _point_in_circle(_IC, _IC, 0.32)
+# Food: filled circle centered in tile (round shape with cut corners, distinct from rect)
+_CIRCLE_MASK = _point_in_circle(0.5, 0.5, 0.35)
 
 
 def _make_empty_tile():
