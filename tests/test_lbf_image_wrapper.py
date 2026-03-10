@@ -9,7 +9,7 @@ from envs import make_env
 from envs.log_wrapper import LogWrapper
 from envs.lbf.rendering.lbf_rendering import (
     render_lbf_state, TILE_PIXELS, _level_color, _FOOD_BASE_COLOR,
-    _AGENT_BASE_COLORS, _EMPTY_TILE, _CIRCLE,
+    _AGENT_BASE_COLORS, _EMPTY_TILE, _SQUARE, _DIAMOND,
 )
 
 
@@ -48,12 +48,17 @@ class TestRenderer:
         # Interior should be white
         assert jnp.all(_EMPTY_TILE[1, 1, :] == 255)
 
-    def test_circle_mask_shape(self):
-        assert _CIRCLE.shape == (TILE_PIXELS, TILE_PIXELS)
-        # Center pixel should be inside circle
-        assert _CIRCLE[TILE_PIXELS // 2, TILE_PIXELS // 2]
-        # Corner pixel should be outside circle
-        assert not _CIRCLE[0, 0]
+    def test_shape_masks(self):
+        assert _SQUARE.shape == (TILE_PIXELS, TILE_PIXELS)
+        assert _DIAMOND.shape == (TILE_PIXELS, TILE_PIXELS)
+        # Center pixel should be inside both shapes
+        assert _SQUARE[TILE_PIXELS // 2, TILE_PIXELS // 2]
+        assert _DIAMOND[TILE_PIXELS // 2, TILE_PIXELS // 2]
+        # Corner should be outside both
+        assert not _SQUARE[0, 0]
+        assert not _DIAMOND[0, 0]
+        # Shapes should differ
+        assert not jnp.array_equal(_SQUARE, _DIAMOND)
 
     def test_level_color_intensity(self):
         low = _level_color(_FOOD_BASE_COLOR, 1)
