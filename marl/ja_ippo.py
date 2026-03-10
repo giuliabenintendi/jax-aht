@@ -821,11 +821,11 @@ def run_ja_ippo(config, logger):
 
                 # Save checkpoint if we've crossed a checkpoint boundary
                 while next_ckpt < steps_done and len(checkpoints) < num_ckpts:
-                    checkpoints.append(runner_state[0].params)
+                    checkpoints.append(jax.tree.map(jnp.copy, runner_state[0].params))
                     next_ckpt += ckpt_interval
                 # Always checkpoint at the very end
                 if steps_done == num_updates and len(checkpoints) < num_ckpts:
-                    checkpoints.append(runner_state[0].params)
+                    checkpoints.append(jax.tree.map(jnp.copy, runner_state[0].params))
 
                 if ci == 0 or ci == len(chunk_sizes) - 1 or (ci + 1) % max(1, len(chunk_sizes) // 10) == 0:
                     print(f"[ja_ippo] Seed {s+1}/{num_seeds}: step {steps_done}/{num_updates}")
