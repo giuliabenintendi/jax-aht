@@ -73,8 +73,6 @@ class LBFImageWrapper(BaseEnv):
         self.observation_spaces = {agent: self.observation_space(agent) for agent in self.agents}
         self.action_spaces = {agent: self.action_space(agent) for agent in self.agents}
 
-        # No interior walls in LBF
-        self.interior_wall_mask = jnp.zeros((self._grid_size, self._grid_size), dtype=jnp.bool_)
 
     def observation_space(self, agent: str):
         return jaxmarl_spaces.Box(0.0, 1.0, (self._obs_dim,))

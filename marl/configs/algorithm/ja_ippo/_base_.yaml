@@ -37,5 +37,4 @@ CONV_PADDING: SAME
 # JA intrinsic reward (paper Appendix A)
 JA_BETA_MAX: 0.05
 JA_WARMUP_ENV_STEPS: 700000
-JA_WALL_BETA: 0.0               # penalty for attending to interior walls (0 = disabled)
 NORMALIZE_REWARDS: true         # streaming reward normalization (reference code default)
