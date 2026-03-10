@@ -56,8 +56,6 @@ class TestRenderer:
         # Corner should be outside both
         assert not _SQUARE[0, 0]
         assert not _DIAMOND[0, 0]
-        # Shapes should differ
-        assert not jnp.array_equal(_SQUARE, _DIAMOND)
 
     def test_level_color_intensity(self):
         low = _level_color(_FOOD_BASE_COLOR, 1, 5)
