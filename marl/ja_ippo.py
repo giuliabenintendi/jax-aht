@@ -920,7 +920,7 @@ def log_metrics(config, out, logger):
     for step in range(num_updates):
         for stat_name, stat_data in train_stats.items():
             logger.log_item(f"Train/{stat_name}", stat_data[step, 0], train_step=step, commit=False)
-        if "base_return" in train_stats:
+        if "base_return" in train_stats and config.task["ENV_NAME"] == "overcooked-v1":
             soups = train_stats["base_return"][step, 0] / 20.0
             logger.log_item("Train/soups_delivered", soups, train_step=step, commit=False)
 
@@ -935,13 +935,16 @@ def log_metrics(config, out, logger):
             env_steps = (step + 1) * int(config.algorithm["ROLLOUT_LENGTH"]) * int(config.algorithm["NUM_ENVS"])
             pct = (step + 1) / num_updates * 100
             ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in train_stats.items())
-            soups = train_stats["base_return"][step, 0] / 20.0 if "base_return" in train_stats else 0
             jsd = float(scalar_data.get("jsd_mean", np.zeros(num_updates))[step])
             intrinsic = float(scalar_data.get("intrinsic_mean", np.zeros(num_updates))[step])
             loss = float(scalar_data.get("loss_total", np.zeros(num_updates))[step])
             grad = float(scalar_data.get("grad_norm", np.zeros(num_updates))[step])
+            extra = ""
+            if "base_return" in train_stats and config.task["ENV_NAME"] == "overcooked-v1":
+                soups = train_stats["base_return"][step, 0] / 20.0
+                extra = f"  soups={soups:.1f}"
             print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  "
-                  f"{ret_str}  soups={soups:.1f}  jsd={jsd:.4f}  intrinsic={intrinsic:.4f}  loss={loss:.4f}  grad={grad:.3f}")
+                  f"{ret_str}{extra}  jsd={jsd:.4f}  intrinsic={intrinsic:.4f}  loss={loss:.4f}  grad={grad:.3f}")
 
     logger.commit()
 

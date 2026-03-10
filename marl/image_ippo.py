@@ -329,10 +329,28 @@ def run_image_ippo(config, logger):
     return out
 
 
+def _render_lbf_eval_frames(inner_env, ep_states):
+    """Render LBF eval frames using the Jumanji matplotlib viewer."""
+    import matplotlib
+    matplotlib.use("Agg")
+    from jumanji.environments.routing.lbf.viewer import LevelBasedForagingViewer
+
+    wrapper = inner_env._env if hasattr(inner_env, '_env') else inner_env
+    jumanji_env = wrapper.env if hasattr(wrapper, 'env') else wrapper
+    grid_size = jumanji_env._generator.grid_size
+
+    viewer = LevelBasedForagingViewer(grid_size=grid_size, render_mode="rgb_array")
+    frames = []
+    for s in ep_states:
+        rgba = viewer.render(s.env_state)
+        frames.append(rgba[:, :, :3])
+    viewer.close()
+    return frames
+
+
 def log_eval_video(algorithm_config, env, out, logger):
     """Run one eval episode with final params (seed 0), log video to wandb."""
     import os
-    from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
     from evaluation.vis_episodes import run_episode_with_states
 
     # Reconstruct policy (same for both agents — shared params)
@@ -357,11 +375,20 @@ def log_eval_video(algorithm_config, env, out, logger):
     os.makedirs(video_dir, exist_ok=True)
     video_path = f"{video_dir}/eval_final.mp4"
 
-    viz = AdHocOvercookedVisualizer()
-    viz.animate_mp4(
-        [s.env_state for s in ep_states], inner_env.agent_view_size,
-        filename=video_path, pixels_per_tile=32, fps=10,
-    )
+    env_name = algorithm_config["ENV_NAME"]
+    if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
+        frames = _render_lbf_eval_frames(inner_env, ep_states)
+        from moviepy import ImageSequenceClip
+        clip = ImageSequenceClip(frames, fps=10)
+        clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
+                             bitrate='8000k', preset='slow')
+    else:
+        from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
+        viz = AdHocOvercookedVisualizer()
+        viz.animate_mp4(
+            [s.env_state for s in ep_states], inner_env.agent_view_size,
+            filename=video_path, pixels_per_tile=32, fps=10,
+        )
     logger.log_video("Eval/episode_video", video_path, commit=False)
 
 
@@ -393,7 +420,7 @@ def log_metrics(config, out, logger):
     for step in range(num_updates):
         for stat_name, stat_data in train_stats.items():
             logger.log_item(f"Train/{stat_name}", stat_data[step, 0], train_step=step, commit=False)
-        if "base_return" in train_stats:
+        if "base_return" in train_stats and config.task["ENV_NAME"] == "overcooked-v1":
             soups = train_stats["base_return"][step, 0] / 20.0
             logger.log_item("Train/soups_delivered", soups, train_step=step, commit=False)
 
@@ -408,11 +435,14 @@ def log_metrics(config, out, logger):
             env_steps = (step + 1) * int(config.algorithm["ROLLOUT_LENGTH"]) * int(config.algorithm["NUM_ENVS"])
             pct = (step + 1) / num_updates * 100
             ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in train_stats.items())
-            soups = train_stats["base_return"][step, 0] / 20.0 if "base_return" in train_stats else 0
             loss = float(scalar_data.get("loss_total", np.zeros(num_updates))[step])
             grad = float(scalar_data.get("grad_norm", np.zeros(num_updates))[step])
+            extra = ""
+            if "base_return" in train_stats and config.task["ENV_NAME"] == "overcooked-v1":
+                soups = train_stats["base_return"][step, 0] / 20.0
+                extra = f"  soups={soups:.1f}"
             print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  "
-                  f"{ret_str}  soups={soups:.1f}  loss={loss:.4f}  grad={grad:.3f}")
+                  f"{ret_str}{extra}  loss={loss:.4f}  grad={grad:.3f}")
 
     logger.commit()
 

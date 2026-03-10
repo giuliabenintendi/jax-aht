@@ -2,11 +2,11 @@
 
 Produces (grid_size*TILE_PIXELS, grid_size*TILE_PIXELS, 3) uint8 RGB images
 from Jumanji LBF State. Mirrors the original LBF renderer style:
-black background, thin white grid, white agents, red food.
+black background, white agents (rectangles), red food (circles).
 
-Shape masks are defined in pixel coordinates centered at (3,3).
-Grid lines are drawn as an overlay between cells after assembling tiles,
-so shapes are perfectly centered within each cell.
+Shape masks are defined in pixel coordinates centered at pixel (3,3).
+Black background provides cell separation (no explicit grid lines needed
+at 7px resolution, matching the Overcooked renderer behavior).
 
 Level is encoded as color intensity — higher level = more saturated.
 """
@@ -24,7 +24,6 @@ _AGENT_BASE_COLORS = jnp.array([
 
 _FOOD_BASE_COLOR = jnp.array([210, 40, 40], dtype=jnp.float32)
 _LOADING_BASE_COLOR = jnp.array([230, 130, 20], dtype=jnp.float32)
-_GRID_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)
 
 
 # --- Pixel-space shape masks (centered at pixel 3,3 = true center of 7x7) ---
@@ -32,12 +31,13 @@ _GRID_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)
 _Y, _X = jnp.meshgrid(jnp.arange(TILE_PIXELS), jnp.arange(TILE_PIXELS), indexing="ij")
 
 # Agent: 5x5 rectangle (pixels 1-5), centered at pixel 3
-_SQUARE = (_Y >= 1) & (_Y <= 5) & (_X >= 1) & (_X <= 5)
+_RECT_MASK = (_Y >= 1) & (_Y <= 5) & (_X >= 1) & (_X <= 5)
 
-# Food: circle centered at pixel (3,3) with radius 2 — gives a diamond/circle shape
-_DIAMOND = ((_X - 3) ** 2 + (_Y - 3) ** 2) <= 4  # r²=4, i.e. r=2
+# Food: circle centered at pixel (3,3) with r²=5
+# Gives a rounded shape (21 pixels) with cut corners, distinct from the 5x5 rect
+_CIRCLE_MASK = ((_X - 3) ** 2 + (_Y - 3) ** 2) <= 5
 
-# Pure black empty tile (no grid — grid is overlaid between cells)
+# Pure black empty tile
 _EMPTY_TILE = jnp.zeros((TILE_PIXELS, TILE_PIXELS, 3), dtype=jnp.uint8)
 
 
@@ -86,7 +86,7 @@ def render_lbf_state(state, grid_size, num_agents, num_food,
         level = state.food_items.level[i]
         eaten = state.food_items.eaten[i]
         color = _level_color(_FOOD_BASE_COLOR, level, max_food_level)
-        food_tile = _render_tile(_DIAMOND, color)
+        food_tile = _render_tile(_CIRCLE_MASK, color)
         y = row * TILE_PIXELS
         x = col * TILE_PIXELS
         img = jnp.where(
@@ -107,28 +107,12 @@ def render_lbf_state(state, grid_size, num_agents, num_food,
         agent_base = _AGENT_BASE_COLORS[i % _AGENT_BASE_COLORS.shape[0]]
         base = jnp.where(loading, _LOADING_BASE_COLOR, agent_base)
         color = _level_color(base, level, max_agent_level)
-        agent_tile = _render_tile(_SQUARE, color)
+        agent_tile = _render_tile(_RECT_MASK, color)
         y = row * TILE_PIXELS
         x = col * TILE_PIXELS
         img = jax.lax.dynamic_update_slice(img, agent_tile, (y, x, 0))
         return img, None
 
     img, _ = jax.lax.scan(draw_agent, img, jnp.arange(num_agents))
-
-    # Overlay grid lines between cells (drawn on top so shapes stay centered)
-    def draw_h_grid(img, i):
-        y = (i + 1) * TILE_PIXELS
-        line = jnp.broadcast_to(_GRID_COLOR, (1, w_px, 3))
-        img = jax.lax.dynamic_update_slice(img, line, (y, 0, 0))
-        return img, None
-
-    def draw_v_grid(img, i):
-        x = (i + 1) * TILE_PIXELS
-        line = jnp.broadcast_to(_GRID_COLOR, (h_px, 1, 3))
-        img = jax.lax.dynamic_update_slice(img, line, (0, x, 0))
-        return img, None
-
-    img, _ = jax.lax.scan(draw_h_grid, img, jnp.arange(grid_size - 1))
-    img, _ = jax.lax.scan(draw_v_grid, img, jnp.arange(grid_size - 1))
 
     return img

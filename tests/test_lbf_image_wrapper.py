@@ -9,7 +9,7 @@ from envs import make_env
 from envs.log_wrapper import LogWrapper
 from envs.lbf.rendering.lbf_rendering import (
     render_lbf_state, TILE_PIXELS, _level_color, _FOOD_BASE_COLOR,
-    _AGENT_BASE_COLORS, _EMPTY_TILE, _SQUARE, _DIAMOND,
+    _AGENT_BASE_COLORS, _EMPTY_TILE, _RECT_MASK, _CIRCLE_MASK,
 )
 
 
@@ -46,16 +46,16 @@ class TestRenderer:
         assert jnp.all(_EMPTY_TILE == 0)
 
     def test_shape_masks(self):
-        assert _SQUARE.shape == (TILE_PIXELS, TILE_PIXELS)
-        assert _DIAMOND.shape == (TILE_PIXELS, TILE_PIXELS)
+        assert _RECT_MASK.shape == (TILE_PIXELS, TILE_PIXELS)
+        assert _CIRCLE_MASK.shape == (TILE_PIXELS, TILE_PIXELS)
         # Center pixel should be inside both shapes
-        assert _SQUARE[TILE_PIXELS // 2, TILE_PIXELS // 2]
-        assert _DIAMOND[TILE_PIXELS // 2, TILE_PIXELS // 2]
+        assert _RECT_MASK[TILE_PIXELS // 2, TILE_PIXELS // 2]
+        assert _CIRCLE_MASK[TILE_PIXELS // 2, TILE_PIXELS // 2]
         # Corner should be outside both
-        assert not _SQUARE[0, 0]
-        assert not _DIAMOND[0, 0]
+        assert not _RECT_MASK[0, 0]
+        assert not _CIRCLE_MASK[0, 0]
         # Shapes should differ (rect is 5x5, circle has cut corners)
-        assert not jnp.array_equal(_SQUARE, _DIAMOND)
+        assert not jnp.array_equal(_RECT_MASK, _CIRCLE_MASK)
 
     def test_level_color_intensity(self):
         low = _level_color(_FOOD_BASE_COLOR, 1, 5)
