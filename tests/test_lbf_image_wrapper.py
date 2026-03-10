@@ -42,11 +42,10 @@ class TestRenderer:
         assert _EMPTY_TILE.shape == (TILE_PIXELS, TILE_PIXELS, 3)
 
     def test_empty_tile_has_grid_lines(self):
-        # Top row and left column should be grid line color (grey)
-        assert jnp.all(_EMPTY_TILE[0, :, :] == 200)
-        assert jnp.all(_EMPTY_TILE[:, 0, :] == 200)
-        # Interior should be white
-        assert jnp.all(_EMPTY_TILE[1, 1, :] == 255)
+        # First row/col pixel should be white grid line
+        assert jnp.all(_EMPTY_TILE[0, 0, :] == 255)
+        # Interior should be black
+        assert jnp.all(_EMPTY_TILE[3, 3, :] == 0)
 
     def test_shape_masks(self):
         assert _SQUARE.shape == (TILE_PIXELS, TILE_PIXELS)
@@ -63,13 +62,13 @@ class TestRenderer:
     def test_level_color_intensity(self):
         low = _level_color(_FOOD_BASE_COLOR, 1)
         high = _level_color(_FOOD_BASE_COLOR, 5)
-        # Higher level = more saturated = further from white = lower mean value
-        assert float(jnp.mean(low.astype(jnp.float32))) > float(jnp.mean(high.astype(jnp.float32)))
+        # Higher level = more saturated = further from black = higher mean value
+        assert float(jnp.mean(low.astype(jnp.float32))) < float(jnp.mean(high.astype(jnp.float32)))
 
     def test_level_color_clamp(self):
         # Level 0 should still produce visible color (clamped to t=0.3)
         color = _level_color(_FOOD_BASE_COLOR, 0)
-        assert not jnp.all(color == 255)  # not pure white
+        assert not jnp.all(color == 0)  # not pure black
 
     def test_render_state_shape(self, jumanji_env):
         state, _ = jumanji_env.reset(jax.random.PRNGKey(0))
@@ -79,11 +78,11 @@ class TestRenderer:
         assert img.shape == (expected_h, expected_w, 3)
         assert img.dtype == jnp.uint8
 
-    def test_render_state_not_all_white(self, jumanji_env):
+    def test_render_state_not_all_black(self, jumanji_env):
         state, _ = jumanji_env.reset(jax.random.PRNGKey(0))
         img = render_lbf_state(state, GRID_SIZE, NUM_AGENTS, NUM_FOOD)
-        # Should have non-white pixels (agents and food)
-        assert not jnp.all(img == 255)
+        # Should have non-black pixels (grid lines, agents, food)
+        assert not jnp.all(img == 0)
 
     def test_render_state_jittable(self, jumanji_env):
         state, _ = jumanji_env.reset(jax.random.PRNGKey(0))
