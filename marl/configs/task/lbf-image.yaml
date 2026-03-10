@@ -5,6 +5,6 @@ ENV_KWARGS:
   grid_size: 7
   num_agents: 2
   num_food: 3
-  max_agent_level: 2
+  max_agent_level: 3
   force_coop: true
 TASK_NAME: lbf-image

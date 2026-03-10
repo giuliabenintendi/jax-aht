@@ -24,7 +24,7 @@ def env():
         'grid_size': GRID_SIZE,
         'num_agents': NUM_AGENTS,
         'num_food': NUM_FOOD,
-        'max_agent_level': 2,
+        'max_agent_level': 3,
         'force_coop': True,
     })
 
@@ -86,8 +86,8 @@ class TestRenderer:
 
     def test_render_state_jittable(self, jumanji_env):
         state, _ = jumanji_env.reset(jax.random.PRNGKey(0))
-        jitted = jax.jit(render_lbf_state, static_argnums=(1, 2, 3, 4))
-        img = jitted(state, GRID_SIZE, NUM_AGENTS, NUM_FOOD, 5)
+        jitted = jax.jit(render_lbf_state, static_argnums=(1, 2, 3, 4, 5))
+        img = jitted(state, GRID_SIZE, NUM_AGENTS, NUM_FOOD, 3, 6)
         assert img.shape == (GRID_SIZE * TILE_PIXELS, GRID_SIZE * TILE_PIXELS, 3)
 
     def test_eaten_food_not_rendered(self, jumanji_env):
@@ -215,7 +215,7 @@ class TestSaveImageObs:
             'grid_size': GRID_SIZE,
             'num_agents': NUM_AGENTS,
             'num_food': NUM_FOOD,
-            'max_agent_level': 2,
+            'max_agent_level': 3,
             'force_coop': True,
         })
         obs, _ = env.reset(jax.random.PRNGKey(0))

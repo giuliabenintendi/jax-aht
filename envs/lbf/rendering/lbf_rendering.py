@@ -98,7 +98,8 @@ def _render_tile(mask, color):
     return tile
 
 
-def render_lbf_state(state, grid_size, num_agents, num_food, max_level=5):
+def render_lbf_state(state, grid_size, num_agents, num_food,
+                     max_agent_level=3, max_food_level=6):
     """Render an LBF state to an RGB image.
 
     Args:
@@ -106,7 +107,8 @@ def render_lbf_state(state, grid_size, num_agents, num_food, max_level=5):
         grid_size: int, the grid dimension
         num_agents: int, number of agents
         num_food: int, number of food items
-        max_level: int, maximum entity level (for color scaling)
+        max_agent_level: int, max agent level (for color scaling)
+        max_food_level: int, max food level (typically max_agent_level * num_agents)
 
     Returns:
         (grid_size * TILE_PIXELS, grid_size * TILE_PIXELS, 3) uint8 array
@@ -125,7 +127,7 @@ def render_lbf_state(state, grid_size, num_agents, num_food, max_level=5):
         col = state.food_items.position[i, 1]
         level = state.food_items.level[i]
         eaten = state.food_items.eaten[i]
-        color = _level_color(_FOOD_BASE_COLOR, level, max_level)
+        color = _level_color(_FOOD_BASE_COLOR, level, max_food_level)
         food_tile = _render_tile(_CIRCLE_MASK, color)
         y = row * TILE_PIXELS
         x = col * TILE_PIXELS
@@ -146,7 +148,7 @@ def render_lbf_state(state, grid_size, num_agents, num_food, max_level=5):
         loading = state.agents.loading[i]
         agent_base = _AGENT_BASE_COLORS[i % _AGENT_BASE_COLORS.shape[0]]
         base = jnp.where(loading, _LOADING_BASE_COLOR, agent_base)
-        color = _level_color(base, level, max_level)
+        color = _level_color(base, level, max_agent_level)
         agent_tile = _render_tile(_RECT_MASK, color)
         y = row * TILE_PIXELS
         x = col * TILE_PIXELS
