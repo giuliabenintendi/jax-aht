@@ -41,11 +41,9 @@ class TestRenderer:
     def test_empty_tile_shape(self):
         assert _EMPTY_TILE.shape == (TILE_PIXELS, TILE_PIXELS, 3)
 
-    def test_empty_tile_has_grid_lines(self):
-        # First row/col pixel should be white grid line
-        assert jnp.all(_EMPTY_TILE[0, 0, :] == 255)
-        # Interior should be black
-        assert jnp.all(_EMPTY_TILE[3, 3, :] == 0)
+    def test_empty_tile_is_black(self):
+        # Tiles are pure black (grid is overlaid between cells)
+        assert jnp.all(_EMPTY_TILE == 0)
 
     def test_shape_masks(self):
         assert _SQUARE.shape == (TILE_PIXELS, TILE_PIXELS)
