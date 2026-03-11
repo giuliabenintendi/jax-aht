@@ -874,7 +874,8 @@ def log_eval_video(algorithm_config, env, out, logger):
     import os
     from evaluation.vis_episodes import (
         run_episode_with_states, log_attention_to_wandb, make_attention_video,
-        compute_attention_metrics,
+        compute_attention_metrics, build_coverage_map, render_coverage_debug,
+        INDEX_TO_OBJECT,
     )
 
     env_name = algorithm_config["ENV_NAME"]
@@ -959,6 +960,92 @@ def log_eval_video(algorithm_config, env, out, logger):
                     )},
                     step=None, commit=False,
                 )
+        except ImportError:
+            pass
+
+    # Compute per-timestep attention coverage breakdown and save as JSON artifact
+    if env_name in ("overcooked-v1",):
+        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        from agents.initialize_agents import _get_image_dims
+        import json
+        import numpy as np
+
+        img_h, img_w, _ = _get_image_dims(env)
+        feat_h, feat_w = _compute_resnet_output_dims(
+            img_h, img_w,
+            stride=algorithm_config.get("CONV_STRIDE", 2),
+            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
+            padding=algorithm_config.get("CONV_PADDING", "SAME"),
+            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
+        )
+
+        # Save a debug image for visual validation (one frame, both agents)
+        debug_t = 0
+        debug_coverage = build_coverage_map(ep_states[debug_t], feat_h, feat_w)
+        from PIL import Image as PILImage
+        for agent_name in ("agent_0", "agent_1"):
+            debug_attn = np.array(attn_data[agent_name][debug_t]).squeeze()
+            debug_img = render_coverage_debug(
+                frames[debug_t], debug_coverage, attn_map=debug_attn)
+            debug_path = f"{video_dir}/coverage_debug_{agent_name}_t{debug_t}.png"
+            PILImage.fromarray(debug_img).save(debug_path)
+            print(f"[ja_ippo] Coverage debug image saved: {debug_path}")
+
+        attn_threshold = 0.05
+        n_steps = min(len(attn_data["agent_0"]), len(ep_states) - 1)
+        coverage_data = {}
+
+        for agent_name in ("agent_0", "agent_1"):
+            maps = attn_data[agent_name]
+            agent_steps = []
+
+            for t in range(n_steps):
+                attn = np.array(maps[t]).squeeze()
+                coverage = build_coverage_map(ep_states[t], feat_h, feat_w)
+
+                # Filter cells above threshold
+                spots = []
+                for r in range(feat_h):
+                    for c in range(feat_w):
+                        val = float(attn[r, c])
+                        if val >= attn_threshold:
+                            cov = coverage[r, c]
+                            # Only include nonzero categories
+                            cov_dict = {
+                                INDEX_TO_OBJECT[i]: round(float(cov[i]), 3)
+                                for i in range(len(INDEX_TO_OBJECT))
+                                if cov[i] > 0.01
+                            }
+                            spots.append({
+                                "attn": round(val, 4),
+                                "coverage": cov_dict,
+                            })
+
+                spots.sort(key=lambda s: -s["attn"])
+                agent_steps.append({"t": t, "spots": spots})
+
+            coverage_data[agent_name] = agent_steps
+
+            # Print a few representative timesteps for validation
+            for t_idx in (0, n_steps // 2, n_steps - 1):
+                step_data = agent_steps[t_idx]
+                print(f"[ja_ippo] {agent_name} t={t_idx}:")
+                for spot in step_data["spots"][:5]:
+                    cov_str = ", ".join(f"{k}={v:.0%}" for k, v in spot["coverage"].items())
+                    print(f"  attn={spot['attn']:.3f} → {cov_str}")
+
+        # Save JSON to run directory
+        json_path = f"{savedir}/attention_coverage.json"
+        with open(json_path, "w") as f:
+            json.dump(coverage_data, f, indent=2)
+        print(f"[ja_ippo] Attention coverage saved to {json_path}")
+
+        # Upload as wandb artifact
+        try:
+            import wandb
+            artifact = wandb.Artifact("attention_coverage", type="analysis")
+            artifact.add_file(json_path)
+            wandb.log_artifact(artifact)
         except ImportError:
             pass
 

@@ -350,6 +350,206 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
                    step=step, commit=commit)
 
 
+INDEX_TO_OBJECT = {
+    0: "unseen", 1: "floor", 2: "wall", 3: "onion",
+    4: "onion_disp", 5: "plate", 6: "plate_disp",
+    7: "serve", 8: "pot", 9: "dish", 10: "agent",
+    11: "counter",
+}
+NUM_CATEGORIES = len(INDEX_TO_OBJECT)
+
+# Indices for maze_map channel 0 (from jaxmarl OBJECT_TO_INDEX)
+_WALL_IDX = 2
+
+
+def _build_counter_mask(wall_map):
+    """Identify counters: wall_map=True tiles adjacent to at least one walkable tile.
+
+    Real walls are surrounded entirely by other wall_map=True tiles.
+    Counters are wall_map=True tiles that border at least one walkable (False) tile.
+    """
+    import numpy as np
+
+    wm = np.array(wall_map, dtype=bool)
+    h, w = wm.shape
+    counter = np.zeros_like(wm, dtype=bool)
+
+    for r in range(h):
+        for c in range(w):
+            if not wm[r, c]:
+                continue
+            # Check 4-connected neighbors for walkable tiles
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w and not wm[nr, nc]:
+                    counter[r, c] = True
+                    break
+
+    return counter
+
+
+def build_coverage_map(state, feat_h, feat_w, padding=4, tile_pixels=7):
+    """Build a (feat_h, feat_w, NUM_CATEGORIES) coverage tensor from env state.
+
+    For each feature-map cell, computes the fractional area covered by each
+    tile type. Uses wall_map + adjacency to distinguish walls from counters,
+    and overlays dynamic agent positions.
+
+    Args:
+        state: WrappedEnvState — must have .env_state with maze_map, wall_map, agent_pos.
+        feat_h: feature map height.
+        feat_w: feature map width.
+        padding: maze_map padding (default 4 for agent_view_size=5).
+        tile_pixels: pixels per tile (default 7).
+
+    Returns:
+        (feat_h, feat_w, NUM_CATEGORIES) float array, each cell sums to 1.
+    """
+    import numpy as np
+
+    env_state = state.env_state
+    grid = np.array(env_state.maze_map[padding:-padding, padding:-padding, 0])
+    grid_h, grid_w = grid.shape
+
+    # Distinguish counters from walls using wall_map adjacency
+    wall_map = np.array(env_state.wall_map)
+    counter_mask = _build_counter_mask(wall_map)
+
+    # Remap: wall tiles that are counters get index 11
+    for r in range(grid_h):
+        for c in range(grid_w):
+            if grid[r, c] == _WALL_IDX and counter_mask[r, c]:
+                grid[r, c] = 11  # counter
+
+    # Overlay agent positions
+    agent_pos = np.array(env_state.agent_pos)  # (num_agents, 2) — (x, y)
+    for a in range(agent_pos.shape[0]):
+        col, row = int(agent_pos[a, 0]), int(agent_pos[a, 1])
+        if 0 <= row < grid_h and 0 <= col < grid_w:
+            grid[row, col] = 10  # agent
+
+    img_h = grid_h * tile_pixels
+    img_w = grid_w * tile_pixels
+
+    coverage = np.zeros((feat_h, feat_w, NUM_CATEGORIES), dtype=np.float32)
+
+    for r in range(feat_h):
+        for c in range(feat_w):
+            # Pixel rectangle this feature cell covers
+            y0 = r * img_h / feat_h
+            y1 = (r + 1) * img_h / feat_h
+            x0 = c * img_w / feat_w
+            x1 = (c + 1) * img_w / feat_w
+
+            # Iterate over tiles that overlap with this rectangle
+            tile_r0 = max(0, int(y0 // tile_pixels))
+            tile_r1 = min(grid_h, int(np.ceil(y1 / tile_pixels)))
+            tile_c0 = max(0, int(x0 // tile_pixels))
+            tile_c1 = min(grid_w, int(np.ceil(x1 / tile_pixels)))
+
+            total_area = 0.0
+            for tr in range(tile_r0, tile_r1):
+                for tc in range(tile_c0, tile_c1):
+                    # Overlap area between feature cell and tile
+                    oy0 = max(y0, tr * tile_pixels)
+                    oy1 = min(y1, (tr + 1) * tile_pixels)
+                    ox0 = max(x0, tc * tile_pixels)
+                    ox1 = min(x1, (tc + 1) * tile_pixels)
+                    area = max(0.0, oy1 - oy0) * max(0.0, ox1 - ox0)
+                    if area > 0:
+                        obj_idx = int(grid[tr, tc])
+                        if 0 <= obj_idx < NUM_CATEGORIES:
+                            coverage[r, c, obj_idx] += area
+                        total_area += area
+
+            if total_area > 0:
+                coverage[r, c] /= total_area
+
+    return coverage
+
+
+def render_coverage_debug(frame, coverage_map, attn_map=None, upscale=8):
+    """Render a debug image showing the feature-map grid over the game frame.
+
+    Each feature cell is labeled with its dominant category (and percentage).
+    If attn_map is provided, cells below 0.05 are dimmed.
+
+    Args:
+        frame: (H_px, W_px, 3) uint8 game frame.
+        coverage_map: (feat_h, feat_w, NUM_CATEGORIES) from build_coverage_map.
+        attn_map: optional (feat_h, feat_w) attention weights.
+        upscale: factor to enlarge the frame for readability.
+
+    Returns:
+        RGB uint8 numpy array.
+    """
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+
+    feat_h, feat_w = coverage_map.shape[:2]
+    h_px, w_px = frame.shape[:2]
+
+    # Upscale frame for readability
+    img = Image.fromarray(frame).resize(
+        (w_px * upscale, h_px * upscale), resample=Image.NEAREST)
+    draw = ImageDraw.Draw(img)
+
+    cell_h = h_px * upscale / feat_h
+    cell_w = w_px * upscale / feat_w
+
+    # Short labels for categories
+    _SHORT = {
+        "unseen": "?", "floor": "flr", "wall": "wal", "onion": "oni",
+        "onion_disp": "o.d", "plate": "plt", "plate_disp": "p.d",
+        "serve": "srv", "pot": "pot", "dish": "dsh", "agent": "agt",
+        "counter": "ctr",
+    }
+
+    for r in range(feat_h):
+        for c in range(feat_w):
+            x0 = int(c * cell_w)
+            y0 = int(r * cell_h)
+            x1 = int((c + 1) * cell_w)
+            y1 = int((r + 1) * cell_h)
+
+            # Draw grid lines
+            draw.rectangle([x0, y0, x1, y1], outline="white", width=1)
+
+            # Build label: top 2 categories with percentages
+            cov = coverage_map[r, c]
+            top_indices = np.argsort(-cov)
+            parts = []
+            for idx in top_indices[:2]:
+                if cov[idx] > 0.05:
+                    name = INDEX_TO_OBJECT.get(idx, "?")
+                    short = _SHORT.get(name, name[:3])
+                    parts.append(f"{short}{int(cov[idx]*100)}")
+            label = "\n".join(parts) if parts else "?"
+
+            # Dim cells with low attention
+            if attn_map is not None:
+                attn_val = float(np.array(attn_map).squeeze()[r, c])
+                if attn_val < 0.05:
+                    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+                    overlay_draw = ImageDraw.Draw(overlay)
+                    overlay_draw.rectangle([x0, y0, x1, y1], fill=(0, 0, 0, 140))
+                    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+                    draw = ImageDraw.Draw(img)
+                    continue
+                # Show attention value
+                label = f"a={attn_val:.2f}\n{label}"
+
+            # Draw text
+            text_x = x0 + 2
+            text_y = y0 + 2
+            # Shadow for readability
+            draw.text((text_x + 1, text_y + 1), label, fill="black")
+            draw.text((text_x, text_y), label, fill="yellow")
+
+    return np.array(img)
+
+
+
 def compute_attention_metrics(attn_data):
     """Compute per-agent temporal consistency of attention maps over an episode.
 
