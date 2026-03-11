@@ -944,25 +944,6 @@ def log_eval_video(algorithm_config, env, out, logger):
             step=None, commit=False,
         )
 
-        # Log per-timestep cosine similarity trace as a wandb line plot
-        try:
-            import wandb
-            trace = attn_metrics[f"{agent_name}_cosine_trace"]
-            if trace:
-                table = wandb.Table(
-                    data=[[t, v] for t, v in enumerate(trace)],
-                    columns=["timestep", "cosine_similarity"],
-                )
-                logger.log(
-                    {f"Eval/{agent_name}_cosine_trace": wandb.plot.line(
-                        table, "timestep", "cosine_similarity",
-                        title=f"{agent_name} attention cosine similarity",
-                    )},
-                    step=None, commit=False,
-                )
-        except ImportError:
-            pass
-
     # Compute per-timestep attention coverage breakdown and save as JSON artifact
     if env_name in ("overcooked-v1",):
         from agents.ja_image_actor_critic import _compute_resnet_output_dims
