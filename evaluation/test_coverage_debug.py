@@ -4,7 +4,7 @@ Creates an env, resets, runs one forward pass with random params to get an
 attention map, builds the coverage map, and saves a debug image.
 
 Usage:
-    uv run python evaluation/test_coverage_debug.py
+    ./run_gpu.sh 0 evaluation.test_coverage_debug
 
 Output: evaluation/coverage_debug_agent_0.png, evaluation/coverage_debug_agent_1.png
 """
@@ -13,10 +13,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from agents.initialize_agents import initialize_ja_image_agent, _get_image_dims
+from agents.initialize_agents import initialize_ja_image_agent
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from envs import make_env
-from envs.log_wrapper import LogWrapper
 from evaluation.vis_episodes import (
     build_coverage_map,
     render_coverage_debug,
@@ -26,17 +25,20 @@ from evaluation.vis_episodes import (
 
 def main():
     # Cramped room, image observations
-    env_kwargs = {"layout": "cramped_room", "max_steps": 400}
+    env_kwargs = {"layout": "cramped_room", "max_steps": 400, "obs_type": "image"}
     env = make_env("overcooked-v1", env_kwargs)
 
-    if isinstance(env, LogWrapper):
-        inner_env = env._env
-    else:
-        inner_env = env
+    # env is OvercookedImageWrapper directly (make_env doesn't wrap in LogWrapper)
+    # _get_image_dims expects to unwrap one level, so we need grid_height on env
+    img_h = env.grid_height * env.tile_size
+    img_w = env.grid_width * env.tile_size
+    feat_h, feat_w = _compute_resnet_output_dims(
+        img_h, img_w, stride=2, kernel_size=3, padding="SAME", num_blocks=4)
+    print(f"Image: {img_h}x{img_w}, Feature map: {feat_h}x{feat_w}")
 
     # Reset env to get one state
     rng = jax.random.PRNGKey(0)
-    obs, env_state = inner_env.reset(rng)
+    obs, env_state = env.reset(rng)
 
     # Init policy with random params
     config = {
@@ -47,17 +49,19 @@ def main():
         "JA_SPATIAL_BASIS_DEPTH": 8,
     }
     rng, init_rng = jax.random.split(rng)
-    policy, init_params = initialize_ja_image_agent(config, inner_env, init_rng)
-
-    # Compute feature map dims
-    img_h, img_w, _ = _get_image_dims(inner_env)
-    feat_h, feat_w = _compute_resnet_output_dims(
-        img_h, img_w, stride=2, kernel_size=3, padding="SAME", num_blocks=4)
-    print(f"Image: {img_h}x{img_w}, Feature map: {feat_h}x{feat_w}")
+    policy, init_params = initialize_ja_image_agent(config, env, init_rng)
 
     # Run one forward pass per agent to get attention maps
     hstate = policy.init_hstate(1)
     done = jnp.zeros((1, 1), dtype=bool)
+
+    # Build coverage map (same for both agents at this timestep)
+    coverage = build_coverage_map(env_state, feat_h, feat_w)
+
+    # Render game frame (render_episode_frames expects WrappedEnvState)
+    frames = render_episode_frames([env_state], env.agent_view_size,
+                                   pixels_per_tile=32)
+    frame = frames[0]
 
     for agent_id, agent_name in enumerate(("agent_0", "agent_1")):
         agent_obs = obs[agent_name].reshape(1, 1, -1)
@@ -65,20 +69,12 @@ def main():
 
         _, _, attn = policy.get_action_and_attention(
             params=init_params, obs=agent_obs, done=done,
-            avail_actions=jnp.ones((1, inner_env.action_space(agent_name).n)),
+            avail_actions=jnp.ones((1, env.action_space(agent_name).n)),
             hstate=hstate, rng=act_rng, agent_id=agent_id,
         )
         attn_map = np.array(attn).squeeze()
         print(f"{agent_name} attention shape: {attn_map.shape}, "
               f"sum: {attn_map.sum():.4f}")
-
-        # Build coverage map
-        coverage = build_coverage_map(env_state, feat_h, feat_w)
-
-        # Render game frame
-        frames = render_episode_frames([env_state], inner_env.agent_view_size,
-                                       pixels_per_tile=32)
-        frame = frames[0]
 
         # Save debug image
         debug_img = render_coverage_debug(frame, coverage, attn_map=attn_map)
