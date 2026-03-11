@@ -466,9 +466,16 @@ def make_train_loop(config, env):
     obs_type = _get_obs_type(config)
     agent_init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
 
-    def init(rng):
+    def init_policy(rng):
+        """Create the policy object (called once, not vmapped)."""
         rng, init_rng = jax.random.split(rng)
-        policy, init_params = agent_init_fn(config, env, init_rng)
+        policy, _ = agent_init_fn(config, env, init_rng)
+        return policy
+
+    def init_state(rng, policy):
+        """Initialize runner state for a single seed (vmappable over rng)."""
+        rng, init_rng = jax.random.split(rng)
+        _, init_params = agent_init_fn(config, env, init_rng)
 
         if config["ANNEAL_LR"]:
             tx = optax.chain(
@@ -492,6 +499,12 @@ def make_train_loop(config, env):
         init_done = {k: jnp.zeros((config["NUM_ENVS"]), dtype=bool) for k in env.agents + ["__all__"]}
         runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
 
+        return runner_state
+
+    def init(rng):
+        """Legacy init: returns (runner_state, policy) for single-seed use."""
+        policy = init_policy(rng)
+        runner_state = init_state(rng, policy)
         return runner_state, policy
 
     def make_step_fn(policy):
@@ -750,9 +763,9 @@ def make_train_loop(config, env):
             )
             return runner_state, update_steps, rew_norm_state, metrics
 
-        return step_fn, chunked_step_fn
+        return step_fn, chunked_step_fn, _single_step
 
-    return init, make_step_fn
+    return init, make_step_fn, init_policy, init_state
 
 
 def run_ja_ippo(config, logger):
@@ -778,7 +791,7 @@ def run_ja_ippo(config, logger):
             train_jit = jax.jit(jax.vmap(train_fn))
             out = train_jit(rngs)
     else:
-        init_fn, make_step_fn = make_train_loop(algorithm_config, env)
+        init_fn, make_step_fn, init_policy_fn, init_state_fn = make_train_loop(algorithm_config, env)
 
         num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
         ckpt_interval = num_updates // max(1, num_ckpts - 1)
@@ -793,55 +806,80 @@ def run_ja_ippo(config, logger):
             chunk_sizes.append(cs)
             remaining -= cs
 
-        seed_outputs = []
-        for s in range(num_seeds):
-            print(f"[ja_ippo] Seed {s+1}/{num_seeds}: initializing...")
-            runner_state, policy = init_fn(rngs[s])
-            step_fn, chunked_step_fn = make_step_fn(policy)
+        # Create policy once, then vmap state init over all seeds in parallel
+        print(f"[ja_ippo] Initializing policy and {num_seeds} seeds in parallel...")
+        policy = init_policy_fn(rngs[0])
+        runner_state = jax.vmap(lambda rng: init_state_fn(rng, policy))(rngs)
 
-            checkpoints = []
-            all_metrics = []
-            update_steps = jnp.int32(0)
-            rew_norm_state = reward_norm_init()
-            steps_done = 0
-            next_ckpt = 0
+        # Get the raw _single_step (no jit/donate decorators) for vmapping
+        _, _, raw_single_step = make_step_fn(policy)
 
-            print(f"[ja_ippo] Seed {s+1}/{num_seeds}: training "
-                  f"({len(chunk_sizes)} chunks, max {scan_chunk} steps each)...")
-            for ci, cs in enumerate(chunk_sizes):
-                if cs == 1:
-                    runner_state, update_steps, rew_norm_state, metric = step_fn(
-                        runner_state, update_steps, rew_norm_state)
-                    metric = jax.tree.map(lambda x: x[None], metric)
-                else:
-                    runner_state, update_steps, rew_norm_state, metric = chunked_step_fn(
-                        runner_state, update_steps, rew_norm_state, cs)
-                all_metrics.append(metric)
-                steps_done += cs
+        @functools.partial(jax.jit, static_argnums=(3,))
+        def vmapped_chunked_step(runner_states, update_steps_all, rew_norm_states, chunk_size):
+            """Run chunk_size updates for all seeds in parallel via vmap + lax.scan."""
+            def per_seed_chunk(rs, us, rns):
+                def _scan_body(carry, _):
+                    rs, us, rns = carry
+                    rs, us, rns, metric = raw_single_step(rs, us, rns)
+                    return (rs, us, rns), metric
+                (rs, us, rns), metrics = jax.lax.scan(
+                    _scan_body, (rs, us, rns), None, length=chunk_size)
+                return rs, us, rns, metrics
+            return jax.vmap(per_seed_chunk)(runner_states, update_steps_all, rew_norm_states)
 
-                # Save checkpoint if we've crossed a checkpoint boundary
-                while next_ckpt < steps_done and len(checkpoints) < num_ckpts:
-                    checkpoints.append(jax.tree.map(jnp.copy, runner_state[0].params))
-                    next_ckpt += ckpt_interval
-                # Always checkpoint at the very end
-                if steps_done == num_updates and len(checkpoints) < num_ckpts:
-                    checkpoints.append(jax.tree.map(jnp.copy, runner_state[0].params))
+        @jax.jit
+        def vmapped_single_step(runner_states, update_steps_all, rew_norm_states):
+            """Single update step for all seeds in parallel."""
+            def per_seed(rs, us, rns):
+                rs, us, rns, metric = raw_single_step(rs, us, rns)
+                return rs, us, rns, metric
+            return jax.vmap(per_seed)(runner_states, update_steps_all, rew_norm_states)
 
-                if ci == 0 or ci == len(chunk_sizes) - 1 or (ci + 1) % max(1, len(chunk_sizes) // 10) == 0:
-                    print(f"[ja_ippo] Seed {s+1}/{num_seeds}: step {steps_done}/{num_updates}")
+        # Per-seed scalars for the training loop
+        update_steps = jnp.zeros(num_seeds, dtype=jnp.int32)
+        rew_norm_state = jax.vmap(lambda _: reward_norm_init())(jnp.arange(num_seeds))
 
-            stacked_metrics = jax.tree.map(lambda *xs: jnp.concatenate(xs), *all_metrics)
-            stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *checkpoints)
+        checkpoints = []
+        all_metrics = []
+        steps_done = 0
+        next_ckpt = 0
 
-            seed_outputs.append({
-                "final_params": runner_state[0].params,
-                "metrics": stacked_metrics,
-                "checkpoints": stacked_ckpts,
-                "final_ckpt_idx": len(checkpoints),
-            })
+        print(f"[ja_ippo] Training {num_seeds} seeds in parallel "
+              f"({len(chunk_sizes)} chunks, max {scan_chunk} steps each)...")
+        for ci, cs in enumerate(chunk_sizes):
+            if cs == 1:
+                runner_state, update_steps, rew_norm_state, metric = vmapped_single_step(
+                    runner_state, update_steps, rew_norm_state)
+                metric = jax.tree.map(lambda x: x[:, None], metric)
+            else:
+                runner_state, update_steps, rew_norm_state, metric = vmapped_chunked_step(
+                    runner_state, update_steps, rew_norm_state, cs)
+            all_metrics.append(metric)
+            steps_done += cs
+
+            # Save checkpoint if we've crossed a checkpoint boundary
+            # runner_state[0].params has shape (num_seeds, ...) — save the whole batch
+            while next_ckpt < steps_done and len(checkpoints) < num_ckpts:
+                checkpoints.append(jax.tree.map(jnp.copy, runner_state[0].params))
+                next_ckpt += ckpt_interval
+            if steps_done == num_updates and len(checkpoints) < num_ckpts:
+                checkpoints.append(jax.tree.map(jnp.copy, runner_state[0].params))
+
+            if ci == 0 or ci == len(chunk_sizes) - 1 or (ci + 1) % max(1, len(chunk_sizes) // 10) == 0:
+                print(f"[ja_ippo] step {steps_done}/{num_updates}")
+
+        # Metrics have shape (num_seeds, chunk_size, ...) per chunk — concat along axis 1
+        stacked_metrics = jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=1), *all_metrics)
+        # Checkpoints: list of (num_seeds, ...) arrays — stack along a new axis 1
+        stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs, axis=1), *checkpoints)
 
         print("[ja_ippo] Training complete.")
-        out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
+        out = {
+            "final_params": runner_state[0].params,
+            "metrics": stacked_metrics,
+            "checkpoints": stacked_ckpts,
+            "final_ckpt_idx": len(checkpoints),
+        }
 
     log_metrics(config, out, logger)
     log_eval_video(algorithm_config, env, out, logger)
