@@ -4,6 +4,8 @@ Loads final_params (shape: num_seeds, ...) from a single checkpoint,
 builds the NxN cross-play matrix, and reports SP/XP with proper SEM
 following the pairing scheme from the ZSC literature.
 
+Reports two matrices: game score and JSD between attention maps.
+
 Usage:
     uv run python -m evaluation.run_xp_seeds \
         --task overcooked-v1-image/cramped_room \
@@ -14,12 +16,13 @@ import os
 import time
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import yaml
 
 from agents.initialize_agents import initialize_ja_image_agent
+from agents.ja_utils import jsd_divergence
 from common.plot_utils import get_metric_names
-from common.run_episodes import run_episodes
 from common.save_load_utils import load_train_run
 from common.tree_utils import tree_stack
 from envs import make_env
@@ -43,6 +46,155 @@ def load_task_config(task_name: str) -> dict:
 def load_algo_config() -> dict:
     with open(ALGO_BASE_CONFIG) as f:
         return yaml.safe_load(f)
+
+
+def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
+                                agent_1_param, agent_1_policy,
+                                max_episode_steps):
+    """Run one eval episode, returning LogWrapper info + mean JSD between attention maps."""
+    rng, reset_rng = jax.random.split(rng)
+    init_obs, init_env_state = env.reset(reset_rng)
+    init_done = {k: jnp.zeros((1), dtype=bool) for k in env.agents + ["__all__"]}
+    init_act_onehot = {k: jnp.zeros((env.action_space(env.agents[i]).n))
+                       for i, k in enumerate(env.agents)}
+
+    init_hstate_0 = agent_0_policy.init_hstate(1, aux_info={"agent_id": 0})
+    init_hstate_1 = agent_1_policy.init_hstate(1, aux_info={"agent_id": 1})
+
+    avail_actions = env.get_avail_actions(init_env_state.env_state)
+    avail_actions = jax.lax.stop_gradient(avail_actions)
+    avail_actions_0 = avail_actions["agent_0"].astype(jnp.float32)
+    avail_actions_1 = avail_actions["agent_1"].astype(jnp.float32)
+
+    # First step
+    rng, act0_rng, act1_rng, step_rng = jax.random.split(rng, 4)
+
+    act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
+        params=agent_0_param,
+        obs=init_obs["agent_0"].reshape(1, 1, -1),
+        done=init_done["agent_0"].reshape(1, 1),
+        avail_actions=avail_actions_0,
+        hstate=init_hstate_0,
+        rng=act0_rng,
+        test_mode=True,
+    )
+    act_0 = act_0.squeeze()
+
+    act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
+        params=agent_1_param,
+        obs=init_obs["agent_1"].reshape(1, 1, -1),
+        done=init_done["agent_1"].reshape(1, 1),
+        avail_actions=avail_actions_1,
+        hstate=init_hstate_1,
+        rng=act1_rng,
+        test_mode=True,
+    )
+    act_1 = act_1.squeeze()
+
+    # Flatten attention maps to distributions for JSD
+    attn_0_flat = attn_0.reshape(-1)
+    attn_1_flat = attn_1.reshape(-1)
+    attn_0_dist = attn_0_flat / (attn_0_flat.sum() + 1e-8)
+    attn_1_dist = attn_1_flat / (attn_1_flat.sum() + 1e-8)
+    # jsd_divergence expects (..., H, W) — reshape back
+    h, w = attn_0.shape[-2], attn_0.shape[-1]
+    step_jsd = jsd_divergence(attn_0_dist.reshape(h, w), attn_1_dist.reshape(h, w))
+    jsd_sum = step_jsd
+    jsd_count = jnp.array(1.0)
+
+    both_actions = [act_0, act_1]
+    env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
+    env_act_onehot = {k: jax.nn.one_hot(both_actions[i], env.action_space(env.agents[i]).n)
+                      for i, k in enumerate(env.agents)}
+    obs, env_state, reward, done, dummy_info = env.step(step_rng, init_env_state, env_act)
+
+    ep_ts = 1
+    init_carry = (ep_ts, env_state, obs, rng, done, reward, env_act_onehot,
+                  hstate_0, hstate_1, dummy_info, jsd_sum, jsd_count)
+
+    def scan_step(carry, _):
+        def take_step(carry_step):
+            (ep_ts, env_state, obs, rng, done, reward, act_onehot,
+             hstate_0, hstate_1, last_info, jsd_sum, jsd_count) = carry_step
+
+            avail_actions = env.get_avail_actions(env_state.env_state)
+            avail_actions = jax.lax.stop_gradient(avail_actions)
+            avail_actions_0 = avail_actions["agent_0"].astype(jnp.float32)
+            avail_actions_1 = avail_actions["agent_1"].astype(jnp.float32)
+
+            rng, act0_rng, act1_rng, step_rng = jax.random.split(rng, 4)
+
+            act_0, hstate_0_next, attn_0 = agent_0_policy.get_action_and_attention(
+                params=agent_0_param,
+                obs=obs["agent_0"].reshape(1, 1, -1),
+                done=done["agent_0"].reshape(1, 1),
+                avail_actions=avail_actions_0,
+                hstate=hstate_0,
+                rng=act0_rng,
+                test_mode=True,
+            )
+            act_0 = act_0.squeeze()
+
+            act_1, hstate_1_next, attn_1 = agent_1_policy.get_action_and_attention(
+                params=agent_1_param,
+                obs=obs["agent_1"].reshape(1, 1, -1),
+                done=done["agent_1"].reshape(1, 1),
+                avail_actions=avail_actions_1,
+                hstate=hstate_1,
+                rng=act1_rng,
+                test_mode=True,
+            )
+            act_1 = act_1.squeeze()
+
+            # Compute JSD between attention maps
+            a0 = attn_0.reshape(-1)
+            a1 = attn_1.reshape(-1)
+            a0 = a0 / (a0.sum() + 1e-8)
+            a1 = a1 / (a1.sum() + 1e-8)
+            step_jsd = jsd_divergence(a0.reshape(h, w), a1.reshape(h, w))
+            jsd_sum_next = jsd_sum + step_jsd
+            jsd_count_next = jsd_count + 1.0
+
+            both_actions = [act_0, act_1]
+            env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
+            env_act_onehot = {k: jax.nn.one_hot(both_actions[i], env.action_space(env.agents[i]).n)
+                              for i, k in enumerate(env.agents)}
+            obs_next, env_state_next, reward, done_next, info_next = env.step(step_rng, env_state, env_act)
+
+            return (ep_ts + 1, env_state_next, obs_next, rng, done_next, reward, env_act_onehot,
+                    hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next)
+
+        (ep_ts, env_state, obs, rng, done, reward, act_onehot,
+         hstate_0, hstate_1, last_info, jsd_sum, jsd_count) = carry
+        new_carry = jax.lax.cond(
+            done["__all__"],
+            lambda curr_carry: curr_carry,
+            take_step,
+            operand=carry,
+        )
+        return new_carry, None
+
+    final_carry, _ = jax.lax.scan(scan_step, init_carry, None, length=max_episode_steps)
+    info = final_carry[-3]  # last_info (the LogWrapper metrics)
+    mean_jsd = final_carry[-2] / final_carry[-1]  # jsd_sum / jsd_count
+    return info, mean_jsd
+
+
+def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
+                          agent_1_param, agent_1_policy,
+                          max_episode_steps, num_eps):
+    """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
+    rngs = jax.random.split(rng, num_eps + 1)
+    ep_rngs = rngs[1:]
+
+    vmap_fn = jax.jit(jax.vmap(
+        lambda ep_rng: run_single_episode_with_jsd(
+            ep_rng, env, agent_0_param, agent_0_policy,
+            agent_1_param, agent_1_policy, max_episode_steps,
+        )
+    ))
+    all_info, all_jsd = vmap_fn(ep_rngs)
+    return all_info, all_jsd  # all_jsd shape: (num_eps,)
 
 
 def xp_mean_and_sem(xp_matrix):
@@ -99,6 +251,7 @@ def run_xp_evaluation(task_name: str, checkpoint_path: str):
     outer_rngs = jax.random.split(eval_rng, num_seeds)
 
     all_metrics = []
+    jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
     start_time = time.time()
     for i in range(num_seeds):
         rng_i = outer_rngs[i]
@@ -107,18 +260,18 @@ def run_xp_evaluation(task_name: str, checkpoint_path: str):
         for j in range(num_seeds):
             label = "SP" if i == j else "XP"
             print(f"  [{label}] seed {i} x seed {j} ...", end=" ", flush=True)
-            metrics = run_episodes(
+            metrics, ep_jsds = run_episodes_with_jsd(
                 partner_rngs[j], env,
                 agent_0_param=seed_params[i], agent_0_policy=policy,
                 agent_1_param=seed_params[j], agent_1_policy=policy,
                 max_episode_steps=max_steps,
                 num_eps=NUM_EVAL_EPISODES,
-                agent_0_test_mode=True,
-                agent_1_test_mode=True,
             )
             row_metrics.append(metrics)
+            jsd_matrix[i, j] = np.array(ep_jsds)
             ret = np.array(metrics["returned_episode_returns"]).mean()
-            print(f"return={ret:.2f}")
+            jsd_mean = np.array(ep_jsds).mean()
+            print(f"return={ret:.2f}  jsd={jsd_mean:.4f}")
         all_metrics.append(tree_stack(row_metrics))
 
     xp_metrics = tree_stack(all_metrics)
@@ -131,7 +284,8 @@ def run_xp_evaluation(task_name: str, checkpoint_path: str):
     for metric_name in metric_names:
         print_xp_table(xp_metrics, metric_name, seed_names)
 
-    print_sp_vs_xp_summary(xp_metrics, metric_names, num_seeds)
+    print_jsd_table(jsd_matrix, seed_names)
+    print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds)
 
 
 def print_xp_table(xp_metrics, metric_name, seed_names):
@@ -155,7 +309,27 @@ def print_xp_table(xp_metrics, metric_name, seed_names):
     print(table)
 
 
-def print_sp_vs_xp_summary(xp_metrics, metric_names, num_seeds):
+def print_jsd_table(jsd_matrix, seed_names):
+    """Print N×N JSD matrix (mean ± std over episodes)."""
+    from prettytable import PrettyTable
+
+    n = len(seed_names)
+    table = PrettyTable()
+    table.field_names = ["agent_0 \\ agent_1"] + seed_names
+
+    for i in range(n):
+        row = [seed_names[i]]
+        for j in range(n):
+            mean = jsd_matrix[i, j].mean()
+            std = jsd_matrix[i, j].std()
+            row.append(f"{mean:.4f} +/- {std:.4f}")
+        table.add_row(row)
+
+    print(f"\nJSD (mean +/- std over {jsd_matrix.shape[2]} episodes):")
+    print(table)
+
+
+def print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds):
     """Report SP and XP with proper SEM using the seed-pairing scheme."""
     print("\n=== Self-Play vs Cross-Play Summary ===")
     m = num_seeds // 2
@@ -176,6 +350,14 @@ def print_sp_vs_xp_summary(xp_metrics, metric_names, num_seeds):
         xp_mean, xp_sem = xp_mean_and_sem(data)
 
         print(f"  {metric_name}:  SP = {sp_mean:.2f} +/- {sp_sem:.2f}  |  XP = {xp_mean:.2f} +/- {xp_sem:.2f}")
+
+    # JSD summary
+    jsd_ep_means = jsd_matrix.mean(axis=-1)  # (N, N)
+    sp_jsd = np.diag(jsd_ep_means)
+    sp_jsd_mean = np.mean(sp_jsd)
+    sp_jsd_sem = np.std(sp_jsd) / np.sqrt(len(sp_jsd))
+    xp_jsd_mean, xp_jsd_sem = xp_mean_and_sem(jsd_ep_means)
+    print(f"  JSD:  SP = {sp_jsd_mean:.4f} +/- {sp_jsd_sem:.4f}  |  XP = {xp_jsd_mean:.4f} +/- {xp_jsd_sem:.4f}")
 
 
 if __name__ == "__main__":
