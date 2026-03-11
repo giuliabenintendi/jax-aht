@@ -350,6 +350,51 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
                    step=step, commit=commit)
 
 
+def compute_attention_metrics(attn_data):
+    """Compute per-agent temporal consistency of attention maps over an episode.
+
+    Temporal consistency = mean cosine similarity between consecutive timesteps.
+    Values near 1.0 indicate static attention; lower values indicate attention
+    that shifts with the game state.
+
+    Args:
+        attn_data: dict {"agent_0": [attn_map, ...], "agent_1": [...]},
+            where each attn_map is (1, batch, H, W) from get_action_and_attention.
+
+    Returns:
+        dict with per-agent metrics:
+            "agent_0_temporal_consistency": float,
+            "agent_1_temporal_consistency": float,
+            "agent_0_cosine_trace": list of per-step cosine similarities,
+            "agent_1_cosine_trace": list of per-step cosine similarities,
+    """
+    import numpy as np
+
+    metrics = {}
+    for agent_name in ("agent_0", "agent_1"):
+        maps = attn_data.get(agent_name, [])
+        if len(maps) < 2:
+            metrics[f"{agent_name}_temporal_consistency"] = float("nan")
+            metrics[f"{agent_name}_cosine_trace"] = []
+            continue
+
+        flat = [np.array(m).squeeze().flatten() for m in maps]
+        cosine_sims = []
+        for t in range(len(flat) - 1):
+            a, b = flat[t], flat[t + 1]
+            dot = np.dot(a, b)
+            norm_a, norm_b = np.linalg.norm(a), np.linalg.norm(b)
+            if norm_a > 1e-10 and norm_b > 1e-10:
+                cosine_sims.append(float(dot / (norm_a * norm_b)))
+            else:
+                cosine_sims.append(0.0)
+
+        metrics[f"{agent_name}_temporal_consistency"] = float(np.mean(cosine_sims))
+        metrics[f"{agent_name}_cosine_trace"] = cosine_sims
+
+    return metrics
+
+
 def _overlay_attention(frame, attn, cmap_name, alpha=0.6):
     """Blend a single attention heatmap onto a game frame.
 

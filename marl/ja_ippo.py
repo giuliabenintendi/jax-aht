@@ -874,6 +874,7 @@ def log_eval_video(algorithm_config, env, out, logger):
     import os
     from evaluation.vis_episodes import (
         run_episode_with_states, log_attention_to_wandb, make_attention_video,
+        compute_attention_metrics,
     )
 
     env_name = algorithm_config["ENV_NAME"]
@@ -931,6 +932,35 @@ def log_eval_video(algorithm_config, env, out, logger):
     logger.log_video("Eval/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
     logger.log_video("Eval/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
     logger.log_video("Eval/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
+
+    # Log temporal consistency metrics
+    attn_metrics = compute_attention_metrics(attn_data)
+    for agent_name in ("agent_0", "agent_1"):
+        tc = attn_metrics[f"{agent_name}_temporal_consistency"]
+        print(f"[ja_ippo] {agent_name} temporal consistency: {tc:.4f}")
+        logger.log(
+            {f"Eval/{agent_name}_temporal_consistency": tc},
+            step=None, commit=False,
+        )
+
+        # Log per-timestep cosine similarity trace as a wandb line plot
+        try:
+            import wandb
+            trace = attn_metrics[f"{agent_name}_cosine_trace"]
+            if trace:
+                table = wandb.Table(
+                    data=[[t, v] for t, v in enumerate(trace)],
+                    columns=["timestep", "cosine_similarity"],
+                )
+                logger.log(
+                    {f"Eval/{agent_name}_cosine_trace": wandb.plot.line(
+                        table, "timestep", "cosine_similarity",
+                        title=f"{agent_name} attention cosine similarity",
+                    )},
+                    step=None, commit=False,
+                )
+        except ImportError:
+            pass
 
 
 def log_metrics(config, out, logger):
