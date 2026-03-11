@@ -1,0 +1,15 @@
+ENV_NAME: overcooked-v1
+ROLLOUT_LENGTH: 400
+ENV_KWARGS:
+  layout: coord_ring
+  obs_type: image
+  random_obj_state: true
+  do_reward_shaping: true
+  reward_shaping_params:
+    PLACEMENT_IN_POT_REW: .5
+    PLATE_PICKUP_REWARD: .1
+    SOUP_PICKUP_REWARD: 1.
+    ONION_PICKUP_REWARD: .1
+    COUNTER_PICKUP_REWARD: 0
+    COUNTER_DROP_REWARD: 0
+TASK_NAME: overcooked-v1-image/coord_ring

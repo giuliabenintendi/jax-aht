@@ -1,0 +1,47 @@
+# Cross-play evaluation for JA-IPPO across seeds (within-layout).
+#
+# Usage:
+#   uv run python -m evaluation.run --config-name=xp_ja_seeds \
+#       task=overcooked-v1-image/cramped_room \
+#       checkpoint_path=results/.../saved_train_run
+defaults:
+  - task: overcooked-v1-image/cramped_room
+  - hydra: hydra_simple
+  - _self_
+
+ENV_NAME: ${task.ENV_NAME}
+ENV_KWARGS: ${task.ENV_KWARGS}
+TASK_NAME: ${task.TASK_NAME}
+
+checkpoint_path: FILL_IN
+actor_type: ja_image
+
+label: ""
+name: ${TASK_NAME}/heldout_xp_matrix/ja_seeds/${label}
+
+global_heldout_settings:
+  EVAL_SEED: 34957
+  MAX_EPISODE_STEPS: ${task.ROLLOUT_LENGTH}
+  NUM_EVAL_EPISODES: 64
+  AGGREGATE_STAT: mean
+  NORMALIZE_RETURNS: false
+
+# Both sets are identical — this produces the NxN self/cross-play matrix.
+# The TASK_NAME key is looked up at runtime, so only the matching entry matters.
+heldout_set:
+  ${TASK_NAME}:
+    ja_seeds:
+      path: ${checkpoint_path}
+      actor_type: ${actor_type}
+      ckpt_key: final_params
+      idx_list: [0, 1, 2, 3, 4]
+      test_mode: true
+
+best_response_set:
+  ${TASK_NAME}:
+    ja_seeds:
+      path: ${checkpoint_path}
+      actor_type: ${actor_type}
+      ckpt_key: final_params
+      idx_list: [0, 1, 2, 3, 4]
+      test_mode: true

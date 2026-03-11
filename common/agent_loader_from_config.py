@@ -5,7 +5,8 @@ from omegaconf import OmegaConf
 
 from agents.initialize_agents import initialize_s5_agent, initialize_mlp_agent, \
     initialize_rnn_agent, initialize_actor_with_double_critic, \
-    initialize_actor_with_conditional_critic
+    initialize_actor_with_conditional_critic, \
+    initialize_ja_image_agent, initialize_image_agent
 from common.save_load_utils import load_checkpoints
 
 log = logging.getLogger(__name__)
@@ -131,6 +132,10 @@ def initialize_rl_agent_from_config(agent_config, agent_name, env, rng):
         policy, init_params = initialize_actor_with_double_critic(agent_config, env, init_rng)
     elif agent_config["actor_type"] == "actor_with_conditional_critic":
         policy, init_params = initialize_actor_with_conditional_critic(agent_config, env, init_rng)
+    elif agent_config["actor_type"] == "ja_image":
+        policy, init_params = initialize_ja_image_agent(agent_config, env, init_rng)
+    elif agent_config["actor_type"] == "image":
+        policy, init_params = initialize_image_agent(agent_config, env, init_rng)
     else:
         raise ValueError(f"Invalid actor type: {agent_config['actor_type']}")
 
