@@ -21,7 +21,7 @@ from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent
 from agents.ja_utils import jsd_divergence
-from common.plot_utils import get_stats, get_metric_names
+from common.plot_utils import get_stats, get_metric_names, plot_seed_aggregate
 from common.save_load_utils import save_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
@@ -1037,6 +1037,17 @@ def log_metrics(config, out, logger):
     metric_names = get_metric_names(config["ENV_NAME"])
     train_stats = get_stats(train_metrics, metric_names)
 
+    # Save mean±std training curves across seeds
+    algorithm_config = dict(config.algorithm)
+    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    plot_seed_aggregate(
+        train_stats,
+        num_rollout_steps=int(algorithm_config["ROLLOUT_LENGTH"]),
+        num_envs=int(algorithm_config["NUM_ENVS"]),
+        savedir=savedir,
+        savename="train_curve",
+    )
+
     train_stats = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
 
     # Scalar metrics to log
@@ -1094,7 +1105,6 @@ def log_metrics(config, out, logger):
 
     logger.commit()
 
-    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     out_savepath = save_train_run(out, savedir, savename="saved_train_run")
     if config["logger"]["log_train_out"]:
         logger.log_artifact(name="saved_train_run", path=out_savepath, type_name="train_run")

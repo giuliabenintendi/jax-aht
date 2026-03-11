@@ -1,12 +1,13 @@
-"""Cross-play evaluation for separately trained seeds.
+"""Cross-play evaluation for multi-seed training runs.
 
-Loads final_params from N checkpoint directories (one per seed),
-builds the NxN cross-play matrix, and prints/saves results.
+Loads final_params (shape: num_seeds, ...) from a single checkpoint,
+builds the NxN cross-play matrix, and reports SP/XP with proper SEM
+following the pairing scheme from the ZSC literature.
 
 Usage:
     uv run python -m evaluation.run_xp_seeds \
         --task overcooked-v1-image/cramped_room \
-        --checkpoints path/to/seed0/saved_train_run path/to/seed1/saved_train_run ...
+        --checkpoint results/.../saved_train_run
 """
 import argparse
 import os
@@ -44,32 +45,53 @@ def load_algo_config() -> dict:
         return yaml.safe_load(f)
 
 
-def run_xp_evaluation(task_name: str, checkpoint_paths: list[str]):
+def xp_mean_and_sem(xp_matrix):
+    """Compute XP mean and SEM using the pairing scheme from the ZSC literature.
+
+    With n seeds and 2 players, we pair seeds into m = n//2 groups:
+    (0,1), (2,3), (4,5), ... Each group gives one independent XP sample
+    by averaging the two permutations: [M[2i, 2i+1] + M[2i+1, 2i]] / 2.
+
+    Args:
+        xp_matrix: (n, n) array where entry (i,j) is the mean return
+                   when seed i is agent 0 and seed j is agent 1.
+    Returns:
+        (mean, sem) over the m independent XP samples.
+    """
+    n = xp_matrix.shape[0]
+    m = n // 2
+    samples = np.zeros(m)
+    for k in range(m):
+        i, j = 2 * k, 2 * k + 1
+        samples[k] = (xp_matrix[i, j] + xp_matrix[j, i]) / 2
+    return np.mean(samples), np.std(samples) / np.sqrt(m)
+
+
+def run_xp_evaluation(task_name: str, checkpoint_path: str):
     task_cfg = load_task_config(task_name)
     algo_cfg = load_algo_config()
     env = make_env(task_cfg["ENV_NAME"], task_cfg["ENV_KWARGS"])
     env = LogWrapper(env)
 
-    num_seeds = len(checkpoint_paths)
+    # Load all seeds from single checkpoint
+    run_data = load_train_run(checkpoint_path)
+    all_final_params = run_data["final_params"]
+    num_seeds = jax.tree.leaves(all_final_params)[0].shape[0]
     print(f"[xp_seeds] task={task_name}, seeds={num_seeds}, episodes={NUM_EVAL_EPISODES}")
 
-    # Initialize policy (same architecture for all seeds)
+    # Initialize policy
     rng = jax.random.PRNGKey(EVAL_SEED)
     rng, init_rng = jax.random.split(rng)
     policy, init_params = initialize_ja_image_agent(algo_cfg, env, init_rng)
 
-    # Load final_params from each seed
+    # Extract per-seed params
     seed_params = []
-    for i, ckpt_path in enumerate(checkpoint_paths):
-        run_data = load_train_run(ckpt_path)
-        params = run_data["final_params"]
-        # final_params has shape (1, ...param_dims) since NUM_SEEDS=1
-        params = jax.tree.map(lambda x: x[0], params)
-        # Verify param structure matches
-        assert jax.tree.structure(params) == jax.tree.structure(init_params), \
+    for i in range(num_seeds):
+        params_i = jax.tree.map(lambda x: x[i], all_final_params)
+        assert jax.tree.structure(params_i) == jax.tree.structure(init_params), \
             f"Param structure mismatch for seed {i}"
-        seed_params.append(params)
-        print(f"  seed {i}: loaded from {ckpt_path}")
+        seed_params.append(params_i)
+        print(f"  seed {i}: loaded")
 
     # Build NxN cross-play matrix
     max_steps = task_cfg["ROLLOUT_LENGTH"]
@@ -103,7 +125,7 @@ def run_xp_evaluation(task_name: str, checkpoint_paths: list[str]):
     elapsed = time.time() - start_time
     print(f"[xp_seeds] evaluation done in {elapsed:.1f}s")
 
-    # Print results
+    # Print full matrix and SP vs XP summary
     metric_names = get_metric_names(task_cfg["ENV_NAME"])
     seed_names = [f"seed_{i}" for i in range(num_seeds)]
     for metric_name in metric_names:
@@ -124,9 +146,8 @@ def print_xp_table(xp_metrics, metric_name, seed_names):
     for i in range(n):
         row = [seed_names[i]]
         for j in range(n):
-            ep_returns = data[i, j]
-            mean = ep_returns.mean()
-            std = ep_returns.std()
+            mean = data[i, j].mean()
+            std = data[i, j].std()
             row.append(f"{mean:.2f} +/- {std:.2f}")
         table.add_row(row)
 
@@ -135,29 +156,34 @@ def print_xp_table(xp_metrics, metric_name, seed_names):
 
 
 def print_sp_vs_xp_summary(xp_metrics, metric_names, num_seeds):
+    """Report SP and XP with proper SEM using the seed-pairing scheme."""
     print("\n=== Self-Play vs Cross-Play Summary ===")
+    m = num_seeds // 2
+    print(f"  ({num_seeds} seeds -> {m} independent XP samples)")
+    if num_seeds % 2 != 0:
+        print(f"  WARNING: odd number of seeds, last seed excluded from SEM computation")
+
     for metric_name in metric_names:
-        data = np.array(xp_metrics[metric_name]).mean(axis=-1)  # (N, N, episodes)
-        sp_vals = []
-        xp_vals = []
-        for i in range(num_seeds):
-            for j in range(num_seeds):
-                ep_mean = data[i, j].mean()
-                if i == j:
-                    sp_vals.append(ep_mean)
-                else:
-                    xp_vals.append(ep_mean)
-        sp_mean, sp_std = np.mean(sp_vals), np.std(sp_vals)
-        xp_mean, xp_std = np.mean(xp_vals), np.std(xp_vals)
-        print(f"  {metric_name}:  SP = {sp_mean:.2f} +/- {sp_std:.2f}  |  XP = {xp_mean:.2f} +/- {xp_std:.2f}")
+        # (N, N, episodes, agents) -> avg over agents and episodes -> (N, N)
+        data = np.array(xp_metrics[metric_name]).mean(axis=(-1, -2))
+
+        # SP: diagonal entries
+        sp_scores = np.diag(data)
+        sp_mean = np.mean(sp_scores)
+        sp_sem = np.std(sp_scores) / np.sqrt(len(sp_scores))
+
+        # XP: proper SEM via seed pairing
+        xp_mean, xp_sem = xp_mean_and_sem(data)
+
+        print(f"  {metric_name}:  SP = {sp_mean:.2f} +/- {sp_sem:.2f}  |  XP = {xp_mean:.2f} +/- {xp_sem:.2f}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cross-play evaluation across seeds")
     parser.add_argument("--task", required=True,
                         help="Task config name (e.g. overcooked-v1-image/cramped_room)")
-    parser.add_argument("--checkpoints", nargs="+", required=True,
-                        help="Paths to saved_train_run directories (one per seed)")
+    parser.add_argument("--checkpoint", required=True,
+                        help="Path to saved_train_run directory")
     args = parser.parse_args()
 
-    run_xp_evaluation(args.task, args.checkpoints)
+    run_xp_evaluation(args.task, args.checkpoint)
