@@ -135,7 +135,7 @@ def plot_seed_aggregate(all_stats, num_rollout_steps, num_envs,
         savepath = None
         if savedir is not None and savename is not None:
             safe_name = stat_name.replace(" ", "_")
-            savepath = os.path.join(savedir, f"{savename}_{safe_name}.pdf")
+            savepath = os.path.join(savedir, f"{savename}_{safe_name}.png")
             fig.savefig(savepath)
         figures[stat_name] = fig
         plt.close(fig)

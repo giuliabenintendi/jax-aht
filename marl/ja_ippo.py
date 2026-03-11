@@ -870,7 +870,7 @@ def _render_lbf_eval_frames(inner_env, ep_states):
 
 
 def log_eval_video(algorithm_config, env, out, logger):
-    """Run one eval episode with final params (seed 0), log video + attention to wandb."""
+    """Run eval episodes for all seeds, log videos + attention to wandb."""
     import os
     from evaluation.vis_episodes import (
         run_episode_with_states, log_attention_to_wandb, make_attention_video,
@@ -887,148 +887,140 @@ def log_eval_video(algorithm_config, env, out, logger):
     rng = jax.random.PRNGKey(0)
     policy, _ = init_fn(algorithm_config, env, rng)
 
-    # Extract final params from seed 0
-    final_params = jax.tree.map(lambda x: x[0], out["final_params"])
-
-    # Unwrap LogWrapper so run_episode_with_states collects WrappedEnvState
+    num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
     inner_env = env._env
-
-    # Run one eval episode collecting states + attention maps
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
-    ep_states, attn_data = run_episode_with_states(
-        jax.random.PRNGKey(42), inner_env, final_params, policy,
-        final_params, policy, max_steps,
-        collect_attention=True,
-    )
-    print(f"[ja_ippo] Eval episode: {len(ep_states)} frames collected")
 
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    video_dir = f"{savedir}/videos"
-    os.makedirs(video_dir, exist_ok=True)
+
+    for seed_idx in range(num_seeds):
+        final_params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
+
+        ep_states, attn_data = run_episode_with_states(
+            jax.random.PRNGKey(42 + seed_idx), inner_env, final_params, policy,
+            final_params, policy, max_steps,
+            collect_attention=True,
+        )
+        print(f"[ja_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
+
+        video_dir = f"{savedir}/videos/seed_{seed_idx}"
+        os.makedirs(video_dir, exist_ok=True)
 
     # Render frames from episode states
-    if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
-        frames = _render_lbf_eval_frames(inner_env, ep_states)
-    else:
-        from evaluation.vis_episodes import render_episode_frames
-        frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
+        if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
+            frames = _render_lbf_eval_frames(inner_env, ep_states)
+        else:
+            from evaluation.vis_episodes import render_episode_frames
+            frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
 
-    # Save plain eval video
-    from moviepy import ImageSequenceClip
-    video_path = f"{video_dir}/eval_final.mp4"
-    clip = ImageSequenceClip(frames, fps=10)
-    clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
-                         bitrate='8000k', preset='slow')
-    logger.log_video("Eval/episode_video", video_path, commit=False)
+        # Save plain eval video
+        from moviepy import ImageSequenceClip
+        video_path = f"{video_dir}/eval_final.mp4"
+        clip = ImageSequenceClip(frames, fps=10)
+        clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
+                             bitrate='8000k', preset='slow')
+        tag = f"Eval/seed_{seed_idx}"
+        logger.log_video(f"{tag}/episode_video", video_path, commit=False)
 
-    # Log attention heatmaps overlaid on rendered frames
-    log_attention_to_wandb(
-        attn_data, logger, step=None, tag_prefix="Eval", commit=False,
-        frames=frames,
-    )
-
-    # Save attention overlay videos (one per agent + combined)
-    attn_video_base = f"{video_dir}/eval_attention.mp4"
-    make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
-    logger.log_video("Eval/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
-    logger.log_video("Eval/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
-    logger.log_video("Eval/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
-
-    # Log temporal consistency metrics
-    attn_metrics = compute_attention_metrics(attn_data)
-    for agent_name in ("agent_0", "agent_1"):
-        tc = attn_metrics[f"{agent_name}_temporal_consistency"]
-        print(f"[ja_ippo] {agent_name} temporal consistency: {tc:.4f}")
-        logger.log(
-            {f"Eval/{agent_name}_temporal_consistency": tc},
-            step=None, commit=False,
+        # Log attention heatmaps overlaid on rendered frames
+        log_attention_to_wandb(
+            attn_data, logger, step=None, tag_prefix=tag, commit=False,
+            frames=frames,
         )
 
-    # Compute per-timestep attention coverage breakdown and save as JSON artifact
-    if env_name in ("overcooked-v1",):
-        from agents.ja_image_actor_critic import _compute_resnet_output_dims
-        from agents.initialize_agents import _get_image_dims
-        import json
-        import numpy as np
+        # Save attention overlay videos (one per agent + combined)
+        attn_video_base = f"{video_dir}/eval_attention.mp4"
+        make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
+        logger.log_video(f"{tag}/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
+        logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
+        logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
 
-        img_h, img_w, _ = _get_image_dims(env)
-        feat_h, feat_w = _compute_resnet_output_dims(
-            img_h, img_w,
-            stride=algorithm_config.get("CONV_STRIDE", 2),
-            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
-            padding=algorithm_config.get("CONV_PADDING", "SAME"),
-            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
-        )
-
-        # Save a debug image for visual validation (one frame, both agents)
-        debug_t = 0
-        debug_coverage = build_coverage_map(ep_states[debug_t], feat_h, feat_w)
-        from PIL import Image as PILImage
+        # Log temporal consistency metrics
+        attn_metrics = compute_attention_metrics(attn_data)
         for agent_name in ("agent_0", "agent_1"):
-            debug_attn = np.array(attn_data[agent_name][debug_t]).squeeze()
-            debug_img = render_coverage_debug(
-                frames[debug_t], debug_coverage, attn_map=debug_attn)
-            debug_path = f"{video_dir}/coverage_debug_{agent_name}_t{debug_t}.png"
-            PILImage.fromarray(debug_img).save(debug_path)
-            print(f"[ja_ippo] Coverage debug image saved: {debug_path}")
+            tc = attn_metrics[f"{agent_name}_temporal_consistency"]
+            print(f"[ja_ippo] Seed {seed_idx} {agent_name} temporal consistency: {tc:.4f}")
+            logger.log(
+                {f"{tag}/{agent_name}_temporal_consistency": tc},
+                step=None, commit=False,
+            )
 
-        attn_threshold = 0.05
-        n_steps = min(len(attn_data["agent_0"]), len(ep_states) - 1)
-        coverage_data = {}
+        # Compute per-timestep attention coverage breakdown and save as JSON artifact
+        if env_name in ("overcooked-v1",):
+            from agents.ja_image_actor_critic import _compute_resnet_output_dims
+            from agents.initialize_agents import _get_image_dims
+            import json
+            import numpy as np
 
-        for agent_name in ("agent_0", "agent_1"):
-            maps = attn_data[agent_name]
-            agent_steps = []
+            img_h, img_w, _ = _get_image_dims(env)
+            feat_h, feat_w = _compute_resnet_output_dims(
+                img_h, img_w,
+                stride=algorithm_config.get("CONV_STRIDE", 2),
+                kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
+                padding=algorithm_config.get("CONV_PADDING", "SAME"),
+                num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
+            )
 
-            for t in range(n_steps):
-                attn = np.array(maps[t]).squeeze()
-                coverage = build_coverage_map(ep_states[t], feat_h, feat_w)
+            # Save a debug image for visual validation (one frame, both agents)
+            debug_t = 0
+            debug_coverage = build_coverage_map(ep_states[debug_t], feat_h, feat_w)
+            from PIL import Image as PILImage
+            for agent_name in ("agent_0", "agent_1"):
+                debug_attn = np.array(attn_data[agent_name][debug_t]).squeeze()
+                debug_img = render_coverage_debug(
+                    frames[debug_t], debug_coverage, attn_map=debug_attn)
+                debug_path = f"{video_dir}/coverage_debug_{agent_name}_t{debug_t}.png"
+                PILImage.fromarray(debug_img).save(debug_path)
+                print(f"[ja_ippo] Seed {seed_idx} coverage debug: {debug_path}")
 
-                # Filter cells above threshold
-                spots = []
-                for r in range(feat_h):
-                    for c in range(feat_w):
-                        val = float(attn[r, c])
-                        if val >= attn_threshold:
-                            cov = coverage[r, c]
-                            # Only include nonzero categories
-                            cov_dict = {
-                                INDEX_TO_OBJECT[i]: round(float(cov[i]), 3)
-                                for i in range(len(INDEX_TO_OBJECT))
-                                if cov[i] > 0.01
-                            }
-                            spots.append({
-                                "attn": round(val, 4),
-                                "coverage": cov_dict,
-                            })
+            attn_threshold = 0.05
+            n_steps = min(len(attn_data["agent_0"]), len(ep_states) - 1)
+            coverage_data = {}
 
-                spots.sort(key=lambda s: -s["attn"])
-                agent_steps.append({"t": t, "spots": spots})
+            for agent_name in ("agent_0", "agent_1"):
+                maps = attn_data[agent_name]
+                agent_steps = []
 
-            coverage_data[agent_name] = agent_steps
+                for t in range(n_steps):
+                    attn = np.array(maps[t]).squeeze()
+                    coverage = build_coverage_map(ep_states[t], feat_h, feat_w)
 
-            # Print a few representative timesteps for validation
-            for t_idx in (0, n_steps // 2, n_steps - 1):
-                step_data = agent_steps[t_idx]
-                print(f"[ja_ippo] {agent_name} t={t_idx}:")
-                for spot in step_data["spots"][:5]:
-                    cov_str = ", ".join(f"{k}={v:.0%}" for k, v in spot["coverage"].items())
-                    print(f"  attn={spot['attn']:.3f} → {cov_str}")
+                    # Filter cells above threshold
+                    spots = []
+                    for r in range(feat_h):
+                        for c in range(feat_w):
+                            val = float(attn[r, c])
+                            if val >= attn_threshold:
+                                cov = coverage[r, c]
+                                # Only include nonzero categories
+                                cov_dict = {
+                                    INDEX_TO_OBJECT[i]: round(float(cov[i]), 3)
+                                    for i in range(len(INDEX_TO_OBJECT))
+                                    if cov[i] > 0.01
+                                }
+                                spots.append({
+                                    "attn": round(val, 4),
+                                    "coverage": cov_dict,
+                                })
 
-        # Save JSON to run directory
-        json_path = f"{savedir}/attention_coverage.json"
-        with open(json_path, "w") as f:
-            json.dump(coverage_data, f, indent=2)
-        print(f"[ja_ippo] Attention coverage saved to {json_path}")
+                    spots.sort(key=lambda s: -s["attn"])
+                    agent_steps.append({"t": t, "spots": spots})
 
-        # Upload as wandb artifact
-        try:
-            import wandb
-            artifact = wandb.Artifact("attention_coverage", type="analysis")
-            artifact.add_file(json_path)
-            wandb.log_artifact(artifact)
-        except ImportError:
-            pass
+                coverage_data[agent_name] = agent_steps
+
+                # Print a few representative timesteps for validation
+                for t_idx in (0, n_steps // 2, n_steps - 1):
+                    step_data = agent_steps[t_idx]
+                    print(f"[ja_ippo] Seed {seed_idx} {agent_name} t={t_idx}:")
+                    for spot in step_data["spots"][:5]:
+                        cov_str = ", ".join(f"{k}={v:.0%}" for k, v in spot["coverage"].items())
+                        print(f"  attn={spot['attn']:.3f} -> {cov_str}")
+
+            # Save JSON to run directory
+            json_path = f"{video_dir}/attention_coverage.json"
+            with open(json_path, "w") as f:
+                json.dump(coverage_data, f, indent=2)
+            print(f"[ja_ippo] Seed {seed_idx} attention coverage saved to {json_path}")
 
 
 def log_metrics(config, out, logger):
