@@ -468,7 +468,7 @@ def build_coverage_map(state, feat_h, feat_w, padding=4, tile_pixels=7):
     return coverage
 
 
-def render_coverage_debug(frame, coverage_map, attn_map=None, upscale=8):
+def render_coverage_debug(frame, coverage_map, attn_map=None, upscale=16):
     """Render a debug image showing the feature-map grid over the game frame.
 
     Each feature cell is labeled with its dominant category (and percentage).
@@ -490,12 +490,22 @@ def render_coverage_debug(frame, coverage_map, attn_map=None, upscale=8):
     h_px, w_px = frame.shape[:2]
 
     # Upscale frame for readability
-    img = Image.fromarray(frame).resize(
-        (w_px * upscale, h_px * upscale), resample=Image.NEAREST)
+    out_w, out_h = w_px * upscale, h_px * upscale
+    img = Image.fromarray(frame).resize((out_w, out_h), resample=Image.NEAREST)
     draw = ImageDraw.Draw(img)
 
-    cell_h = h_px * upscale / feat_h
-    cell_w = w_px * upscale / feat_w
+    cell_h = out_h / feat_h
+    cell_w = out_w / feat_w
+
+    # Try to load a truetype font; fall back to default
+    font_size = max(10, int(min(cell_h, cell_w) / 5))
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size)
+    except (OSError, IOError):
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf", font_size)
+        except (OSError, IOError):
+            font = ImageFont.load_default()
 
     # Short labels for categories
     _SHORT = {
@@ -539,12 +549,11 @@ def render_coverage_debug(frame, coverage_map, attn_map=None, upscale=8):
                 # Show attention value
                 label = f"a={attn_val:.2f}\n{label}"
 
-            # Draw text
-            text_x = x0 + 2
-            text_y = y0 + 2
-            # Shadow for readability
-            draw.text((text_x + 1, text_y + 1), label, fill="black")
-            draw.text((text_x, text_y), label, fill="yellow")
+            # Draw text with shadow for readability
+            text_x = x0 + 3
+            text_y = y0 + 3
+            draw.text((text_x + 1, text_y + 1), label, fill="black", font=font)
+            draw.text((text_x, text_y), label, fill="yellow", font=font)
 
     return np.array(img)
 
