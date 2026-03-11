@@ -11,7 +11,7 @@ set -e
 GPUS=(1 5)
 TIMESTEPS=5e6
 WARMUP=3500000
-BETAS=(0.05 0.1 0.25 0.5)
+BETAS=(1.0 2.5)
 LAYOUTS=(cramped_room forced_coord coord_ring)
 
 # Build list of (beta, layout) jobs
