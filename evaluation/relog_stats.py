@@ -138,7 +138,7 @@ def _relog_training_metrics(train_metrics, env_name, run_dir,
     print(f"[relog] CSV: {csv_path} ({num_updates} updates, {num_seeds} seeds, {len(csv_header)} cols)")
     wandb.save(csv_path, base_path=run_dir)
 
-    # Log to wandb
+    # Log to wandb: aggregate + per-seed curves
     for step in range(num_updates):
         log_dict = {}
         for stat_name, stat_data in episode_stats_mean.items():
@@ -150,9 +150,14 @@ def _relog_training_metrics(train_metrics, env_name, run_dir,
             if key in scalar_mean:
                 log_dict[f"{wandb_name}/mean"] = float(scalar_mean[key][step])
                 log_dict[f"{wandb_name}/std"] = float(scalar_std[key][step])
+        # Per-seed curves
+        for stat_name in train_stats:
+            stat_data = np.array(train_stats[stat_name])
+            for seed_idx in range(num_seeds):
+                log_dict[f"Seeds/{stat_name}/seed_{seed_idx}"] = float(stat_data[seed_idx, step, 0])
         wandb.log(log_dict, step=step)
 
-    print(f"[relog] Training metrics logged: {num_updates} steps, {num_seeds} seeds")
+    print(f"[relog] Training metrics logged: {num_updates} steps, {num_seeds} seeds ({num_seeds} per-seed curves)")
 
 
 def _relog_eval_videos(alg_config, final_params, run_dir):
