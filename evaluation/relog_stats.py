@@ -267,8 +267,12 @@ def relog(checkpoint_path: str, env_name: str | None = None, run_name: str | Non
 
     run_data = load_train_run(checkpoint_path)
 
-    # Init wandb with same tags/group as training
     num_seeds = run_data["metrics"]["returned_episode"].shape[0]
+    if num_seeds < 2:
+        print(f"[relog] SKIP: only {num_seeds} seed(s) at {checkpoint_path}")
+        return
+
+    # Init wandb with same tags/group as training
     run_suffix = run_name or _infer_run_name(cfg)
     tags = [
         str(alg_config["ALG"]),
