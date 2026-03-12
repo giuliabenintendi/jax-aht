@@ -12,11 +12,15 @@ Usage:
         --checkpoint results/.../saved_train_run
 """
 import argparse
+import csv
 import os
 import time
 
 import jax
 import jax.numpy as jnp
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
@@ -219,6 +223,57 @@ def xp_mean_and_sem(xp_matrix):
     return np.mean(samples), np.std(samples) / np.sqrt(m)
 
 
+def save_xp_heatmap(matrix_mean: np.ndarray, matrix_std: np.ndarray,
+                     title: str, filepath: str, fmt: str = ".2f",
+                     cmap: str = "YlOrRd", vmin: float | None = None,
+                     vmax: float | None = None):
+    """Save an annotated NxN heatmap as PNG."""
+    n = matrix_mean.shape[0]
+    fig, ax = plt.subplots(figsize=(1.5 + n * 1.2, 1.0 + n * 1.0))
+    im = ax.imshow(matrix_mean, cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal")
+
+    # Annotate cells with mean ± std
+    for i in range(n):
+        for j in range(n):
+            m, s = matrix_mean[i, j], matrix_std[i, j]
+            label = "SP" if i == j else ""
+            text = f"{m:{fmt}}\n±{s:{fmt}}"
+            if label:
+                text = f"{label}\n{text}"
+            color = "white" if matrix_mean[i, j] > (im.norm.vmax + im.norm.vmin) / 2 else "black"
+            ax.text(j, i, text, ha="center", va="center", fontsize=8, color=color)
+
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels([f"seed_{i}" for i in range(n)], fontsize=9)
+    ax.set_yticklabels([f"seed_{i}" for i in range(n)], fontsize=9)
+    ax.set_xlabel("Agent 1")
+    ax.set_ylabel("Agent 0")
+    ax.set_title(title, fontsize=11)
+    fig.colorbar(im, ax=ax, shrink=0.8)
+    fig.tight_layout()
+    fig.savefig(filepath, dpi=150)
+    plt.close(fig)
+    print(f"[xp_seeds] heatmap saved: {filepath}")
+
+
+def save_xp_csv(matrix_mean: np.ndarray, matrix_std: np.ndarray,
+                 filepath: str, label: str = "value"):
+    """Save NxN mean and std matrices as CSV."""
+    n = matrix_mean.shape[0]
+    with open(filepath, "w", newline="") as f:
+        writer = csv.writer(f)
+        header = ["agent_0 \\ agent_1"] + [f"seed_{j}" for j in range(n)]
+        writer.writerow([f"{label}_mean"] + header[1:])
+        for i in range(n):
+            writer.writerow([f"seed_{i}"] + [f"{matrix_mean[i, j]:.4f}" for j in range(n)])
+        writer.writerow([])
+        writer.writerow([f"{label}_std"] + header[1:])
+        for i in range(n):
+            writer.writerow([f"seed_{i}"] + [f"{matrix_std[i, j]:.4f}" for j in range(n)])
+    print(f"[xp_seeds] CSV saved: {filepath}")
+
+
 def _load_hydra_config(checkpoint_path: str) -> dict | None:
     """Load resolved Hydra config from the run directory, if available."""
     from omegaconf import OmegaConf
@@ -230,13 +285,28 @@ def _load_hydra_config(checkpoint_path: str) -> dict | None:
     return OmegaConf.to_container(cfg, resolve=True)
 
 
+def _build_run_label(algo_cfg: dict, task_name: str) -> str:
+    """Build a human-readable label from config, e.g. 'cramped_room / BETA=0.1 / 5M'."""
+    # Extract layout name from task (e.g. "overcooked-v1/cramped_room" -> "cramped_room")
+    layout = task_name.split("/")[-1] if "/" in task_name else task_name
+    parts = [layout]
+    beta = algo_cfg.get("JA_BETA_MAX")
+    if beta is not None:
+        parts.append(f"BETA={beta}")
+    total = algo_cfg.get("TOTAL_TIMESTEPS")
+    if total is not None:
+        total = float(total)
+        parts.append(f"{total / 1e6:.0f}M" if total >= 1e6 else f"{total:.0f}")
+    return " / ".join(parts)
+
+
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     # Infer config from Hydra if --task not provided
+    hydra_cfg = _load_hydra_config(checkpoint_path)
     if task_name is not None:
         task_cfg = load_task_config(task_name)
         algo_cfg = load_algo_config()
     else:
-        hydra_cfg = _load_hydra_config(checkpoint_path)
         if hydra_cfg is None:
             raise ValueError("No --task provided and no .hydra/config.yaml found")
         algo_cfg = hydra_cfg["algorithm"]
@@ -245,6 +315,10 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
                     "ROLLOUT_LENGTH": algo_cfg["ROLLOUT_LENGTH"]}
         task_name = hydra_cfg.get("TASK_NAME", algo_cfg["ENV_NAME"])
 
+    # Use Hydra config for label if available, fall back to algo_cfg
+    label_cfg = hydra_cfg["algorithm"] if hydra_cfg else algo_cfg
+    run_label = _build_run_label(label_cfg, task_name)
+
     env = make_env(task_cfg["ENV_NAME"], task_cfg["ENV_KWARGS"])
     env = LogWrapper(env)
 
@@ -252,6 +326,9 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     run_data = load_train_run(checkpoint_path)
     all_final_params = run_data["final_params"]
     num_seeds = jax.tree.leaves(all_final_params)[0].shape[0]
+    if num_seeds < 2:
+        print(f"[xp_seeds] SKIP: only {num_seeds} seed(s) — need at least 2 for cross-play")
+        return
     print(f"[xp_seeds] task={task_name}, seeds={num_seeds}, episodes={NUM_EVAL_EPISODES}")
 
     # Initialize policy
@@ -309,6 +386,34 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
 
     print_jsd_table(jsd_matrix, seed_names)
     print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds)
+
+    # Save heatmaps and CSVs next to checkpoint
+    run_dir = os.path.dirname(checkpoint_path)
+    xp_dir = os.path.join(run_dir, "xp_results")
+    os.makedirs(xp_dir, exist_ok=True)
+
+    # Game score heatmap (base_return, averaged over agents and episodes)
+    if "base_return" in xp_metrics:
+        score_data = np.array(xp_metrics["base_return"]).mean(axis=-1)  # (N, N, eps)
+        score_mean = score_data.mean(axis=-1)  # (N, N)
+        score_std = score_data.std(axis=-1)
+        save_xp_heatmap(score_mean, score_std,
+                         f"XP Episode Return — {run_label}",
+                         os.path.join(xp_dir, "xp_score_matrix.png"))
+        save_xp_csv(score_mean, score_std,
+                     os.path.join(xp_dir, "xp_score_matrix.csv"), label="episode_return")
+
+    # JSD heatmap
+    jsd_mean = jsd_matrix.mean(axis=-1)  # (N, N)
+    jsd_std = jsd_matrix.std(axis=-1)
+    save_xp_heatmap(jsd_mean, jsd_std,
+                     f"XP JSD — {run_label}",
+                     os.path.join(xp_dir, "xp_jsd_matrix.png"),
+                     fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
+    save_xp_csv(jsd_mean, jsd_std,
+                 os.path.join(xp_dir, "xp_jsd_matrix.csv"), label="jsd")
+
+    print(f"[xp_seeds] all results saved to {xp_dir}")
 
 
 def print_xp_table(xp_metrics, metric_name, seed_names):
