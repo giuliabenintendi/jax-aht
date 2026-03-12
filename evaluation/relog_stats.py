@@ -20,7 +20,7 @@ import wandb
 from omegaconf import OmegaConf
 
 from agents.initialize_agents import initialize_ja_image_agent, initialize_ja_agent
-from common.plot_utils import get_metric_names, get_stats
+from common.plot_utils import get_metric_names, get_stats, plot_seed_aggregate
 from common.save_load_utils import load_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
@@ -79,6 +79,21 @@ def _relog_training_metrics(train_metrics, env_name, run_dir,
     """Log training metrics to wandb and export CSV."""
     metric_names = get_metric_names(env_name)
     train_stats = get_stats(train_metrics, metric_names)
+
+    # Save mean±std training curve PNGs and upload to wandb
+    plot_seed_aggregate(
+        train_stats,
+        num_rollout_steps=rollout_length,
+        num_envs=num_envs,
+        savedir=run_dir,
+        savename="train_curve",
+    )
+    for name in train_stats:
+        png_path = os.path.join(run_dir, f"train_curve_{name}.png")
+        if os.path.exists(png_path):
+            wandb.log({f"Plots/train_curve_{name}": wandb.Image(png_path)}, commit=False)
+            wandb.save(png_path, base_path=run_dir)
+
     episode_stats_mean = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
 
     scalar_mean = {}
@@ -232,6 +247,7 @@ def _relog_eval_videos(alg_config, final_params, run_dir):
             json_path = os.path.join(video_dir, "attention_coverage.json")
             with open(json_path, "w") as f:
                 json.dump(coverage_data, f, indent=2)
+            wandb.save(json_path, base_path=run_dir)
             print(f"[relog] Seed {seed_idx} coverage saved to {json_path}")
 
     print(f"[relog] Eval videos logged for {num_seeds} seeds")
