@@ -39,7 +39,8 @@ for CKPT_PATH in $ALL_CKPTS; do
     else
         RUN_DIR=$(dirname "$CKPT_PATH")
         CFG="$RUN_DIR/.hydra/config.yaml"
-        if [ -f "$CFG" ] && grep -q "JA_BETA_MAX: $BETA" "$CFG"; then
+        CFG_BETA=$(grep "JA_BETA_MAX:" "$CFG" 2>/dev/null | awk '{print $2+0}')
+        if [ -f "$CFG" ] && [ "$(echo "$CFG_BETA == $BETA" | bc -l)" = "1" ]; then
             CKPTS="$CKPTS $CKPT_PATH"
         fi
     fi
