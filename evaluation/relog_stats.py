@@ -35,7 +35,7 @@ SCALAR_KEYS = [
     ("ja_beta",              "JA/beta"),
     ("jsd_mean",             "JA/jsd"),
     ("raw_env_reward_mean",  "Reward/env_raw"),
-    ("combined_reward_mean", "Reward/combined_raw"),
+    # combined_reward_mean skipped: old checkpoints saved normalized value (bug)
     ("loss_total",           "Loss/total"),
     ("loss_value",           "Loss/value"),
     ("loss_policy",          "Loss/policy"),
