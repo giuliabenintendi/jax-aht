@@ -384,33 +384,82 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     print_jsd_table(jsd_matrix, seed_names)
     print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds)
 
+    # Build beta prefix for filenames
+    beta = label_cfg.get("JA_BETA_MAX", "unknown")
+    beta_prefix = f"BETA{beta}"
+
     # Save heatmaps and CSVs next to checkpoint
     run_dir = os.path.dirname(checkpoint_path)
     xp_dir = os.path.join(run_dir, "xp_results")
     os.makedirs(xp_dir, exist_ok=True)
 
-    # Game score heatmap (base_return, averaged over agents and episodes)
+    # Central results folder: results/<env>/<layout>/ja_ippo/xp_results/
+    central_xp_dir = os.path.join(run_dir, "..", "xp_results")
+    os.makedirs(central_xp_dir, exist_ok=True)
+
+    score_mean = score_std = None
     if "base_return" in xp_metrics:
         score_data = np.array(xp_metrics["base_return"]).mean(axis=-1)  # (N, N, eps)
         score_mean = score_data.mean(axis=-1)  # (N, N)
         score_std = score_data.std(axis=-1)
-        save_xp_heatmap(score_mean, score_std,
-                         f"XP Episode Return — {run_label}",
-                         os.path.join(xp_dir, "xp_score_matrix.png"))
-        save_xp_csv(score_mean, score_std,
-                     os.path.join(xp_dir, "xp_score_matrix.csv"), label="episode_return")
+        for d in (xp_dir, central_xp_dir):
+            prefix = "" if d == xp_dir else f"{beta_prefix}_"
+            save_xp_heatmap(score_mean, score_std,
+                             f"XP Episode Return — {run_label}",
+                             os.path.join(d, f"{prefix}xp_score_matrix.png"))
+            save_xp_csv(score_mean, score_std,
+                         os.path.join(d, f"{prefix}xp_score_matrix.csv"), label="episode_return")
 
     # JSD heatmap
     jsd_mean = jsd_matrix.mean(axis=-1)  # (N, N)
     jsd_std = jsd_matrix.std(axis=-1)
-    save_xp_heatmap(jsd_mean, jsd_std,
-                     f"XP JSD — {run_label}",
-                     os.path.join(xp_dir, "xp_jsd_matrix.png"),
-                     fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
-    save_xp_csv(jsd_mean, jsd_std,
-                 os.path.join(xp_dir, "xp_jsd_matrix.csv"), label="jsd")
+    for d in (xp_dir, central_xp_dir):
+        prefix = "" if d == xp_dir else f"{beta_prefix}_"
+        save_xp_heatmap(jsd_mean, jsd_std,
+                         f"XP JSD — {run_label}",
+                         os.path.join(d, f"{prefix}xp_jsd_matrix.png"),
+                         fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
+        save_xp_csv(jsd_mean, jsd_std,
+                     os.path.join(d, f"{prefix}xp_jsd_matrix.csv"), label="jsd")
 
-    print(f"[xp_seeds] all results saved to {xp_dir}")
+    print(f"[xp_seeds] results saved to {xp_dir} and {central_xp_dir}")
+
+    # Log to wandb
+    import wandb
+    env_name = task_cfg["ENV_NAME"]
+    layout = task_name.split("/")[-1] if "/" in task_name else task_name
+    wb_run = wandb.init(
+        project="aht-benchmark",
+        entity="g-benintendi-university-of-brescia",
+        config=label_cfg,
+        tags=[str(label_cfg.get("ALG", "")), layout, beta_prefix, "xp_eval"],
+        group=f"{task_name}/{label_cfg.get('ALG', '')}",
+        name=f"XP_{beta_prefix}_{layout}",
+        dir=run_dir,
+    )
+    if score_mean is not None:
+        wb_run.log({"XP/score_matrix": wandb.Image(os.path.join(xp_dir, "xp_score_matrix.png"))}, commit=False)
+    wb_run.log({"XP/jsd_matrix": wandb.Image(os.path.join(xp_dir, "xp_jsd_matrix.png"))}, commit=False)
+
+    # Log SP vs XP summary as scalars
+    jsd_ep_means = jsd_matrix.mean(axis=-1)
+    sp_jsd = np.diag(jsd_ep_means).mean()
+    xp_jsd_m, xp_jsd_s = xp_mean_and_sem(jsd_ep_means)
+    wb_run.summary["XP/sp_jsd"] = sp_jsd
+    wb_run.summary["XP/xp_jsd_mean"] = xp_jsd_m
+    wb_run.summary["XP/xp_jsd_sem"] = xp_jsd_s
+    if score_mean is not None:
+        sp_score = np.diag(score_mean).mean()
+        xp_score_m, xp_score_s = xp_mean_and_sem(score_mean)
+        wb_run.summary["XP/sp_score"] = sp_score
+        wb_run.summary["XP/xp_score_mean"] = xp_score_m
+        wb_run.summary["XP/xp_score_sem"] = xp_score_s
+
+    # Upload CSVs to wandb Files
+    wandb.save(os.path.join(xp_dir, "xp_score_matrix.csv"), base_path=xp_dir)
+    wandb.save(os.path.join(xp_dir, "xp_jsd_matrix.csv"), base_path=xp_dir)
+    wb_run.finish()
+    print(f"[xp_seeds] wandb run: {wb_run.url}")
 
 
 def print_xp_table(xp_metrics, metric_name, seed_names):
