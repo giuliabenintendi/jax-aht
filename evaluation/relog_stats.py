@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import wandb
-import yaml
+from omegaconf import OmegaConf
 
 from agents.initialize_agents import initialize_ja_image_agent, initialize_ja_agent
 from common.plot_utils import get_metric_names, get_stats
@@ -46,11 +46,11 @@ SCALAR_KEYS = [
 
 
 def _load_hydra_config(checkpoint_path: str) -> dict:
-    """Load the Hydra config.yaml from the run directory."""
+    """Load the Hydra config.yaml with resolved interpolations."""
     run_dir = os.path.dirname(checkpoint_path)
     config_path = os.path.join(run_dir, ".hydra", "config.yaml")
-    with open(config_path) as f:
-        return yaml.safe_load(f)
+    cfg = OmegaConf.load(config_path)
+    return OmegaConf.to_container(cfg, resolve=True)
 
 
 def _infer_run_name(cfg: dict) -> str:
