@@ -251,13 +251,27 @@ def relog(checkpoint_path: str, env_name: str | None = None, run_name: str | Non
 
     run_data = load_train_run(checkpoint_path)
 
-    # Init wandb with same naming convention as training
+    # Init wandb with same tags/group as training
+    num_seeds = run_data["metrics"]["returned_episode"].shape[0]
     run_suffix = run_name or _infer_run_name(cfg)
+    tags = [
+        str(alg_config["ALG"]),
+        str(cfg.get("TASK_NAME", "")),
+        f"seed={alg_config.get('TRAIN_SEED', '')}",
+        f"num_envs={alg_config.get('NUM_ENVS', '')}",
+    ]
+    label = cfg.get("label", "default_label")
+    if label != "default_label":
+        tags.append(str(label))
+    tags.append("relog")
+    group = f"{cfg.get('TASK_NAME', '')}/{alg_config['ALG']}"
+
     wb_run = wandb.init(
         project=project,
         entity=entity,
         config=alg_config,
-        tags=["relog", f"seeds={run_data['metrics']['returned_episode'].shape[0]}"],
+        tags=tags,
+        group=group,
     )
     wb_run.name = str(wb_run.name) + "___" + run_suffix
 
