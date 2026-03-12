@@ -236,10 +236,7 @@ def save_xp_heatmap(matrix_mean: np.ndarray, matrix_std: np.ndarray,
     for i in range(n):
         for j in range(n):
             m, s = matrix_mean[i, j], matrix_std[i, j]
-            label = "SP" if i == j else ""
             text = f"{m:{fmt}}\n±{s:{fmt}}"
-            if label:
-                text = f"{label}\n{text}"
             color = "white" if matrix_mean[i, j] > (im.norm.vmax + im.norm.vmin) / 2 else "black"
             ax.text(j, i, text, ha="center", va="center", fontsize=8, color=color)
 
