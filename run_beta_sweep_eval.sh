@@ -14,15 +14,12 @@ set -e
 GPU="${1:?Usage: ./run_beta_sweep_eval.sh <gpu_id> <layout>}"
 LAYOUT="${2:?Usage: ./run_beta_sweep_eval.sh <gpu_id> <layout>}"
 
-case "$LAYOUT" in
-    cramped_room|coord_ring|forced_coord)
-        EVAL_TASK_CFG="overcooked-v1-image/$LAYOUT"
-        RESULT_DIR="results/overcooked-v1/$LAYOUT/ja_ippo/beta_sweep" ;;
-    *)
-        echo "Unknown layout: $LAYOUT"
-        echo "Available: cramped_room, forced_coord, coord_ring"
-        exit 1 ;;
-esac
+RESULT_DIR="results/overcooked-v1/$LAYOUT/ja_ippo/beta_sweep"
+if [ ! -d "$RESULT_DIR" ]; then
+    echo "ERROR: $RESULT_DIR not found"
+    echo "Available layouts: cramped_room, forced_coord, coord_ring"
+    exit 1
+fi
 
 CKPTS=$(ls -td $RESULT_DIR/*/saved_train_run 2>/dev/null)
 if [ -z "$CKPTS" ]; then
@@ -47,7 +44,6 @@ for CKPT_PATH in $CKPTS; do
     XLA_PYTHON_CLIENT_PREALLOCATE=false \
     LD_LIBRARY_PATH="" \
     uv run python -m evaluation.run_xp_seeds \
-        --task "$EVAL_TASK_CFG" \
         --checkpoint "$CKPT_PATH"
 done
 
