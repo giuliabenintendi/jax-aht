@@ -34,7 +34,7 @@ from envs.log_wrapper import LogWrapper
 
 
 EVAL_SEED = 34957
-NUM_EVAL_EPISODES = 64
+NUM_EVAL_EPISODES = 1024
 CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs", "task")
 ALGO_BASE_CONFIG = os.path.join(
     os.path.dirname(__file__), "..", "marl", "configs", "algorithm", "ja_ippo", "_base_.yaml"
