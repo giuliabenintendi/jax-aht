@@ -9,6 +9,7 @@ coordination comes from:
      over JA_WARMUP_ENV_STEPS. Combined with env reward before normalization.
 '''
 import functools
+import os
 import shutil
 from typing import NamedTuple
 
@@ -364,7 +365,7 @@ def make_train_scan(config, env):
             metric["grad_norm"] = grad_norm.mean()
             metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
             metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
-            metric["combined_reward_mean"] = traj_batch.reward[:, :num_envs].mean()
+            metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
 
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
@@ -732,7 +733,7 @@ def make_train_loop(config, env):
             metric["grad_norm"] = grad_norm.mean()
             metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
             metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
-            metric["combined_reward_mean"] = traj_batch.reward[:, :num_envs].mean()
+            metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
 
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
@@ -912,8 +913,7 @@ def log_eval_video(algorithm_config, env, out, logger):
     import os
     from evaluation.vis_episodes import (
         run_episode_with_states, log_attention_to_wandb, make_attention_video,
-        compute_attention_metrics, build_coverage_map, render_coverage_debug,
-        INDEX_TO_OBJECT,
+        build_coverage_map, INDEX_TO_OBJECT,
     )
 
     env_name = algorithm_config["ENV_NAME"]
@@ -944,7 +944,7 @@ def log_eval_video(algorithm_config, env, out, logger):
         video_dir = f"{savedir}/videos/seed_{seed_idx}"
         os.makedirs(video_dir, exist_ok=True)
 
-    # Render frames from episode states
+        # Render frames from episode states
         if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
             frames = _render_lbf_eval_frames(inner_env, ep_states)
         else:
@@ -973,15 +973,6 @@ def log_eval_video(algorithm_config, env, out, logger):
         logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
         logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
 
-        # Log temporal consistency metrics
-        attn_metrics = compute_attention_metrics(attn_data)
-        for agent_name in ("agent_0", "agent_1"):
-            tc = attn_metrics[f"{agent_name}_temporal_consistency"]
-            print(f"[ja_ippo] Seed {seed_idx} {agent_name} temporal consistency: {tc:.4f}")
-            logger.log(
-                {f"{tag}/{agent_name}_temporal_consistency": tc},
-                step=None, commit=False,
-            )
 
         # Compute per-timestep attention coverage breakdown and save as JSON artifact
         if env_name in ("overcooked-v1",):
@@ -998,18 +989,6 @@ def log_eval_video(algorithm_config, env, out, logger):
                 padding=algorithm_config.get("CONV_PADDING", "SAME"),
                 num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
             )
-
-            # Save a debug image for visual validation (one frame, both agents)
-            debug_t = 0
-            debug_coverage = build_coverage_map(ep_states[debug_t], feat_h, feat_w)
-            from PIL import Image as PILImage
-            for agent_name in ("agent_0", "agent_1"):
-                debug_attn = np.array(attn_data[agent_name][debug_t]).squeeze()
-                debug_img = render_coverage_debug(
-                    frames[debug_t], debug_coverage, attn_map=debug_attn)
-                debug_path = f"{video_dir}/coverage_debug_{agent_name}_t{debug_t}.png"
-                PILImage.fromarray(debug_img).save(debug_path)
-                print(f"[ja_ippo] Seed {seed_idx} coverage debug: {debug_path}")
 
             attn_threshold = 0.05
             n_steps = min(len(attn_data["agent_0"]), len(ep_states) - 1)
@@ -1046,14 +1025,6 @@ def log_eval_video(algorithm_config, env, out, logger):
 
                 coverage_data[agent_name] = agent_steps
 
-                # Print a few representative timesteps for validation
-                for t_idx in (0, n_steps // 2, n_steps - 1):
-                    step_data = agent_steps[t_idx]
-                    print(f"[ja_ippo] Seed {seed_idx} {agent_name} t={t_idx}:")
-                    for spot in step_data["spots"][:5]:
-                        cov_str = ", ".join(f"{k}={v:.0%}" for k, v in spot["coverage"].items())
-                        print(f"  attn={spot['attn']:.3f} -> {cov_str}")
-
             # Save JSON to run directory
             json_path = f"{video_dir}/attention_coverage.json"
             with open(json_path, "w") as f:
@@ -1062,76 +1033,124 @@ def log_eval_video(algorithm_config, env, out, logger):
 
 
 def log_metrics(config, out, logger):
-    '''Save train run output and log all metrics to wandb.'''
+    '''Save train run output, export CSV, and log mean±std to wandb.'''
+    import csv
+
     train_metrics = out["metrics"]
     metric_names = get_metric_names(config["ENV_NAME"])
     train_stats = get_stats(train_metrics, metric_names)
 
-    # Save mean±std training curves across seeds
     algorithm_config = dict(config.algorithm)
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    rollout_length = int(algorithm_config["ROLLOUT_LENGTH"])
+    num_envs = int(algorithm_config["NUM_ENVS"])
+
+    # Save mean±std training curve PNGs
     plot_seed_aggregate(
         train_stats,
-        num_rollout_steps=int(algorithm_config["ROLLOUT_LENGTH"]),
-        num_envs=int(algorithm_config["NUM_ENVS"]),
+        num_rollout_steps=rollout_length,
+        num_envs=num_envs,
         savedir=savedir,
         savename="train_curve",
     )
 
-    train_stats = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
+    num_seeds = train_metrics["returned_episode"].shape[0]
+    num_updates = train_metrics["returned_episode"].shape[1]
 
-    # Scalar metrics to log
+    # Per-seed episode stats → mean across seeds (shape: [updates, 2] where [:,0]=mean [:,1]=std)
+    episode_stats_mean = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
+
+    # Scalar metrics: (metric_key, wandb_name)
+    # Dropped ja_reward_mean (= -jsd) and intrinsic_mean (= -beta*jsd) as redundant
     scalar_keys = [
-        ("ja_beta", "JA"),
-        ("ja_reward_mean", "JA"),
-        ("jsd_mean", "JA"),
-        ("raw_env_reward_mean", "Rewards"),
-        ("intrinsic_mean", "Rewards"),
-        ("combined_reward_mean", "Rewards"),
-        ("loss_total", "Losses"),
-        ("loss_value", "Losses"),
-        ("loss_policy", "Losses"),
-        ("entropy", "Losses"),
-        ("grad_norm", "Losses"),
-        ("value_mean", "Values"),
+        ("ja_beta",              "JA/beta"),
+        ("jsd_mean",             "JA/jsd"),
+        ("raw_env_reward_mean",  "Reward/env_raw"),
+        ("combined_reward_mean", "Reward/combined_raw"),
+        ("loss_total",           "Loss/total"),
+        ("loss_value",           "Loss/value"),
+        ("loss_policy",          "Loss/policy"),
+        ("entropy",              "Loss/entropy"),
+        ("grad_norm",            "Loss/grad_norm"),
+        ("value_mean",           "Value/mean"),
     ]
 
-    scalar_data = {}
+    scalar_mean = {}
+    scalar_std = {}
     for key, _ in scalar_keys:
         if key in train_metrics:
-            scalar_data[key] = np.mean(np.array(train_metrics[key]), axis=0)
+            vals = np.array(train_metrics[key])
+            scalar_mean[key] = np.mean(vals, axis=0)
+            scalar_std[key] = np.std(vals, axis=0)
 
-    num_updates = train_metrics["returned_episode"].shape[1]
+    # --- Export CSV ---
+    csv_header = ["update", "timestep"]
+    for name in metric_names:
+        csv_header.extend([f"{name}_mean", f"{name}_std"])
+    if config.task["ENV_NAME"] == "overcooked-v1" and "base_return" in metric_names:
+        csv_header.append("soups_delivered")
+    for key, _ in scalar_keys:
+        if key in scalar_mean:
+            csv_header.extend([f"{key}_mean", f"{key}_std"])
+
+    csv_path = os.path.join(savedir, "train_stats.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(csv_header)
+        for step in range(num_updates):
+            row = [step, (step + 1) * rollout_length * num_envs]
+            for name in metric_names:
+                stat_data = np.array(train_stats[name])
+                seed_means = stat_data[:, step, 0]
+                row.extend([float(seed_means.mean()), float(seed_means.std())])
+            if config.task["ENV_NAME"] == "overcooked-v1" and "base_return" in metric_names:
+                base_data = np.array(train_stats["base_return"])
+                row.append(float(base_data[:, step, 0].mean()) / 20.0)
+            for key, _ in scalar_keys:
+                if key in scalar_mean:
+                    row.extend([float(scalar_mean[key][step]), float(scalar_std[key][step])])
+            writer.writerow(row)
+
+    print(f"[log_metrics] CSV: {csv_path} ({num_updates} updates, {num_seeds} seeds, {len(csv_header)} cols)")
+    import wandb as _wandb
+    _wandb.save(csv_path, base_path=savedir)
+
+    # --- Log to wandb ---
     print_interval = max(1, num_updates // 20)
 
     for step in range(num_updates):
-        for stat_name, stat_data in train_stats.items():
-            logger.log_item(f"Train/{stat_name}", stat_data[step, 0], train_step=step, commit=False)
-        if "base_return" in train_stats and config.task["ENV_NAME"] == "overcooked-v1":
-            soups = train_stats["base_return"][step, 0] / 20.0
+        # Episode metrics (mean±std across seeds)
+        for stat_name, stat_data in episode_stats_mean.items():
+            logger.log_item(f"Train/{stat_name}_mean", stat_data[step, 0], train_step=step, commit=False)
+            logger.log_item(f"Train/{stat_name}_std", stat_data[step, 1], train_step=step, commit=False)
+        if "base_return" in episode_stats_mean and config.task["ENV_NAME"] == "overcooked-v1":
+            soups = episode_stats_mean["base_return"][step, 0] / 20.0
             logger.log_item("Train/soups_delivered", soups, train_step=step, commit=False)
 
-        for key, prefix in scalar_keys:
-            if key in scalar_data:
-                logger.log_item(f"{prefix}/{key}", float(scalar_data[key][step]),
+        # Scalar metrics (mean±std across seeds)
+        for key, wandb_name in scalar_keys:
+            if key in scalar_mean:
+                logger.log_item(f"{wandb_name}/mean", float(scalar_mean[key][step]),
+                                train_step=step, commit=False)
+                logger.log_item(f"{wandb_name}/std", float(scalar_std[key][step]),
                                 train_step=step, commit=False)
 
         logger.log({}, step=step, commit=True)
 
         if step % print_interval == 0 or step == num_updates - 1:
-            env_steps = (step + 1) * int(config.algorithm["ROLLOUT_LENGTH"]) * int(config.algorithm["NUM_ENVS"])
+            env_steps = (step + 1) * rollout_length * num_envs
             pct = (step + 1) / num_updates * 100
-            ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in train_stats.items())
-            jsd = float(scalar_data.get("jsd_mean", np.zeros(num_updates))[step])
-            intrinsic = float(scalar_data.get("intrinsic_mean", np.zeros(num_updates))[step])
-            loss = float(scalar_data.get("loss_total", np.zeros(num_updates))[step])
-            grad = float(scalar_data.get("grad_norm", np.zeros(num_updates))[step])
+            ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in episode_stats_mean.items())
+            jsd = float(scalar_mean.get("jsd_mean", np.zeros(num_updates))[step])
+            beta = float(scalar_mean.get("ja_beta", np.zeros(num_updates))[step])
+            loss = float(scalar_mean.get("loss_total", np.zeros(num_updates))[step])
+            grad = float(scalar_mean.get("grad_norm", np.zeros(num_updates))[step])
             extra = ""
-            if "base_return" in train_stats and config.task["ENV_NAME"] == "overcooked-v1":
-                soups = train_stats["base_return"][step, 0] / 20.0
+            if "base_return" in episode_stats_mean and config.task["ENV_NAME"] == "overcooked-v1":
+                soups = episode_stats_mean["base_return"][step, 0] / 20.0
                 extra = f"  soups={soups:.1f}"
             print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  "
-                  f"{ret_str}{extra}  jsd={jsd:.4f}  intrinsic={intrinsic:.4f}  loss={loss:.4f}  grad={grad:.3f}")
+                  f"{ret_str}{extra}  jsd={jsd:.4f}  beta={beta:.4f}  loss={loss:.4f}  grad={grad:.3f}")
 
     logger.commit()
 

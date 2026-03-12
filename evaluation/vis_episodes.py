@@ -323,31 +323,7 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
 
     n = min(len(maps_0), len(maps_1))
 
-    # Print attention stats for diagnostics
-    for agent_name, maps in attn_data.items():
-        all_attn = np.array([np.array(m).squeeze() for m in maps])
-        h, w = all_attn.shape[1], all_attn.shape[2]
-        uniform_ent = np.log(h * w)
-        per_step_ent = -np.sum(all_attn * np.log(all_attn + 1e-10), axis=(1, 2))
-        print(f"[attn] {agent_name}: shape=({h},{w}), "
-              f"min={all_attn.min():.4f}, max={all_attn.max():.4f}, "
-              f"mean_entropy={per_step_ent.mean():.3f} / {uniform_ent:.3f} (uniform)")
 
-    indices = {"first": 0, "middle": n // 2, "last": n - 1}
-    for label, idx in indices.items():
-        attn_0 = np.array(maps_0[idx]).squeeze()
-        attn_1 = np.array(maps_1[idx]).squeeze()
-        combined = np.minimum(attn_0, attn_1)
-
-        panel = _make_heatmap_figure(
-            [attn_0, attn_1, combined],
-            ["Agent 0", "Agent 1", "Combined"],
-            ["Blues", "Reds", "jet"],
-            title=f"Attention t={idx}",
-        )
-        img = wandb.Image(panel, caption=f"t={idx}")
-        logger.log({f"{tag_prefix}/attention_{label}": img},
-                   step=step, commit=commit)
 
 
 INDEX_TO_OBJECT = {
