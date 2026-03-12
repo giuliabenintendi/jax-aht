@@ -4,7 +4,7 @@
 # Usage: ./run_beta_sweep_eval.sh <gpu_id> <layout> [beta]
 #
 # beta can be a specific value (e.g. 0.0, 0.1) or "all" (default).
-# Matches folder names containing "BETA<value>" (e.g. BETA0.0_seed20374_5M).
+# Reads JA_BETA_MAX from each checkpoint's Hydra config to filter.
 #
 # Examples:
 #   ./run_beta_sweep_eval.sh 6 cramped_room         # all betas
@@ -25,19 +25,33 @@ if [ ! -d "$RESULT_DIR" ]; then
     exit 1
 fi
 
-if [ "$BETA" = "all" ]; then
-    CKPTS=$(ls -td $RESULT_DIR/*/saved_train_run 2>/dev/null)
-else
-    CKPTS=$(ls -td $RESULT_DIR/BETA${BETA}*/saved_train_run 2>/dev/null)
-fi
-
-if [ -z "$CKPTS" ]; then
-    echo "ERROR: no checkpoints found (layout=$LAYOUT, beta=$BETA)"
-    echo "  looked in: $RESULT_DIR/"
+ALL_CKPTS=$(ls -td $RESULT_DIR/*/saved_train_run 2>/dev/null)
+if [ -z "$ALL_CKPTS" ]; then
+    echo "ERROR: no checkpoints found at $RESULT_DIR/*/saved_train_run"
     exit 1
 fi
 
-total=$(echo "$CKPTS" | wc -l | tr -d ' ')
+# Filter by beta value from Hydra config
+CKPTS=""
+for CKPT_PATH in $ALL_CKPTS; do
+    if [ "$BETA" = "all" ]; then
+        CKPTS="$CKPTS $CKPT_PATH"
+    else
+        RUN_DIR=$(dirname "$CKPT_PATH")
+        CFG="$RUN_DIR/.hydra/config.yaml"
+        if [ -f "$CFG" ] && grep -q "JA_BETA_MAX: $BETA" "$CFG"; then
+            CKPTS="$CKPTS $CKPT_PATH"
+        fi
+    fi
+done
+CKPTS=$(echo "$CKPTS" | xargs)
+
+if [ -z "$CKPTS" ]; then
+    echo "ERROR: no checkpoints found (layout=$LAYOUT, beta=$BETA)"
+    exit 1
+fi
+
+total=$(echo "$CKPTS" | wc -w)
 count=0
 
 echo "=== Beta sweep eval: $LAYOUT, beta=$BETA ($total checkpoints) ==="
