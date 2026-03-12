@@ -288,6 +288,7 @@ def relog(checkpoint_path: str, env_name: str | None = None, run_name: str | Non
         config=alg_config,
         tags=tags,
         group=group,
+        dir=run_dir,
     )
     wb_run.name = str(wb_run.name) + "___" + run_suffix
 
