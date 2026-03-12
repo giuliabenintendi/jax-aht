@@ -219,9 +219,32 @@ def xp_mean_and_sem(xp_matrix):
     return np.mean(samples), np.std(samples) / np.sqrt(m)
 
 
-def run_xp_evaluation(task_name: str, checkpoint_path: str):
-    task_cfg = load_task_config(task_name)
-    algo_cfg = load_algo_config()
+def _load_hydra_config(checkpoint_path: str) -> dict | None:
+    """Load resolved Hydra config from the run directory, if available."""
+    from omegaconf import OmegaConf
+    run_dir = os.path.dirname(checkpoint_path)
+    config_path = os.path.join(run_dir, ".hydra", "config.yaml")
+    if not os.path.exists(config_path):
+        return None
+    cfg = OmegaConf.load(config_path)
+    return OmegaConf.to_container(cfg, resolve=True)
+
+
+def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
+    # Infer config from Hydra if --task not provided
+    if task_name is not None:
+        task_cfg = load_task_config(task_name)
+        algo_cfg = load_algo_config()
+    else:
+        hydra_cfg = _load_hydra_config(checkpoint_path)
+        if hydra_cfg is None:
+            raise ValueError("No --task provided and no .hydra/config.yaml found")
+        algo_cfg = hydra_cfg["algorithm"]
+        task_cfg = {"ENV_NAME": algo_cfg["ENV_NAME"],
+                    "ENV_KWARGS": algo_cfg["ENV_KWARGS"],
+                    "ROLLOUT_LENGTH": algo_cfg["ROLLOUT_LENGTH"]}
+        task_name = hydra_cfg.get("TASK_NAME", algo_cfg["ENV_NAME"])
+
     env = make_env(task_cfg["ENV_NAME"], task_cfg["ENV_KWARGS"])
     env = LogWrapper(env)
 
@@ -362,8 +385,8 @@ def print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cross-play evaluation across seeds")
-    parser.add_argument("--task", required=True,
-                        help="Task config name (e.g. overcooked-v1-image/cramped_room)")
+    parser.add_argument("--task", default=None,
+                        help="Task config name (default: inferred from Hydra config)")
     parser.add_argument("--checkpoint", required=True,
                         help="Path to saved_train_run directory")
     args = parser.parse_args()
