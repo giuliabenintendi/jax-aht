@@ -16,6 +16,7 @@ import os
 
 import numpy as np
 import wandb
+import yaml
 
 from common.plot_utils import get_metric_names, get_stats
 from common.save_load_utils import load_train_run
@@ -36,7 +37,30 @@ SCALAR_KEYS = [
 ]
 
 
-def relog_stats(checkpoint_path: str, env_name: str, run_name: str,
+def _infer_run_name(checkpoint_path: str) -> str | None:
+    """Rebuild the run name suffix from Hydra config next to the checkpoint."""
+    run_dir = os.path.dirname(checkpoint_path)
+    config_path = os.path.join(run_dir, ".hydra", "config.yaml")
+    if not os.path.exists(config_path):
+        return None
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    alg = cfg.get("algorithm", {})
+    parts = [str(alg.get("ALG", "unknown"))]
+    total = alg.get("TOTAL_TIMESTEPS")
+    if total is not None:
+        total = float(total)
+        if total >= 1e6:
+            parts.append(f"{total / 1e6:.0f}M")
+        else:
+            parts.append(f"{total:.0f}")
+    beta = alg.get("JA_BETA_MAX")
+    if beta is not None:
+        parts.append(f"BETA{beta}")
+    return "_".join(parts)
+
+
+def relog_stats(checkpoint_path: str, env_name: str, run_name: str | None = None,
                 project: str = "aht-benchmark",
                 entity: str = "g-benintendi-university-of-brescia",
                 rollout_length: int = 400, num_envs: int = 64):
@@ -89,13 +113,14 @@ def relog_stats(checkpoint_path: str, env_name: str, run_name: str,
 
     print(f"[relog] CSV: {csv_path} ({num_updates} updates, {num_seeds} seeds, {len(csv_header)} cols)")
 
-    # Log to wandb
+    # Log to wandb — use same naming convention as training
+    run_suffix = run_name or _infer_run_name(checkpoint_path) or "relog"
     run = wandb.init(
         project=project,
         entity=entity,
-        name=run_name,
         tags=["relog", f"seeds={num_seeds}"],
     )
+    run.name = str(run.name) + "___" + run_suffix
 
     for step in range(num_updates):
         log_dict = {}
@@ -126,8 +151,8 @@ if __name__ == "__main__":
                         help="Path to saved_train_run directory")
     parser.add_argument("--env-name", required=True,
                         help="Environment name (e.g. overcooked-v1)")
-    parser.add_argument("--run-name", required=True,
-                        help="Name for the wandb run")
+    parser.add_argument("--run-name", default=None,
+                        help="Name suffix for wandb run (default: inferred from Hydra config)")
     parser.add_argument("--project", default="aht-benchmark")
     parser.add_argument("--entity", default="g-benintendi-university-of-brescia")
     parser.add_argument("--rollout-length", type=int, default=400)
