@@ -191,14 +191,31 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
 
-    vmap_fn = jax.jit(jax.vmap(
+    vmap_fn = jax.vmap(
         lambda ep_rng: run_single_episode_with_jsd(
             ep_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps,
         )
-    ))
+    )
     all_info, all_jsd = vmap_fn(ep_rngs)
     return all_info, all_jsd  # all_jsd shape: (num_eps,)
+
+
+def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
+                     all_agent_1_params, agent_1_policy,
+                     max_episode_steps, num_eps):
+    """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
+    num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
+    partner_rngs = jax.random.split(rng, num_partners)
+
+    # vmap over partners (j dimension)
+    def eval_one_partner(partner_rng, agent_1_param):
+        return run_episodes_with_jsd(
+            partner_rng, env, agent_0_param, agent_0_policy,
+            agent_1_param, agent_1_policy, max_episode_steps, num_eps,
+        )
+
+    return jax.vmap(eval_one_partner)(partner_rngs, all_agent_1_params)
 
 
 def xp_mean_and_sem(xp_matrix):
@@ -333,45 +350,51 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     rng, init_rng = jax.random.split(rng)
     policy, init_params = initialize_ja_image_agent(algo_cfg, env, init_rng)
 
-    # Extract per-seed params
+    # Extract per-seed params and check for NaN
     seed_params = []
     for i in range(num_seeds):
         params_i = jax.tree.map(lambda x: x[i], all_final_params)
         assert jax.tree.structure(params_i) == jax.tree.structure(init_params), \
             f"Param structure mismatch for seed {i}"
+        num_nan = sum(int(jnp.isnan(x).sum()) for x in jax.tree.leaves(params_i))
+        num_params = sum(x.size for x in jax.tree.leaves(params_i))
+        status = f"OK ({num_params} params)" if num_nan == 0 else f"WARNING: {num_nan}/{num_params} NaN params!"
         seed_params.append(params_i)
-        print(f"  seed {i}: loaded")
+        print(f"  seed {i}: {status}")
 
     # Build NxN cross-play matrix
+    # Stack all seed params into a single pytree with leading dim = num_seeds
+    stacked_params = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_params)
+
     max_steps = task_cfg["ROLLOUT_LENGTH"]
     rng, eval_rng = jax.random.split(rng)
     outer_rngs = jax.random.split(eval_rng, num_seeds)
 
-    all_metrics = []
+    # JIT-compile the row function once, then reuse for each i
+    row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
+        rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES,
+    ))
+
+    all_row_metrics = []
     jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
     start_time = time.time()
     for i in range(num_seeds):
-        rng_i = outer_rngs[i]
-        partner_rngs = jax.random.split(rng_i, num_seeds)
-        row_metrics = []
-        for j in range(num_seeds):
-            label = "SP" if i == j else "XP"
-            print(f"  [{label}] seed {i} x seed {j} ...", end=" ", flush=True)
-            metrics, ep_jsds = run_episodes_with_jsd(
-                partner_rngs[j], env,
-                agent_0_param=seed_params[i], agent_0_policy=policy,
-                agent_1_param=seed_params[j], agent_1_policy=policy,
-                max_episode_steps=max_steps,
-                num_eps=NUM_EVAL_EPISODES,
-            )
-            row_metrics.append(metrics)
-            jsd_matrix[i, j] = np.array(ep_jsds)
-            ret = np.array(metrics["returned_episode_returns"]).mean()
-            jsd_mean = np.array(ep_jsds).mean()
-            print(f"return={ret:.2f}  jsd={jsd_mean:.4f}")
-        all_metrics.append(tree_stack(row_metrics))
+        print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
+        row_metrics, row_jsds = row_fn(outer_rngs[i], seed_params[i])
+        # row_metrics: pytree with leaves (num_seeds, num_eps, ...)
+        # row_jsds: (num_seeds, num_eps)
+        jsd_matrix[i] = np.array(row_jsds)
+        all_row_metrics.append(row_metrics)
 
-    xp_metrics = tree_stack(all_metrics)
+        # Print per-partner results
+        for j in range(num_seeds):
+            ret = np.array(row_metrics["returned_episode_returns"][j]).mean()
+            jsd_mean = float(row_jsds[j].mean())
+            label = "SP" if i == j else "XP"
+            print(f"  [{label}] {i}x{j}: return={ret:.2f} jsd={jsd_mean:.4f}", end="")
+        print()
+
+    xp_metrics = tree_stack(all_row_metrics)
     elapsed = time.time() - start_time
     print(f"[xp_seeds] evaluation done in {elapsed:.1f}s")
 
