@@ -221,6 +221,7 @@ class JAImageActorCritic(nn.Module):
 
         unavail_actions = 1 - avail_actions
         action_logits = action_logits - (unavail_actions * 1e10)
+        action_logits = jnp.clip(action_logits, -20.0, 20.0)
         pi = distrax.Categorical(logits=action_logits)
 
         # Critic path

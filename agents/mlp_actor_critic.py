@@ -35,6 +35,7 @@ class ActorCritic(nn.Module):
         # Mask unavailable actions if avail_actions is provided
         unavail_actions = 1 - avail_actions
         actor_mean = actor_mean - (unavail_actions * 1e10)
+        actor_mean = jnp.clip(actor_mean, -20.0, 20.0)
 
         pi = distrax.Categorical(logits=actor_mean)
 
@@ -80,6 +81,7 @@ class ActorWithDoubleCritic(nn.Module):
         # Mask unavailable actions if avail_actions is provided
         unavail_actions = 1 - avail_actions
         actor_mean = actor_mean - (unavail_actions * 1e10)
+        actor_mean = jnp.clip(actor_mean, -20.0, 20.0)
 
         pi = distrax.Categorical(logits=actor_mean)
 
@@ -138,6 +140,7 @@ class ActorWithConditionalCritic(nn.Module):
         # Mask unavailable actions if avail_actions is provided
         unavail_actions = 1 - avail_actions
         actor_mean = actor_mean - (unavail_actions * 1e10)
+        actor_mean = jnp.clip(actor_mean, -20.0, 20.0)
 
         pi = distrax.Categorical(logits=actor_mean)
 

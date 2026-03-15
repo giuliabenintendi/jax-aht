@@ -184,8 +184,6 @@ def make_train_scan(config, env):
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
                         )
-                        # Guard against NaN from entropy collapse (log(0) in policy)
-                        total_loss = jnp.where(jnp.isnan(total_loss), 0.0, total_loss)
                         return total_loss, (value_loss, loss_actor, entropy)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
@@ -557,8 +555,6 @@ def make_train_loop(config, env):
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
                         )
-                        # Guard against NaN from entropy collapse (log(0) in policy)
-                        total_loss = jnp.where(jnp.isnan(total_loss), 0.0, total_loss)
                         return total_loss, (value_loss, loss_actor, entropy)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)

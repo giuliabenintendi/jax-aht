@@ -68,6 +68,7 @@ class RNNActorCritic(nn.Module):
         )(actor_mean)
         unavail_actions = 1 - avail_actions
         action_logits = actor_mean - (unavail_actions * 1e10)
+        action_logits = jnp.clip(action_logits, -20.0, 20.0)
 
         pi = distrax.Categorical(logits=action_logits)
 
