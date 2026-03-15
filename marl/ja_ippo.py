@@ -789,12 +789,12 @@ def run_ja_ippo(config, logger):
     rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
     rngs = jax.random.split(rng, num_seeds)
 
-    if False:
-        # vmap/scan path — disabled for now, JA network too large for full scan
+    use_scan = algorithm_config.get("USE_SCAN", False)
+    if use_scan:
         train_fn = make_train_scan(algorithm_config, env)
-        with jax.disable_jit(False):
-            train_jit = jax.jit(jax.vmap(train_fn))
-            out = train_jit(rngs)
+        print(f"[ja_ippo] Using full scan path (compiling {num_seeds} seeds)...")
+        train_jit = jax.jit(jax.vmap(train_fn))
+        out = train_jit(rngs)
     else:
         init_fn, make_step_fn, init_policy_fn, init_state_fn = make_train_loop(algorithm_config, env)
 
