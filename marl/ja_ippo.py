@@ -796,7 +796,7 @@ def run_ja_ippo(config, logger):
 
         num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
         ckpt_interval = num_updates // max(1, num_ckpts - 1)
-        scan_chunk = algorithm_config.get("SCAN_CHUNK_SIZE", 50)
+        scan_chunk = algorithm_config.get("SCAN_CHUNK_SIZE", 1)
 
         # Build chunk schedule: equal chunks with a smaller remainder at the end.
         # Checkpoints are saved whenever we cross a checkpoint boundary.
