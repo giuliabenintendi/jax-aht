@@ -535,12 +535,13 @@ def render_coverage_debug(frame, coverage_map, attn_map=None, upscale=16):
 
 
 
-def compute_attention_metrics(attn_data):
-    """Compute per-agent temporal consistency of attention maps over an episode.
+def compute_attention_stasis(attn_data):
+    """Compute per-agent attention stasis via mean consecutive JSD.
 
-    Temporal consistency = mean cosine similarity between consecutive timesteps.
-    Values near 1.0 indicate static attention; lower values indicate attention
-    that shifts with the game state.
+    Measures how much each agent's own attention map changes from one
+    timestep to the next. Low values indicate static/fixated attention
+    (potential reward hacking); higher values indicate dynamic attention
+    that tracks the game state.
 
     Args:
         attn_data: dict {"agent_0": [attn_map, ...], "agent_1": [...]},
@@ -548,34 +549,109 @@ def compute_attention_metrics(attn_data):
 
     Returns:
         dict with per-agent metrics:
-            "agent_0_temporal_consistency": float,
-            "agent_1_temporal_consistency": float,
-            "agent_0_cosine_trace": list of per-step cosine similarities,
-            "agent_1_cosine_trace": list of per-step cosine similarities,
+            "agent_0_stasis": float — mean consecutive JSD (0 = perfectly static),
+            "agent_1_stasis": float,
+            "agent_0_jsd_trace": list of per-step JSD values,
+            "agent_1_jsd_trace": list of per-step JSD values,
     """
     import numpy as np
+
+    eps = 1e-8
+
+    def _jsd(p, q):
+        """JSD between two 1-D probability distributions (numpy)."""
+        m = 0.5 * (p + q)
+        kl_pm = np.sum(p * (np.log(p + eps) - np.log(m + eps)))
+        kl_qm = np.sum(q * (np.log(q + eps) - np.log(m + eps)))
+        return float(0.5 * kl_pm + 0.5 * kl_qm)
 
     metrics = {}
     for agent_name in ("agent_0", "agent_1"):
         maps = attn_data.get(agent_name, [])
         if len(maps) < 2:
-            metrics[f"{agent_name}_temporal_consistency"] = float("nan")
-            metrics[f"{agent_name}_cosine_trace"] = []
+            metrics[f"{agent_name}_stasis"] = float("nan")
+            metrics[f"{agent_name}_jsd_trace"] = []
             continue
 
         flat = [np.array(m).squeeze().flatten() for m in maps]
-        cosine_sims = []
-        for t in range(len(flat) - 1):
-            a, b = flat[t], flat[t + 1]
-            dot = np.dot(a, b)
-            norm_a, norm_b = np.linalg.norm(a), np.linalg.norm(b)
-            if norm_a > 1e-10 and norm_b > 1e-10:
-                cosine_sims.append(float(dot / (norm_a * norm_b)))
-            else:
-                cosine_sims.append(0.0)
+        jsd_vals = [_jsd(flat[t], flat[t + 1]) for t in range(len(flat) - 1)]
 
-        metrics[f"{agent_name}_temporal_consistency"] = float(np.mean(cosine_sims))
-        metrics[f"{agent_name}_cosine_trace"] = cosine_sims
+        metrics[f"{agent_name}_stasis"] = float(np.mean(jsd_vals))
+        metrics[f"{agent_name}_jsd_trace"] = jsd_vals
+
+    return metrics
+
+
+def compute_object_coverage(attn_data, ep_states, feat_h, feat_w,
+                            padding=4, tile_pixels=7):
+    """Compute per-agent, per-timestep attention mass on objects vs non-objects.
+
+    For each timestep, reports the fraction of feature-map cells that cover
+    task-relevant objects (semantic categories) and the attention weight on
+    those cells, kept as separate quantities.
+
+    Object categories: onion, onion_disp, plate, plate_disp, serve, pot, dish, agent.
+    Non-object categories: floor, wall, counter, unseen.
+
+    Args:
+        attn_data: dict {"agent_0": [...], "agent_1": [...]}.
+        ep_states: list of WrappedEnvState from run_episode_with_states.
+        feat_h, feat_w: feature map spatial dimensions.
+        padding: maze_map padding (default 4).
+        tile_pixels: pixels per tile (default 7).
+
+    Returns:
+        dict with per-agent metrics:
+            "agent_0_pct_objects": float — mean % of attention mass on object cells,
+            "agent_1_pct_objects": float,
+            "agent_0_pct_objects_trace": list of per-timestep values,
+            "agent_1_pct_objects_trace": list of per-timestep values,
+            "agent_0_category_mass": dict — mean attention mass per category,
+            "agent_1_category_mass": dict — mean attention mass per category,
+    """
+    import numpy as np
+
+    OBJECT_CATEGORIES = {"onion", "onion_disp", "plate", "plate_disp",
+                         "serve", "pot", "dish", "agent"}
+
+    metrics = {}
+    for agent_name in ("agent_0", "agent_1"):
+        maps = attn_data.get(agent_name, [])
+        n_steps = min(len(maps), len(ep_states) - 1)
+        if n_steps == 0:
+            metrics[f"{agent_name}_pct_objects"] = float("nan")
+            metrics[f"{agent_name}_pct_objects_trace"] = []
+            metrics[f"{agent_name}_category_mass"] = {}
+            continue
+
+        pct_trace = []
+        category_accum = {name: 0.0 for name in INDEX_TO_OBJECT.values()}
+
+        for t in range(n_steps):
+            attn = np.array(maps[t]).squeeze()  # (feat_h, feat_w)
+            coverage = build_coverage_map(ep_states[t], feat_h, feat_w,
+                                          padding=padding, tile_pixels=tile_pixels)
+
+            # Per-cell: weighted coverage by attention
+            # attn (H, W), coverage (H, W, NUM_CATEGORIES)
+            weighted = attn[..., None] * coverage  # (H, W, NUM_CATEGORIES)
+            category_mass = weighted.sum(axis=(0, 1))  # (NUM_CATEGORIES,)
+
+            obj_mass = sum(
+                float(category_mass[i])
+                for i, name in INDEX_TO_OBJECT.items()
+                if name in OBJECT_CATEGORIES
+            )
+            pct_trace.append(float(obj_mass))
+
+            for i, name in INDEX_TO_OBJECT.items():
+                category_accum[name] += float(category_mass[i])
+
+        metrics[f"{agent_name}_pct_objects"] = float(np.mean(pct_trace))
+        metrics[f"{agent_name}_pct_objects_trace"] = pct_trace
+        metrics[f"{agent_name}_category_mass"] = {
+            k: v / n_steps for k, v in category_accum.items()
+        }
 
     return metrics
 

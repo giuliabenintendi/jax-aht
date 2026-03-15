@@ -1,4 +1,6 @@
 import os
+from datetime import datetime
+
 import wandb
 from omegaconf import OmegaConf
 
@@ -15,26 +17,50 @@ def _format_timesteps(n: float) -> str:
     return str(int(n))
 
 
-def _build_run_string(alg_config: dict) -> str:
-    """Build the descriptive part of the run name from algorithm config."""
+def _get_layout_short(config) -> str:
+    """Extract short layout name from task config."""
+    task = str(config.get("TASK_NAME", ""))
+    # e.g. "overcooked-v1/cramped_room" → "cramped_room"
+    return task.split("/")[-1] if "/" in task else task
+
+
+def _build_run_string(config: dict) -> str:
+    """Build a concise, searchable run name.
+
+    Format: layout_alg_timesteps_bX.X_sN_DDMMYYYY
+    e.g. cramped_room_ja_ippo_5M_b0.5_s42_15032026
+    """
+    alg_config = config["algorithm"]
     alg = alg_config["ALG"]
-    parts = [alg]
+    layout = _get_layout_short(config)
+    date = datetime.now().strftime("%d%m%Y")
+
+    parts = [layout, alg]
     if "TOTAL_TIMESTEPS" in alg_config:
         parts.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
     if "JA_BETA_MAX" in alg_config:
-        parts.append(f"BETA{alg_config['JA_BETA_MAX']}")
+        parts.append(f"b{alg_config['JA_BETA_MAX']}")
+    parts.append(f"s{alg_config.get('TRAIN_SEED', 0)}")
+    parts.append(date)
     return "_".join(parts)
 
 
 def _build_tags(config) -> list[str]:
     """Build tags list from config for wandb filtering."""
     alg_config = config["algorithm"]
+    layout = _get_layout_short(config)
+    date = datetime.now().strftime("%d%m%Y")
     tags = [
         str(alg_config["ALG"]),
-        str(config["TASK_NAME"]),
-        f"seed={alg_config['TRAIN_SEED']}",
-        f"num_envs={alg_config['NUM_ENVS']}",
+        layout,
+        f"seed={alg_config.get('TRAIN_SEED', 0)}",
+        f"envs={alg_config['NUM_ENVS']}",
+        date,
     ]
+    if "JA_BETA_MAX" in alg_config:
+        tags.append(f"beta={alg_config['JA_BETA_MAX']}")
+    if "TOTAL_TIMESTEPS" in alg_config:
+        tags.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
     label = config.get("label", "default_label")
     if label != "default_label":
         tags.append(str(label))
@@ -42,8 +68,18 @@ def _build_tags(config) -> list[str]:
 
 
 def _build_group(config) -> str:
-    """Build group string: TASK_NAME/ALG."""
-    return f"{config['TASK_NAME']}/{config['algorithm']['ALG']}"
+    """Build group string for wandb seed aggregation.
+
+    Runs in the same group get mean±std plots automatically.
+    """
+    alg_config = config["algorithm"]
+    parts = [str(config["TASK_NAME"]), str(alg_config["ALG"])]
+    if "JA_BETA_MAX" in alg_config:
+        parts.append(f"b{alg_config['JA_BETA_MAX']}")
+    label = config.get("label", "default_label")
+    if label != "default_label":
+        parts.append(str(label))
+    return "/".join(parts)
 
 
 class Logger:
@@ -54,7 +90,7 @@ class Logger:
         self.verbose = config["logger"].get("verbose", False)
         tags = _build_tags(config)
         group_string = _build_group(config)
-        run_string = _build_run_string(config["algorithm"])
+        run_string = _build_run_string(config)
 
         if len(run_string) > 250:
             raise ValueError("Run name exceeds file name length limit.")
@@ -71,10 +107,7 @@ class Logger:
             reinit=True,
         )
 
-        if self.run.sweep_id is not None:
-            self.run.name = self.run.sweep_id + "___" + run_string
-        else:
-            self.run.name = str(self.run.name) + "___" + run_string
+        self.run.name = run_string
 
         self.define_metrics()
 

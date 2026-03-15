@@ -815,7 +815,7 @@ def run_ja_ippo(config, logger):
         # Get the raw _single_step (no jit/donate decorators) for vmapping
         _, _, raw_single_step = make_step_fn(policy)
 
-        @functools.partial(jax.jit, static_argnums=(3,))
+        @functools.partial(jax.jit, static_argnums=(3,), donate_argnums=(0, 2))
         def vmapped_chunked_step(runner_states, update_steps_all, rew_norm_states, chunk_size):
             """Run chunk_size updates for all seeds in parallel via vmap + lax.scan."""
             def per_seed_chunk(rs, us, rns):
@@ -828,7 +828,7 @@ def run_ja_ippo(config, logger):
                 return rs, us, rns, metrics
             return jax.vmap(per_seed_chunk)(runner_states, update_steps_all, rew_norm_states)
 
-        @jax.jit
+        @functools.partial(jax.jit, donate_argnums=(0, 2))
         def vmapped_single_step(runner_states, update_steps_all, rew_norm_states):
             """Single update step for all seeds in parallel."""
             def per_seed(rs, us, rns):
@@ -860,11 +860,9 @@ def run_ja_ippo(config, logger):
 
             # Save checkpoint if we've crossed a checkpoint boundary
             # runner_state[0].params has shape (num_seeds, ...) — save the whole batch
-            while next_ckpt < steps_done and len(checkpoints) < num_ckpts:
+            while next_ckpt <= steps_done and len(checkpoints) < num_ckpts:
                 checkpoints.append(jax.tree.map(jnp.copy, runner_state[0].params))
                 next_ckpt += ckpt_interval
-            if steps_done == num_updates and len(checkpoints) < num_ckpts:
-                checkpoints.append(jax.tree.map(jnp.copy, runner_state[0].params))
 
             if ci == 0 or ci == len(chunk_sizes) - 1 or (ci + 1) % max(1, len(chunk_sizes) // 10) == 0:
                 print(f"[ja_ippo] step {steps_done}/{num_updates}")
@@ -914,6 +912,7 @@ def log_eval_video(algorithm_config, env, out, logger):
     from evaluation.vis_episodes import (
         run_episode_with_states, log_attention_to_wandb, make_attention_video,
         build_coverage_map, INDEX_TO_OBJECT,
+        compute_attention_stasis, compute_object_coverage,
     )
 
     env_name = algorithm_config["ENV_NAME"]
@@ -974,12 +973,18 @@ def log_eval_video(algorithm_config, env, out, logger):
         logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
 
 
-        # Compute per-timestep attention coverage breakdown and save as JSON artifact
+        # Compute attention stasis (consecutive JSD within each agent)
+        stasis_metrics = compute_attention_stasis(attn_data)
+        logger.log_item(f"{tag}/stasis_agent0", stasis_metrics["agent_0_stasis"], commit=False)
+        logger.log_item(f"{tag}/stasis_agent1", stasis_metrics["agent_1_stasis"], commit=False)
+        print(f"[ja_ippo] Seed {seed_idx} stasis: "
+              f"agent0={stasis_metrics['agent_0_stasis']:.4f}, "
+              f"agent1={stasis_metrics['agent_1_stasis']:.4f}")
+
+        # Compute object coverage (Overcooked only — requires semantic grid)
         if env_name in ("overcooked-v1",):
             from agents.ja_image_actor_critic import _compute_resnet_output_dims
             from agents.initialize_agents import _get_image_dims
-            import json
-            import numpy as np
 
             img_h, img_w, _ = _get_image_dims(env)
             feat_h, feat_w = _compute_resnet_output_dims(
@@ -989,6 +994,24 @@ def log_eval_video(algorithm_config, env, out, logger):
                 padding=algorithm_config.get("CONV_PADDING", "SAME"),
                 num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
             )
+
+            obj_metrics = compute_object_coverage(
+                attn_data, ep_states, feat_h, feat_w,
+            )
+            logger.log_item(f"{tag}/pct_objects_agent0", obj_metrics["agent_0_pct_objects"], commit=False)
+            logger.log_item(f"{tag}/pct_objects_agent1", obj_metrics["agent_1_pct_objects"], commit=False)
+            # Log per-category breakdown
+            for agent_name in ("agent_0", "agent_1"):
+                for cat, mass in obj_metrics[f"{agent_name}_category_mass"].items():
+                    logger.log_item(f"{tag}/coverage_{agent_name}/{cat}", mass, commit=False)
+            print(f"[ja_ippo] Seed {seed_idx} pct_objects: "
+                  f"agent0={obj_metrics['agent_0_pct_objects']:.4f}, "
+                  f"agent1={obj_metrics['agent_1_pct_objects']:.4f}")
+
+        # Compute per-timestep attention coverage breakdown and save as JSON artifact
+        if env_name in ("overcooked-v1",):
+            import json
+            import numpy as np
 
             attn_threshold = 0.05
             n_steps = min(len(attn_data["agent_0"]), len(ep_states) - 1)
