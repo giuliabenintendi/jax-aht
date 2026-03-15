@@ -806,6 +806,7 @@ def run_ja_ippo(config, logger):
 
         all_seed_metrics = []
         all_seed_ckpts = []
+        all_seed_final_params = []
 
         for seed_idx in range(num_seeds):
             runner_state = init_state_fn(rngs[seed_idx], policy)
@@ -831,20 +832,21 @@ def run_ja_ippo(config, logger):
                 if ci == 0 or ci == num_updates - 1 or (ci + 1) % max(1, num_updates // 10) == 0:
                     print(f"[ja_ippo]   step {steps_done}/{num_updates}")
 
-            # Stack this seed's metrics: (num_updates, ...) and ckpts: (num_ckpts, ...)
+            all_seed_final_params.append(runner_state[0].params)
             all_seed_metrics.append(jax.tree.map(lambda *xs: jnp.stack(xs), *seed_metrics))
             all_seed_ckpts.append(jax.tree.map(lambda *xs: jnp.stack(xs), *seed_ckpts))
 
-        # Stack across seeds: metrics (num_seeds, num_updates, ...), ckpts (num_seeds, num_ckpts, ...)
+        # Stack across seeds: (num_seeds, ...)
+        stacked_params = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_final_params)
         stacked_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_metrics)
         stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_ckpts)
 
         print("[ja_ippo] Training complete.")
         out = {
-            "final_params": runner_state[0].params,
+            "final_params": stacked_params,
             "metrics": stacked_metrics,
             "checkpoints": stacked_ckpts,
-            "final_ckpt_idx": len(checkpoints),
+            "final_ckpt_idx": num_ckpts,
         }
 
     log_metrics(config, out, logger)
