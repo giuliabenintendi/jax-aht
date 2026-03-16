@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Run multi-episode attention eval on all multi-seed beta_sweep checkpoints.
-# Skips single-seed checkpoints.
 #
 # Usage: ./run_all_attention_eval.sh <gpu_id> [num_episodes]
 #
@@ -32,8 +31,14 @@ for CKPT_PATH in $CKPTS; do
     RUN_NAME=$(basename "$RUN_DIR")
     LAYOUT=$(echo "$CKPT_PATH" | sed "s|$BASE_DIR/||" | cut -d/ -f1)
 
+    # Read beta from Hydra config
+    CFG="$RUN_DIR/.hydra/config.yaml"
+    BETA=$(grep "JA_BETA_MAX:" "$CFG" 2>/dev/null | awk '{print $2}' || echo "?")
+    SEEDS=$(grep "NUM_SEEDS:" "$CFG" 2>/dev/null | head -1 | awk '{print $2}' || echo "?")
+    NORM=$(grep "NORMALIZE_REWARDS:" "$CFG" 2>/dev/null | awk '{print $2}' || echo "?")
+
     echo ""
-    echo "=== [$count/$total] $LAYOUT / $RUN_NAME ==="
+    echo "=== [$count/$total] $LAYOUT | beta=$BETA | seeds=$SEEDS | norm=$NORM | $RUN_NAME ==="
 
     ./run_gpu.sh "$GPU" evaluation.eval_attention_multi \
         "$RUN_DIR" \
