@@ -942,16 +942,15 @@ def log_eval_video(algorithm_config, env, out, logger):
         logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
 
 
-        # Compute attention stasis (consecutive JSD within each agent)
-        stasis_metrics = compute_attention_stasis(attn_data)
-        logger.log_item(f"{tag}/stasis_agent0", stasis_metrics["agent_0_stasis"], commit=False)
-        logger.log_item(f"{tag}/stasis_agent1", stasis_metrics["agent_1_stasis"], commit=False)
-        print(f"[ja_ippo] Seed {seed_idx} stasis: "
-              f"agent0={stasis_metrics['agent_0_stasis']:.4f}, "
-              f"agent1={stasis_metrics['agent_1_stasis']:.4f}")
+        # Multi-episode attention metrics (stasis, object coverage)
+        import numpy as np
 
-        # Compute object coverage (Overcooked only — requires semantic grid)
-        if env_name in ("overcooked-v1",):
+        num_eval_episodes = int(algorithm_config.get("NUM_EVAL_EPISODES", 64))
+        is_overcooked = env_name in ("overcooked-v1",)
+
+        # Pre-compute feature map dims for object coverage (Overcooked only)
+        feat_h = feat_w = None
+        if is_overcooked:
             from agents.ja_image_actor_critic import _compute_resnet_output_dims
             from agents.initialize_agents import _get_image_dims
 
@@ -964,64 +963,89 @@ def log_eval_video(algorithm_config, env, out, logger):
                 num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
             )
 
-            obj_metrics = compute_object_coverage(
-                attn_data, ep_states, feat_h, feat_w,
+        # Accumulators across episodes (video episode = ep 0)
+        stasis_agent0_vals = []
+        stasis_agent1_vals = []
+        pct_obj_agent0_vals = []
+        pct_obj_agent1_vals = []
+        category_accum_agent0: dict[str, float] = {}
+        category_accum_agent1: dict[str, float] = {}
+
+        def _accumulate_episode(ep_attn_data, ep_ep_states):
+            stasis = compute_attention_stasis(ep_attn_data)
+            stasis_agent0_vals.append(stasis["agent_0_stasis"])
+            stasis_agent1_vals.append(stasis["agent_1_stasis"])
+
+            if is_overcooked and feat_h is not None and feat_w is not None:
+                obj = compute_object_coverage(ep_attn_data, ep_ep_states, feat_h, feat_w)
+                pct_obj_agent0_vals.append(obj["agent_0_pct_objects"])
+                pct_obj_agent1_vals.append(obj["agent_1_pct_objects"])
+                for agent_key, accum in [
+                    ("agent_0", category_accum_agent0),
+                    ("agent_1", category_accum_agent1),
+                ]:
+                    cat_mass = obj[f"{agent_key}_category_mass"]
+                    for cat, val in cat_mass.items():
+                        accum[cat] = accum.get(cat, 0.0) + val
+
+        # Include the video episode (already collected above)
+        _accumulate_episode(attn_data, ep_states)
+
+        # Run additional eval episodes for metrics only
+        for ep in range(1, num_eval_episodes):
+            ep_rng = jax.random.PRNGKey(42 + seed_idx * 10000 + ep)
+            ep_states_extra, attn_data_extra = run_episode_with_states(
+                ep_rng, inner_env, final_params, policy,
+                final_params, policy, max_steps,
+                collect_attention=True,
             )
-            logger.log_item(f"{tag}/pct_objects_agent0", obj_metrics["agent_0_pct_objects"], commit=False)
-            logger.log_item(f"{tag}/pct_objects_agent1", obj_metrics["agent_1_pct_objects"], commit=False)
-            # Log per-category breakdown
-            for agent_name in ("agent_0", "agent_1"):
-                for cat, mass in obj_metrics[f"{agent_name}_category_mass"].items():
-                    logger.log_item(f"{tag}/coverage_{agent_name}/{cat}", mass, commit=False)
-            print(f"[ja_ippo] Seed {seed_idx} pct_objects: "
-                  f"agent0={obj_metrics['agent_0_pct_objects']:.4f}, "
-                  f"agent1={obj_metrics['agent_1_pct_objects']:.4f}")
+            _accumulate_episode(attn_data_extra, ep_states_extra)
 
-        # Compute per-timestep attention coverage breakdown and save as JSON artifact
-        if env_name in ("overcooked-v1",):
-            import json
-            import numpy as np
+            if (ep + 1) % max(1, num_eval_episodes // 4) == 0:
+                print(f"[ja_ippo] Seed {seed_idx}: eval attention episode {ep + 1}/{num_eval_episodes}")
 
-            attn_threshold = 0.05
-            n_steps = min(len(attn_data["agent_0"]), len(ep_states) - 1)
-            coverage_data = {}
+        # Compute averaged metrics
+        n_eps = len(stasis_agent0_vals)
+        stasis_a0_mean = float(np.nanmean(stasis_agent0_vals))
+        stasis_a0_std = float(np.nanstd(stasis_agent0_vals))
+        stasis_a1_mean = float(np.nanmean(stasis_agent1_vals))
+        stasis_a1_std = float(np.nanstd(stasis_agent1_vals))
 
-            for agent_name in ("agent_0", "agent_1"):
-                maps = attn_data[agent_name]
-                agent_steps = []
+        print(f"[ja_ippo] Seed {seed_idx} stasis ({n_eps} eps): "
+              f"agent0={stasis_a0_mean:.4f} +/- {stasis_a0_std:.4f}, "
+              f"agent1={stasis_a1_mean:.4f} +/- {stasis_a1_std:.4f}")
 
-                for t in range(n_steps):
-                    attn = np.array(maps[t]).squeeze()
-                    coverage = build_coverage_map(ep_states[t], feat_h, feat_w)
+        logger.log({
+            f"{tag}/stasis_agent0_mean": stasis_a0_mean,
+            f"{tag}/stasis_agent1_mean": stasis_a1_mean,
+        }, commit=False)
 
-                    # Filter cells above threshold
-                    spots = []
-                    for r in range(feat_h):
-                        for c in range(feat_w):
-                            val = float(attn[r, c])
-                            if val >= attn_threshold:
-                                cov = coverage[r, c]
-                                # Only include nonzero categories
-                                cov_dict = {
-                                    INDEX_TO_OBJECT[i]: round(float(cov[i]), 3)
-                                    for i in range(len(INDEX_TO_OBJECT))
-                                    if cov[i] > 0.01
-                                }
-                                spots.append({
-                                    "attn": round(val, 4),
-                                    "coverage": cov_dict,
-                                })
+        if is_overcooked and pct_obj_agent0_vals:
+            pct_a0_mean = float(np.nanmean(pct_obj_agent0_vals))
+            pct_a0_std = float(np.nanstd(pct_obj_agent0_vals))
+            pct_a1_mean = float(np.nanmean(pct_obj_agent1_vals))
+            pct_a1_std = float(np.nanstd(pct_obj_agent1_vals))
 
-                    spots.sort(key=lambda s: -s["attn"])
-                    agent_steps.append({"t": t, "spots": spots})
+            print(f"[ja_ippo] Seed {seed_idx} pct_objects ({n_eps} eps): "
+                  f"agent0={pct_a0_mean:.4f} +/- {pct_a0_std:.4f}, "
+                  f"agent1={pct_a1_mean:.4f} +/- {pct_a1_std:.4f}")
 
-                coverage_data[agent_name] = agent_steps
+            logger.log({
+                f"{tag}/pct_objects_agent0_mean": pct_a0_mean,
+                f"{tag}/pct_objects_agent1_mean": pct_a1_mean,
+            }, commit=False)
 
-            # Save JSON to run directory
-            json_path = f"{video_dir}/attention_coverage.json"
-            with open(json_path, "w") as f:
-                json.dump(coverage_data, f, indent=2)
-            print(f"[ja_ippo] Seed {seed_idx} attention coverage saved to {json_path}")
+            # Per-category average coverage mass
+            for agent_label, accum in [("agent_0", category_accum_agent0),
+                                        ("agent_1", category_accum_agent1)]:
+                cat_log = {}
+                for cat, total in accum.items():
+                    cat_log[f"{tag}/coverage_{agent_label}/{cat}_mean"] = total / n_eps
+                logger.log(cat_log, commit=False)
+
+                sorted_cats = sorted(accum.items(), key=lambda x: -x[1])[:5]
+                parts = [f"{k}={v / n_eps:.3f}" for k, v in sorted_cats]
+                print(f"[ja_ippo] Seed {seed_idx} {agent_label} top categories: {', '.join(parts)}")
 
 
 def log_metrics(config, out, logger):
