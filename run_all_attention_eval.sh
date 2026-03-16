@@ -31,11 +31,17 @@ for CKPT_PATH in $CKPTS; do
     RUN_NAME=$(basename "$RUN_DIR")
     LAYOUT=$(echo "$CKPT_PATH" | sed "s|$BASE_DIR/||" | cut -d/ -f1)
 
-    # Read beta from Hydra config
+    # Read config from Hydra
     CFG="$RUN_DIR/.hydra/config.yaml"
     BETA=$(grep "JA_BETA_MAX:" "$CFG" 2>/dev/null | awk '{print $2}' || echo "?")
     SEEDS=$(grep "NUM_SEEDS:" "$CFG" 2>/dev/null | head -1 | awk '{print $2}' || echo "?")
     NORM=$(grep "NORMALIZE_REWARDS:" "$CFG" 2>/dev/null | awk '{print $2}' || echo "?")
+
+    # Skip runs with fewer than 2 seeds
+    if [ "$SEEDS" -lt 2 ] 2>/dev/null; then
+        echo "  SKIP: $LAYOUT | beta=$BETA | seeds=$SEEDS | $RUN_NAME"
+        continue
+    fi
 
     echo ""
     echo "=== [$count/$total] $LAYOUT | beta=$BETA | seeds=$SEEDS | norm=$NORM | $RUN_NAME ==="
