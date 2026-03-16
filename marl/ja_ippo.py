@@ -1015,11 +1015,6 @@ def log_eval_video(algorithm_config, env, out, logger):
               f"agent0={stasis_a0_mean:.4f} +/- {stasis_a0_std:.4f}, "
               f"agent1={stasis_a1_mean:.4f} +/- {stasis_a1_std:.4f}")
 
-        logger.log({
-            f"{tag}/stasis_agent0_mean": stasis_a0_mean,
-            f"{tag}/stasis_agent1_mean": stasis_a1_mean,
-        }, commit=False)
-
         if is_overcooked and pct_obj_agent0_vals:
             pct_a0_mean = float(np.nanmean(pct_obj_agent0_vals))
             pct_a0_std = float(np.nanstd(pct_obj_agent0_vals))
@@ -1030,19 +1025,8 @@ def log_eval_video(algorithm_config, env, out, logger):
                   f"agent0={pct_a0_mean:.4f} +/- {pct_a0_std:.4f}, "
                   f"agent1={pct_a1_mean:.4f} +/- {pct_a1_std:.4f}")
 
-            logger.log({
-                f"{tag}/pct_objects_agent0_mean": pct_a0_mean,
-                f"{tag}/pct_objects_agent1_mean": pct_a1_mean,
-            }, commit=False)
-
-            # Per-category average coverage mass
             for agent_label, accum in [("agent_0", category_accum_agent0),
                                         ("agent_1", category_accum_agent1)]:
-                cat_log = {}
-                for cat, total in accum.items():
-                    cat_log[f"{tag}/coverage_{agent_label}/{cat}_mean"] = total / n_eps
-                logger.log(cat_log, commit=False)
-
                 sorted_cats = sorted(accum.items(), key=lambda x: -x[1])[:5]
                 parts = [f"{k}={v / n_eps:.3f}" for k, v in sorted_cats]
                 print(f"[ja_ippo] Seed {seed_idx} {agent_label} top categories: {', '.join(parts)}")
@@ -1135,21 +1119,23 @@ def log_metrics(config, out, logger):
     print_interval = max(1, num_updates // 20)
 
     for step in range(num_updates):
-        # Episode metrics (mean±std across seeds)
+        # Episode metrics
         for stat_name, stat_data in episode_stats_mean.items():
             logger.log_item(f"Train/{stat_name}_mean", stat_data[step, 0], train_step=step, commit=False)
-            logger.log_item(f"Train/{stat_name}_std", stat_data[step, 1], train_step=step, commit=False)
+            if num_seeds > 1:
+                logger.log_item(f"Train/{stat_name}_std", stat_data[step, 1], train_step=step, commit=False)
         if "base_return" in episode_stats_mean and config.task["ENV_NAME"] == "overcooked-v1":
             soups = episode_stats_mean["base_return"][step, 0] / 20.0
             logger.log_item("Train/soups_delivered", soups, train_step=step, commit=False)
 
-        # Scalar metrics (mean±std across seeds)
+        # Scalar metrics
         for key, wandb_name in scalar_keys:
             if key in scalar_mean:
                 logger.log_item(f"{wandb_name}/mean", float(scalar_mean[key][step]),
                                 train_step=step, commit=False)
-                logger.log_item(f"{wandb_name}/std", float(scalar_std[key][step]),
-                                train_step=step, commit=False)
+                if num_seeds > 1:
+                    logger.log_item(f"{wandb_name}/std", float(scalar_std[key][step]),
+                                    train_step=step, commit=False)
 
         logger.log({}, step=step, commit=True)
 
