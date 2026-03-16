@@ -7,6 +7,7 @@ from agents.rnn_actor_critic_agent import RNNActorCriticPolicy
 from agents.s5_actor_critic_agent import S5ActorCriticPolicy
 from agents.ja_actor_critic_agent import JAActorCriticPolicy
 from agents.ja_image_actor_critic_agent import JAImageActorCriticPolicy
+from agents.ja_dual_image_actor_critic_agent import JADualImageActorCriticPolicy
 from agents.image_actor_critic_agent import ImageActorCriticPolicy
 from envs.base_env import get_inner_env
 from agents.liam_agent import LIAMPolicy, initialize_liam_encoder_decoder
@@ -132,6 +133,32 @@ def initialize_ja_image_agent(config, env, rng):
     img_h, img_w, num_scalars = _get_image_dims(env)
 
     policy = JAImageActorCriticPolicy(
+        action_dim=env.action_space(env.agents[0]).n,
+        obs_dim=env.observation_space(env.agents[0]).shape[0],
+        img_height=img_h,
+        img_width=img_w,
+        conv_filters=config.get("CONV_FILTERS", 32),
+        conv_num_blocks=config.get("CONV_NUM_BLOCKS", 4),
+        conv_kernel_size=config.get("CONV_KERNEL_SIZE", 3),
+        conv_stride=config.get("CONV_STRIDE", 2),
+        conv_padding=config.get("CONV_PADDING", "SAME"),
+        num_heads=config.get("JA_NUM_HEADS", 4),
+        head_features=config.get("JA_HEAD_FEATURES", 16),
+        fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
+        lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
+        spatial_basis_depth=config.get("JA_SPATIAL_BASIS_DEPTH", 8),
+    )
+
+    rng, init_rng = jax.random.split(rng)
+    init_params = policy.init_params(init_rng)
+
+    return policy, init_params
+
+def initialize_ja_dual_image_agent(config, env, rng):
+    """Initialize a Joint Attention dual-critic agent with image observations."""
+    img_h, img_w, num_scalars = _get_image_dims(env)
+
+    policy = JADualImageActorCriticPolicy(
         action_dim=env.action_space(env.agents[0]).n,
         obs_dim=env.observation_space(env.agents[0]).shape[0],
         img_height=img_h,

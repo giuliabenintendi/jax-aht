@@ -7,6 +7,7 @@ from marl.ippo import run_ippo
 from marl.ja_ippo import run_ja_ippo
 from marl.ja_ippo_no_share import run_ja_ippo_no_share
 from marl.image_ippo import run_image_ippo
+from marl.ja_dual_ippo import run_ja_dual_ippo
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="base_config_marl")
@@ -17,7 +18,10 @@ def main(config):
     if config.algorithm["ALG"] == "ippo":
         run_ippo(config, wandb_logger)
     elif config.algorithm["ALG"] == "ja_ippo":
-        run_ja_ippo(config, wandb_logger)
+        if config.algorithm.get("USE_DUAL_CRITIC", False):
+            run_ja_dual_ippo(config, wandb_logger)
+        else:
+            run_ja_ippo(config, wandb_logger)
     elif config.algorithm["ALG"] == "ja_ippo_no_share":
         run_ja_ippo_no_share(config, wandb_logger)
     elif config.algorithm["ALG"] == "image_ippo":

@@ -27,9 +27,9 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_agents):
 
 
 def _create_minibatches(traj_batch, advantages, targets, init_hstate, num_actors, num_minibatches, perm_rng):
-    """Create minibatches for PPO updates, where each leaf has shape 
-        (num_minibatches, rollout_len, num_actors / num_minibatches, ...) 
-    This function ensures that the rollout (time) dimension is kept separate from the minibatch and num_actors 
+    """Create minibatches for PPO updates, where each leaf has shape
+        (num_minibatches, rollout_len, num_actors / num_minibatches, ...)
+    This function ensures that the rollout (time) dimension is kept separate from the minibatch and num_actors
     dimensions, so that the minibatches are compatible with recurrent ActorCritics.
     """
     # Create batch containing trajectory, advantages, and targets
@@ -53,9 +53,31 @@ def _create_minibatches(traj_batch, advantages, targets, init_hstate, num_actors
         lambda x: jnp.swapaxes(
             jnp.reshape(
                 x,
-                [x.shape[0], num_minibatches, -1] 
+                [x.shape[0], num_minibatches, -1]
                 + list(x.shape[2:]),
         ), 1, 0,),
+        shuffled_batch,
+    )
+
+    return minibatches
+
+
+def _create_dual_minibatches(traj_batch, adv_ext, adv_int, targets_ext, targets_int,
+                              init_hstate, num_actors, num_minibatches, perm_rng):
+    """Like _create_minibatches but with dual advantage/target streams."""
+    batch = (init_hstate, traj_batch, adv_ext, adv_int, targets_ext, targets_int)
+
+    permutation = jax.random.permutation(perm_rng, num_actors)
+    shuffled_batch = jax.tree.map(
+        lambda x: jnp.take(x, permutation, axis=1), batch
+    )
+    minibatches = jax.tree_util.tree_map(
+        lambda x: jnp.swapaxes(
+            jnp.reshape(
+                x,
+                [x.shape[0], num_minibatches, -1]
+                + list(x.shape[2:]),
+            ), 1, 0,),
         shuffled_batch,
     )
 
