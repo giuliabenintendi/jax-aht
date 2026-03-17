@@ -10,7 +10,7 @@ set -e
 
 GPU="${1:?Usage: ./run_attention_eval.sh <gpu>}"
 
-ALL_CKPTS=$(ls -d results/overcooked-v1/*/ja_ippo/*/saved_train_run 2>/dev/null)
+ALL_CKPTS=$(find results/overcooked-v1 -path "*/ja_ippo/beta_sweep/*/saved_train_run" -type d 2>/dev/null)
 
 if [ -z "$ALL_CKPTS" ]; then
     echo "ERROR: no checkpoints found"
