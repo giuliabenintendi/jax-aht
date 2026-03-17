@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-from agents.initialize_agents import initialize_ja_image_agent
+from agents.initialize_agents import initialize_ja_image_agent, initialize_ja_dual_image_agent
 from agents.ja_utils import jsd_divergence
 from common.plot_utils import get_metric_names
 from common.save_load_utils import load_train_run
@@ -348,7 +348,9 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     # Initialize policy
     rng = jax.random.PRNGKey(EVAL_SEED)
     rng, init_rng = jax.random.split(rng)
-    policy, init_params = initialize_ja_image_agent(algo_cfg, env, init_rng)
+    use_dual = algo_cfg.get("USE_DUAL_CRITIC", False)
+    init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
+    policy, init_params = init_fn(algo_cfg, env, init_rng)
 
     # Extract per-seed params and check for NaN
     seed_params = []
