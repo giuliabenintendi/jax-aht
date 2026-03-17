@@ -1053,6 +1053,11 @@ def log_metrics(config, out, logger):
         savedir=savedir,
         savename="train_curve",
     )
+    import wandb as _wandb
+    for name in train_stats:
+        png_path = os.path.join(savedir, f"train_curve_{name}.png")
+        if os.path.exists(png_path):
+            logger.log_item(f"Plots/train_curve_{name}", _wandb.Image(png_path), commit=False)
 
     num_seeds = train_metrics["returned_episode"].shape[0]
     num_updates = train_metrics["returned_episode"].shape[1]
