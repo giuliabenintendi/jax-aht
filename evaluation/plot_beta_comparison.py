@@ -192,7 +192,7 @@ def main():
             fig.tight_layout()
 
             slug = layout_name.lower().replace(" ", "_")
-            filename = f"beta_comparison_{slug}_{metric_key}.pdf"
+            filename = f"beta_comparison_{slug}_{metric_key}.png"
             fig.savefig(output_dir / filename)
             plt.close(fig)
             print(f"saved {output_dir / filename}")
@@ -203,7 +203,7 @@ def main():
         plot_single_layout(ax, layout_name, run_ids, "base_return", api, cache)
 
     fig.tight_layout(w_pad=2.5)
-    combined_path = output_dir / "beta_comparison_all_layouts.pdf"
+    combined_path = output_dir / "beta_comparison_all_layouts.png"
     fig.savefig(combined_path)
     plt.close(fig)
     print(f"saved {combined_path}")
