@@ -1,14 +1,13 @@
 """Plot beta comparison curves from wandb training runs.
 
 Downloads training curves for JA-IPPO experiments across multiple layouts
-and beta values, then produces publication-quality PDF plots.
+and beta values, then produces plots matching default matplotlib style.
 
 Usage:
     uv run python -m evaluation.plot_beta_comparison --output-dir plots/
 """
 
 import argparse
-import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -45,57 +44,22 @@ LAYOUTS = {
     },
 }
 
+# Default matplotlib tab colors
 BETA_COLORS = {
-    0.0: "#2166ac",
-    0.1: "#66bd63",
-    0.25: "#fee08b",
-    0.5: "#f46d43",
-    1.0: "#d73027",
+    0.0: "C0",   # tab:blue
+    0.1: "C1",   # tab:orange
+    0.25: "C2",  # tab:green
+    0.5: "C3",   # tab:red
+    1.0: "C4",   # tab:purple
 }
 
 METRICS = {
-    "episode_return": {
-        "mean": "Train/returned_episode_returns_mean",
-        "std": "Train/returned_episode_returns_std",
-        "ylabel": "Mean Episode Return",
-    },
     "base_return": {
         "mean": "Train/base_return_mean",
         "std": "Train/base_return_std",
-        "ylabel": "Soups Delivered",
-        "scale": 1.0 / 20.0,
+        "ylabel": "Mean Episode Return",
     },
 }
-
-
-def setup_style():
-    plt.rcParams.update({
-        "font.family": "serif",
-        "mathtext.fontset": "cm",
-        "font.size": 10,
-        "axes.labelsize": 12,
-        "axes.titlesize": 13,
-        "legend.fontsize": 9,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "axes.grid": False,
-        "figure.facecolor": "white",
-        "axes.facecolor": "white",
-        "savefig.facecolor": "white",
-        "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.1,
-    })
-
-
-def ema(values: np.ndarray, alpha: float = 0.05) -> np.ndarray:
-    """Exponential moving average."""
-    result = np.empty_like(values)
-    result[0] = values[0]
-    for i in range(1, len(values)):
-        result[i] = alpha * values[i] + (1 - alpha) * result[i - 1]
-    return result
 
 
 def fetch_run_data(api: wandb.Api, run_id: str, metric_mean: str, metric_std: str):
@@ -140,31 +104,24 @@ def plot_single_layout(
             )
         timesteps, mean_vals, std_vals = cache[cache_key]
 
-        mean_smooth = mean_vals * scale
-        std_smooth = std_vals * scale
+        mean_plot = mean_vals * scale
+        std_plot = std_vals * scale
 
         color = BETA_COLORS[beta]
-        label = rf"$\beta = {beta}$"
-        ax.plot(timesteps, mean_smooth, color=color, linewidth=1.8, label=label)
+        label = f"β = {beta}"
+        ax.plot(timesteps, mean_plot, color=color, linewidth=1.5, label=label)
         ax.fill_between(
             timesteps,
-            mean_smooth - std_smooth,
-            mean_smooth + std_smooth,
+            mean_plot - std_plot,
+            mean_plot + std_plot,
             color=color,
-            alpha=0.18,
+            alpha=0.25,
         )
 
     ax.set_xlabel("Timesteps")
     ax.set_ylabel(metric_info["ylabel"])
     ax.set_title(layout_name)
-    ax.legend(
-        loc="best",
-        frameon=True,
-        edgecolor="0.7",
-        fancybox=False,
-        framealpha=0.9,
-    )
-    ax.ticklabel_format(axis="x", style="sci", scilimits=(6, 6))
+    ax.legend(loc="best")
 
 
 def main():
@@ -173,38 +130,42 @@ def main():
         "--output-dir",
         type=str,
         default="plots",
-        help="Directory to save PDF plots",
+        help="Directory to save plots",
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=150,
     )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    setup_style()
     api = wandb.Api()
     cache = {}
 
     # Individual plots per layout, per metric
     for metric_key in METRICS:
         for layout_name, run_ids in LAYOUTS.items():
-            fig, ax = plt.subplots(figsize=(7, 4.5))
+            fig, ax = plt.subplots(figsize=(8, 5))
             plot_single_layout(ax, layout_name, run_ids, metric_key, api, cache)
             fig.tight_layout()
 
             slug = layout_name.lower().replace(" ", "_")
             filename = f"beta_comparison_{slug}_{metric_key}.png"
-            fig.savefig(output_dir / filename)
+            fig.savefig(output_dir / filename, dpi=args.dpi)
             plt.close(fig)
             print(f"saved {output_dir / filename}")
 
     # Combined 3-panel figure for base_return (soups delivered)
-    fig, axes = plt.subplots(1, 3, figsize=(18, 4.5), sharey=False)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=False)
     for ax, (layout_name, run_ids) in zip(axes, LAYOUTS.items()):
         plot_single_layout(ax, layout_name, run_ids, "base_return", api, cache)
 
-    fig.tight_layout(w_pad=2.5)
+    fig.tight_layout(w_pad=3.0)
     combined_path = output_dir / "beta_comparison_all_layouts.png"
-    fig.savefig(combined_path)
+    fig.savefig(combined_path, dpi=args.dpi)
     plt.close(fig)
     print(f"saved {combined_path}")
 
