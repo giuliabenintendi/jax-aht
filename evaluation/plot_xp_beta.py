@@ -142,45 +142,55 @@ def main():
     betas = [0.0, 0.1, 0.25, 0.5, 1.0]
     layout_names = list(LAYOUTS.keys())
 
-    # Plot 1: XP/SP ratio (3 panels) — one line per seed + mean band
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+    # Plot 1: XP and SP returns (3 panels) — one color per seed, solid=XP, dashed=SP
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     seed_colors = ["C0", "C1", "C2", "C3", "C4"]
 
     for ax, layout in zip(axes, layout_names):
         n_seeds = data[layout][betas[0]]["score"].shape[0]
-        seed_means = [[] for _ in range(n_seeds)]
-        seed_sems = [[] for _ in range(n_seeds)]
+        seed_xp_means = [[] for _ in range(n_seeds)]
+        seed_xp_sems = [[] for _ in range(n_seeds)]
+        seed_sp = [[] for _ in range(n_seeds)]
 
         for beta in betas:
             score_matrix = data[layout][beta]["score"]
-            per_seed_m, per_seed_s, _ = compute_xp_sp_ratios(score_matrix)
-
+            n = score_matrix.shape[0]
             for s in range(n_seeds):
-                m = 0 if np.isnan(per_seed_m[s]) else per_seed_m[s]
-                se = 0 if np.isnan(per_seed_s[s]) else per_seed_s[s]
-                seed_means[s].append(m)
-                seed_sems[s].append(se)
+                sp_val = score_matrix[s, s]
+                xp_vals = np.array([score_matrix[s, j] for j in range(n) if j != s])
+                seed_sp[s].append(sp_val)
+                seed_xp_means[s].append(np.mean(xp_vals))
+                seed_xp_sems[s].append(np.std(xp_vals) / np.sqrt(len(xp_vals)))
 
-        # Per-seed lines with SEM bands
         for s in range(n_seeds):
-            m = np.array(seed_means[s])
-            se = np.array(seed_sems[s])
             color = seed_colors[s % len(seed_colors)]
-            ax.fill_between(betas, m - se, m + se, color=color, alpha=0.15, zorder=1)
-            ax.plot(betas, m, 'o-', color=color,
-                    linewidth=1.2, markersize=6, label=f"Seed {s}", zorder=2)
+            xp_m = np.array(seed_xp_means[s])
+            xp_se = np.array(seed_xp_sems[s])
+            sp_arr = np.array(seed_sp[s])
 
-        ax.axhline(1.0, color="red", linestyle=":", linewidth=1, alpha=0.7, label="Perfect XP")
+            ax.fill_between(betas, xp_m - xp_se, xp_m + xp_se, color=color, alpha=0.12, zorder=1)
+            ax.plot(betas, xp_m, 'o-', color=color, linewidth=1.2, markersize=6, zorder=2,
+                    label=f"Seed {s}" if layout == layout_names[0] else None)
+            ax.plot(betas, sp_arr, '--', color=color, linewidth=1.0, alpha=0.6, zorder=1)
+
         ax.set_xlabel(r"$\beta$")
-        if ax == axes[0]:
-            ax.set_ylabel("XP / SP")
+        ax.set_ylabel("Episode Return")
         ax.set_title(layout)
-        ax.set_ylim(0, 1.2)
         ax.set_xticks(betas)
-        ax.legend(fontsize=7, ncol=2)
 
+    # Shared legend below all panels
+    from matplotlib.lines import Line2D
+    handles = [Line2D([0], [0], color=seed_colors[s], linewidth=1.2) for s in range(n_seeds)]
+    labels = [f"Seed {s}" for s in range(n_seeds)]
+    handles.append(Line2D([0], [0], color="gray", linestyle="-", linewidth=1.2))
+    labels.append("XP (solid)")
+    handles.append(Line2D([0], [0], color="gray", linestyle="--", linewidth=1.0, alpha=0.6))
+    labels.append("SP (dashed)")
+    fig.legend(handles, labels, loc="lower center", ncol=len(labels),
+               fontsize=9, bbox_to_anchor=(0.5, -0.02))
     fig.tight_layout(w_pad=2.0)
-    path = output_dir / "xp_sp_ratio_vs_beta.png"
+    fig.subplots_adjust(bottom=0.15)
+    path = output_dir / "xp_sp_returns_vs_beta.png"
     fig.savefig(path, dpi=args.dpi)
     plt.close(fig)
     print(f"Saved {path}")
