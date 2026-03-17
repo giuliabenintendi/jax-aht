@@ -19,7 +19,9 @@ import numpy as np
 import wandb
 from omegaconf import OmegaConf
 
-from agents.initialize_agents import initialize_ja_image_agent, initialize_ja_agent
+from agents.initialize_agents import (
+    initialize_ja_image_agent, initialize_ja_dual_image_agent, initialize_ja_agent,
+)
 from common.plot_utils import get_metric_names, get_stats, plot_seed_aggregate
 from common.save_load_utils import load_train_run
 from envs import make_env
@@ -42,6 +44,22 @@ SCALAR_KEYS = [
     ("entropy",              "Loss/entropy"),
     ("grad_norm",            "Loss/grad_norm"),
     ("value_mean",           "Value/mean"),
+]
+
+# Dual-critic runs log separate ext/int value losses and means
+DUAL_SCALAR_KEYS = [
+    ("ja_beta",              "JA/beta"),
+    ("jsd_mean",             "JA/jsd"),
+    ("raw_env_reward_mean",  "Reward/env_raw"),
+    ("intrinsic_mean",       "Reward/intrinsic"),
+    ("loss_total",           "Loss/total"),
+    ("loss_value_ext",       "Loss/value_ext"),
+    ("loss_value_int",       "Loss/value_int"),
+    ("loss_policy",          "Loss/policy"),
+    ("entropy",              "Loss/entropy"),
+    ("grad_norm",            "Loss/grad_norm"),
+    ("value_ext_mean",       "Value/ext_mean"),
+    ("value_int_mean",       "Value/int_mean"),
 ]
 
 
@@ -75,8 +93,10 @@ def _get_obs_type(alg_config: dict) -> str:
 
 
 def _relog_training_metrics(train_metrics, env_name, run_dir,
-                            rollout_length, num_envs):
+                            rollout_length, num_envs, scalar_keys=None):
     """Log training metrics to wandb and export CSV."""
+    if scalar_keys is None:
+        scalar_keys = SCALAR_KEYS
     metric_names = get_metric_names(env_name)
     train_stats = get_stats(train_metrics, metric_names)
 
@@ -98,7 +118,7 @@ def _relog_training_metrics(train_metrics, env_name, run_dir,
 
     scalar_mean = {}
     scalar_std = {}
-    for key, _ in SCALAR_KEYS:
+    for key, _ in scalar_keys:
         if key in train_metrics:
             vals = np.array(train_metrics[key])
             scalar_mean[key] = np.mean(vals, axis=0)
@@ -113,7 +133,7 @@ def _relog_training_metrics(train_metrics, env_name, run_dir,
         csv_header.extend([f"{name}_mean", f"{name}_std"])
     if env_name == "overcooked-v1" and "base_return" in metric_names:
         csv_header.append("soups_delivered")
-    for key, _ in SCALAR_KEYS:
+    for key, _ in scalar_keys:
         if key in scalar_mean:
             csv_header.extend([f"{key}_mean", f"{key}_std"])
 
@@ -130,7 +150,7 @@ def _relog_training_metrics(train_metrics, env_name, run_dir,
             if env_name == "overcooked-v1" and "base_return" in metric_names:
                 base_data = np.array(train_stats["base_return"])
                 row.append(float(base_data[:, step, 0].mean()) / 20.0)
-            for key, _ in SCALAR_KEYS:
+            for key, _ in scalar_keys:
                 if key in scalar_mean:
                     row.extend([float(scalar_mean[key][step]), float(scalar_std[key][step])])
             writer.writerow(row)
@@ -146,7 +166,7 @@ def _relog_training_metrics(train_metrics, env_name, run_dir,
             log_dict[f"Train/{stat_name}_std"] = stat_data[step, 1]
         if "base_return" in episode_stats_mean and env_name == "overcooked-v1":
             log_dict["Train/soups_delivered"] = episode_stats_mean["base_return"][step, 0] / 20.0
-        for key, wandb_name in SCALAR_KEYS:
+        for key, wandb_name in scalar_keys:
             if key in scalar_mean:
                 log_dict[f"{wandb_name}/mean"] = float(scalar_mean[key][step])
                 log_dict[f"{wandb_name}/std"] = float(scalar_std[key][step])
@@ -171,7 +191,11 @@ def _relog_eval_videos(alg_config, final_params, run_dir):
     env = LogWrapper(env)
 
     obs_type = _get_obs_type(alg_config)
-    init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
+    use_dual = alg_config.get("USE_DUAL_CRITIC", False)
+    if obs_type in ("image", "fov"):
+        init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
+    else:
+        init_fn = initialize_ja_agent
 
     rng = jax.random.PRNGKey(0)
     policy, _ = init_fn(alg_config, env, rng)
@@ -302,8 +326,10 @@ def relog(checkpoint_path: str, env_name: str | None = None, run_name: str | Non
     wb_run.name = str(wb_run.name) + "___" + run_suffix
 
     # Training metrics + CSV
+    use_dual = alg_config.get("USE_DUAL_CRITIC", False)
+    keys = DUAL_SCALAR_KEYS if use_dual else SCALAR_KEYS
     _relog_training_metrics(run_data["metrics"], env_name, run_dir,
-                           rollout_length, num_envs)
+                           rollout_length, num_envs, scalar_keys=keys)
 
     # Eval videos
     if not skip_videos:

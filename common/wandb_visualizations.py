@@ -40,6 +40,9 @@ def _build_run_string(config: dict) -> str:
         parts.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
     if "JA_BETA_MAX" in alg_config:
         parts.append(f"b{alg_config['JA_BETA_MAX']}")
+    if alg_config.get("USE_DUAL_CRITIC", False):
+        jsd_gae = "jsdgae" if alg_config.get("DUAL_CRITIC_ACTOR_JA", False) else "nojsdgae"
+        parts.append(f"dual_{jsd_gae}")
     parts.append(f"s{alg_config.get('TRAIN_SEED', 0)}")
     parts.append(date)
     return "_".join(parts)
