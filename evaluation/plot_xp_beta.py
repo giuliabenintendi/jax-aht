@@ -138,12 +138,12 @@ def main():
     betas = [0.0, 0.1, 0.25, 0.5, 1.0]
     layout_names = list(LAYOUTS.keys())
 
-    # Plot 1: XP/SP ratio (3 panels)
+    # Plot 1: XP/SP ratio (3 panels) with individual seed points
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
     for ax, layout in zip(axes, layout_names):
         means = []
         sems = []
-        marker_colors = []
+        all_seed_ratios = []
 
         for beta in betas:
             score_matrix = data[layout][beta]["score"]
@@ -151,22 +151,22 @@ def main():
 
             valid = ~np.isnan(per_seed_ratios)
             ratios = per_seed_ratios[valid] * 100
-            mean_sp = sp_values.mean()
 
             means.append(np.mean(ratios))
             sems.append(np.std(ratios) / np.sqrt(len(ratios)))
-            marker_colors.append("C0" if mean_sp >= SP_THRESHOLD else "0.6")
+            all_seed_ratios.append(ratios)
 
         means = np.array(means)
         sems = np.array(sems)
 
-        ax.plot(betas, means, color="C0", linewidth=1.5, zorder=2)
-        ax.fill_between(betas, means - sems, means + sems, color="C0", alpha=0.25, zorder=1)
-        for i, (b, m, c) in enumerate(zip(betas, means, marker_colors)):
-            ax.plot(b, m, 'o', color=c, markersize=7, zorder=3)
-            if c == "0.6":
-                ax.annotate("SP collapsed", (b, m), textcoords="offset points",
-                            xytext=(0, 10), ha='center', fontsize=7, color="0.5")
+        # Shaded SEM band
+        ax.fill_between(betas, means - sems, means + sems, color="C0", alpha=0.2, zorder=1)
+        # Mean line with markers
+        ax.plot(betas, means, 'o-', color="C0", linewidth=1.5, markersize=8, zorder=3)
+        # Individual seed points (jittered slightly for visibility)
+        for i, (b, ratios) in enumerate(zip(betas, all_seed_ratios)):
+            jitter = np.linspace(-0.015, 0.015, len(ratios))
+            ax.scatter(b + jitter, ratios, color="C0", alpha=0.4, s=25, zorder=2)
 
         ax.axhline(100, color="red", linestyle=":", linewidth=1, alpha=0.7, label="Perfect XP")
         ax.set_xlabel(r"$\beta$")
