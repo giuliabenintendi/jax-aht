@@ -676,6 +676,14 @@ def log_metrics(config, out, logger):
                     logger.log_item(f"{wandb_name}/std", float(scalar_std[key][step]),
                                     train_step=step, commit=False)
 
+        # Per-seed curves for cross-seed analysis
+        for stat_name in train_stats:
+            stat_data = np.array(train_stats[stat_name])
+            for seed_idx in range(num_seeds):
+                logger.log_item(f"Seeds/{stat_name}/seed_{seed_idx}",
+                                float(stat_data[seed_idx, step, 0]),
+                                train_step=step, commit=False)
+
         logger.log({}, step=step, commit=True)
 
         if step % print_interval == 0 or step == num_updates - 1:
