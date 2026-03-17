@@ -21,7 +21,7 @@ class AgentPolicy(abc.ABC):
     @abc.abstractmethod
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   aux_obs=None, env_state=None, test_mode=False) -> Tuple[int, chex.Array]:
+                   aux_obs=None, env_state=None, greedy=False) -> Tuple[int, chex.Array]:
         """
         Only computes an action given an observation, done flag, available actions, hidden state, and random key.
 

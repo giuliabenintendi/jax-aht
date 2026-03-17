@@ -14,7 +14,7 @@ heldout_set:
       actor_type: mlp
       ckpt_key: final_params
       idx_list: [0] # load in seed 0 only
-      test_mode: false
+      greedy: false
       performance_bounds:
         percent_eaten: [[0.0, 100.0]]
         returned_episode_returns: [[0.0, 0.5]]
@@ -22,7 +22,7 @@ heldout_set:
       path: "eval_teammates/lbf/ippo/2025-04-21_23-41-17/saved_train_run"
       actor_type: mlp
       idx_list: [[2, 0]] # load in seed 2 ckpt 0
-      test_mode: false
+      greedy: false
       performance_bounds:
         percent_eaten: [[0.0, 69.27]]
         returned_episode_returns: [[0.0, 0.35]]
@@ -32,7 +32,7 @@ heldout_set:
       idx_list: [0, 1, 2] # load in population members 0, 1, 2
       ckpt_key: final_params_conf # key to load from checkpoint.
       POP_SIZE: 5 # for brdiv, we need to specify population size that the method was trained with
-      test_mode: false
+      greedy: false
       performance_bounds:
         percent_eaten: [[0.0, 61.98], [0.0, 83.33], [0.0, 78.65]]
         returned_episode_returns: [[0.0, 0.31], [0.0, 0.42], [0.0, 0.39]]
@@ -42,7 +42,7 @@ heldout_set:
       idx_list: [0, 1]
       ckpt_key: final_params_conf
       POP_SIZE: 3
-      test_mode: false
+      greedy: false
       performance_bounds:
         percent_eaten: [[0.0, 90.62], [0.0, 52.08]]
         returned_episode_returns: [[0.0, 0.45], [0.0, 0.26]]
@@ -88,7 +88,7 @@ heldout_set:
       actor_type: mlp
       ckpt_key: final_params
       idx_list: [0, 1, 2]
-      test_mode: true
+      greedy: true
       performance_bounds:
         base_return: [[0.0, 196.25], [0.0, 180.94], [0.0, 211.88]]
         returned_episode_returns: [[0.0, 209.55], [0.0, 193.39], [0.0, 226.68]]
@@ -133,7 +133,7 @@ heldout_set:
       actor_type: mlp
       ckpt_key: final_params
       idx_list: [0, 1, 2]
-      test_mode: true
+      greedy: true
       performance_bounds:
         base_return: [[0.0, 91.56], [0.0, 117.50], [0.0, 153.44]]
         returned_episode_returns: [[0.0, 91.56], [0.0, 117.50], [0.0, 153.44]]
@@ -171,7 +171,7 @@ heldout_set:
       actor_type: mlp
       ckpt_key: final_params
       idx_list: [0, 1, 2]
-      test_mode: true
+      greedy: true
       performance_bounds:
         base_return: [[0.0, 196.88], [0.0, 198.12], [0.0, 189.06]]
         returned_episode_returns: [[0.0, 209.12], [0.0, 210.51], [0.0, 207.01]]
@@ -180,7 +180,7 @@ heldout_set:
       actor_type: mlp
       ckpt_key: final_params
       idx_list: [0, 1, 2]
-      test_mode: true
+      greedy: true
       performance_bounds:
         base_return: [[0.0, 59.38], [0.0, 46.25], [0.0, 142.5]] # RE-EVALUATE
         returned_episode_returns: [[0.0, 62.86], [0.0, 47.63], [0.0, 150.60]]
@@ -221,7 +221,7 @@ heldout_set:
       actor_type: mlp
       ckpt_key: final_params
       idx_list: [1, 2, 3]
-      test_mode: true
+      greedy: true
       performance_bounds:
         base_return: [[0.0, 218.44], [0.0, 246.56], [0.0, 246.56]]
         returned_episode_returns: [[0.0, 232.62], [0.0, 262.83], [0.0, 262.83]]
@@ -268,7 +268,7 @@ heldout_set:
       actor_type: mlp
       ckpt_key: final_params
       idx_list: [0, 1, 2]
-      test_mode: true
+      greedy: true
       performance_bounds:
         base_return: [[0.0, 220.00], [0.0, 214.38], [0.0, 225.62]]
         returned_episode_returns: [[0.0, 233.83], [0.0, 227.73], [0.0, 239.82]]

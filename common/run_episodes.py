@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 def run_single_episode(rng, env, agent_0_param, agent_0_policy,
                        agent_1_param, agent_1_policy,
-                       max_episode_steps, agent_0_test_mode=False, agent_1_test_mode=False):
+                       max_episode_steps, agent_0_greedy=False, agent_1_greedy=False):
     # Reset the env.
     rng, reset_rng = jax.random.split(rng)
     init_obs, init_env_state = env.reset(reset_rng)
@@ -41,7 +41,7 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
         rng=act0_rng,
         aux_obs=(init_act_onehot["agent_0"].reshape(1, 1, -1), init_joint_act_onehot, init_reward["agent_0"].reshape(1, 1, -1)),
         env_state=init_env_state,
-        test_mode=agent_0_test_mode,
+        greedy=agent_0_greedy,
     )
     act_0 = act_0.squeeze()
 
@@ -55,7 +55,7 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
         rng=act1_rng,
         aux_obs=None,
         env_state=init_env_state,
-        test_mode=agent_1_test_mode,
+        greedy=agent_1_greedy,
     )
     act_1 = act_1.squeeze()
 
@@ -91,7 +91,7 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
                 rng=act0_rng,
                 aux_obs=(act_onehot["agent_0"].reshape(1, 1, -1), joint_act_onehot, reward["agent_0"].reshape(1, 1, -1)),
                 env_state=env_state,
-                test_mode=agent_0_test_mode,
+                greedy=agent_0_greedy,
             )
             act_0 = act_0.squeeze()
 
@@ -104,7 +104,7 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_1,
                 rng=act1_rng,
                 env_state=env_state,
-                test_mode=agent_1_test_mode,
+                greedy=agent_1_greedy,
             )
             act_1 = act_1.squeeze()
 
@@ -131,7 +131,7 @@ def run_single_episode(rng, env, agent_0_param, agent_0_policy,
 
 def run_episodes(rng, env, agent_0_param, agent_0_policy,
                  agent_1_param, agent_1_policy,
-                 max_episode_steps, num_eps, agent_0_test_mode=False, agent_1_test_mode=False):
+                 max_episode_steps, num_eps, agent_0_greedy=False, agent_1_greedy=False):
     '''Given a single ego agent and a single partner agent, run num_eps episodes in parallel using vmap.'''
     # Create episode-specific RNGs
     rngs = jax.random.split(rng, num_eps + 1)
@@ -142,7 +142,7 @@ def run_episodes(rng, env, agent_0_param, agent_0_policy,
         lambda ep_rng: run_single_episode(
             ep_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps,
-            agent_0_test_mode, agent_1_test_mode
+            agent_0_greedy, agent_1_greedy
         )
     ))
     # Run episodes in parallel

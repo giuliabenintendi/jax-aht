@@ -32,7 +32,7 @@ class AgentPopulation:
         return jax.tree.map(gather_leaf, pop_params)
     
     def get_actions(self, pop_params, agent_indices, obs, done, avail_actions, hstate, rng, 
-                    env_state=None, aux_obs=None, test_mode=False):
+                    env_state=None, aux_obs=None, greedy=False):
         '''
         Get the actions of the agents specified by agent_indices. 
         
@@ -56,7 +56,7 @@ class AgentPopulation:
         vmapped_get_action = jax.vmap(partial(self.policy_cls.get_action, 
                                               aux_obs=aux_obs, 
                                               env_state=env_state, 
-                                              test_mode=test_mode))
+                                              greedy=greedy))
         actions, new_hstate = vmapped_get_action(
             gathered_params, obs, done, avail_actions, hstate, 
             rngs_batched)

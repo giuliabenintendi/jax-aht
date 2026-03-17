@@ -70,13 +70,13 @@ class ImageActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   aux_obs=None, env_state=None, test_mode=False):
+                   aux_obs=None, env_state=None, greedy=False):
         hidden = self._unpack_hstate(hstate)
         new_hidden, pi, _ = self.network.apply(
             params, hidden, (obs, done, avail_actions)
         )
         action = jax.lax.cond(
-            test_mode,
+            greedy,
             lambda: pi.mode(),
             lambda: pi.sample(seed=rng),
         )

@@ -24,10 +24,10 @@ class MLPActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   aux_obs=None, env_state=None, test_mode=False):
+                   aux_obs=None, env_state=None, greedy=False):
         """Get actions for the MLP policy."""
         pi, _ = self.network.apply(params, (obs, avail_actions))
-        action = jax.lax.cond(test_mode,
+        action = jax.lax.cond(greedy,
                               lambda: pi.mode(),
                               lambda: pi.sample(seed=rng))
         return action, None  # no hidden state
@@ -62,11 +62,11 @@ class ActorWithDoubleCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   aux_obs=None, env_state=None, test_mode=False):
+                   aux_obs=None, env_state=None, greedy=False):
         """Get actions for the policy with double critics.
         """
         pi, _, _ = self.network.apply(params, (obs, avail_actions))
-        action = jax.lax.cond(test_mode,
+        action = jax.lax.cond(greedy,
                               lambda: pi.mode(),
                               lambda: pi.sample(seed=rng))
         return action, None  # no hidden state
@@ -116,13 +116,13 @@ class ActorWithConditionalCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   aux_obs=None, env_state=None, test_mode=False):
+                   aux_obs=None, env_state=None, greedy=False):
         """Get actions."""
         # The agent id is only used by the critic, so we pass in a
         # dummy vector to represent the one-hot agent id
         dummy_agent_id = jnp.zeros(obs.shape[:-1] + (self.pop_size,))
         pi, _ = self.network.apply(params, (obs, dummy_agent_id, avail_actions))
-        action = jax.lax.cond(test_mode,
+        action = jax.lax.cond(greedy,
                               lambda: pi.mode(),
                               lambda: pi.sample(seed=rng))
         return action, None  # no hidden state

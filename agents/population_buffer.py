@@ -335,7 +335,7 @@ class BufferedPopulation(AgentPopulation):
         return jax.tree_map(gather_leaf, buffer.params)
     
     def get_actions(self, buffer, agent_indices, obs, done, avail_actions, hstate, rng, 
-                    env_state=None, aux_obs=None, test_mode=False):
+                    env_state=None, aux_obs=None, greedy=False):
         """Get actions from agents in the buffer.
         
         Args:
@@ -348,7 +348,7 @@ class BufferedPopulation(AgentPopulation):
             rng: Random key
             env_state: Environment state with shape (num_envs, ...) or None
             aux_obs: Optional auxiliary vector to append to observation
-            test_mode: Whether to use test mode (deterministic actions)
+            greedy: Whether to use test mode (deterministic actions)
             
         Returns:
             actions: Actions with shape (num_envs,)
@@ -361,7 +361,7 @@ class BufferedPopulation(AgentPopulation):
         vmapped_get_action = jax.vmap(partial(self.policy_cls.get_action, 
                                              aux_obs=aux_obs, 
                                              env_state=env_state, 
-                                             test_mode=test_mode))
+                                             greedy=greedy))
         actions, new_hstate = vmapped_get_action(
             gathered_params, obs, done, avail_actions, hstate, 
             rngs_batched)

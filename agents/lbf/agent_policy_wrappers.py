@@ -13,7 +13,7 @@ class LBFRandomPolicyWrapper(AgentPolicy):
         self.policy = RandomAgent() # agent id doesn't matter for the random agent
 
     def get_action(self, params, obs, done, avail_actions, hstate, rng, 
-                   env_state, aux_obs=None, test_mode=False):
+                   env_state, aux_obs=None, greedy=False):
         # hstate represents the agent state
         action, new_hstate =  self.policy.get_action(obs, env_state, hstate, rng)
         return action, new_hstate
@@ -31,7 +31,7 @@ class LBFSequentialFruitPolicyWrapper(AgentPolicy):
         self.using_log_wrapper = using_log_wrapper
 
     def get_action(self, params, obs, done, avail_actions, hstate, rng, 
-                   env_state, aux_obs=None, test_mode=False):
+                   env_state, aux_obs=None, greedy=False):
         # hstate represents the agent state
         if self.using_log_wrapper:
             env_state = env_state.env_state

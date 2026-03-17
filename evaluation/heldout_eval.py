@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 def eval_2d_egos_vs_heldouts(config, env, rng, num_episodes, ego_policy, ego_params, 
-                          heldout_agent_list, ego_test_mode=False):
+                          heldout_agent_list, ego_greedy=False):
     '''Evaluate all ego agents against all heldout partners using vmap over egos.
     Ego_params must be a pytree of shape (num_seeds, num_oel_iters, ...)
     '''
@@ -32,14 +32,14 @@ def eval_2d_egos_vs_heldouts(config, env, rng, num_episodes, ego_policy, ego_par
     num_partner_total = len(heldout_agent_list)
 
     def _eval_ego_vs_one_partner(rng_for_ego, single_ego_params, single_ego_policy, 
-                                 heldout_params, heldout_policy, heldout_test_mode):
+                                 heldout_params, heldout_policy, heldout_greedy):
         return run_episodes(rng_for_ego, env,
                             agent_0_policy=single_ego_policy, agent_0_param=single_ego_params,
                             agent_1_policy=heldout_policy, agent_1_param=heldout_params,
                             max_episode_steps=config["global_heldout_settings"]["MAX_EPISODE_STEPS"],
                             num_eps=num_episodes, 
-                            agent_0_test_mode=ego_test_mode,
-                            agent_1_test_mode=heldout_test_mode)
+                            agent_0_greedy=ego_greedy,
+                            agent_1_greedy=heldout_greedy)
 
     # Outer Python loop over heterogeneous heldout partners
     all_metrics_for_partners = []
@@ -47,7 +47,7 @@ def eval_2d_egos_vs_heldouts(config, env, rng, num_episodes, ego_policy, ego_par
     start_time = time.time()
 
     for partner_idx in range(num_partner_total):
-        heldout_policy, heldout_params, heldout_test_mode, heldout_performance_bounds = heldout_agent_list[partner_idx]
+        heldout_policy, heldout_params, heldout_greedy, heldout_performance_bounds = heldout_agent_list[partner_idx]
         ego_rngs = jax.random.split(partner_rngs[partner_idx], tot_ego_agents)
         ego_rngs = ego_rngs.reshape(num_ego_seeds, num_ego_iters, 2)
 
@@ -56,7 +56,7 @@ def eval_2d_egos_vs_heldouts(config, env, rng, num_episodes, ego_policy, ego_par
                                single_ego_policy=ego_policy,
                                heldout_params=heldout_params,
                                heldout_policy=heldout_policy,
-                               heldout_test_mode=heldout_test_mode)
+                               heldout_greedy=heldout_greedy)
 
         # Inner vmap: Maps over the 'num_oel_iters' dimension.
         # Operates on the partially applied function `eval_partial`.
@@ -93,7 +93,7 @@ def eval_2d_egos_vs_heldouts(config, env, rng, num_episodes, ego_policy, ego_par
     return final_metrics
 
 def run_heldout_evaluation(config, ego_policy, ego_params, init_ego_params, 
-                           ego_as_2d: bool, ego_test_mode=False):
+                           ego_as_2d: bool, ego_greedy=False):
     '''Run heldout evaluation given an ego policy, ego params, and init_ego_params.
     Ego_params can be a pytree of shape (num_seeds, num_oel_iters, ...) or (num_seeds, ...).
     Args:
@@ -102,7 +102,7 @@ def run_heldout_evaluation(config, ego_policy, ego_params, init_ego_params,
         ego_params: Parameters for the ego agent
         init_ego_params: Initial parameters for the ego agent
         ego_as_2d: Whether to treat the ego agent params as a 2D or 1D array of ego agents
-        ego_test_mode: Whether the ego agent should run in test mode (default: False)
+        ego_greedy: Whether the ego agent should run in test mode (default: False)
     '''
     log.info("Running heldout evaluation...")
     env = make_env(config["ENV_NAME"], config["ENV_KWARGS"])
@@ -129,10 +129,10 @@ def run_heldout_evaluation(config, ego_policy, ego_params, init_ego_params,
     # run evaluation
     if ego_as_2d:
         eval_metrics = eval_2d_egos_vs_heldouts(config, env, eval_rng, config["global_heldout_settings"]["NUM_EVAL_EPISODES"], 
-                                            ego_policy, ego_params, heldout_agent_list, ego_test_mode)
+                                            ego_policy, ego_params, heldout_agent_list, ego_greedy)
     else:
         eval_metrics = eval_1d_egos_vs_heldouts(config, env, eval_rng, config["global_heldout_settings"]["NUM_EVAL_EPISODES"], 
-                                            ego_policy, ego_params, heldout_agent_list, ego_test_mode)
+                                            ego_policy, ego_params, heldout_agent_list, ego_greedy)
 
     return eval_metrics, ego_names, heldout_names
 

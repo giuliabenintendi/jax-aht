@@ -70,7 +70,8 @@ def save_video(env, env_name,
 
 def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            agent_1_param, agent_1_policy,
-                           max_episode_steps, collect_attention=False):
+                           max_episode_steps, collect_attention=False,
+                           greedy=True):
     '''
     Run a single episode and collect states for rendering.
 
@@ -127,6 +128,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_0,
                 hstate=hstate_0,
                 rng=act_rng,
+                greedy=greedy,
                 agent_id=0,
             )
             attn_maps["agent_0"].append(attn_0)
@@ -138,6 +140,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_0,
                 hstate=hstate_0,
                 rng=act_rng,
+                greedy=greedy,
             )
         act_0 = act_0.squeeze()
 
@@ -150,6 +153,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_1,
                 hstate=hstate_1,
                 rng=part_rng,
+                greedy=greedy,
                 agent_id=1,
             )
             attn_maps["agent_1"].append(attn_1)
@@ -161,6 +165,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_1,
                 hstate=hstate_1,
                 rng=part_rng,
+                greedy=greedy,
             )
         act_1 = act_1.squeeze()
 

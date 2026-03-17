@@ -12,7 +12,7 @@ from evaluation.heldout_evaluator import load_heldout_set, print_metrics_table, 
 def heldout_crossplay(config, env, rng, num_episodes, heldout_agent_list, br_agent_list):
     '''Evaluate all heldout agents against each other
     Args: 
-        heldout_agent_list: a list of (policy, params, test_mode) tuples for each heldout partner. params might be None for heuristic agents.
+        heldout_agent_list: a list of (policy, params, greedy) tuples for each heldout partner. params might be None for heuristic agents.
         br_agent_list: list with same structure as heldout_agent_list, but for best response agents.
     Returns a pytree of shape (num_heldout_agents, num_heldout_agents, num_eval_episodes, num_agents_per_env)
     '''
@@ -21,14 +21,14 @@ def heldout_crossplay(config, env, rng, num_episodes, heldout_agent_list, br_age
 
     num_heldout_agents = len(heldout_agent_list)
 
-    def eval_pair_fn(rng, policy1, param1, test_mode1, policy2, param2, test_mode2):
+    def eval_pair_fn(rng, policy1, param1, greedy1, policy2, param2, greedy2):
         return run_episodes(rng, env, 
                             agent_0_param=param1, agent_0_policy=policy1,
                             agent_1_param=param2, agent_1_policy=policy2,
                             max_episode_steps=config["global_heldout_settings"]["MAX_EPISODE_STEPS"],
                             num_eps=num_episodes, 
-                            agent_0_test_mode=test_mode1,
-                            agent_1_test_mode=test_mode2)
+                            agent_0_greedy=greedy1,
+                            agent_1_greedy=greedy2)
 
     # Initialize results array
     all_metrics = []
@@ -41,7 +41,7 @@ def heldout_crossplay(config, env, rng, num_episodes, heldout_agent_list, br_age
     # param structures. 
     for i in range(num_heldout_agents):
         heldout_agent1 = heldout_agent_list[i]
-        policy1, param1, test_mode1, performance_bounds1 = heldout_agent1
+        policy1, param1, greedy1, performance_bounds1 = heldout_agent1
         rng1 = outer_heldout_rngs[i]
         
         # Split RNG for each heldout partner
@@ -51,11 +51,11 @@ def heldout_crossplay(config, env, rng, num_episodes, heldout_agent_list, br_age
         partner_i_metrics = []
         for j in range(num_heldout_agents):
             br_agent = br_agent_list[j]
-            policy2, param2, test_mode2, performance_bounds2 = br_agent
+            policy2, param2, greedy2, performance_bounds2 = br_agent
             rng2 = partner_rngs[j]
             
             # Evaluate the pair
-            eval_metrics = eval_pair_fn(rng2, policy1, param1, test_mode1, policy2, param2, test_mode2)
+            eval_metrics = eval_pair_fn(rng2, policy1, param1, greedy1, policy2, param2, greedy2)
 
             if config["global_heldout_settings"]["NORMALIZE_RETURNS"]:
                 if performance_bounds1 is not None and performance_bounds2 is not None:

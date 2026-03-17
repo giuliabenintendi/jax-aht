@@ -76,13 +76,13 @@ class JADualImageActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   aux_obs=None, env_state=None, test_mode=False, agent_id=None):
+                   aux_obs=None, env_state=None, greedy=False, agent_id=None):
         hidden = self._unpack_hstate(hstate)
         new_hidden, pi, _, _, _ = self.network.apply(
             params, hidden, (obs, done, avail_actions)
         )
         action = jax.lax.cond(
-            test_mode,
+            greedy,
             lambda: pi.mode(),
             lambda: pi.sample(seed=rng),
         )
@@ -91,13 +91,13 @@ class JADualImageActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action_and_attention(self, params, obs, done, avail_actions, hstate, rng,
-                                 test_mode=False, agent_id=None):
+                                 greedy=False, agent_id=None):
         hidden = self._unpack_hstate(hstate)
         new_hidden, pi, _, _, attn_map = self.network.apply(
             params, hidden, (obs, done, avail_actions)
         )
         action = jax.lax.cond(
-            test_mode,
+            greedy,
             lambda: pi.mode(),
             lambda: pi.sample(seed=rng),
         )

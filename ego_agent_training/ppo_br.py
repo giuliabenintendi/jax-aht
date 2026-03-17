@@ -28,9 +28,9 @@ class DummyPolicyPopulation(AgentPopulation):
     The main difference from the AgentPopulation is that the test mode is a class attribute, 
     so it remains static for the lifetime of the object
     '''
-    def __init__(self, policy_cls, test_mode=False):
+    def __init__(self, policy_cls, greedy=False):
         super().__init__(pop_size=1, policy_cls=policy_cls)
-        self.test_mode = test_mode
+        self.greedy = greedy
     
     def get_actions(self, pop_params, agent_indices, obs, done, avail_actions, hstate, rng, 
                     env_state=None, aux_obs=None):
@@ -47,7 +47,7 @@ class DummyPolicyPopulation(AgentPopulation):
         vmapped_get_action = jax.vmap(partial(self.policy_cls.get_action, 
                                               aux_obs=aux_obs, 
                                               env_state=env_state, 
-                                              test_mode=self.test_mode))
+                                              greedy=self.greedy))
         actions, new_hstate = vmapped_get_action(
             gathered_params, obs, done, avail_actions, hstate, 
             rngs_batched)
@@ -86,7 +86,7 @@ class HeuristicPolicyPopulation(AgentPopulation):
             return self.policy_cls.get_action(params=params, obs=obs, done=done, 
                                               avail_actions=avail_actions, hstate=hstate, 
                                               rng=rng, env_state=env_state, 
-                                              aux_obs=None, test_mode=False)
+                                              aux_obs=None, greedy=False)
         vmapped_get_action = jax.vmap(_policy_cls_get_action)
         actions, new_hstate = vmapped_get_action(
             params=gathered_params, 
@@ -124,13 +124,13 @@ def run_br_training(config, wandb_logger):
     heldout_agents = load_heldout_set(partner_agent_config, env, config["TASK_NAME"], config["ENV_KWARGS"], init_rng)
     assert len(heldout_agents) == 1, "Only supports training against one partner agent. Use ppo_ego.py for training against a population of partner agents."
 
-    partner_policy, partner_params, partner_test_mode, _ = list(heldout_agents.values())[0]
+    partner_policy, partner_params, partner_greedy, _ = list(heldout_agents.values())[0]
 
     if partner_params is not None: # RL agent
         partner_params = jax.tree.map(lambda x: x[jnp.newaxis, ...], partner_params)
         partner_population = DummyPolicyPopulation(
             policy_cls=partner_policy,
-            test_mode=partner_test_mode
+            greedy=partner_greedy
         )
     
     else: # heuristic agent

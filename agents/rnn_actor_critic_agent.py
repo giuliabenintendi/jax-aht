@@ -31,7 +31,7 @@ class RNNActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   aux_obs=None, env_state=None, test_mode=False):
+                   aux_obs=None, env_state=None, greedy=False):
         """Get actions for the RNN policy.
         Shape of obs, done, avail_actions should correspond to (seq_len, batch_size, ...)
         Shape of hstate should correspond to (1, batch_size, -1). We maintain the extra first dimension for
@@ -39,7 +39,7 @@ class RNNActorCriticPolicy(AgentPolicy):
         """
         batch_size = obs.shape[1]
         new_hstate, pi, _ = self.network.apply(params, hstate.squeeze(0), (obs, done, avail_actions))
-        action = jax.lax.cond(test_mode,
+        action = jax.lax.cond(greedy,
                               lambda: pi.mode(),
                               lambda: pi.sample(seed=rng))
         return action, new_hstate.reshape(1, batch_size, -1)

@@ -80,7 +80,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         avail_actions=avail_actions_0,
         hstate=init_hstate_0,
         rng=act0_rng,
-        test_mode=True,
+        greedy=True,
     )
     act_0 = act_0.squeeze()
 
@@ -91,7 +91,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         avail_actions=avail_actions_1,
         hstate=init_hstate_1,
         rng=act1_rng,
-        test_mode=True,
+        greedy=True,
     )
     act_1 = act_1.squeeze()
 
@@ -135,7 +135,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_0,
                 hstate=hstate_0,
                 rng=act0_rng,
-                test_mode=True,
+                greedy=True,
             )
             act_0 = act_0.squeeze()
 
@@ -146,7 +146,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_1,
                 hstate=hstate_1,
                 rng=act1_rng,
-                test_mode=True,
+                greedy=True,
             )
             act_1 = act_1.squeeze()
 

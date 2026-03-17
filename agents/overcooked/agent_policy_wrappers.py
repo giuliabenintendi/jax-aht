@@ -20,7 +20,7 @@ class OvercookedIndependentPolicyWrapper(AgentPolicy):
 
     
     def get_action(self, params, obs, done, avail_actions, hstate, rng, 
-                   env_state, aux_obs=None, test_mode=False):
+                   env_state, aux_obs=None, greedy=False):
         if self.using_log_wrapper:
             env_state = env_state.env_state
         # hstate represents the agent state
@@ -43,7 +43,7 @@ class OvercookedOnionPolicyWrapper(AgentPolicy):
         self.using_log_wrapper = using_log_wrapper
 
     def get_action(self, params, obs, done, avail_actions, hstate, rng, 
-                   env_state, aux_obs=None, test_mode=False):
+                   env_state, aux_obs=None, greedy=False):
         if self.using_log_wrapper:
             env_state = env_state.env_state
         action, new_hstate = self.policy.get_action(obs, env_state, hstate)
@@ -64,7 +64,7 @@ class OvercookedPlatePolicyWrapper(AgentPolicy):
         self.using_log_wrapper = using_log_wrapper
 
     def get_action(self, params, obs, done, avail_actions, hstate, rng, 
-                   env_state, aux_obs=None, test_mode=False):
+                   env_state, aux_obs=None, greedy=False):
         if self.using_log_wrapper:
             env_state = env_state.env_state
         action, new_hstate = self.policy.get_action(obs, env_state, hstate)
@@ -85,7 +85,7 @@ class OvercookedStaticPolicyWrapper(AgentPolicy):
         self.using_log_wrapper = using_log_wrapper
 
     def get_action(self, params, obs, done, avail_actions, hstate, rng, 
-                   env_state, aux_obs=None, test_mode=False):
+                   env_state, aux_obs=None, greedy=False):
         if self.using_log_wrapper:
             env_state = env_state.env_state
         action, new_hstate = self.policy.get_action(obs, env_state, hstate)
@@ -102,7 +102,7 @@ class OvercookedRandomPolicyWrapper(AgentPolicy):
         self.using_log_wrapper = using_log_wrapper
 
     def get_action(self, params, obs, done, avail_actions, hstate, rng, 
-                   aux_obs=None, env_state=None, test_mode=False):
+                   aux_obs=None, env_state=None, greedy=False):
         if self.using_log_wrapper:
             env_state = env_state.env_state
         action, new_hstate = self.policy.get_action(obs, env_state, hstate)

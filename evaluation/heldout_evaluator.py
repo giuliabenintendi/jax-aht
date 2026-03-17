@@ -97,13 +97,13 @@ def extract_performance_bounds(agent_config, n_models):
 def load_heldout_set(heldout_config, env, task_name, env_kwargs, rng):
     '''Load heldout evaluation agents from config.
     Returns a dictionary of agents with keys as agent names and values as tuples of 
-    (policy, params, test_mode).
+    (policy, params, greedy).
     '''
     heldout_agents = {}
     for agent_name, agent_config in heldout_config.items():
         params_list = None
         idx_labels = None
-        test_mode = agent_config.get("test_mode", False)
+        greedy = agent_config.get("greedy", False)
         # Load RL-based agents
         if "path" in agent_config:
             # ensure that each rl agent has a unique initialization rng
@@ -155,14 +155,14 @@ def load_heldout_set(heldout_config, env, task_name, env_kwargs, rng):
         
         # Generate agent labels
         if params_list is None: # heuristic agent
-            heldout_agents[agent_name] = (policy, None, test_mode, performance_bounds)
+            heldout_agents[agent_name] = (policy, None, greedy, performance_bounds)
         else: # rl agent
             for i, params_i in enumerate(params_list):
                 if idx_labels is None:
                     agent_label = f'{agent_name} ({i})'
                 else:
                     agent_label = f'{agent_name} ({idx_labels[i]})'
-                heldout_agents[agent_label] = (policy, params_i, test_mode, performance_bounds_list[i])
+                heldout_agents[agent_label] = (policy, params_i, greedy, performance_bounds_list[i])
     return heldout_agents
 
 def normalize_metrics(metrics, performance_bounds):
@@ -175,7 +175,7 @@ def normalize_metrics(metrics, performance_bounds):
 
 
 def eval_egos_vs_heldouts(config, env, rng, num_episodes, ego_policy, ego_params, 
-                          heldout_agent_list, ego_test_mode=False):
+                          heldout_agent_list, ego_greedy=False):
     '''Evaluate all ego agents against all heldout partners using vmap over egos.
     Ego_params must be a pytree of shape (num_ego_agents, ...)
     '''
@@ -186,14 +186,14 @@ def eval_egos_vs_heldouts(config, env, rng, num_episodes, ego_policy, ego_params
     num_partner_total = len(heldout_agent_list)
 
     def _eval_ego_vs_one_partner(single_ego_policy, single_ego_params, rng_for_ego,
-                                     heldout_policy, heldout_params, heldout_test_mode):
+                                     heldout_policy, heldout_params, heldout_greedy):
         return run_episodes(rng_for_ego, env,
                             agent_0_policy=single_ego_policy, agent_0_param=single_ego_params,
                             agent_1_policy=heldout_policy, agent_1_param=heldout_params,
                             max_episode_steps=config["global_heldout_settings"]["MAX_EPISODE_STEPS"],
                             num_eps=num_episodes, 
-                            agent_0_test_mode=ego_test_mode,
-                            agent_1_test_mode=heldout_test_mode)
+                            agent_0_greedy=ego_greedy,
+                            agent_1_greedy=heldout_greedy)
 
     # Outer Python loop over heterogeneous heldout partners
     all_metrics_for_partners = []
@@ -202,14 +202,14 @@ def eval_egos_vs_heldouts(config, env, rng, num_episodes, ego_policy, ego_params
     start_time = time.time()
 
     for partner_idx in range(num_partner_total):
-        heldout_policy, heldout_params, heldout_test_mode, heldout_performance_bounds = heldout_agent_list[partner_idx]
+        heldout_policy, heldout_params, heldout_greedy, heldout_performance_bounds = heldout_agent_list[partner_idx]
         ego_rngs = jax.random.split(partner_rngs[partner_idx], num_ego_agents)
 
         # Use partial to fix the heldout agent for the function being vmapped
         func_to_vmap = partial(_eval_ego_vs_one_partner,
                                heldout_policy=heldout_policy,
                                heldout_params=heldout_params,
-                               heldout_test_mode=heldout_test_mode)
+                               heldout_greedy=heldout_greedy)
 
         # vmap over the stacked ego agents and their RNGs
         results_for_this_partner = jax.vmap(
@@ -246,7 +246,7 @@ def run_heldout_evaluation(config, print_metrics=False):
     
     # load ego agents
     ego_agent_config = dict(config["ego_agent"])
-    ego_test_mode = ego_agent_config.get("test_mode", False)
+    ego_greedy = ego_agent_config.get("greedy", False)
     ego_policy, ego_params, init_ego_params, ego_idx_labels = initialize_rl_agent_from_config(ego_agent_config, "ego", env, ego_init_rng)
     # flatten ego params and idx labels
     ego_idx_labels = np.array(ego_idx_labels).reshape(-1) # flatten the list of ego agent labels 
@@ -260,7 +260,7 @@ def run_heldout_evaluation(config, print_metrics=False):
     # run evaluation
     eval_metrics = eval_egos_vs_heldouts(
         config, env, eval_rng, config["global_heldout_settings"]["NUM_EVAL_EPISODES"], 
-        ego_policy, flattened_ego_params, heldout_agent_list, ego_test_mode)
+        ego_policy, flattened_ego_params, heldout_agent_list, ego_greedy)
 
     if print_metrics:
         # each leaf of eval_metrics has shape (num_ego_agents, num_heldout_agents, num_eval_episodes, num_agents_per_env)

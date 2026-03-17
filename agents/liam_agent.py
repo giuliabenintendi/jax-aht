@@ -397,7 +397,7 @@ class LIAMPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
-                   aux_obs=None, env_state=None, test_mode=False):
+                   aux_obs=None, env_state=None, greedy=False):
         """
         Get actions for the LIAM policy.
 
@@ -414,7 +414,7 @@ class LIAMPolicy(AgentPolicy):
             rng: jax.random.PRNGKey, random key for action sampling
             aux_obs: tuple of auxiliary observations i.e. (act, joint_act, reward)
             env_state: jnp.Array, the environment state
-            test_mode: bool, whether to use deterministic action selection
+            greedy: bool, whether to use deterministic action selection
 
         Returns:
             action: jnp.Array, the selected action
@@ -438,7 +438,7 @@ class LIAMPolicy(AgentPolicy):
             rng=rng,
             aux_obs=aux_obs,
             env_state=env_state,
-            test_mode=test_mode
+            greedy=greedy
         )
 
         return action, (new_encoder_hstate, new_policy_hstate)
