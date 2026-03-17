@@ -55,32 +55,32 @@ BETA_COLORS = {
 
 METRICS = {
     "base_return": {
-        "mean": "Train/base_return_mean",
-        "std": "Train/base_return_std",
+        "seed_metric": "base_return",
         "ylabel": "Mean Episode Return",
     },
 }
 
 
-def fetch_run_data(api: wandb.Api, run_id: str, metric_mean: str, metric_std: str):
-    """Fetch training curves from a wandb run (all rows, no truncation)."""
+def fetch_run_data(api: wandb.Api, run_id: str, metric_name: str, num_seeds: int = 5):
+    """Fetch per-seed training curves and compute cross-seed mean/std."""
     run = api.run(f"{ENTITY}/{PROJECT}/{run_id}")
-    rows = list(run.scan_history(keys=[metric_mean, metric_std]))
+    seed_keys = [f"Seeds/{metric_name}/seed_{i}" for i in range(num_seeds)]
+    rows = list(run.scan_history(keys=seed_keys))
 
-    steps = []
-    means = []
-    stds = []
-    for i, row in enumerate(rows):
-        val = row.get(metric_mean)
-        if val is None:
+    # Build (num_steps, num_seeds) array
+    all_seeds = []
+    for row in rows:
+        vals = [row.get(k) for k in seed_keys]
+        if any(v is None for v in vals):
             continue
-        steps.append(i)
-        means.append(val)
-        stds.append(row.get(metric_std, 0.0) or 0.0)
+        all_seeds.append(vals)
 
-    steps = np.array(steps)
+    all_seeds = np.array(all_seeds)  # (num_steps, num_seeds)
+    steps = np.arange(len(all_seeds))
     timesteps = (steps + 1) * ROLLOUT_LENGTH * NUM_ENVS
-    return timesteps, np.array(means), np.array(stds)
+    means = all_seeds.mean(axis=1)
+    stds = all_seeds.std(axis=1)
+    return timesteps, means, stds
 
 
 def plot_single_layout(
@@ -93,19 +93,14 @@ def plot_single_layout(
 ):
     """Plot all beta curves for one layout on the given axes."""
     metric_info = METRICS[metric_key]
-    scale = metric_info.get("scale", 1.0)
+    seed_metric = metric_info["seed_metric"]
 
     for beta, run_id in sorted(run_ids.items()):
-        cache_key = (run_id, metric_info["mean"])
+        cache_key = (run_id, seed_metric)
         if cache_key not in cache:
             print(f"  fetching {layout_name} beta={beta} ({run_id})...")
-            cache[cache_key] = fetch_run_data(
-                api, run_id, metric_info["mean"], metric_info["std"]
-            )
-        timesteps, mean_vals, std_vals = cache[cache_key]
-
-        mean_plot = mean_vals * scale
-        std_plot = std_vals * scale
+            cache[cache_key] = fetch_run_data(api, run_id, seed_metric)
+        timesteps, mean_plot, std_plot = cache[cache_key]
 
         color = BETA_COLORS[beta]
         label = f"β = {beta}"
