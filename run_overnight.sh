@@ -29,7 +29,7 @@ mkdir -p logs
     algorithm.USE_DUAL_CRITIC=true \
     algorithm.DUAL_CRITIC_ACTOR_JA=false \
     label="dual_cring_b001_jsdgae_off" \
-    > "logs/coord_ring_dual_jsdgae_off.log" 2>&1
+    > "logs/coord_ring_dual_jsdgae_off.log" 2>&1 &
 
 # Run 2: JSD GAE on (task + JA policy gradient)
 ./run_gpu.sh "$GPU" marl.run \
@@ -43,6 +43,7 @@ mkdir -p logs
     algorithm.USE_DUAL_CRITIC=true \
     algorithm.DUAL_CRITIC_ACTOR_JA=true \
     label="dual_cring_b001_jsdgae_on" \
-    > "logs/coord_ring_dual_jsdgae_on.log" 2>&1
+    > "logs/coord_ring_dual_jsdgae_on.log" 2>&1 &
 
+wait
 echo "[$(date +%H:%M)] All runs complete"
