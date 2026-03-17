@@ -140,8 +140,8 @@ def plot_single_layout(
             )
         timesteps, mean_vals, std_vals = cache[cache_key]
 
-        mean_smooth = ema(mean_vals * scale)
-        std_smooth = ema(std_vals * scale)
+        mean_smooth = mean_vals * scale
+        std_smooth = std_vals * scale
 
         color = BETA_COLORS[beta]
         label = rf"$\beta = {beta}$"
