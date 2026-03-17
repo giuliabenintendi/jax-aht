@@ -138,35 +138,38 @@ def main():
     betas = [0.0, 0.1, 0.25, 0.5, 1.0]
     layout_names = list(LAYOUTS.keys())
 
-    # Plot 1: XP/SP ratio (3 panels) with individual seed points
+    # Plot 1: XP/SP ratio (3 panels) — one line per seed + mean band
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+    seed_colors = ["C0", "C1", "C2", "C3", "C4"]
+
     for ax, layout in zip(axes, layout_names):
+        # Collect per-seed ratios across all betas
+        # seed_curves[seed_idx] = list of ratio values, one per beta
+        n_seeds = data[layout][betas[0]]["score"].shape[0]
+        seed_curves = [[] for _ in range(n_seeds)]
         means = []
         sems = []
-        all_seed_ratios = []
 
         for beta in betas:
             score_matrix = data[layout][beta]["score"]
-            per_seed_ratios, sp_values = compute_xp_sp_ratios(score_matrix)
+            per_seed_ratios, _ = compute_xp_sp_ratios(score_matrix)
+            ratios = np.where(np.isnan(per_seed_ratios), 0, per_seed_ratios) * 100
 
-            valid = ~np.isnan(per_seed_ratios)
-            ratios = per_seed_ratios[valid] * 100
-
+            for s in range(n_seeds):
+                seed_curves[s].append(ratios[s])
             means.append(np.mean(ratios))
             sems.append(np.std(ratios) / np.sqrt(len(ratios)))
-            all_seed_ratios.append(ratios)
 
         means = np.array(means)
         sems = np.array(sems)
 
-        # Shaded SEM band
-        ax.fill_between(betas, means - sems, means + sems, color="C0", alpha=0.2, zorder=1)
-        # Mean line with markers
-        ax.plot(betas, means, 'o-', color="C0", linewidth=1.5, markersize=8, zorder=3)
-        # Individual seed points (jittered slightly for visibility)
-        for i, (b, ratios) in enumerate(zip(betas, all_seed_ratios)):
-            jitter = np.linspace(-0.015, 0.015, len(ratios))
-            ax.scatter(b + jitter, ratios, color="C0", alpha=0.4, s=25, zorder=2)
+        # Mean shaded band
+        ax.fill_between(betas, means - sems, means + sems, color="gray", alpha=0.15, zorder=1)
+
+        # Per-seed lines
+        for s in range(n_seeds):
+            ax.plot(betas, seed_curves[s], 'o-', color=seed_colors[s % len(seed_colors)],
+                    linewidth=1.2, markersize=6, alpha=0.7, label=f"Seed {s}", zorder=2)
 
         ax.axhline(100, color="red", linestyle=":", linewidth=1, alpha=0.7, label="Perfect XP")
         ax.set_xlabel(r"$\beta$")
@@ -174,7 +177,7 @@ def main():
             ax.set_ylabel("XP / SP (%)")
         ax.set_title(layout)
         ax.set_xticks(betas)
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=7, ncol=2)
 
     fig.tight_layout(w_pad=2.0)
     path = output_dir / "xp_sp_ratio_vs_beta.png"
