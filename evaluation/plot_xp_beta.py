@@ -91,23 +91,27 @@ def fetch_matrices(api):
 
 
 def compute_xp_sp_ratios(score_matrix):
-    """Compute per-seed XP/SP ratio, return (per_seed_means, sp_values).
+    """Compute per-seed XP/SP ratio with SEM.
 
-    For each seed i: ratio_i = mean(M[i,j] / M[i,i] for j≠i)
+    For each seed i: ratio_ij = M[i,j] / M[i,i] for j≠i
+    Returns (per_seed_means, per_seed_sems, sp_values)
     """
     n = score_matrix.shape[0]
-    per_seed_ratios = []
+    per_seed_means = []
+    per_seed_sems = []
     sp_values = np.diag(score_matrix)
 
     for i in range(n):
         sp_i = score_matrix[i, i]
         if sp_i < 1e-6:
-            per_seed_ratios.append(np.nan)
+            per_seed_means.append(np.nan)
+            per_seed_sems.append(np.nan)
             continue
-        xp_ratios = [score_matrix[i, j] / sp_i for j in range(n) if j != i]
-        per_seed_ratios.append(np.mean(xp_ratios))
+        xp_ratios = np.array([score_matrix[i, j] / sp_i for j in range(n) if j != i])
+        per_seed_means.append(np.mean(xp_ratios))
+        per_seed_sems.append(np.std(xp_ratios) / np.sqrt(len(xp_ratios)))
 
-    return np.array(per_seed_ratios), sp_values
+    return np.array(per_seed_means), np.array(per_seed_sems), sp_values
 
 
 def compute_xp_jsd(jsd_matrix):
@@ -143,39 +147,35 @@ def main():
     seed_colors = ["C0", "C1", "C2", "C3", "C4"]
 
     for ax, layout in zip(axes, layout_names):
-        # Collect per-seed ratios across all betas
-        # seed_curves[seed_idx] = list of ratio values, one per beta
         n_seeds = data[layout][betas[0]]["score"].shape[0]
-        seed_curves = [[] for _ in range(n_seeds)]
-        means = []
-        sems = []
+        seed_means = [[] for _ in range(n_seeds)]
+        seed_sems = [[] for _ in range(n_seeds)]
 
         for beta in betas:
             score_matrix = data[layout][beta]["score"]
-            per_seed_ratios, _ = compute_xp_sp_ratios(score_matrix)
-            ratios = np.where(np.isnan(per_seed_ratios), 0, per_seed_ratios) * 100
+            per_seed_m, per_seed_s, _ = compute_xp_sp_ratios(score_matrix)
 
             for s in range(n_seeds):
-                seed_curves[s].append(ratios[s])
-            means.append(np.mean(ratios))
-            sems.append(np.std(ratios) / np.sqrt(len(ratios)))
+                m = 0 if np.isnan(per_seed_m[s]) else per_seed_m[s]
+                se = 0 if np.isnan(per_seed_s[s]) else per_seed_s[s]
+                seed_means[s].append(m)
+                seed_sems[s].append(se)
 
-        means = np.array(means)
-        sems = np.array(sems)
-
-        # Mean shaded band
-        ax.fill_between(betas, means - sems, means + sems, color="gray", alpha=0.15, zorder=1)
-
-        # Per-seed lines
+        # Per-seed lines with SEM bands
         for s in range(n_seeds):
-            ax.plot(betas, seed_curves[s], 'o-', color=seed_colors[s % len(seed_colors)],
-                    linewidth=1.2, markersize=6, alpha=0.7, label=f"Seed {s}", zorder=2)
+            m = np.array(seed_means[s])
+            se = np.array(seed_sems[s])
+            color = seed_colors[s % len(seed_colors)]
+            ax.fill_between(betas, m - se, m + se, color=color, alpha=0.15, zorder=1)
+            ax.plot(betas, m, 'o-', color=color,
+                    linewidth=1.2, markersize=6, label=f"Seed {s}", zorder=2)
 
-        ax.axhline(100, color="red", linestyle=":", linewidth=1, alpha=0.7, label="Perfect XP")
+        ax.axhline(1.0, color="red", linestyle=":", linewidth=1, alpha=0.7, label="Perfect XP")
         ax.set_xlabel(r"$\beta$")
         if ax == axes[0]:
-            ax.set_ylabel("XP / SP (%)")
+            ax.set_ylabel("XP / SP")
         ax.set_title(layout)
+        ax.set_ylim(0, 1.2)
         ax.set_xticks(betas)
         ax.legend(fontsize=7, ncol=2)
 
