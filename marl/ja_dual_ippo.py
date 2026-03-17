@@ -585,7 +585,16 @@ def log_metrics(config, out, logger):
     num_seeds = train_metrics["returned_episode"].shape[0]
     num_updates = train_metrics["returned_episode"].shape[1]
 
-    episode_stats_mean = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
+    # Compute cross-seed mean and std from per-seed means
+    # train_stats[k] shape: (num_seeds, num_updates, 2) where [:,:,0] = per-seed mean
+    episode_stats_mean = {}
+    for k, v in train_stats.items():
+        v_arr = np.array(v)
+        seed_means = v_arr[:, :, 0]
+        episode_stats_mean[k] = np.stack([
+            seed_means.mean(axis=0),
+            seed_means.std(axis=0),
+        ], axis=-1)
 
     scalar_keys = [
         ("ja_beta",              "JA/beta"),
