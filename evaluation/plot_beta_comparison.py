@@ -79,8 +79,8 @@ def fetch_run_data(api: wandb.Api, run_id: str, metric_name: str, num_seeds: int
     steps = np.arange(len(all_seeds))
     timesteps = (steps + 1) * ROLLOUT_LENGTH * NUM_ENVS
     means = all_seeds.mean(axis=1)
-    stds = all_seeds.std(axis=1)
-    return timesteps, means, stds
+    sem = all_seeds.std(axis=1) / np.sqrt(all_seeds.shape[1])
+    return timesteps, means, sem
 
 
 def plot_single_layout(
