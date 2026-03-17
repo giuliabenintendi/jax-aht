@@ -43,7 +43,12 @@ def _build_run_string(config: dict) -> str:
     if alg_config.get("USE_DUAL_CRITIC", False):
         jsd_gae = "jsdgae" if alg_config.get("DUAL_CRITIC_ACTOR_JA", False) else "nojsdgae"
         parts.append(f"dual_{jsd_gae}")
-    parts.append(f"s{alg_config.get('TRAIN_SEED', 0)}")
+    ent_coef = alg_config.get("ENT_COEF", 0.01)
+    if ent_coef != 0.01:
+        parts.append(f"ent{ent_coef}")
+    num_seeds = alg_config.get("NUM_SEEDS", 1)
+    if num_seeds > 1:
+        parts.append(f"s{num_seeds}")
     parts.append(date)
     return "_".join(parts)
 
