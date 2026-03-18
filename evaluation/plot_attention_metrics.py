@@ -136,7 +136,8 @@ def main():
         fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
         for ax, layout in zip(axes, layout_names):
             plot_metric_on_ax(ax, data, layout, metric_type, colors)
-        axes[0].set_ylabel(info["ylabel"])
+            ax.set_ylabel(info["ylabel"])
+            ax.tick_params(labelleft=True)
 
         # Shared legend below
         from matplotlib.lines import Line2D
@@ -163,8 +164,8 @@ def main():
         for col, layout in enumerate(layout_names):
             ax = axes[row, col]
             plot_metric_on_ax(ax, data, layout, metric_type, colors)
-            if col == 0:
-                ax.set_ylabel(info["ylabel"])
+            ax.set_ylabel(info["ylabel"])
+            ax.tick_params(labelleft=True)
             if row == 0:
                 ax.set_xlabel("")
 
