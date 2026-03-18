@@ -98,7 +98,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--run-id", default=None, help="Wandb run ID to resume and upload results")
-    parser.add_argument("--num-episodes", type=int, default=256)
+    parser.add_argument("--num-episodes", type=int, default=64)
     parser.add_argument("--output-dir", default="plots")
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument("--project", default="aht-benchmark")

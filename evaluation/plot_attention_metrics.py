@@ -1,7 +1,7 @@
 """Plot attention stasis and object coverage vs beta for all layouts.
 
-Reads attention_metrics.json files from saved checkpoints.
-Produces 4 plots: stasis agent_0, stasis agent_1, coverage agent_0, coverage agent_1.
+Both agents on the same plot with different colors.
+Produces individual plots + a combined 2x3 panel figure.
 
 Usage:
     uv run python -m evaluation.plot_attention_metrics --output-dir plots/
@@ -14,7 +14,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-# 5-seed beta sweep checkpoints (same as run_attention_eval.sh)
+# 5-seed beta sweep checkpoints
 CHECKPOINTS = {
     "Cramped Room": {
         0.0: "results/overcooked-v1/cramped_room/ja_ippo/beta_sweep/2026-03-11_16-28-18",
@@ -41,9 +41,22 @@ CHECKPOINTS = {
 
 BETAS = [0.0, 0.1, 0.25, 0.5, 1.0]
 
+AGENT_COLORS = {"agent_0": "C0", "agent_1": "C1"}
+AGENT_LABELS = {"agent_0": "Agent 0", "agent_1": "Agent 1"}
+
+METRICS_INFO = {
+    "stasis_mean": {
+        "ylabel": "Attention Stasis (JSD)",
+        "slug": "stasis",
+    },
+    "pct_objects_mean": {
+        "ylabel": "% Attention on Objects",
+        "slug": "coverage",
+    },
+}
+
 
 def load_metrics(base_path):
-    """Load attention_metrics.json from a checkpoint directory."""
     json_path = os.path.join(base_path, "attention_metrics.json")
     if not os.path.exists(json_path):
         print(f"  MISSING: {json_path}")
@@ -53,11 +66,7 @@ def load_metrics(base_path):
 
 
 def extract_per_seed(metrics, agent, metric_type):
-    """Extract per-seed values for a given agent and metric.
-
-    metric_type: 'stasis_mean' or 'pct_objects_mean'
-    Returns array of per-seed values.
-    """
+    """Extract per-seed values. Returns array of per-seed values."""
     per_seed = metrics.get("per_seed", [])
     values = []
     for seed_data in per_seed:
@@ -66,6 +75,37 @@ def extract_per_seed(metrics, agent, metric_type):
         if val is not None and not np.isnan(val):
             values.append(val)
     return np.array(values)
+
+
+def plot_metric_on_ax(ax, data, layout, metric_type):
+    """Plot both agents on a single axis for one layout and metric."""
+    for agent in ["agent_0", "agent_1"]:
+        means = []
+        sems = []
+        for beta in BETAS:
+            if beta not in data.get(layout, {}):
+                means.append(np.nan)
+                sems.append(0)
+                continue
+            vals = extract_per_seed(data[layout][beta], agent, metric_type)
+            if len(vals) == 0:
+                means.append(np.nan)
+                sems.append(0)
+            else:
+                means.append(vals.mean())
+                sems.append(vals.std() / np.sqrt(len(vals)))
+
+        means = np.array(means)
+        sems = np.array(sems)
+        color = AGENT_COLORS[agent]
+
+        ax.plot(BETAS, means, "o-", color=color, linewidth=1.5, markersize=6,
+                label=AGENT_LABELS[agent])
+        ax.fill_between(BETAS, means - sems, means + sems, color=color, alpha=0.15)
+
+    ax.set_xlabel(r"$\beta$")
+    ax.set_xticks(BETAS)
+    ax.set_title(layout)
 
 
 def main():
@@ -89,50 +129,56 @@ def main():
                 data[layout][beta] = metrics
                 print(f"  {layout} β={beta}: loaded")
 
-    # 4 plots: stasis/coverage x agent_0/agent_1
-    for metric_type, ylabel in [
-        ("stasis_mean", "Attention Stasis (JSD)"),
-        ("pct_objects_mean", "% Attention on Objects"),
-    ]:
-        for agent in ["agent_0", "agent_1"]:
-            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    # Individual 3-panel plots (one per metric)
+    for metric_type, info in METRICS_INFO.items():
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        for ax, layout in zip(axes, layout_names):
+            plot_metric_on_ax(ax, data, layout, metric_type)
+            ax.set_ylabel(info["ylabel"])
 
-            for ax, layout in zip(axes, layout_names):
-                means = []
-                sems = []
+        # Shared legend below
+        from matplotlib.lines import Line2D
+        handles = [
+            Line2D([0], [0], color=AGENT_COLORS["agent_0"], marker="o", linewidth=1.5),
+            Line2D([0], [0], color=AGENT_COLORS["agent_1"], marker="o", linewidth=1.5),
+        ]
+        fig.legend(handles, [AGENT_LABELS["agent_0"], AGENT_LABELS["agent_1"]],
+                   loc="lower center", ncol=2, fontsize=10, bbox_to_anchor=(0.5, -0.02))
+        fig.tight_layout()
+        fig.subplots_adjust(bottom=0.12)
 
-                for beta in BETAS:
-                    if beta not in data.get(layout, {}):
-                        means.append(np.nan)
-                        sems.append(0)
-                        continue
-                    vals = extract_per_seed(data[layout][beta], agent, metric_type)
-                    if len(vals) == 0:
-                        means.append(np.nan)
-                        sems.append(0)
-                    else:
-                        means.append(vals.mean())
-                        sems.append(vals.std() / np.sqrt(len(vals)))
+        path = output_dir / f"attn_{info['slug']}_both_agents.png"
+        fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved {path}")
 
-                means = np.array(means)
-                sems = np.array(sems)
+    # Combined 2x3 figure (rows: stasis, coverage; cols: layouts)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 9))
 
-                ax.plot(BETAS, means, "o-", color="C0", linewidth=1.5, markersize=7)
-                ax.fill_between(BETAS, means - sems, means + sems, color="C0", alpha=0.2)
-                ax.set_xlabel(r"$\beta$")
-                ax.set_ylabel(ylabel)
-                ax.set_title(layout)
-                ax.set_xticks(BETAS)
+    for row, (metric_type, info) in enumerate(METRICS_INFO.items()):
+        for col, layout in enumerate(layout_names):
+            ax = axes[row, col]
+            plot_metric_on_ax(ax, data, layout, metric_type)
+            if col == 0:
+                ax.set_ylabel(info["ylabel"])
+            if row == 0:
+                ax.set_xlabel("")
 
-            agent_label = "Agent 0" if agent == "agent_0" else "Agent 1"
-            fig.suptitle(f"{ylabel} — {agent_label}", fontsize=12)
-            fig.tight_layout()
+    # Shared legend below
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([0], [0], color=AGENT_COLORS["agent_0"], marker="o", linewidth=1.5),
+        Line2D([0], [0], color=AGENT_COLORS["agent_1"], marker="o", linewidth=1.5),
+    ]
+    fig.legend(handles, [AGENT_LABELS["agent_0"], AGENT_LABELS["agent_1"]],
+               loc="lower center", ncol=2, fontsize=10, bbox_to_anchor=(0.5, -0.01))
+    fig.tight_layout()
+    fig.subplots_adjust(bottom=0.08)
 
-            metric_slug = "stasis" if "stasis" in metric_type else "coverage"
-            path = output_dir / f"attn_{metric_slug}_{agent}.png"
-            fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
-            plt.close(fig)
-            print(f"Saved {path}")
+    combined_path = output_dir / "attn_combined_2x3.png"
+    fig.savefig(combined_path, dpi=args.dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {combined_path}")
 
 
 if __name__ == "__main__":
