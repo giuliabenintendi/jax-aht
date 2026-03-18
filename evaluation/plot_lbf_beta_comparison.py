@@ -58,7 +58,7 @@ def fetch_run_data(api, run_id, num_seeds):
         steps = np.arange(len(all_seeds))
         timesteps = (steps + 1) * ROLLOUT_LENGTH * NUM_ENVS
         means = all_seeds.mean(axis=1)
-        sems = all_seeds.std(axis=1)
+        sems = all_seeds.std(axis=1) / np.sqrt(num_seeds)
         print(f"    using per-seed data ({num_seeds} seeds, {len(all_seeds)} steps)")
         return timesteps, means, sems
 
@@ -78,8 +78,9 @@ def fetch_run_data(api, run_id, num_seeds):
     stds = np.array(stds)
     steps = np.arange(len(means))
     timesteps = (steps + 1) * ROLLOUT_LENGTH * NUM_ENVS
-    print(f"    fallback to mean/std ({len(means)} steps, no per-seed)")
-    return timesteps, means, stds
+    sems = stds / np.sqrt(num_seeds)
+    print(f"    fallback to mean/std ({len(means)} steps, SEM from {num_seeds} seeds)")
+    return timesteps, means, sems
 
 
 def main():
