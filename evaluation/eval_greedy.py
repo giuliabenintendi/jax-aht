@@ -1,4 +1,7 @@
-"""Run greedy and stochastic eval episodes and plot return distributions.
+"""Run greedy and stochastic eval episodes and plot return curves.
+
+Plots per-episode returns as a line chart (like training curves) with
+running mean and overall mean ± std band.
 
 Usage:
     uv run python -m evaluation.eval_greedy \
@@ -21,36 +24,14 @@ from agents.initialize_agents import (
 from common.save_load_utils import load_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
-from evaluation.vis_episodes import run_episode_with_states
 
 
 def _get_obs_type(alg_config):
     return alg_config.get("OBS_TYPE", alg_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
 
 
-def run_eval_episodes(env, policy, params, num_episodes, max_steps, greedy, seed_offset=0):
-    """Run N eval episodes, return per-episode total returns."""
-    returns = []
-    for ep in range(num_episodes):
-        rng = jax.random.PRNGKey(1000 + seed_offset * 10000 + ep)
-        ep_states, _ = run_episode_with_states(
-            rng, env, params, policy, params, policy, max_steps,
-            collect_attention=False, greedy=greedy,
-        )
-        # Sum rewards from state transitions
-        total_return = 0.0
-        for i in range(1, len(ep_states)):
-            # base_return is in env_state
-            pass
-        # Use episode length as proxy — actually we need reward from env
-        # Simpler: run with LogWrapper info
-        returns.append(len(ep_states) - 1)  # placeholder
-
-    return np.array(returns)
-
-
-def run_eval_with_rewards(inner_env, env, policy, params, num_episodes, max_steps, greedy, seed_offset=0):
-    """Run N eval episodes collecting total reward per episode."""
+def run_eval_with_rewards(inner_env, policy, params, num_episodes, max_steps, greedy, seed_offset=0):
+    """Run N eval episodes, return per-episode total rewards."""
     returns = []
     for ep in range(num_episodes):
         rng = jax.random.PRNGKey(1000 + seed_offset * 10000 + ep)
@@ -103,6 +84,16 @@ def run_eval_with_rewards(inner_env, env, policy, params, num_episodes, max_step
     return np.array(returns)
 
 
+def running_mean(arr, window=20):
+    """Compute running mean with given window size."""
+    cumsum = np.cumsum(np.insert(arr, 0, 0))
+    rm = np.empty_like(arr, dtype=float)
+    for i in range(len(arr)):
+        lo = max(0, i - window + 1)
+        rm[i] = (cumsum[i + 1] - cumsum[lo]) / (i - lo + 1)
+    return rm
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
@@ -122,7 +113,6 @@ def main():
     env_name = alg_config["ENV_NAME"]
     env = make_env(env_name, alg_config["ENV_KWARGS"])
     inner_env = env
-    env = LogWrapper(env)
 
     obs_type = _get_obs_type(alg_config)
     use_dual = alg_config.get("USE_DUAL_CRITIC", False)
@@ -132,8 +122,9 @@ def main():
         from agents.initialize_agents import initialize_ja_agent
         init_fn = initialize_ja_agent
 
+    env_wrapped = LogWrapper(env)
     rng = jax.random.PRNGKey(0)
-    policy, _ = init_fn(alg_config, env, rng)
+    policy, _ = init_fn(alg_config, env_wrapped, rng)
 
     run_data = load_train_run(args.checkpoint)
     final_params = run_data["final_params"]
@@ -143,8 +134,10 @@ def main():
     layout = cfg.get("TASK_NAME", env_name)
     beta = alg_config.get("JA_BETA_MAX", 0)
     ent = alg_config.get("ENT_COEF", 0.01)
+    jsd_gae = alg_config.get("DUAL_CRITIC_ACTOR_JA", False)
 
-    print(f"Layout: {layout}, Beta: {beta}, ENT_COEF: {ent}, Seeds: {num_seeds}")
+    print(f"Layout: {layout}, Beta: {beta}, ENT_COEF: {ent}, Dual: {use_dual}, "
+          f"JSD GAE: {jsd_gae}, Seeds: {num_seeds}")
     print(f"Running {args.num_episodes} episodes per seed, greedy + stochastic")
 
     all_greedy = []
@@ -155,10 +148,10 @@ def main():
         print(f"\nSeed {seed_idx}:")
 
         greedy_returns = run_eval_with_rewards(
-            inner_env, env, policy, params, args.num_episodes, max_steps,
+            inner_env, policy, params, args.num_episodes, max_steps,
             greedy=True, seed_offset=seed_idx)
         stochastic_returns = run_eval_with_rewards(
-            inner_env, env, policy, params, args.num_episodes, max_steps,
+            inner_env, policy, params, args.num_episodes, max_steps,
             greedy=False, seed_offset=seed_idx)
 
         all_greedy.append(greedy_returns)
@@ -175,25 +168,36 @@ def main():
     print(f"  Greedy:     mean={all_greedy.mean():.1f} ± {all_greedy.std():.1f}")
     print(f"  Stochastic: mean={all_stochastic.mean():.1f} ± {all_stochastic.std():.1f}")
 
-    # Plot: two histograms side by side
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    # Plot: line chart with per-episode returns + running mean + mean±std band
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+    episodes = np.arange(1, len(all_stochastic) + 1)
 
-    ax1.hist(all_stochastic, bins=30, color="C1", alpha=0.7, edgecolor="white")
-    ax1.axvline(all_stochastic.mean(), color="C1", linestyle="--", linewidth=2,
-                label=f"mean={all_stochastic.mean():.1f} ± {all_stochastic.std():.1f}")
-    ax1.set_xlabel("Episode Return")
-    ax1.set_ylabel("Count")
-    ax1.set_title("Stochastic")
-    ax1.legend(fontsize=9)
+    for ax, data, title, color in [
+        (ax1, all_stochastic, "Stochastic", "C1"),
+        (ax2, all_greedy, "Greedy", "C0"),
+    ]:
+        mean = data.mean()
+        std = data.std()
+        rm = running_mean(data, window=20)
 
-    ax2.hist(all_greedy, bins=30, color="C0", alpha=0.7, edgecolor="white")
-    ax2.axvline(all_greedy.mean(), color="C0", linestyle="--", linewidth=2,
-                label=f"mean={all_greedy.mean():.1f} ± {all_greedy.std():.1f}")
-    ax2.set_xlabel("Episode Return")
-    ax2.set_title("Greedy")
-    ax2.legend(fontsize=9)
+        # Per-episode returns as faint dots
+        ax.scatter(episodes, data, s=3, alpha=0.2, color=color, zorder=1)
+        # Running mean line
+        ax.plot(episodes, rm, color=color, linewidth=1.5, zorder=2, label="Running mean")
+        # Overall mean ± std band
+        ax.axhline(mean, color=color, linestyle="--", linewidth=1.5, zorder=3)
+        ax.fill_between(episodes, mean - std, mean + std, color=color, alpha=0.1, zorder=0)
+        ax.set_xlabel("Episode")
+        ax.set_title(title)
+        ax.legend([f"Running mean (w=20)",
+                   f"Mean={mean:.1f} ± {std:.1f}"],
+                  fontsize=8, loc="lower right")
 
-    fig.suptitle(f"{layout} | β={beta} | ENT_COEF={ent} | {num_seeds} seeds x {args.num_episodes} eps",
+    ax1.set_ylabel("Episode Return")
+
+    jsd_label = "jsdgae" if jsd_gae else "nojsdgae"
+    fig.suptitle(f"{layout} | β={beta} | ent={ent} | dual_{jsd_label} | "
+                 f"{num_seeds}s x {args.num_episodes}ep",
                  fontsize=11)
     fig.tight_layout()
 
