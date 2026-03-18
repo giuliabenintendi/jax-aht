@@ -86,11 +86,21 @@ def main():
             f = run.file("xp_score_matrix.csv")
             f.download(replace=True, root="/tmp/xp_bars")
             with open("/tmp/xp_bars/xp_score_matrix.csv") as fh:
-                matrix = parse_mean_matrix(fh.read())
-            sp, xp = compute_sp_xp(matrix)
-            data[layout][beta] = {"sp": sp, "xp": xp}
-            print(f"  {layout} β={beta}: SP={sp.mean():.1f}±{sp.std()/np.sqrt(len(sp)):.1f}  "
-                  f"XP={xp.mean():.1f}±{xp.std()/np.sqrt(len(xp)):.1f}")
+                score_matrix = parse_mean_matrix(fh.read())
+            sp_score, xp_score = compute_sp_xp(score_matrix)
+
+            f = run.file("xp_jsd_matrix.csv")
+            f.download(replace=True, root="/tmp/xp_bars")
+            with open("/tmp/xp_bars/xp_jsd_matrix.csv") as fh:
+                jsd_matrix = parse_mean_matrix(fh.read())
+            sp_jsd, xp_jsd = compute_sp_xp(jsd_matrix)
+
+            data[layout][beta] = {
+                "sp": sp_score, "xp": xp_score,
+                "sp_jsd": sp_jsd, "xp_jsd": xp_jsd,
+            }
+            print(f"  {layout} β={beta}: SP={sp_score.mean():.1f}  XP={xp_score.mean():.1f}  "
+                  f"SP_JSD={sp_jsd.mean():.3f}  XP_JSD={xp_jsd.mean():.3f}")
 
     layouts = list(CONFIGS.keys())
     n_layouts = len(layouts)
@@ -175,6 +185,70 @@ def main():
     fig.tight_layout()
 
     path = output_dir / "xp_sp_bars.png"
+    fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {path}")
+
+    # JSD bar chart — same layout
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    jsd_sp_b0_means, jsd_sp_b0_sems = [], []
+    jsd_xp_b0_means, jsd_xp_b0_sems = [], []
+    jsd_sp_best_means, jsd_sp_best_sems = [], []
+    jsd_xp_best_means, jsd_xp_best_sems = [], []
+
+    for layout in layouts:
+        beta_vals = sorted(CONFIGS[layout].keys())
+        b0, b_best = beta_vals[0], beta_vals[1]
+
+        d0 = data[layout][b0]
+        db = data[layout][b_best]
+
+        jsd_sp_b0_means.append(d0["sp_jsd"].mean())
+        jsd_sp_b0_sems.append(d0["sp_jsd"].std() / np.sqrt(len(d0["sp_jsd"])))
+        jsd_xp_b0_means.append(d0["xp_jsd"].mean())
+        jsd_xp_b0_sems.append(d0["xp_jsd"].std() / np.sqrt(len(d0["xp_jsd"])))
+
+        jsd_sp_best_means.append(db["sp_jsd"].mean())
+        jsd_sp_best_sems.append(db["sp_jsd"].std() / np.sqrt(len(db["sp_jsd"])))
+        jsd_xp_best_means.append(db["xp_jsd"].mean())
+        jsd_xp_best_sems.append(db["xp_jsd"].std() / np.sqrt(len(db["xp_jsd"])))
+
+    ax.bar(x + offsets[0] * bar_width, jsd_sp_b0_means, bar_width, yerr=jsd_sp_b0_sems,
+           color=blue, edgecolor=blue, capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
+    ax.bar(x + offsets[1] * bar_width, jsd_xp_b0_means, bar_width, yerr=jsd_xp_b0_sems,
+           color="white", edgecolor=blue, hatch="//", linewidth=1.2,
+           capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
+    ax.bar(x + offsets[2] * bar_width, jsd_sp_best_means, bar_width, yerr=jsd_sp_best_sems,
+           color=orange, edgecolor=orange, capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
+    ax.bar(x + offsets[3] * bar_width, jsd_xp_best_means, bar_width, yerr=jsd_xp_best_sems,
+           color="white", edgecolor=orange, hatch="//", linewidth=1.2,
+           capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
+
+    # log(2) reference line
+    ax.axhline(np.log(2), color="red", linestyle="--", linewidth=2, alpha=0.8)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(layouts, fontsize=11)
+    ax.set_ylabel("JSD", fontsize=12)
+    ax.set_ylim(0, 0.75)
+
+    ax.yaxis.grid(True, linestyle="-", alpha=0.2)
+    ax.set_axisbelow(True)
+
+    legend_handles = [
+        mpatches.Patch(facecolor=blue, edgecolor=blue, label=r"$\beta$=0  SP"),
+        mpatches.Patch(facecolor="white", edgecolor=blue, hatch="//", label=r"$\beta$=0  XP"),
+        mpatches.Patch(facecolor=orange, edgecolor=orange, label=r"Best $\beta$  SP"),
+        mpatches.Patch(facecolor="white", edgecolor=orange, hatch="//", label=r"Best $\beta$  XP"),
+        Line2D([0], [0], color="red", linestyle="--", linewidth=2, alpha=0.8,
+               label=r"$\log(2)$"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper right", fontsize=8,
+              framealpha=0.9, edgecolor="none")
+
+    fig.tight_layout()
+    path = output_dir / "xp_sp_jsd_bars.png"
     fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {path}")
