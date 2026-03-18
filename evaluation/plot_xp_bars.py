@@ -99,9 +99,9 @@ def main():
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Colors matching reference: blue (#5B7FFF) and orange (#FF8C42)
-    blue = "#5B7FFF"
-    orange = "#FF8C42"
+    # Default matplotlib tab colors (matching beta comparison plot)
+    blue = "C0"
+    orange = "C1"
 
     sp_b0_means, sp_b0_sems = [], []
     xp_b0_means, xp_b0_sems = [], []
@@ -154,7 +154,6 @@ def main():
     ax.set_xticks(x)
     ax.set_xticklabels(layouts, fontsize=11)
     ax.set_ylabel("Base Return", fontsize=12)
-    ax.set_title("Self-Play vs Cross-Play", fontsize=13)
     ax.set_ylim(bottom=0)
 
     # Light horizontal grid
