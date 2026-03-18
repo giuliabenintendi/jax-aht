@@ -237,7 +237,6 @@ def main():
     ax.set_xticks(x)
     ax.set_xticklabels(layouts, fontsize=11)
     ax.set_ylabel("JSD", fontsize=12)
-    ax.set_ylim(0, 0.75)
 
     ax.yaxis.grid(True, linestyle="-", alpha=0.2)
     ax.set_axisbelow(True)
