@@ -41,17 +41,18 @@ CHECKPOINTS = {
 
 BETAS = [0.0, 0.1, 0.25, 0.5, 1.0]
 
-AGENT_COLORS = {"agent_0": "C0", "agent_1": "C1"}
 AGENT_LABELS = {"agent_0": "Agent 0", "agent_1": "Agent 1"}
 
 METRICS_INFO = {
     "stasis_mean": {
         "ylabel": "Attention Stasis (JSD)",
         "slug": "stasis",
+        "colors": {"agent_0": "C3", "agent_1": "C2"},  # red, green
     },
     "pct_objects_mean": {
         "ylabel": "% Attention on Objects",
         "slug": "coverage",
+        "colors": {"agent_0": "C1", "agent_1": "C0"},  # orange, blue
     },
 }
 
@@ -77,7 +78,7 @@ def extract_per_seed(metrics, agent, metric_type):
     return np.array(values)
 
 
-def plot_metric_on_ax(ax, data, layout, metric_type):
+def plot_metric_on_ax(ax, data, layout, metric_type, colors):
     """Plot both agents on a single axis for one layout and metric."""
     for agent in ["agent_0", "agent_1"]:
         means = []
@@ -97,7 +98,7 @@ def plot_metric_on_ax(ax, data, layout, metric_type):
 
         means = np.array(means)
         sems = np.array(sems)
-        color = AGENT_COLORS[agent]
+        color = colors[agent]
 
         ax.plot(BETAS, means, "o-", color=color, linewidth=1.5, markersize=6,
                 label=AGENT_LABELS[agent])
@@ -131,21 +132,22 @@ def main():
 
     # Individual 3-panel plots (one per metric)
     for metric_type, info in METRICS_INFO.items():
+        colors = info["colors"]
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         for ax, layout in zip(axes, layout_names):
-            plot_metric_on_ax(ax, data, layout, metric_type)
+            plot_metric_on_ax(ax, data, layout, metric_type, colors)
             ax.set_ylabel(info["ylabel"])
 
         # Shared legend below
         from matplotlib.lines import Line2D
         handles = [
-            Line2D([0], [0], color=AGENT_COLORS["agent_0"], marker="o", linewidth=1.5),
-            Line2D([0], [0], color=AGENT_COLORS["agent_1"], marker="o", linewidth=1.5),
+            Line2D([0], [0], color=colors["agent_0"], marker="o", linewidth=1.5),
+            Line2D([0], [0], color=colors["agent_1"], marker="o", linewidth=1.5),
         ]
         fig.legend(handles, [AGENT_LABELS["agent_0"], AGENT_LABELS["agent_1"]],
-                   loc="lower center", ncol=2, fontsize=10, bbox_to_anchor=(0.5, -0.02))
+                   loc="lower center", ncol=2, fontsize=10, bbox_to_anchor=(0.5, -0.05))
         fig.tight_layout()
-        fig.subplots_adjust(bottom=0.12)
+        fig.subplots_adjust(bottom=0.15)
 
         path = output_dir / f"attn_{info['slug']}_both_agents.png"
         fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
@@ -155,25 +157,36 @@ def main():
     # Combined 2x3 figure (rows: stasis, coverage; cols: layouts)
     fig, axes = plt.subplots(2, 3, figsize=(18, 9))
 
+    all_handles = []
     for row, (metric_type, info) in enumerate(METRICS_INFO.items()):
+        colors = info["colors"]
         for col, layout in enumerate(layout_names):
             ax = axes[row, col]
-            plot_metric_on_ax(ax, data, layout, metric_type)
+            plot_metric_on_ax(ax, data, layout, metric_type, colors)
             if col == 0:
                 ax.set_ylabel(info["ylabel"])
             if row == 0:
                 ax.set_xlabel("")
 
-    # Shared legend below
+    # Use stasis colors for legend (both rows show Agent 0 / Agent 1)
     from matplotlib.lines import Line2D
+    stasis_colors = METRICS_INFO["stasis_mean"]["colors"]
+    coverage_colors = METRICS_INFO["pct_objects_mean"]["colors"]
     handles = [
-        Line2D([0], [0], color=AGENT_COLORS["agent_0"], marker="o", linewidth=1.5),
-        Line2D([0], [0], color=AGENT_COLORS["agent_1"], marker="o", linewidth=1.5),
+        Line2D([0], [0], color="gray", marker="o", linewidth=1.5),
+        Line2D([0], [0], color="gray", marker="o", linewidth=1.5, linestyle="--"),
+    ]
+    # Use actual per-row colors in the legend
+    handles = [
+        Line2D([0], [0], color=stasis_colors["agent_0"], marker="o", linewidth=1.5,
+               label="Agent 0 (stasis: red, coverage: orange)"),
+        Line2D([0], [0], color=stasis_colors["agent_1"], marker="o", linewidth=1.5,
+               label="Agent 1 (stasis: green, coverage: blue)"),
     ]
     fig.legend(handles, [AGENT_LABELS["agent_0"], AGENT_LABELS["agent_1"]],
-               loc="lower center", ncol=2, fontsize=10, bbox_to_anchor=(0.5, -0.01))
+               loc="lower center", ncol=2, fontsize=10, bbox_to_anchor=(0.5, -0.02))
     fig.tight_layout()
-    fig.subplots_adjust(bottom=0.08)
+    fig.subplots_adjust(bottom=0.06)
 
     combined_path = output_dir / "attn_combined_2x3.png"
     fig.savefig(combined_path, dpi=args.dpi, bbox_inches="tight")
