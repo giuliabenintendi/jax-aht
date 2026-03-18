@@ -56,14 +56,19 @@ def parse_mean_matrix(csv_text):
     return matrix
 
 
-def compute_sp_xp(score_matrix):
-    n = score_matrix.shape[0]
-    sp = np.diag(score_matrix)
-    xp = np.array([
-        np.mean([score_matrix[i, j] for j in range(n) if j != i])
+def compute_sp_xp(matrix, sp_threshold=1.0):
+    """Compute per-seed SP and XP, filtering out collapsed seeds (SP < threshold)."""
+    n = matrix.shape[0]
+    sp_all = np.diag(matrix)
+    xp_all = np.array([
+        np.mean([matrix[i, j] for j in range(n) if j != i])
         for i in range(n)
     ])
-    return sp, xp
+    # Filter out collapsed seeds
+    valid = sp_all >= sp_threshold
+    if valid.sum() < n:
+        print(f"    Dropped {n - valid.sum()} collapsed seed(s) (SP < {sp_threshold})")
+    return sp_all[valid], xp_all[valid]
 
 
 def main():
