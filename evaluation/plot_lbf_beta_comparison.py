@@ -58,7 +58,7 @@ def fetch_run_data(api, run_id, num_seeds):
         steps = np.arange(len(all_seeds))
         timesteps = (steps + 1) * ROLLOUT_LENGTH * NUM_ENVS
         means = all_seeds.mean(axis=1)
-        sems = all_seeds.std(axis=1) / np.sqrt(num_seeds)
+        sems = all_seeds.std(axis=1)
         print(f"    using per-seed data ({num_seeds} seeds, {len(all_seeds)} steps)")
         return timesteps, means, sems
 
@@ -113,7 +113,7 @@ def main():
         ax.set_xlabel("Timesteps")
         ax.set_ylabel("Mean Episode Return")
         ax.set_title(layout_name)
-        ax.legend(loc="best")
+        ax.legend(loc="lower right")
 
         slug = layout_name.lower().replace(" ", "_").replace("-", "_")
         path = output_dir / f"beta_comparison_{slug}.png"
@@ -139,13 +139,9 @@ def main():
         ax.set_xlabel("Timesteps")
         ax.set_ylabel("Mean Episode Return")
         ax.set_title(layout_name)
+        ax.legend(loc="lower right")
 
-    # Shared legend below
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=len(labels),
-               fontsize=10, bbox_to_anchor=(0.5, -0.05))
     fig.tight_layout()
-    fig.subplots_adjust(bottom=0.15)
 
     combined_path = output_dir / "beta_comparison_lbf_all.png"
     fig.savefig(combined_path, dpi=args.dpi, bbox_inches="tight")
