@@ -6,8 +6,6 @@
 # Example:
 #   ./run_lbf_xp.sh 5 6
 
-set -e
-
 GPU_A="${1:?Usage: ./run_lbf_xp.sh <gpu_a> <gpu_b>}"
 GPU_B="${2:?Usage: ./run_lbf_xp.sh <gpu_a> <gpu_b>}"
 
