@@ -54,13 +54,13 @@ def load_algo_config() -> dict:
 
 def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 agent_1_param, agent_1_policy,
-                                max_episode_steps):
+                                max_episode_steps, action_sizes):
     """Run one eval episode, returning LogWrapper info + mean JSD between attention maps."""
     rng, reset_rng = jax.random.split(rng)
     init_obs, init_env_state = env.reset(reset_rng)
     init_done = {k: jnp.zeros((1), dtype=bool) for k in env.agents + ["__all__"]}
-    init_act_onehot = {k: jnp.zeros((env.action_space(env.agents[i]).n))
-                       for i, k in enumerate(env.agents)}
+    init_act_onehot = {k: jnp.zeros((action_sizes[k],))
+                       for k in env.agents}
 
     init_hstate_0 = agent_0_policy.init_hstate(1, aux_info={"agent_id": 0})
     init_hstate_1 = agent_1_policy.init_hstate(1, aux_info={"agent_id": 1})
@@ -186,7 +186,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
 def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
                           agent_1_param, agent_1_policy,
-                          max_episode_steps, num_eps):
+                          max_episode_steps, num_eps, action_sizes):
     """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
@@ -194,7 +194,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
     vmap_fn = jax.vmap(
         lambda ep_rng: run_single_episode_with_jsd(
             ep_rng, env, agent_0_param, agent_0_policy,
-            agent_1_param, agent_1_policy, max_episode_steps,
+            agent_1_param, agent_1_policy, max_episode_steps, action_sizes,
         )
     )
     all_info, all_jsd = vmap_fn(ep_rngs)
@@ -203,7 +203,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
 def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
                      all_agent_1_params, agent_1_policy,
-                     max_episode_steps, num_eps):
+                     max_episode_steps, num_eps, action_sizes):
     """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
     num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
     partner_rngs = jax.random.split(rng, num_partners)
@@ -212,7 +212,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
     def eval_one_partner(partner_rng, agent_1_param):
         return run_episodes_with_jsd(
             partner_rng, env, agent_0_param, agent_0_policy,
-            agent_1_param, agent_1_policy, max_episode_steps, num_eps,
+            agent_1_param, agent_1_policy, max_episode_steps, num_eps, action_sizes,
         )
 
     return jax.vmap(eval_one_partner)(partner_rngs, all_agent_1_params)
@@ -372,9 +372,12 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     rng, eval_rng = jax.random.split(rng)
     outer_rngs = jax.random.split(eval_rng, num_seeds)
 
+    # Pre-compute action sizes outside JIT
+    action_sizes = {k: int(env.action_space(k).n) for k in env.agents}
+
     # JIT-compile the row function once, then reuse for each i
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
-        rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES,
+        rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
     ))
 
     all_row_metrics = []
