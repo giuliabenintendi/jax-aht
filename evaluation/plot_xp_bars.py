@@ -1,4 +1,7 @@
-"""Grouped bar chart: SP vs XP for beta=0 and best beta, all layouts on one axis.
+"""Grouped bar chart: SP vs XP for beta=0 and best beta, all layouts.
+
+Matches the style from the reference image: blue solid/hatched, orange solid/hatched,
+red dotted benchmark line, legend below.
 
 Usage:
     uv run python -m evaluation.plot_xp_bars --output-dir plots/
@@ -10,6 +13,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
 import numpy as np
 import wandb
 
@@ -30,6 +34,13 @@ CONFIGS = {
         0.0: "l3lzx4fy",
         0.5: "ykagespv",
     },
+}
+
+# XP greedy benchmark from Forkel et al. 2026 (read from Figure 3, best alpha)
+HIGH_ENTROPY_XP_BENCHMARK = {
+    "Cramped Room": 220,
+    "Coord Ring": 315,
+    "Forced Coord": 205,
 }
 
 
@@ -81,8 +92,6 @@ def main():
             print(f"  {layout} β={beta}: SP={sp.mean():.1f}±{sp.std()/np.sqrt(len(sp)):.1f}  "
                   f"XP={xp.mean():.1f}±{xp.std()/np.sqrt(len(xp)):.1f}")
 
-    # Single figure: all layouts on x-axis
-    # For each layout: 4 bars (SP β=0, XP β=0, SP β=best, XP β=best)
     layouts = list(CONFIGS.keys())
     n_layouts = len(layouts)
     bar_width = 0.18
@@ -90,9 +99,9 @@ def main():
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Colors: blue for β=0, orange for β=best
-    # Solid for SP, hatched for XP
-    colors = {"b0_sp": "C0", "b0_xp": "C0", "best_sp": "C1", "best_xp": "C1"}
+    # Colors matching reference: blue (#5B7FFF) and orange (#FF8C42)
+    blue = "#5B7FFF"
+    orange = "#FF8C42"
 
     sp_b0_means, sp_b0_sems = [], []
     xp_b0_means, xp_b0_sems = [], []
@@ -102,8 +111,8 @@ def main():
 
     for layout in layouts:
         beta_vals = sorted(CONFIGS[layout].keys())
-        b0 = beta_vals[0]       # 0.0
-        b_best = beta_vals[1]   # best beta
+        b0 = beta_vals[0]
+        b_best = beta_vals[1]
         best_beta_labels.append(f"β={b_best}")
 
         d0 = data[layout][b0]
@@ -119,35 +128,56 @@ def main():
         xp_best_means.append(db["xp"].mean())
         xp_best_sems.append(db["xp"].std() / np.sqrt(len(db["xp"])))
 
-    # 4 groups of bars per layout
     offsets = [-1.5, -0.5, 0.5, 1.5]
 
+    # β=0 SP (solid blue)
     ax.bar(x + offsets[0] * bar_width, sp_b0_means, bar_width, yerr=sp_b0_sems,
-           color="C0", capsize=4)
+           color=blue, edgecolor=blue, capsize=4, error_kw={"linewidth": 1.2})
+    # β=0 XP (hatched blue)
     ax.bar(x + offsets[1] * bar_width, xp_b0_means, bar_width, yerr=xp_b0_sems,
-           color="C0", hatch="//", edgecolor="C0", capsize=4)
+           color="white", edgecolor=blue, hatch="//", linewidth=1.2,
+           capsize=4, error_kw={"linewidth": 1.2})
+    # Best β SP (solid orange)
     ax.bar(x + offsets[2] * bar_width, sp_best_means, bar_width, yerr=sp_best_sems,
-           color="C1", capsize=4)
+           color=orange, edgecolor=orange, capsize=4, error_kw={"linewidth": 1.2})
+    # Best β XP (hatched orange)
     ax.bar(x + offsets[3] * bar_width, xp_best_means, bar_width, yerr=xp_best_sems,
-           color="C1", hatch="//", edgecolor="C1", capsize=4)
+           color="white", edgecolor=orange, hatch="//", linewidth=1.2,
+           capsize=4, error_kw={"linewidth": 1.2})
+
+    # Red dotted benchmark line per layout
+    for i, layout in enumerate(layouts):
+        benchmark = HIGH_ENTROPY_XP_BENCHMARK[layout]
+        ax.plot([i - 2 * bar_width, i + 2 * bar_width], [benchmark, benchmark],
+                color="red", linestyle="--", linewidth=2, alpha=0.8)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(layouts)
-    ax.set_ylabel("Episode Return")
-    ax.set_title("Self-Play vs Cross-Play")
+    ax.set_xticklabels(layouts, fontsize=11)
+    ax.set_ylabel("Base Return", fontsize=12)
+    ax.set_title("Self-Play vs Cross-Play", fontsize=13)
+    ax.set_ylim(bottom=0)
 
-    # Legend
+    # Light horizontal grid
+    ax.yaxis.grid(True, linestyle="-", alpha=0.2)
+    ax.set_axisbelow(True)
+
+    # Legend below
     legend_handles = [
-        mpatches.Patch(facecolor="C0", label="β = 0  SP"),
-        mpatches.Patch(facecolor="C0", hatch="//", edgecolor="C0", label="β = 0  XP"),
-        mpatches.Patch(facecolor="C1", label="Best β  SP"),
-        mpatches.Patch(facecolor="C1", hatch="//", edgecolor="C1", label="Best β  XP"),
+        mpatches.Patch(facecolor=blue, edgecolor=blue, label="β=0  SP"),
+        mpatches.Patch(facecolor="white", edgecolor=blue, hatch="//", label="β=0  XP"),
+        mpatches.Patch(facecolor=orange, edgecolor=orange, label="Best β  SP"),
+        mpatches.Patch(facecolor="white", edgecolor=orange, hatch="//", label="Best β  XP"),
+        Line2D([0], [0], color="red", linestyle="--", linewidth=2, alpha=0.8,
+               label="High entropy XP (Forkel et al.)"),
     ]
-    ax.legend(handles=legend_handles, fontsize=9, loc="upper right")
+    fig.legend(handles=legend_handles, loc="lower center", ncol=3,
+               fontsize=9, bbox_to_anchor=(0.5, -0.05))
 
     fig.tight_layout()
+    fig.subplots_adjust(bottom=0.18)
+
     path = output_dir / "xp_sp_bars.png"
-    fig.savefig(path, dpi=args.dpi)
+    fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {path}")
 
