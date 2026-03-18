@@ -133,10 +133,10 @@ def main():
     # Individual 3-panel plots (one per metric)
     for metric_type, info in METRICS_INFO.items():
         colors = info["colors"]
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
         for ax, layout in zip(axes, layout_names):
             plot_metric_on_ax(ax, data, layout, metric_type, colors)
-            ax.set_ylabel(info["ylabel"])
+        axes[0].set_ylabel(info["ylabel"])
 
         # Shared legend below
         from matplotlib.lines import Line2D
@@ -155,7 +155,7 @@ def main():
         print(f"Saved {path}")
 
     # Combined 2x3 figure (rows: stasis, coverage; cols: layouts)
-    fig, axes = plt.subplots(2, 3, figsize=(18, 9))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 9), sharey="row")
 
     all_handles = []
     for row, (metric_type, info) in enumerate(METRICS_INFO.items()):
