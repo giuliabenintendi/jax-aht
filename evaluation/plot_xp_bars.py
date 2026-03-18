@@ -52,22 +52,23 @@ def parse_mean_matrix(csv_text):
     matrix = np.zeros((n, n))
     for i, row in enumerate(reader):
         for j in range(n):
-            matrix[i, j] = float(row[j + 1])
+            val = row[j + 1].strip()
+            matrix[i, j] = float(val) if val != "nan" else np.nan
     return matrix
 
 
 def compute_sp_xp(matrix, sp_threshold=1.0):
-    """Compute per-seed SP and XP, filtering out collapsed seeds (SP < threshold)."""
+    """Compute per-seed SP and XP, filtering out collapsed/NaN seeds."""
     n = matrix.shape[0]
     sp_all = np.diag(matrix)
     xp_all = np.array([
-        np.mean([matrix[i, j] for j in range(n) if j != i])
+        np.nanmean([matrix[i, j] for j in range(n) if j != i])
         for i in range(n)
     ])
-    # Filter out collapsed seeds
-    valid = sp_all >= sp_threshold
+    # Filter out collapsed or NaN seeds
+    valid = ~np.isnan(sp_all) & (sp_all >= sp_threshold)
     if valid.sum() < n:
-        print(f"    Dropped {n - valid.sum()} collapsed seed(s) (SP < {sp_threshold})")
+        print(f"    Dropped {n - valid.sum()} collapsed/NaN seed(s)")
     return sp_all[valid], xp_all[valid]
 
 
