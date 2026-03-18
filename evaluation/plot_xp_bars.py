@@ -132,18 +132,18 @@ def main():
 
     # β=0 SP (solid blue)
     ax.bar(x + offsets[0] * bar_width, sp_b0_means, bar_width, yerr=sp_b0_sems,
-           color=blue, edgecolor=blue, capsize=4, error_kw={"linewidth": 1.2})
+           color=blue, edgecolor=blue, capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
     # β=0 XP (hatched blue)
     ax.bar(x + offsets[1] * bar_width, xp_b0_means, bar_width, yerr=xp_b0_sems,
            color="white", edgecolor=blue, hatch="//", linewidth=1.2,
-           capsize=4, error_kw={"linewidth": 1.2})
+           capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
     # Best β SP (solid orange)
     ax.bar(x + offsets[2] * bar_width, sp_best_means, bar_width, yerr=sp_best_sems,
-           color=orange, edgecolor=orange, capsize=4, error_kw={"linewidth": 1.2})
+           color=orange, edgecolor=orange, capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
     # Best β XP (hatched orange)
     ax.bar(x + offsets[3] * bar_width, xp_best_means, bar_width, yerr=xp_best_sems,
            color="white", edgecolor=orange, hatch="//", linewidth=1.2,
-           capsize=4, error_kw={"linewidth": 1.2})
+           capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
 
     # Red dotted benchmark line per layout
     for i, layout in enumerate(layouts):
@@ -161,20 +161,19 @@ def main():
     ax.yaxis.grid(True, linestyle="-", alpha=0.2)
     ax.set_axisbelow(True)
 
-    # Legend below
+    # Legend upper right inside plot
     legend_handles = [
-        mpatches.Patch(facecolor=blue, edgecolor=blue, label="β=0  SP"),
-        mpatches.Patch(facecolor="white", edgecolor=blue, hatch="//", label="β=0  XP"),
-        mpatches.Patch(facecolor=orange, edgecolor=orange, label="Best β  SP"),
-        mpatches.Patch(facecolor="white", edgecolor=orange, hatch="//", label="Best β  XP"),
+        mpatches.Patch(facecolor=blue, edgecolor=blue, label=r"$\beta$=0  SP"),
+        mpatches.Patch(facecolor="white", edgecolor=blue, hatch="//", label=r"$\beta$=0  XP"),
+        mpatches.Patch(facecolor=orange, edgecolor=orange, label=r"Best $\beta$  SP"),
+        mpatches.Patch(facecolor="white", edgecolor=orange, hatch="//", label=r"Best $\beta$  XP"),
         Line2D([0], [0], color="red", linestyle="--", linewidth=2, alpha=0.8,
                label="High entropy XP (Forkel et al.)"),
     ]
-    fig.legend(handles=legend_handles, loc="lower center", ncol=3,
-               fontsize=9, bbox_to_anchor=(0.5, -0.05))
+    ax.legend(handles=legend_handles, loc="upper right", fontsize=8,
+              framealpha=0.9, edgecolor="none")
 
     fig.tight_layout()
-    fig.subplots_adjust(bottom=0.18)
 
     path = output_dir / "xp_sp_bars.png"
     fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
