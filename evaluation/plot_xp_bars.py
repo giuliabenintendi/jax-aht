@@ -246,21 +246,15 @@ def main():
     ax.set_axisbelow(True)
 
     legend_handles = [
-        (mpatches.Patch(facecolor=blue, edgecolor=blue),
-         mpatches.Patch(facecolor="white", edgecolor=blue, hatch="//")),
-        (mpatches.Patch(facecolor=orange, edgecolor=orange),
-         mpatches.Patch(facecolor="white", edgecolor=orange, hatch="//")),
-        Line2D([0], [0], color="red", linestyle="--", linewidth=2, alpha=0.8),
+        mpatches.Patch(facecolor=blue, edgecolor=blue, label=r"$\beta$=0  SP"),
+        mpatches.Patch(facecolor="white", edgecolor=blue, hatch="//", label=r"$\beta$=0  XP"),
+        mpatches.Patch(facecolor=orange, edgecolor=orange, label=r"Best $\beta$  SP"),
+        mpatches.Patch(facecolor="white", edgecolor=orange, hatch="//", label=r"Best $\beta$  XP"),
+        Line2D([0], [0], color="red", linestyle="--", linewidth=2, alpha=0.8,
+               label=r"$\log(2)$"),
     ]
-    legend_labels = [
-        r"$\beta$=0  (SP / XP)",
-        r"Best $\beta$  (SP / XP)",
-        r"$\log(2)$",
-    ]
-    from matplotlib.legend_handler import HandlerTuple
-    ax.legend(legend_handles, legend_labels, loc="upper right", fontsize=8,
-              framealpha=0.9, edgecolor="none",
-              handler_map={tuple: HandlerTuple(ndivide=None, pad=0.3)})
+    ax.legend(handles=legend_handles, loc="upper right", fontsize=8,
+              framealpha=0.9, edgecolor="none")
 
     fig.tight_layout()
     path = output_dir / "xp_sp_jsd_bars.png"
