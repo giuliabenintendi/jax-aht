@@ -57,16 +57,20 @@ def parse_mean_matrix(csv_text):
     return matrix
 
 
-def compute_sp_xp(matrix, sp_threshold=1.0):
-    """Compute per-seed SP and XP, filtering out collapsed/NaN seeds."""
+def compute_sp_xp(matrix, sp_threshold=None):
+    """Compute per-seed SP and XP, filtering out NaN seeds.
+
+    If sp_threshold is set, also drop seeds with SP below that value.
+    """
     n = matrix.shape[0]
     sp_all = np.diag(matrix)
     xp_all = np.array([
         np.nanmean([matrix[i, j] for j in range(n) if j != i])
         for i in range(n)
     ])
-    # Filter out collapsed or NaN seeds
-    valid = ~np.isnan(sp_all) & (sp_all >= sp_threshold)
+    valid = ~np.isnan(sp_all)
+    if sp_threshold is not None:
+        valid = valid & (sp_all >= sp_threshold)
     if valid.sum() < n:
         print(f"    Dropped {n - valid.sum()} collapsed/NaN seed(s)")
     return sp_all[valid], xp_all[valid]
@@ -93,7 +97,7 @@ def main():
             f.download(replace=True, root="/tmp/xp_bars")
             with open("/tmp/xp_bars/xp_score_matrix.csv") as fh:
                 score_matrix = parse_mean_matrix(fh.read())
-            sp_score, xp_score = compute_sp_xp(score_matrix)
+            sp_score, xp_score = compute_sp_xp(score_matrix, sp_threshold=1.0)
 
             f = run.file("xp_jsd_matrix.csv")
             f.download(replace=True, root="/tmp/xp_bars")
