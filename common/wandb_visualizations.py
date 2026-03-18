@@ -69,6 +69,14 @@ def _build_tags(config) -> list[str]:
         tags.append(f"beta={alg_config['JA_BETA_MAX']}")
     if "TOTAL_TIMESTEPS" in alg_config:
         tags.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
+    ent_coef = alg_config.get("ENT_COEF", 0.01)
+    tags.append(f"ent={ent_coef}")
+    if alg_config.get("USE_DUAL_CRITIC", False):
+        tags.append("dual_critic")
+        if alg_config.get("DUAL_CRITIC_ACTOR_JA", False):
+            tags.append("jsdgae_on")
+        else:
+            tags.append("jsdgae_off")
     label = config.get("label", "default_label")
     if label != "default_label":
         tags.append(str(label))
