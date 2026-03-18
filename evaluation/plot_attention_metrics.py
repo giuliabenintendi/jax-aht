@@ -47,12 +47,12 @@ METRICS_INFO = {
     "stasis_mean": {
         "ylabel": "Attention Stasis (JSD)",
         "slug": "stasis",
-        "colors": {"agent_0": "C3", "agent_1": "C2"},  # red, green
+        "colors": {"agent_0": "C3", "agent_1": "C4"},  # red, purple
     },
     "pct_objects_mean": {
         "ylabel": "% Attention on Objects",
         "slug": "coverage",
-        "colors": {"agent_0": "C1", "agent_1": "C0"},  # orange, blue
+        "colors": {"agent_0": "C0", "agent_1": "C2"},  # blue, green
     },
 }
 
@@ -78,6 +78,8 @@ def extract_per_seed(metrics, agent, metric_type):
     return np.array(values)
 
 
+AGENT_JITTER = {"agent_0": -0.012, "agent_1": 0.012}
+
 def plot_metric_on_ax(ax, data, layout, metric_type, colors):
     """Plot both agents on a single axis for one layout and metric."""
     for agent in ["agent_0", "agent_1"]:
@@ -99,10 +101,12 @@ def plot_metric_on_ax(ax, data, layout, metric_type, colors):
         means = np.array(means)
         sems = np.array(sems)
         color = colors[agent]
+        jitter = AGENT_JITTER[agent]
+        x = np.array(BETAS) + jitter
 
-        ax.plot(BETAS, means, "o-", color=color, linewidth=1.5, markersize=6,
+        ax.plot(x, means, "o-", color=color, linewidth=1.5, markersize=6,
                 label=AGENT_LABELS[agent])
-        ax.fill_between(BETAS, means - sems, means + sems, color=color, alpha=0.15)
+        ax.fill_between(x, means - sems, means + sems, color=color, alpha=0.15)
 
     ax.set_xlabel(r"$\beta$")
     ax.set_xticks(BETAS)
@@ -134,10 +138,11 @@ def main():
     for metric_type, info in METRICS_INFO.items():
         colors = info["colors"]
         fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-        for ax, layout in zip(axes, layout_names):
+        for i, (ax, layout) in enumerate(zip(axes, layout_names)):
             plot_metric_on_ax(ax, data, layout, metric_type, colors)
-            ax.set_ylabel(info["ylabel"])
             ax.tick_params(labelleft=True)
+            if i == 0:
+                ax.set_ylabel(info["ylabel"])
 
         # Shared legend below
         from matplotlib.lines import Line2D
@@ -164,8 +169,9 @@ def main():
         for col, layout in enumerate(layout_names):
             ax = axes[row, col]
             plot_metric_on_ax(ax, data, layout, metric_type, colors)
-            ax.set_ylabel(info["ylabel"])
             ax.tick_params(labelleft=True)
+            if col == 0:
+                ax.set_ylabel(info["ylabel"])
             if row == 0:
                 ax.set_xlabel("")
 
