@@ -108,7 +108,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
     both_actions = [act_0, act_1]
     env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
-    env_act_onehot = {k: jax.nn.one_hot(both_actions[i], env.action_space(env.agents[i]).n)
+    env_act_onehot = {k: jax.nn.one_hot(both_actions[i], action_sizes[k])
                       for i, k in enumerate(env.agents)}
     obs, env_state, reward, done, dummy_info = env.step(step_rng, init_env_state, env_act)
 
@@ -161,7 +161,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
             both_actions = [act_0, act_1]
             env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
-            env_act_onehot = {k: jax.nn.one_hot(both_actions[i], env.action_space(env.agents[i]).n)
+            env_act_onehot = {k: jax.nn.one_hot(both_actions[i], action_sizes[k])
                               for i, k in enumerate(env.agents)}
             obs_next, env_state_next, reward, done_next, info_next = env.step(step_rng, env_state, env_act)
 
