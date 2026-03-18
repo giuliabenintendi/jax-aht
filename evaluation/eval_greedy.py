@@ -97,9 +97,12 @@ def running_mean(arr, window=20):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--run-id", default=None, help="Wandb run ID to resume and upload results")
     parser.add_argument("--num-episodes", type=int, default=256)
     parser.add_argument("--output-dir", default="plots")
     parser.add_argument("--dpi", type=int, default=150)
+    parser.add_argument("--project", default="aht-benchmark")
+    parser.add_argument("--entity", default="g-benintendi-university-of-brescia")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -206,6 +209,22 @@ def main():
     fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"\nSaved {path}")
+
+    # Upload to existing wandb run if --run-id provided
+    if args.run_id:
+        import wandb
+        wb_run = wandb.init(
+            project=args.project, entity=args.entity,
+            id=args.run_id, resume="must",
+        )
+        wb_run.log({"Eval/greedy_vs_stochastic": wandb.Image(path)}, commit=False)
+        wb_run.summary["Eval/greedy_return_mean"] = float(all_greedy.mean())
+        wb_run.summary["Eval/greedy_return_std"] = float(all_greedy.std())
+        wb_run.summary["Eval/stochastic_return_mean"] = float(all_stochastic.mean())
+        wb_run.summary["Eval/stochastic_return_std"] = float(all_stochastic.std())
+        wb_run.log({}, commit=True)
+        wb_run.finish()
+        print(f"Uploaded to wandb run {args.run_id}")
 
 
 if __name__ == "__main__":
