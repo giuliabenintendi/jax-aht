@@ -92,6 +92,11 @@ def main():
     else:
         frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
 
+    # Debug: print attention map stats
+    for agent_name in ["agent_0", "agent_1"]:
+        attn = np.array(attn_data[agent_name][t]).squeeze()
+        print(f"  {agent_name} t={t}: shape={attn.shape}, min={attn.min():.4f}, max={attn.max():.4f}, sum={attn.sum():.4f}")
+
     # Create 2x2 grid
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
@@ -99,21 +104,21 @@ def main():
         frame = frames[timestep]
         for col, agent_name in enumerate(["agent_0", "agent_1"]):
             ax = axes[row, col]
-            attn_map = attn_data[agent_name][timestep]
+            attn_map = np.array(attn_data[agent_name][timestep]).squeeze()
 
             # Overlay attention on frame
             cmap = "Blues" if agent_name == "agent_0" else "Reds"
-            overlaid = _overlay_attention(frame, attn_map, cmap, alpha=0.6)
+            overlaid = _overlay_attention(frame, attn_map, cmap, alpha=0.7)
 
             ax.imshow(overlaid)
             ax.set_xticks([])
             ax.set_yticks([])
 
             if row == 0:
-                agent_label = "Agent 0" if agent_name == "agent_0" else "Agent 1"
+                agent_label = "Agent 0 (Blue)" if agent_name == "agent_0" else "Agent 1 (Red)"
                 ax.set_title(agent_label, fontsize=16)
             if col == 0:
-                ax.set_ylabel(f"t = {timestep}", fontsize=16)
+                ax.set_ylabel(f"t", fontsize=16) if row == 0 else ax.set_ylabel(f"t + 1", fontsize=16)
 
     fig.tight_layout()
 
