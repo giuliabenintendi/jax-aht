@@ -192,10 +192,10 @@ def main():
         Line2D([0], [0], color="red", linestyle="--", linewidth=2.5, alpha=0.8,
                label="High entropy XP (Forkel et al.)"),
     ]
-    ax.legend(handles=legend_handles, loc="upper right", fontsize=11,
-              framealpha=0.9, edgecolor="none")
-
+    fig.legend(handles=legend_handles, loc="lower center", ncol=3, fontsize=11,
+               bbox_to_anchor=(0.5, -0.05), framealpha=0.9, edgecolor="none")
     fig.tight_layout()
+    fig.subplots_adjust(bottom=0.18)
 
     path = output_dir / "xp_sp_bars.png"
     fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
@@ -256,10 +256,11 @@ def main():
         Line2D([0], [0], color="red", linestyle="--", linewidth=2.5, alpha=0.8,
                label=r"$\log(2)$"),
     ]
-    ax.legend(handles=legend_handles, loc="upper right", fontsize=11,
-              framealpha=0.9, edgecolor="none")
-
+    fig.legend(handles=legend_handles, loc="lower center", ncol=3, fontsize=11,
+               bbox_to_anchor=(0.5, -0.05), framealpha=0.9, edgecolor="none")
     fig.tight_layout()
+    fig.subplots_adjust(bottom=0.18)
+
     path = output_dir / "xp_sp_jsd_bars.png"
     fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
     plt.close(fig)
