@@ -162,10 +162,10 @@ def main():
         mpatches.Patch(facecolor=orange, edgecolor=orange, label=r"$\beta$=0.001  SP"),
         mpatches.Patch(facecolor="white", edgecolor=orange, hatch="//", label=r"$\beta$=0.001  XP"),
     ]
-    fig.legend(handles=legend_handles, loc="lower center", ncol=2, fontsize=11,
-               bbox_to_anchor=(0.5, -0.05), framealpha=0.9, edgecolor="none")
+    fig.legend(handles=legend_handles, loc="lower center", ncol=4, fontsize=11,
+               bbox_to_anchor=(0.5, -0.01), framealpha=0.9, edgecolor="none")
     fig.tight_layout()
-    fig.subplots_adjust(bottom=0.18)
+    fig.subplots_adjust(bottom=0.14)
 
     path = output_dir / "lbf_xp_sp_bars.png"
     fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
@@ -225,10 +225,10 @@ def main():
         Line2D([0], [0], color="red", linestyle="--", linewidth=2.5, alpha=0.8,
                label=r"$\log(2)$"),
     ]
-    fig.legend(handles=legend_handles, loc="lower center", ncol=3, fontsize=11,
-               bbox_to_anchor=(0.5, -0.05), framealpha=0.9, edgecolor="none")
+    fig.legend(handles=legend_handles, loc="lower center", ncol=5, fontsize=11,
+               bbox_to_anchor=(0.5, -0.01), framealpha=0.9, edgecolor="none")
     fig.tight_layout()
-    fig.subplots_adjust(bottom=0.18)
+    fig.subplots_adjust(bottom=0.14)
 
     path = output_dir / "lbf_xp_sp_jsd_bars.png"
     fig.savefig(path, dpi=args.dpi, bbox_inches="tight")
