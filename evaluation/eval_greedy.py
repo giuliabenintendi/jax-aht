@@ -186,22 +186,22 @@ def main():
         # Per-episode returns as faint dots
         ax.scatter(episodes, data, s=3, alpha=0.2, color=color, zorder=1)
         # Running mean line
-        ax.plot(episodes, rm, color=color, linewidth=1.5, zorder=2, label="Running mean")
+        ax.plot(episodes, rm, color=color, linewidth=2.0, zorder=2, label="Running mean")
         # Overall mean ± std band
-        ax.axhline(mean, color=color, linestyle="--", linewidth=1.5, zorder=3)
+        ax.axhline(mean, color=color, linestyle="--", linewidth=2.0, zorder=3)
         ax.fill_between(episodes, mean - std, mean + std, color=color, alpha=0.1, zorder=0)
         ax.set_xlabel("Episode")
         ax.set_title(title)
         ax.legend([f"Running mean (w=20)",
                    f"Mean={mean:.1f} ± {std:.1f}"],
-                  fontsize=8, loc="lower right")
+                  fontsize=14, loc="lower right")
 
     ax1.set_ylabel("Episode Return")
 
     jsd_label = "jsdgae" if jsd_gae else "nojsdgae"
     fig.suptitle(f"{layout} | β={beta} | ent={ent} | dual_{jsd_label} | "
                  f"{num_seeds}s x {args.num_episodes}ep",
-                 fontsize=11)
+                 fontsize=14)
     fig.tight_layout()
 
     slug = layout.replace("/", "_").replace(" ", "_")

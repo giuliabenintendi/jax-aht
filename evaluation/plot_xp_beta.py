@@ -169,9 +169,9 @@ def main():
             sp_arr = np.array(seed_sp[s])
 
             ax.fill_between(betas, xp_m - xp_se, xp_m + xp_se, color=color, alpha=0.12, zorder=1)
-            ax.plot(betas, xp_m, 'o-', color=color, linewidth=1.2, markersize=6, zorder=2,
+            ax.plot(betas, xp_m, 'o-', color=color, linewidth=1.6, markersize=8, zorder=2,
                     label=f"Seed {s}" if layout == layout_names[0] else None)
-            ax.plot(betas, sp_arr, '--', color=color, linewidth=1.0, alpha=0.6, zorder=1)
+            ax.plot(betas, sp_arr, '--', color=color, linewidth=1.3, alpha=0.6, zorder=1)
 
         ax.set_xlabel(r"$\beta$")
         ax.set_ylabel("Episode Return")
@@ -180,14 +180,14 @@ def main():
 
     # Shared legend below all panels
     from matplotlib.lines import Line2D
-    handles = [Line2D([0], [0], color=seed_colors[s], linewidth=1.2) for s in range(n_seeds)]
+    handles = [Line2D([0], [0], color=seed_colors[s], linewidth=1.6) for s in range(n_seeds)]
     labels = [f"Seed {s}" for s in range(n_seeds)]
-    handles.append(Line2D([0], [0], color="gray", linestyle="-", linewidth=1.2))
+    handles.append(Line2D([0], [0], color="gray", linestyle="-", linewidth=1.6))
     labels.append("XP (solid)")
-    handles.append(Line2D([0], [0], color="gray", linestyle="--", linewidth=1.0, alpha=0.6))
+    handles.append(Line2D([0], [0], color="gray", linestyle="--", linewidth=1.3, alpha=0.6))
     labels.append("SP (dashed)")
     fig.legend(handles, labels, loc="lower center", ncol=len(labels),
-               fontsize=9, bbox_to_anchor=(0.5, -0.02))
+               fontsize=12, bbox_to_anchor=(0.5, -0.02))
     fig.tight_layout(w_pad=2.0)
     fig.subplots_adjust(bottom=0.15)
     path = output_dir / "xp_sp_returns_vs_beta.png"
@@ -211,12 +211,12 @@ def main():
         jsd_means = np.array(jsd_means)
         jsd_sems = np.array(jsd_sems)
 
-        ax.plot(betas, jsd_means, color="C1", linewidth=1.5, zorder=2)
+        ax.plot(betas, jsd_means, color="C1", linewidth=2.0, zorder=2)
         ax.fill_between(betas, jsd_means - jsd_sems, jsd_means + jsd_sems,
                          color="C1", alpha=0.25, zorder=1)
-        ax.plot(betas, jsd_means, 'o', color="C1", markersize=7, zorder=3)
+        ax.plot(betas, jsd_means, 'o', color="C1", markersize=9, zorder=3)
 
-        ax.axhline(np.log(2), color="red", linestyle=":", linewidth=1, alpha=0.7,
+        ax.axhline(np.log(2), color="red", linestyle=":", linewidth=1.3, alpha=0.7,
                     label=f"log(2) = {np.log(2):.3f}")
         ax.set_xlabel(r"$\beta$")
         if ax == axes[0]:
@@ -224,7 +224,7 @@ def main():
         ax.set_title(layout)
         ax.set_ylim(0, 0.75)
         ax.set_xticks(betas)
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=11)
 
     fig.tight_layout(w_pad=2.0)
     path = output_dir / "xp_jsd_vs_beta.png"

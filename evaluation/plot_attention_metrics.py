@@ -104,7 +104,7 @@ def plot_metric_on_ax(ax, data, layout, metric_type, colors):
         jitter = AGENT_JITTER[agent]
         x = np.array(BETAS) + jitter
 
-        ax.plot(x, means, "o-", color=color, linewidth=1.5, markersize=6,
+        ax.plot(x, means, "o-", color=color, linewidth=2.0, markersize=8,
                 label=AGENT_LABELS[agent])
         ax.fill_between(x, means - sems, means + sems, color=color, alpha=0.15)
 
@@ -147,11 +147,11 @@ def main():
         # Shared legend below
         from matplotlib.lines import Line2D
         handles = [
-            Line2D([0], [0], color=colors["agent_0"], marker="o", linewidth=1.5),
-            Line2D([0], [0], color=colors["agent_1"], marker="o", linewidth=1.5),
+            Line2D([0], [0], color=colors["agent_0"], marker="o", linewidth=2.0),
+            Line2D([0], [0], color=colors["agent_1"], marker="o", linewidth=2.0),
         ]
         fig.legend(handles, [AGENT_LABELS["agent_0"], AGENT_LABELS["agent_1"]],
-                   loc="lower center", ncol=2, fontsize=10, bbox_to_anchor=(0.5, -0.05))
+                   loc="lower center", ncol=2, fontsize=13, bbox_to_anchor=(0.5, -0.05))
         fig.tight_layout()
         fig.subplots_adjust(bottom=0.15)
 
@@ -180,18 +180,18 @@ def main():
     stasis_colors = METRICS_INFO["stasis_mean"]["colors"]
     coverage_colors = METRICS_INFO["pct_objects_mean"]["colors"]
     handles = [
-        Line2D([0], [0], color="gray", marker="o", linewidth=1.5),
-        Line2D([0], [0], color="gray", marker="o", linewidth=1.5, linestyle="--"),
+        Line2D([0], [0], color="gray", marker="o", linewidth=2.0),
+        Line2D([0], [0], color="gray", marker="o", linewidth=2.0, linestyle="--"),
     ]
     # Use actual per-row colors in the legend
     handles = [
-        Line2D([0], [0], color=stasis_colors["agent_0"], marker="o", linewidth=1.5,
+        Line2D([0], [0], color=stasis_colors["agent_0"], marker="o", linewidth=2.0,
                label="Agent 0 (stasis: red, coverage: orange)"),
-        Line2D([0], [0], color=stasis_colors["agent_1"], marker="o", linewidth=1.5,
+        Line2D([0], [0], color=stasis_colors["agent_1"], marker="o", linewidth=2.0,
                label="Agent 1 (stasis: green, coverage: blue)"),
     ]
     fig.legend(handles, [AGENT_LABELS["agent_0"], AGENT_LABELS["agent_1"]],
-               loc="lower center", ncol=2, fontsize=10, bbox_to_anchor=(0.5, -0.02))
+               loc="lower center", ncol=2, fontsize=13, bbox_to_anchor=(0.5, -0.02))
     fig.tight_layout()
     fig.subplots_adjust(bottom=0.06)
 

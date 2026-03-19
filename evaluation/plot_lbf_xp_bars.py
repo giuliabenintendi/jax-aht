@@ -140,17 +140,17 @@ def main():
     ax.bar(x + offsets[0] * bar_width, sp_b0_means, bar_width, yerr=sp_b0_sems,
            color=blue, edgecolor=blue, capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
     ax.bar(x + offsets[1] * bar_width, xp_b0_means, bar_width, yerr=xp_b0_sems,
-           color="white", edgecolor=blue, hatch="//", linewidth=1.2,
+           color="white", edgecolor=blue, hatch="//", linewidth=1.6,
            capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
     ax.bar(x + offsets[2] * bar_width, sp_best_means, bar_width, yerr=sp_best_sems,
            color=orange, edgecolor=orange, capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
     ax.bar(x + offsets[3] * bar_width, xp_best_means, bar_width, yerr=xp_best_sems,
-           color="white", edgecolor=orange, hatch="//", linewidth=1.2,
+           color="white", edgecolor=orange, hatch="//", linewidth=1.6,
            capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
 
     ax.set_xticks(x)
-    ax.set_xticklabels(layouts, fontsize=11)
-    ax.set_ylabel("Mean Episode Return", fontsize=12)
+    ax.set_xticklabels(layouts, fontsize=14)
+    ax.set_ylabel("Mean Episode Return", fontsize=16)
     ax.set_ylim(bottom=0)
 
     ax.yaxis.grid(True, linestyle="-", alpha=0.2)
@@ -162,7 +162,7 @@ def main():
         mpatches.Patch(facecolor=orange, edgecolor=orange, label=r"$\beta$=0.001  SP"),
         mpatches.Patch(facecolor="white", edgecolor=orange, hatch="//", label=r"$\beta$=0.001  XP"),
     ]
-    ax.legend(handles=legend_handles, loc="upper right", fontsize=8,
+    ax.legend(handles=legend_handles, loc="upper right", fontsize=11,
               framealpha=0.9, edgecolor="none")
 
     fig.tight_layout()
@@ -199,19 +199,19 @@ def main():
     ax.bar(x + offsets[0] * bar_width, jsd_sp_b0_means, bar_width, yerr=jsd_sp_b0_sems,
            color=blue, edgecolor=blue, capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
     ax.bar(x + offsets[1] * bar_width, jsd_xp_b0_means, bar_width, yerr=jsd_xp_b0_sems,
-           color="white", edgecolor=blue, hatch="//", linewidth=1.2,
+           color="white", edgecolor=blue, hatch="//", linewidth=1.6,
            capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
     ax.bar(x + offsets[2] * bar_width, jsd_sp_best_means, bar_width, yerr=jsd_sp_best_sems,
            color=orange, edgecolor=orange, capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
     ax.bar(x + offsets[3] * bar_width, jsd_xp_best_means, bar_width, yerr=jsd_xp_best_sems,
-           color="white", edgecolor=orange, hatch="//", linewidth=1.2,
+           color="white", edgecolor=orange, hatch="//", linewidth=1.6,
            capsize=4, error_kw={"linewidth": 1.0, "color": "black"})
 
-    ax.axhline(np.log(2), color="red", linestyle="--", linewidth=2, alpha=0.8)
+    ax.axhline(np.log(2), color="red", linestyle="--", linewidth=2.5, alpha=0.8)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(layouts, fontsize=11)
-    ax.set_ylabel("JSD", fontsize=12)
+    ax.set_xticklabels(layouts, fontsize=14)
+    ax.set_ylabel("JSD", fontsize=16)
 
     ax.yaxis.grid(True, linestyle="-", alpha=0.2)
     ax.set_axisbelow(True)
@@ -221,10 +221,10 @@ def main():
         mpatches.Patch(facecolor="white", edgecolor=blue, hatch="//", label=r"$\beta$=0  XP"),
         mpatches.Patch(facecolor=orange, edgecolor=orange, label=r"$\beta$=0.001  SP"),
         mpatches.Patch(facecolor="white", edgecolor=orange, hatch="//", label=r"$\beta$=0.001  XP"),
-        Line2D([0], [0], color="red", linestyle="--", linewidth=2, alpha=0.8,
+        Line2D([0], [0], color="red", linestyle="--", linewidth=2.5, alpha=0.8,
                label=r"$\log(2)$"),
     ]
-    ax.legend(handles=legend_handles, loc="upper right", fontsize=8,
+    ax.legend(handles=legend_handles, loc="upper right", fontsize=11,
               framealpha=0.9, edgecolor="none")
 
     fig.tight_layout()

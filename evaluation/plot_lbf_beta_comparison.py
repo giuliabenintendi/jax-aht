@@ -106,7 +106,7 @@ def main():
 
             color = BETA_COLORS[beta]
             label = f"β = {beta}"
-            ax.plot(timesteps, means, color=color, linewidth=1.5, label=label)
+            ax.plot(timesteps, means, color=color, linewidth=2.0, label=label)
             if sems.any():
                 ax.fill_between(timesteps, means - sems, means + sems,
                                 color=color, alpha=0.25)
@@ -132,7 +132,7 @@ def main():
 
             color = BETA_COLORS[beta]
             label = f"β = {beta}"
-            ax.plot(timesteps, means, color=color, linewidth=1.5, label=label)
+            ax.plot(timesteps, means, color=color, linewidth=2.0, label=label)
             if sems.any():
                 ax.fill_between(timesteps, means - sems, means + sems,
                                 color=color, alpha=0.25)

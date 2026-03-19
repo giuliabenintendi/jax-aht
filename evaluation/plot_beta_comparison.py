@@ -104,7 +104,7 @@ def plot_single_layout(
 
         color = BETA_COLORS[beta]
         label = f"β = {beta}"
-        ax.plot(timesteps, mean_plot, color=color, linewidth=1.5, label=label)
+        ax.plot(timesteps, mean_plot, color=color, linewidth=2.0, label=label)
         ax.fill_between(
             timesteps,
             mean_plot - std_plot,
