@@ -856,7 +856,8 @@ def run_ja_ippo(config, logger):
 
 
 def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
-    """Run greedy and stochastic eval episodes, print and log results."""
+    """Run greedy and stochastic eval episodes, print per-episode and summary stats."""
+    from agents.ja_utils import jsd_divergence
     obs_type = _get_obs_type(algorithm_config)
     init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
     rng = jax.random.PRNGKey(0)
@@ -868,9 +869,11 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
 
     for mode_name, greedy in [("greedy", True), ("stochastic", False)]:
         all_returns = []
+        all_jsds = []
         for seed_idx in range(num_seeds):
             params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
             seed_returns = []
+            seed_jsds = []
             for ep in range(num_episodes):
                 rng = jax.random.PRNGKey(2000 + seed_idx * 10000 + ep)
                 rng, reset_rng = jax.random.split(rng)
@@ -881,40 +884,58 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
                 hstate_1 = policy.init_hstate(1)
 
                 total_reward = 0.0
+                ep_jsds = []
                 step = 0
                 while not done["__all__"] and step < max_steps:
                     avail_actions = inner_env.get_avail_actions(env_state)
                     avail_actions = jax.lax.stop_gradient(avail_actions)
 
                     rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
-                    act_0, hstate_0 = policy.get_action(
+                    act_0, hstate_0, attn_0 = policy.get_action_and_attention(
                         params=params,
                         obs=obs["agent_0"].reshape(1, 1, -1),
                         done=done["agent_0"].reshape(1, 1),
                         avail_actions=avail_actions["agent_0"].astype(jnp.float32),
                         hstate=hstate_0, rng=rng0, greedy=greedy,
                     )
-                    act_1, hstate_1 = policy.get_action(
+                    act_1, hstate_1, attn_1 = policy.get_action_and_attention(
                         params=params,
                         obs=obs["agent_1"].reshape(1, 1, -1),
                         done=done["agent_1"].reshape(1, 1),
                         avail_actions=avail_actions["agent_1"].astype(jnp.float32),
                         hstate=hstate_1, rng=rng1, greedy=greedy,
                     )
+
+                    jsd_val = float(jsd_divergence(
+                        attn_0.squeeze(0), attn_1.squeeze(0)).mean())
+                    ep_jsds.append(jsd_val)
+
                     env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1.squeeze()}
                     obs, env_state, reward, done, info = inner_env.step(step_rng, env_state, env_act)
                     total_reward += float(reward["agent_0"])
                     step += 1
 
+                ep_jsd_mean = float(np.mean(ep_jsds)) if ep_jsds else 0.0
                 seed_returns.append(total_reward)
-            all_returns.append(np.mean(seed_returns))
-            print(f"[eval] seed {seed_idx} {mode_name}: mean={np.mean(seed_returns):.1f} ± {np.std(seed_returns):.1f}")
+                seed_jsds.append(ep_jsd_mean)
+                print(f"[eval] {mode_name} seed={seed_idx} ep={ep}: "
+                      f"return={total_reward:.1f}  jsd={ep_jsd_mean:.4f}  steps={step}")
 
-        overall_mean = np.mean(all_returns)
-        overall_std = np.std(all_returns)
-        print(f"[eval] {mode_name} overall: mean={overall_mean:.1f} ± {overall_std:.1f}")
-        logger.log_item(f"Eval/{mode_name}_return_mean", float(overall_mean), commit=False)
-        logger.log_item(f"Eval/{mode_name}_return_std", float(overall_std), commit=False)
+            all_returns.extend(seed_returns)
+            all_jsds.extend(seed_jsds)
+            print(f"[eval] seed {seed_idx} {mode_name} summary: "
+                  f"return={np.mean(seed_returns):.1f} ± {np.std(seed_returns):.1f}  "
+                  f"jsd={np.mean(seed_jsds):.4f} ± {np.std(seed_jsds):.4f}")
+
+        ret_mean, ret_std = np.mean(all_returns), np.std(all_returns)
+        jsd_mean, jsd_std = np.mean(all_jsds), np.std(all_jsds)
+        print(f"[eval] {mode_name} overall ({len(all_returns)} eps): "
+              f"return={ret_mean:.1f} ± {ret_std:.1f}  "
+              f"jsd={jsd_mean:.4f} ± {jsd_std:.4f}")
+        logger.log_item(f"Eval/{mode_name}_return_mean", float(ret_mean), commit=False)
+        logger.log_item(f"Eval/{mode_name}_return_std", float(ret_std), commit=False)
+        logger.log_item(f"Eval/{mode_name}_jsd_mean", float(jsd_mean), commit=False)
+        logger.log_item(f"Eval/{mode_name}_jsd_std", float(jsd_std), commit=False)
 
     logger.log({}, commit=True)
 
