@@ -38,7 +38,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--seed", type=int, default=0, help="Seed index within checkpoint")
-    parser.add_argument("--timestep", type=int, default=50, help="Timestep t (will also show t+1)")
+    parser.add_argument("--timestep", type=int, default=50, help="First timestep t")
+    parser.add_argument("--gap", type=int, default=5, help="Gap between frames (default: 5, so t and t+gap)")
     parser.add_argument("--episode-rng", type=int, default=42, help="RNG seed for the episode")
     parser.add_argument("--output", default="attention_grid.png")
     parser.add_argument("--dpi", type=int, default=150)
@@ -81,9 +82,10 @@ def main():
     print(f"Episode: {len(ep_states)} frames, {len(attn_data['agent_0'])} attention maps")
 
     t = args.timestep
-    if t + 1 >= len(attn_data["agent_0"]):
-        print(f"Timestep {t} too large, episode has {len(attn_data['agent_0'])} steps. Using last 2.")
-        t = len(attn_data["agent_0"]) - 2
+    gap = args.gap
+    if t + gap >= len(attn_data["agent_0"]):
+        print(f"Timestep {t}+{gap} too large, episode has {len(attn_data['agent_0'])} steps. Adjusting.")
+        t = max(0, len(attn_data["agent_0"]) - gap - 1)
 
     # Render game frames
     if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
@@ -100,7 +102,7 @@ def main():
     # Create 2x2 grid
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-    for row, timestep in enumerate([t, t + 1]):
+    for row, timestep in enumerate([t, t + gap]):
         frame = frames[timestep]
         for col, agent_name in enumerate(["agent_0", "agent_1"]):
             ax = axes[row, col]
@@ -118,7 +120,7 @@ def main():
                 agent_label = "Agent 0 (Blue)" if agent_name == "agent_0" else "Agent 1 (Red)"
                 ax.set_title(agent_label, fontsize=16)
             if col == 0:
-                ax.set_ylabel(f"t", fontsize=16) if row == 0 else ax.set_ylabel(f"t + 1", fontsize=16)
+                ax.set_ylabel(f"t", fontsize=16) if row == 0 else ax.set_ylabel(f"t + {gap}", fontsize=16)
 
     fig.tight_layout()
 
