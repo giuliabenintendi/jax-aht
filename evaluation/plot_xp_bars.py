@@ -100,7 +100,7 @@ def main():
             f.download(replace=True, root="/tmp/xp_bars")
             with open("/tmp/xp_bars/xp_score_matrix.csv") as fh:
                 score_matrix = parse_mean_matrix(fh.read())
-            sp_score, xp_score = compute_sp_xp(score_matrix, sp_threshold=1.0)
+            sp_score, xp_score = compute_sp_xp(score_matrix)
 
             f = run.file("xp_jsd_matrix.csv")
             f.download(replace=True, root="/tmp/xp_bars")
