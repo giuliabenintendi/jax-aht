@@ -1,5 +1,5 @@
 ENV_NAME: card-game
-ROLLOUT_LENGTH: 1300
+ROLLOUT_LENGTH: 130
 ENV_KWARGS:
   max_steps: 10
   obs_type: image
