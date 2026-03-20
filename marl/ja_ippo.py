@@ -1035,24 +1035,32 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
     logger.log({}, commit=True)
 
 
-def _draw_choice_on_cell(cell, choice_pos, agent_color, scale):
-    """Draw a thick colored border around the chosen card on an upscaled frame.
+def _draw_box(cell, row, col, tile_h, tile_w, color, thickness):
+    """Draw a thick border around a tile at grid (row, col) on an upscaled frame."""
+    y0 = row * tile_h
+    x0 = col * tile_w
+    cell[y0:y0 + thickness, x0:x0 + tile_w] = color
+    cell[y0 + tile_h - thickness:y0 + tile_h, x0:x0 + tile_w] = color
+    cell[y0:y0 + tile_h, x0:x0 + thickness] = color
+    cell[y0:y0 + tile_h, x0 + tile_w - thickness:x0 + tile_w] = color
 
-    card row = 1 in the 3-row grid. Drawn after attention overlay so it's visible.
+
+def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale):
+    """Draw white borders around the agent tile and its chosen card.
+
+    Agent 0 is at grid (0, 2), agent 1 at (2, 2). Cards are at row 1.
     """
-    from envs.card_game.rendering import GRID_ROWS, GRID_COLS, TILE_PIXELS
+    from envs.card_game.rendering import GRID_ROWS, GRID_COLS
     tile_h = cell.shape[0] // GRID_ROWS
     tile_w = cell.shape[1] // GRID_COLS
     thickness = max(4, scale // 4)
+    white = [255, 255, 255]
 
-    y0 = tile_h  # card row = 1
-    x0 = choice_pos * tile_w
-
-    cell[y0:y0 + thickness, x0:x0 + tile_w] = agent_color
-    cell[y0 + tile_h - thickness:y0 + tile_h, x0:x0 + tile_w] = agent_color
-    cell[y0:y0 + tile_h, x0:x0 + thickness] = agent_color
-    cell[y0:y0 + tile_h, x0 + tile_w - thickness:x0 + tile_w] = agent_color
-    return cell
+    # Border around the chosen card (row 1)
+    _draw_box(cell, 1, choice_pos, tile_h, tile_w, white, thickness)
+    # Border around the agent tile
+    agent_row = 0 if agent_idx == 0 else 2
+    _draw_box(cell, agent_row, 2, tile_h, tile_w, white, thickness)
 
 
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger):
@@ -1093,8 +1101,8 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
         # Draw choice borders on the last timestep
         if t == n_steps - 1 and last_action[0] >= 0:
-            _draw_choice_on_cell(cell_0, last_action[0], agent0_color, scale)
-            _draw_choice_on_cell(cell_1, last_action[1], agent1_color, scale)
+            _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
+            _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
 
         row_0.append(cell_0)
         row_1.append(cell_1)
