@@ -32,7 +32,7 @@ from envs.card_game.rendering import (
     NUM_CARDS,
 )
 
-_EGO_HIGHLIGHT_COLOR = jnp.array([255, 0, 255], dtype=jnp.uint8)
+_EGO_HIGHLIGHT_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)
 
 # Fixed agent grid positions
 _AGENT_POSITIONS = jnp.array([
