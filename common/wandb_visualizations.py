@@ -77,6 +77,8 @@ def _build_tags(config) -> list[str]:
             tags.append("jsdgae_on")
         else:
             tags.append("jsdgae_off")
+    if alg_config.get("FEED_OTHER_ATTN", False):
+        tags.append("feed_attn")
     label = config.get("label", "default_label")
     if label != "default_label":
         tags.append(str(label))

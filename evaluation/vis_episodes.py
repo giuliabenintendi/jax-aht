@@ -71,18 +71,22 @@ def save_video(env, env_name,
 def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            agent_1_param, agent_1_policy,
                            max_episode_steps, collect_attention=False,
-                           greedy=True):
+                           greedy=True, feed_other_attn_dims=None):
     '''
     Run a single episode and collect states for rendering.
 
     Args:
         collect_attention: if True and agents are JA, also return per-timestep
             attention maps via get_action_and_attention.
+        feed_other_attn_dims: if not None, a tuple (img_h, img_w, feat_h, feat_w)
+            for augmenting obs with the other agent's previous attention map.
 
     Returns:
         ep_states when collect_attention=False,
         (ep_states, {"agent_0": [...], "agent_1": [...]}) when True.
     '''
+    from agents.ja_utils import augment_obs_for_eval
+
     # Reset the env.
     rng, reset_rng = jax.random.split(rng)
 
@@ -92,6 +96,12 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
     # Initialize hidden states
     hstate_0 = agent_0_policy.init_hstate(1)
     hstate_1 = agent_1_policy.init_hstate(1)
+
+    # Initialize previous attention maps for feed_other_attn
+    if feed_other_attn_dims is not None:
+        _img_h, _img_w, _feat_h, _feat_w = feed_other_attn_dims
+        prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+        prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
     # Collect states for rendering
     ep_states = [env_state]
@@ -109,6 +119,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         # Get agent obses
         obs_0, obs_1 = obs["agent_0"], obs["agent_1"]
         prev_done_0, prev_done_1 = done["agent_0"], done["agent_1"]
+
+        # Augment obs with other agent's previous attention as 4th channel
+        if feed_other_attn_dims is not None:
+            obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
+            obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
 
         # Reshape inputs for policies
         obs_0_reshaped = obs_0.reshape(1, 1, -1)
@@ -168,6 +183,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 greedy=greedy,
             )
         act_1 = act_1.squeeze()
+
+        # Update previous attention maps for feed_other_attn
+        if feed_other_attn_dims is not None and collect_attention:
+            prev_attn_0 = attn_0.squeeze()  # (feat_h, feat_w)
+            prev_attn_1 = attn_1.squeeze()  # (feat_h, feat_w)
 
         # Take step in environment
         both_actions = [act_0, act_1]
