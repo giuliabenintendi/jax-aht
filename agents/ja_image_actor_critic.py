@@ -1,12 +1,16 @@
 """Joint Attention Actor-Critic network for image observations.
 
 Per-agent architecture:
-  obs (flat) -> unpack image (H_px, W_px, 3)
+  obs (flat) -> unpack image (H_px, W_px, num_channels)
   Image -> ResNet encoder -> features F  (H_out, W_out, filters)
   F + sinusoidal spatial basis -> 1x1 Conv -> Keys K, Values V
   Q = Dense(concat(h, c)) — query from own LSTM state
   Multi-head attention: softmax(Q . K) -> attended O
   Concat(O) -> FC -> FC -> LSTM -> projection
+
+When FEED_OTHER_ATTN is enabled, num_channels=4: the 4th channel is the
+other agent's previous attention map (nearest-neighbor upsampled to pixel
+resolution), providing a human-like joint attention signal.
 """
 import functools
 
@@ -47,6 +51,7 @@ class JAImageScannedLSTM(nn.Module):
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
+    num_channels: int = 3
 
     def setup(self):
         self.feat_h, self.feat_w = _compute_resnet_output_dims(
@@ -57,7 +62,7 @@ class JAImageScannedLSTM(nn.Module):
         self.spatial_basis = make_sinusoidal_spatial_basis(
             self.feat_h, self.feat_w, self.spatial_basis_depth,
         )
-        self._img_flat_dim = self.img_height * self.img_width * 3
+        self._img_flat_dim = self.img_height * self.img_width * self.num_channels
 
     @functools.partial(
         nn.scan,
@@ -82,7 +87,7 @@ class JAImageScannedLSTM(nn.Module):
 
         # Unpack flat obs -> image
         img_flat = obs_flat[:, :self._img_flat_dim]
-        image = img_flat.reshape(batch_size, self.img_height, self.img_width, 3)
+        image = img_flat.reshape(batch_size, self.img_height, self.img_width, self.num_channels)
 
         # ResNet encoder -> (batch, feat_h, feat_w, conv_filters)
         features = ResNetEncoder(
@@ -177,6 +182,7 @@ class JAImageActorCritic(nn.Module):
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
+    num_channels: int = 3
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -197,6 +203,7 @@ class JAImageActorCritic(nn.Module):
             fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             spatial_basis_depth=self.spatial_basis_depth,
+            num_channels=self.num_channels,
         )
 
         # Actor path

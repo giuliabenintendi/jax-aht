@@ -31,6 +31,7 @@ class JADualImageActorCritic(nn.Module):
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
+    num_channels: int = 3
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -51,6 +52,7 @@ class JADualImageActorCritic(nn.Module):
             fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             spatial_basis_depth=self.spatial_basis_depth,
+            num_channels=self.num_channels,
         )
 
         # Actor path (identical to single-critic version)
