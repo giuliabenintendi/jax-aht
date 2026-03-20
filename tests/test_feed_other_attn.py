@@ -225,3 +225,68 @@ def test_initialize_agents_feed_other_attn():
     policy_3ch, _ = initialize_ja_image_agent(config, env, rng)
     assert policy_3ch.obs_dim == IMG_H * IMG_W * 3
     assert policy_3ch.network.num_channels == 3
+
+
+def test_visualize_4th_channel():
+    """Visualize the 4-channel observation: RGB + attention heatmap.
+
+    Saves a figure to tests/feed_other_attn_vis.png showing:
+      - Left: 3-channel RGB image observation (agent 0)
+      - Center: the attention map at feature-map resolution (what agent 1 produced)
+      - Right: the 4th channel after nearest-neighbor upsampling to pixel resolution
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from envs import make_env
+
+    env = make_env("overcooked-v1", {"layout": "cramped_room", "max_steps": 400, "obs_type": "image"})
+    rng = jax.random.PRNGKey(42)
+    rng, reset_rng = jax.random.split(rng)
+    obs, _ = env.reset(reset_rng)
+
+    # RGB obs for agent 0
+    obs_0 = np.array(obs["agent_0"])
+    rgb = obs_0.reshape(IMG_H, IMG_W, 3)
+
+    # Simulate a non-uniform attention map (as if agent 1 attended to specific spots)
+    attn = np.zeros((FEAT_H, FEAT_W), dtype=np.float32)
+    attn[1, 2] = 0.4   # strong focus
+    attn[2, 3] = 0.3
+    attn[3, 5] = 0.2
+    attn[0, 0] = 0.05
+    attn[4, 7] = 0.05
+    # Normalize to probability distribution
+    attn = attn / attn.sum()
+    attn_jnp = jnp.array(attn)
+
+    # Upsample to pixel resolution (same as what the training loop does)
+    upsampled = np.array(jax.image.resize(attn_jnp, (IMG_H, IMG_W), method='nearest'))
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+
+    axes[0].imshow(rgb)
+    axes[0].set_title(f"RGB obs (agent 0)\n{IMG_H}x{IMG_W}x3")
+    axes[0].axis("off")
+
+    im1 = axes[1].imshow(attn, cmap="hot", interpolation="nearest")
+    axes[1].set_title(f"Other's attention (feat map)\n{FEAT_H}x{FEAT_W}")
+    for r in range(FEAT_H):
+        for c in range(FEAT_W):
+            v = attn[r, c]
+            if v > 0.01:
+                axes[1].text(c, r, f"{v:.2f}", ha="center", va="center",
+                             fontsize=7, color="white" if v > 0.15 else "black")
+    plt.colorbar(im1, ax=axes[1], fraction=0.046)
+
+    im2 = axes[2].imshow(upsampled, cmap="hot", interpolation="nearest")
+    axes[2].set_title(f"4th channel (upsampled)\n{IMG_H}x{IMG_W}")
+    plt.colorbar(im2, ax=axes[2], fraction=0.046)
+
+    fig.suptitle("FEED_OTHER_ATTN: what the 4th image channel looks like", fontweight="bold")
+    plt.tight_layout()
+
+    out_path = "tests/feed_other_attn_vis.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"\nVisualization saved to {out_path}")
