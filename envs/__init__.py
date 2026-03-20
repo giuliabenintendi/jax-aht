@@ -109,6 +109,10 @@ def make_env(env_name: str, env_kwargs: dict = {}):
                 env_kwargs_copy.pop(k, None)
             env = OvercookedWrapper(**env_kwargs_copy)
     
+    elif env_name == 'card-game':
+        from envs.card_game.card_game import CardGameEnv
+        env = CardGameEnv(**env_kwargs)
+
     elif env_name == 'hanabi':
         default_env_kwargs = {
             "num_agents": 2,
