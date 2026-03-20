@@ -46,6 +46,8 @@ def _build_run_string(config: dict) -> str:
     ent_coef = alg_config.get("ENT_COEF", 0.01)
     if ent_coef != 0.01:
         parts.append(f"ent{ent_coef}")
+    if alg_config.get("FEED_OTHER_ATTN", False):
+        parts.append("feed_attn")
     num_seeds = alg_config.get("NUM_SEEDS", 1)
     if num_seeds > 1:
         parts.append(f"s{num_seeds}")
@@ -79,6 +81,8 @@ def _build_tags(config) -> list[str]:
             tags.append("jsdgae_off")
     if alg_config.get("FEED_OTHER_ATTN", False):
         tags.append("feed_attn")
+    else:
+        tags.append("no_feed_attn")
     label = config.get("label", "default_label")
     if label != "default_label":
         tags.append(str(label))
