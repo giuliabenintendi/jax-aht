@@ -249,15 +249,23 @@ def test_visualize_4th_channel():
     obs_0 = np.array(obs["agent_0"])
     rgb = obs_0.reshape(IMG_H, IMG_W, 3)
 
-    # Simulate a non-uniform attention map (as if agent 1 attended to specific spots)
-    attn = np.zeros((FEAT_H, FEAT_W), dtype=np.float32)
-    attn[1, 2] = 0.4   # strong focus
-    attn[2, 3] = 0.3
-    attn[3, 5] = 0.2
-    attn[0, 0] = 0.05
-    attn[4, 7] = 0.05
-    # Normalize to probability distribution
-    attn = attn / attn.sum()
+    # Get a real attention map from a randomly initialized network (untrained)
+    policy = JAImageActorCriticPolicy(
+        action_dim=ACTION_DIM, obs_dim=IMG_H * IMG_W * 3,
+        img_height=IMG_H, img_width=IMG_W, num_channels=3, lstm_hidden_dim=64,
+    )
+    rng, init_rng, act_rng = jax.random.split(rng, 3)
+    params = policy.init_params(init_rng)
+    hstate = policy.init_hstate(1)
+
+    # Forward pass with agent 1's obs to get its attention map
+    obs_1 = obs["agent_1"]
+    _, _, _, _, attn_map = policy.get_action_value_policy(
+        params=params, obs=obs_1.reshape(1, 1, -1),
+        done=jnp.zeros((1, 1)), avail_actions=jnp.ones((1, 1, ACTION_DIM)),
+        hstate=hstate, rng=act_rng,
+    )
+    attn = np.array(attn_map.squeeze())  # (feat_h, feat_w)
     attn_jnp = jnp.array(attn)
 
     # Upsample to pixel resolution (same as what the training loop does)
