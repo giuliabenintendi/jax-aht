@@ -20,7 +20,8 @@ import jax.numpy as jnp
 import optax
 from flax.training.train_state import TrainState
 
-from agents.initialize_agents import initialize_ja_dual_image_agent
+from agents.initialize_agents import initialize_ja_dual_image_agent, _get_image_dims
+from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence
 from common.plot_utils import get_stats, get_metric_names, plot_seed_aggregate
 from common.save_load_utils import save_train_run
@@ -64,6 +65,17 @@ def make_train_loop(config, env):
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     use_jsd_in_actor = config.get("DUAL_CRITIC_ACTOR_JA", False)
+    feed_other_attn = config.get("FEED_OTHER_ATTN", False)
+
+    # Precompute image and feature-map dimensions for attention channel
+    img_h, img_w, _ = _get_image_dims(env)
+    feat_h, feat_w = _compute_resnet_output_dims(
+        img_h, img_w,
+        stride=config.get("CONV_STRIDE", 2),
+        kernel_size=config.get("CONV_KERNEL_SIZE", 3),
+        padding=config.get("CONV_PADDING", "SAME"),
+        num_blocks=config.get("CONV_NUM_BLOCKS", 4),
+    )
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -98,7 +110,13 @@ def make_train_loop(config, env):
 
         init_hstate = policy.init_hstate(num_actors)
         init_done = {k: jnp.zeros((config["NUM_ENVS"]), dtype=bool) for k in env.agents + ["__all__"]}
-        runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
+
+        if feed_other_attn:
+            # Uniform attention: no prior info about where the other agent looked
+            init_other_attn = jnp.ones((num_actors, feat_h, feat_w)) / (feat_h * feat_w)
+            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng, init_other_attn)
+        else:
+            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
 
         return runner_state
 
@@ -183,6 +201,24 @@ def make_train_loop(config, env):
             )
             return update_state[0], loss_info
 
+        def _augment_obs_with_attn(obs_batch, prev_other_attn):
+            """Append upsampled other-agent attention as 4th image channel."""
+            upsampled = jax.image.resize(
+                prev_other_attn, (num_actors, img_h, img_w), method='nearest',
+            )
+            attn_channel = upsampled.reshape(num_actors, img_h * img_w)
+            return jnp.concatenate([obs_batch, attn_channel], axis=-1)
+
+        def _swap_and_reset_attn(attn_map, done_batch):
+            """Swap attention maps between agents, reset to uniform on done."""
+            attn = attn_map.squeeze(0)  # (num_actors, feat_h, feat_w)
+            attn_0 = attn[:num_envs]
+            attn_1 = attn[num_envs:]
+            # Each agent gets the other's attention
+            swapped = jnp.concatenate([attn_1, attn_0], axis=0)
+            uniform = jnp.ones((feat_h, feat_w)) / (feat_h * feat_w)
+            return jnp.where(done_batch[:, None, None], uniform[None], swapped)
+
         def _single_step(runner_state, update_steps):
             ja_beta = jnp.minimum(
                 ja_beta_max,
@@ -190,12 +226,19 @@ def make_train_loop(config, env):
             )
 
             def _env_step(runner_state, unused):
-                (train_state, env_state, last_obs, last_done, hstate, rng) = runner_state
+                if feed_other_attn:
+                    (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state
+                else:
+                    (train_state, env_state, last_obs, last_done, hstate, rng) = runner_state
 
                 rng, act_rng = jax.random.split(rng)
 
                 last_obs_batch = batchify(last_obs, env.agents, num_actors)
                 last_done_batch = batchify(last_done, env.agents, num_actors)
+
+                # Augment obs with other agent's previous attention as 4th channel
+                if feed_other_attn:
+                    last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
 
                 avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
                 avail_actions_batch = jax.lax.stop_gradient(
@@ -249,18 +292,29 @@ def make_train_loop(config, env):
                     avail_actions=avail_actions_batch,
                     ja_reward=r_ja_batch,
                 )
-                runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
+
+                if feed_other_attn:
+                    new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
+                    new_other_attn = _swap_and_reset_attn(attn_map, new_done_batch)
+                    runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng, new_other_attn)
+                else:
+                    runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
                 return runner_state, transition
 
             runner_state, traj_batch = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
-            (train_state, env_state, last_obs, last_done, hstate, rng) = runner_state
+            if feed_other_attn:
+                (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state
+            else:
+                (train_state, env_state, last_obs, last_done, hstate, rng) = runner_state
 
             # Bootstrap values
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
+            if feed_other_attn:
+                last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
             last_avail = jax.vmap(env.get_avail_actions)(env_state.env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
@@ -323,7 +377,10 @@ def make_train_loop(config, env):
             metric["value_ext_mean"] = traj_batch.value_ext.mean()
             metric["value_int_mean"] = traj_batch.value_int.mean()
 
-            runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
+            if feed_other_attn:
+                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
+            else:
+                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
             return runner_state, update_steps + 1, metric
 
         @functools.partial(jax.jit, donate_argnums=(0,))
@@ -410,10 +467,21 @@ def run_ja_dual_ippo(config, logger):
 
 def log_greedy_eval(algorithm_config, env, out, logger, policy, num_episodes=64):
     """Run greedy and stochastic eval episodes, print per-episode and summary stats."""
-    from agents.ja_utils import jsd_divergence
+    from agents.ja_utils import jsd_divergence, augment_obs_for_eval
     inner_env = env._env
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
     num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
+
+    feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
+    if feed_attn:
+        _img_h, _img_w, _ = _get_image_dims(env)
+        _feat_h, _feat_w = _compute_resnet_output_dims(
+            _img_h, _img_w,
+            stride=algorithm_config.get("CONV_STRIDE", 2),
+            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
+            padding=algorithm_config.get("CONV_PADDING", "SAME"),
+            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
+        )
 
     for mode_name, greedy in [("greedy", True), ("stochastic", False)]:
         all_returns = []
@@ -431,6 +499,10 @@ def log_greedy_eval(algorithm_config, env, out, logger, policy, num_episodes=64)
                 hstate_0 = policy.init_hstate(1)
                 hstate_1 = policy.init_hstate(1)
 
+                if feed_attn:
+                    prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+                    prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+
                 total_reward = 0.0
                 ep_jsds = []
                 step = 0
@@ -438,21 +510,31 @@ def log_greedy_eval(algorithm_config, env, out, logger, policy, num_episodes=64)
                     avail_actions = inner_env.get_avail_actions(env_state)
                     avail_actions = jax.lax.stop_gradient(avail_actions)
 
+                    obs_0 = obs["agent_0"]
+                    obs_1 = obs["agent_1"]
+                    if feed_attn:
+                        obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
+                        obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+
                     rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
                     act_0, hstate_0, attn_0 = policy.get_action_and_attention(
                         params=params,
-                        obs=obs["agent_0"].reshape(1, 1, -1),
+                        obs=obs_0.reshape(1, 1, -1),
                         done=done["agent_0"].reshape(1, 1),
                         avail_actions=avail_actions["agent_0"].astype(jnp.float32),
                         hstate=hstate_0, rng=rng0, greedy=greedy,
                     )
                     act_1, hstate_1, attn_1 = policy.get_action_and_attention(
                         params=params,
-                        obs=obs["agent_1"].reshape(1, 1, -1),
+                        obs=obs_1.reshape(1, 1, -1),
                         done=done["agent_1"].reshape(1, 1),
                         avail_actions=avail_actions["agent_1"].astype(jnp.float32),
                         hstate=hstate_1, rng=rng1, greedy=greedy,
                     )
+
+                    if feed_attn:
+                        prev_attn_0 = attn_0.squeeze()
+                        prev_attn_1 = attn_1.squeeze()
 
                     jsd_val = float(jsd_divergence(
                         attn_0.squeeze(0), attn_1.squeeze(0)).mean())
@@ -519,6 +601,19 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
     inner_env = env._env
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
 
+    feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
+    feed_attn_dims = None
+    if feed_attn:
+        ev_img_h, ev_img_w, _ = _get_image_dims(env)
+        ev_feat_h, ev_feat_w = _compute_resnet_output_dims(
+            ev_img_h, ev_img_w,
+            stride=algorithm_config.get("CONV_STRIDE", 2),
+            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
+            padding=algorithm_config.get("CONV_PADDING", "SAME"),
+            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
+        )
+        feed_attn_dims = (ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
+
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
 
     for seed_idx in range(num_seeds):
@@ -528,6 +623,7 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
             jax.random.PRNGKey(42 + seed_idx), inner_env, final_params, policy,
             final_params, policy, max_steps,
             collect_attention=True,
+            feed_other_attn_dims=feed_attn_dims,
         )
         print(f"[ja_dual_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
 
@@ -563,14 +659,11 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
         num_eval_episodes = int(algorithm_config.get("NUM_EVAL_EPISODES", 64))
         is_overcooked = env_name in ("overcooked-v1",)
 
-        feat_h = feat_w = None
+        attn_feat_h = attn_feat_w = None
         if is_overcooked:
-            from agents.ja_image_actor_critic import _compute_resnet_output_dims
-            from agents.initialize_agents import _get_image_dims
-
-            img_h, img_w, _ = _get_image_dims(env)
-            feat_h, feat_w = _compute_resnet_output_dims(
-                img_h, img_w,
+            attn_img_h, attn_img_w, _ = _get_image_dims(env)
+            attn_feat_h, attn_feat_w = _compute_resnet_output_dims(
+                attn_img_h, attn_img_w,
                 stride=algorithm_config.get("CONV_STRIDE", 2),
                 kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
                 padding=algorithm_config.get("CONV_PADDING", "SAME"),
@@ -589,8 +682,8 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
             stasis_agent0_vals.append(stasis["agent_0_stasis"])
             stasis_agent1_vals.append(stasis["agent_1_stasis"])
 
-            if is_overcooked and feat_h is not None and feat_w is not None:
-                obj = compute_object_coverage(ep_attn_data, ep_ep_states, feat_h, feat_w)
+            if is_overcooked and attn_feat_h is not None and attn_feat_w is not None:
+                obj = compute_object_coverage(ep_attn_data, ep_ep_states, attn_feat_h, attn_feat_w)
                 pct_obj_agent0_vals.append(obj["agent_0_pct_objects"])
                 pct_obj_agent1_vals.append(obj["agent_1_pct_objects"])
                 for agent_key, accum in [
@@ -609,6 +702,7 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
                 ep_rng, inner_env, final_params, policy,
                 final_params, policy, max_steps,
                 collect_attention=True,
+                feed_other_attn_dims=feed_attn_dims,
             )
             _accumulate_episode(attn_data_extra, ep_states_extra)
 
