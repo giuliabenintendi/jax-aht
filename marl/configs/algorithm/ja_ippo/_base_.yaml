@@ -40,3 +40,4 @@ JA_WARMUP_ENV_STEPS: 700000
 NORMALIZE_REWARDS: false        # reference code uses no normalization (Lee et al. 2021)
 USE_DUAL_CRITIC: false          # dual critic (V_ext + V_int) for separate reward baselines
 DUAL_CRITIC_ACTOR_JA: false     # include JA advantage in policy gradient (requires USE_DUAL_CRITIC)
+FEED_OTHER_ATTN: false          # feed other agent's previous attention map as 4th image channel

@@ -131,10 +131,12 @@ def _get_image_dims(env):
 def initialize_ja_image_agent(config, env, rng):
     """Initialize a Joint Attention agent with image observations."""
     img_h, img_w, num_scalars = _get_image_dims(env)
+    num_channels = 4 if config.get("FEED_OTHER_ATTN", False) else 3
+    obs_dim = img_h * img_w * num_channels
 
     policy = JAImageActorCriticPolicy(
         action_dim=env.action_space(env.agents[0]).n,
-        obs_dim=env.observation_space(env.agents[0]).shape[0],
+        obs_dim=obs_dim,
         img_height=img_h,
         img_width=img_w,
         conv_filters=config.get("CONV_FILTERS", 32),
@@ -147,6 +149,7 @@ def initialize_ja_image_agent(config, env, rng):
         fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
         spatial_basis_depth=config.get("JA_SPATIAL_BASIS_DEPTH", 8),
+        num_channels=num_channels,
     )
 
     rng, init_rng = jax.random.split(rng)
@@ -157,10 +160,12 @@ def initialize_ja_image_agent(config, env, rng):
 def initialize_ja_dual_image_agent(config, env, rng):
     """Initialize a Joint Attention dual-critic agent with image observations."""
     img_h, img_w, num_scalars = _get_image_dims(env)
+    num_channels = 4 if config.get("FEED_OTHER_ATTN", False) else 3
+    obs_dim = img_h * img_w * num_channels
 
     policy = JADualImageActorCriticPolicy(
         action_dim=env.action_space(env.agents[0]).n,
-        obs_dim=env.observation_space(env.agents[0]).shape[0],
+        obs_dim=obs_dim,
         img_height=img_h,
         img_width=img_w,
         conv_filters=config.get("CONV_FILTERS", 32),
@@ -173,6 +178,7 @@ def initialize_ja_dual_image_agent(config, env, rng):
         fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
         spatial_basis_depth=config.get("JA_SPATIAL_BASIS_DEPTH", 8),
+        num_channels=num_channels,
     )
 
     rng, init_rng = jax.random.split(rng)

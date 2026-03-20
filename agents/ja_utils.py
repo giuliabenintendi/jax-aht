@@ -7,7 +7,9 @@ Provides:
 - JSD (Jensen-Shannon Divergence) between attention distributions
 - Sinusoidal 2D spatial basis (positional encoding)
 - Inferred attention map from agent (position, direction) — used by PO ego training
+- Eval obs augmentation for FEED_OTHER_ATTN
 """
+import jax
 import jax.numpy as jnp
 
 from envs.overcooked.po_utils import cone_forward_lateral
@@ -139,3 +141,22 @@ def inferred_attention(
     weights = w_dist * w_ang * in_front
 
     return weights / (jnp.sum(weights) + 1e-8)
+
+
+def augment_obs_for_eval(obs_flat, other_attn, img_h, img_w):
+    """Append other agent's attention as 4th channel during eval.
+
+    Used by eval loops where agents are called individually (batch_size=1).
+
+    Args:
+        obs_flat: flat obs, shape (..., img_h * img_w * 3)
+        other_attn: other agent's attention map, shape (feat_h, feat_w)
+        img_h: pixel height of the image observation
+        img_w: pixel width of the image observation
+
+    Returns:
+        Augmented flat obs, shape (..., img_h * img_w * 4)
+    """
+    upsampled = jax.image.resize(other_attn, (img_h, img_w), method='nearest')
+    attn_channel = upsampled.reshape(-1)
+    return jnp.concatenate([obs_flat, attn_channel], axis=-1)
