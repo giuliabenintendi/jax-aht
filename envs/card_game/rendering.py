@@ -113,3 +113,28 @@ def render_card_game(card_permutation: jnp.ndarray) -> jnp.ndarray:
     img, _ = jax.lax.scan(draw_card, img, jnp.arange(NUM_CARDS))
 
     return img
+
+
+def render_card_game_eval_frames(ep_states, scale: int = 32):
+    """Render upscaled RGB frames from a list of episode WrappedEnvStates.
+
+    Args:
+        ep_states: list of WrappedEnvState (from run_episode_with_states).
+        scale: upscale factor (nearest-neighbor) for video quality.
+
+    Returns:
+        list of (H_scaled, W_scaled, 3) uint8 numpy arrays.
+    """
+    import numpy as np
+    from PIL import Image
+
+    frames = []
+    for state in ep_states:
+        img = render_card_game(state.env_state.card_permutation)
+        img_np = np.array(img)
+        h, w = img_np.shape[:2]
+        pil_img = Image.fromarray(img_np).resize(
+            (w * scale, h * scale), Image.NEAREST
+        )
+        frames.append(np.array(pil_img))
+    return frames

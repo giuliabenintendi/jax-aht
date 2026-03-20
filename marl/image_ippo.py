@@ -378,10 +378,9 @@ def log_eval_video(algorithm_config, env, out, logger):
     env_name = algorithm_config["ENV_NAME"]
     if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
         frames = _render_lbf_eval_frames(inner_env, ep_states)
-        from moviepy import ImageSequenceClip
-        clip = ImageSequenceClip(frames, fps=10)
-        clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
-                             bitrate='8000k', preset='slow')
+    elif env_name == "card-game":
+        from envs.card_game.rendering import render_card_game_eval_frames
+        frames = render_card_game_eval_frames(ep_states, scale=32)
     else:
         from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
         viz = AdHocOvercookedVisualizer()
@@ -389,6 +388,13 @@ def log_eval_video(algorithm_config, env, out, logger):
             [s.env_state for s in ep_states], inner_env.agent_view_size,
             filename=video_path, pixels_per_tile=32, fps=10,
         )
+        logger.log_video("Eval/episode_video", video_path, commit=False)
+        return
+
+    from moviepy import ImageSequenceClip
+    clip = ImageSequenceClip(frames, fps=10)
+    clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
+                         bitrate='8000k', preset='slow')
     logger.log_video("Eval/episode_video", video_path, commit=False)
 
 

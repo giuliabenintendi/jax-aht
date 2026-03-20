@@ -1096,6 +1096,9 @@ def log_eval_video(algorithm_config, env, out, logger):
         # Render frames from episode states
         if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
             frames = _render_lbf_eval_frames(inner_env, ep_states)
+        elif env_name == "card-game":
+            from envs.card_game.rendering import render_card_game_eval_frames
+            frames = render_card_game_eval_frames(ep_states, scale=32)
         else:
             from evaluation.vis_episodes import render_episode_frames
             frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
