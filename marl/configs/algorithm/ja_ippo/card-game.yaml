@@ -1,0 +1,7 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+TOTAL_TIMESTEPS: 1e6
+NUM_ENVS: 64
+FEED_OTHER_ATTN: true

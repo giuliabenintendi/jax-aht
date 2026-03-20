@@ -1,0 +1,5 @@
+ENV_NAME: card-game
+ROLLOUT_LENGTH: 10
+ENV_KWARGS:
+  max_steps: 10
+TASK_NAME: card-game
