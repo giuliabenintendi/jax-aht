@@ -207,7 +207,7 @@ def _relog_eval_videos(alg_config, final_params, run_dir):
     for seed_idx in range(num_seeds):
         params = jax.tree.map(lambda x: x[seed_idx], final_params)
 
-        ep_states, attn_data = run_episode_with_states(
+        ep_states, attn_data, _ = run_episode_with_states(
             jax.random.PRNGKey(42 + seed_idx), inner_env, params, policy,
             params, policy, max_steps, collect_attention=True,
         )

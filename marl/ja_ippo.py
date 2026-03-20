@@ -1055,7 +1055,7 @@ def _draw_choice_on_cell(cell, choice_pos, agent_color, scale):
     return cell
 
 
-def _log_card_game_attention_grid(frames, attn_data, ep_states, tag, video_dir, logger):
+def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger):
     """Log a 2×T grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
 
     Each cell shows the scene with the attention heatmap overlaid.
@@ -1075,16 +1075,13 @@ def _log_card_game_attention_grid(frames, attn_data, ep_states, tag, video_dir, 
 
     n_steps = min(len(maps_0), len(maps_1), len(frames) - 1)
 
-    # Use the base frame (without choice borders) for attention overlay
-    base_frame = frames[0]  # all frames show the same scene; choices only on last
-    scale = base_frame.shape[0] // 3  # tile height = img_height / GRID_ROWS
+    scale = frames[0].shape[0] // 3  # tile height = img_height / GRID_ROWS
 
     agent0_color = np.array([255, 140, 0], dtype=np.uint8)    # orange
     agent1_color = np.array([255, 0, 255], dtype=np.uint8)    # magenta
 
-    # Get choices from the last state
-    last_state = ep_states[-1]
-    choices = np.array(last_state.env_state.agent_choices)
+    # Get choices from the last action taken
+    last_action = ep_actions[-1] if ep_actions else (-1, -1)
 
     # Build overlay frames for each agent at each timestep
     row_0 = []  # agent 0 attention (Blues)
@@ -1095,9 +1092,9 @@ def _log_card_game_attention_grid(frames, attn_data, ep_states, tag, video_dir, 
         cell_1 = _overlay_attention(frame, maps_1[t], "Reds", alpha=0.6).copy()
 
         # Draw choice borders on the last timestep
-        if t == n_steps - 1 and choices[0] >= 0:
-            _draw_choice_on_cell(cell_0, int(choices[0]), agent0_color, scale)
-            _draw_choice_on_cell(cell_1, int(choices[1]), agent1_color, scale)
+        if t == n_steps - 1 and last_action[0] >= 0:
+            _draw_choice_on_cell(cell_0, last_action[0], agent0_color, scale)
+            _draw_choice_on_cell(cell_1, last_action[1], agent1_color, scale)
 
         row_0.append(cell_0)
         row_1.append(cell_1)
@@ -1186,7 +1183,7 @@ def log_eval_video(algorithm_config, env, out, logger):
     for seed_idx in range(num_seeds):
         final_params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
 
-        ep_states, attn_data = run_episode_with_states(
+        ep_states, attn_data, ep_actions = run_episode_with_states(
             jax.random.PRNGKey(42 + seed_idx), inner_env, final_params, policy,
             final_params, policy, max_steps,
             collect_attention=True,
@@ -1212,7 +1209,7 @@ def log_eval_video(algorithm_config, env, out, logger):
         if env_name == "card-game":
             # Card game: 2×T grid image (row 0 = agent 0 attention, row 1 = agent 1 attention)
             _log_card_game_attention_grid(
-                frames, attn_data, ep_states, tag, video_dir, logger,
+                frames, attn_data, ep_actions, tag, video_dir, logger,
             )
         else:
             # Other envs: videos + attention overlays
@@ -1279,7 +1276,7 @@ def log_eval_video(algorithm_config, env, out, logger):
 
         for ep in range(1, num_eval_episodes):
             ep_rng = jax.random.PRNGKey(42 + seed_idx * 10000 + ep)
-            ep_states_extra, attn_data_extra = run_episode_with_states(
+            ep_states_extra, attn_data_extra, _ = run_episode_with_states(
                 ep_rng, inner_env, final_params, policy,
                 final_params, policy, max_steps,
                 collect_attention=True,

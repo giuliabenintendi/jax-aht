@@ -36,7 +36,7 @@ def save_video(env, env_name,
         rng, episode_rng = jax.random.split(rng)
         
         # Run a single episode and collect states
-        episode_states = run_episode_with_states(
+        episode_states, _ = run_episode_with_states(
             episode_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps
         )
@@ -103,8 +103,9 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
         prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
-    # Collect states for rendering
+    # Collect states and actions for rendering
     ep_states = [env_state]
+    ep_actions = []
     attn_maps = {"agent_0": [], "agent_1": []}
 
     # Run episode until done or max steps reached
@@ -194,14 +195,15 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
         obs, env_state, reward, done, info = env.step(step_rng, env_state, env_act)
 
-        # Add state to the list for rendering
+        # Add state and actions to the lists for rendering
         ep_states.append(env_state)
+        ep_actions.append((int(act_0), int(act_1)))
 
         step += 1
 
     if collect_attention:
-        return ep_states, attn_maps
-    return ep_states
+        return ep_states, attn_maps, ep_actions
+    return ep_states, ep_actions
 
 def _render_heatmap_panel(attn, title, cmap, target_height, figwidth=3.0):
     """Render a single attention heatmap with grid, numbers, and colorbar.

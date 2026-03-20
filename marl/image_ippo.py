@@ -363,7 +363,7 @@ def log_eval_video(algorithm_config, env, out, logger):
     inner_env = env._env
 
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
-    ep_states = run_episode_with_states(
+    ep_states, _ = run_episode_with_states(
         jax.random.PRNGKey(42), inner_env, final_params, policy,
         final_params, policy, max_steps,
         collect_attention=False,
