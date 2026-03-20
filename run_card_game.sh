@@ -5,7 +5,7 @@
 # Example: ./run_card_game.sh 0
 
 GPU="${1:?Usage: ./run_card_game.sh <gpu>}"
-SEEDS=3
+SEEDS=5
 TIMESTEPS=1e6
 COMMON="algorithm.NUM_SEEDS=$SEEDS algorithm.TOTAL_TIMESTEPS=$TIMESTEPS algorithm.FEED_OTHER_ATTN=true"
 
