@@ -1088,8 +1088,8 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     row_1 = []  # agent 1 attention (Reds)
     for t in range(n_steps):
         frame = frames[t + 1]
-        cell_0 = _overlay_attention(frame, maps_0[t], "Blues", alpha=0.6).copy()
-        cell_1 = _overlay_attention(frame, maps_1[t], "Reds", alpha=0.6).copy()
+        cell_0 = _overlay_attention(frame, maps_0[t], "Oranges", alpha=0.6).copy()
+        cell_1 = _overlay_attention(frame, maps_1[t], "RdPu", alpha=0.6).copy()
 
         # Draw choice borders on the last timestep
         if t == n_steps - 1 and last_action[0] >= 0:
