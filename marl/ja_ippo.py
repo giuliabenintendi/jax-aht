@@ -1053,7 +1053,7 @@ def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale):
     from envs.card_game.rendering import GRID_ROWS, GRID_COLS
     tile_h = cell.shape[0] // GRID_ROWS
     tile_w = cell.shape[1] // GRID_COLS
-    thickness = max(4, scale // 4)
+    thickness = max(2, scale // 8)
     white = [255, 255, 255]
 
     # Border around the chosen card (row 1)
