@@ -914,6 +914,7 @@ def run_ja_ippo(config, logger):
 
 def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
     """Run greedy and stochastic eval episodes, print per-episode and summary stats."""
+    import wandb
     from agents.ja_utils import jsd_divergence, augment_obs_for_eval
     obs_type = _get_obs_type(algorithm_config)
     init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
