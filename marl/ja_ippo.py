@@ -1035,11 +1035,32 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
     logger.log({}, commit=True)
 
 
+def _draw_choice_on_cell(cell, choice_pos, agent_color, scale):
+    """Draw a thick colored border around the chosen card on an upscaled frame.
+
+    card row = 1 in the 3-row grid. Drawn after attention overlay so it's visible.
+    """
+    from envs.card_game.rendering import GRID_ROWS, GRID_COLS, TILE_PIXELS
+    tile_h = cell.shape[0] // GRID_ROWS
+    tile_w = cell.shape[1] // GRID_COLS
+    thickness = max(4, scale // 4)
+
+    y0 = tile_h  # card row = 1
+    x0 = choice_pos * tile_w
+
+    cell[y0:y0 + thickness, x0:x0 + tile_w] = agent_color
+    cell[y0 + tile_h - thickness:y0 + tile_h, x0:x0 + tile_w] = agent_color
+    cell[y0:y0 + tile_h, x0:x0 + thickness] = agent_color
+    cell[y0:y0 + tile_h, x0 + tile_w - thickness:x0 + tile_w] = agent_color
+    return cell
+
+
 def _log_card_game_attention_grid(frames, attn_data, ep_states, tag, video_dir, logger):
     """Log a 2×T grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
 
     Each cell shows the scene with the attention heatmap overlaid.
-    The last column shows the agents' card choices as colored borders.
+    The last column shows the agents' card choices as thick colored borders
+    drawn on top of the attention overlay.
     """
     import os
     import wandb
@@ -1054,13 +1075,32 @@ def _log_card_game_attention_grid(frames, attn_data, ep_states, tag, video_dir, 
 
     n_steps = min(len(maps_0), len(maps_1), len(frames) - 1)
 
+    # Use the base frame (without choice borders) for attention overlay
+    base_frame = frames[0]  # all frames show the same scene; choices only on last
+    scale = base_frame.shape[0] // 3  # tile height = img_height / GRID_ROWS
+
+    agent0_color = np.array([255, 140, 0], dtype=np.uint8)    # orange
+    agent1_color = np.array([255, 0, 255], dtype=np.uint8)    # magenta
+
+    # Get choices from the last state
+    last_state = ep_states[-1]
+    choices = np.array(last_state.env_state.agent_choices)
+
     # Build overlay frames for each agent at each timestep
     row_0 = []  # agent 0 attention (Blues)
     row_1 = []  # agent 1 attention (Reds)
     for t in range(n_steps):
-        frame = frames[t + 1]  # frame after step t
-        row_0.append(_overlay_attention(frame, maps_0[t], "Blues", alpha=0.6))
-        row_1.append(_overlay_attention(frame, maps_1[t], "Reds", alpha=0.6))
+        frame = frames[t + 1]
+        cell_0 = _overlay_attention(frame, maps_0[t], "Blues", alpha=0.6).copy()
+        cell_1 = _overlay_attention(frame, maps_1[t], "Reds", alpha=0.6).copy()
+
+        # Draw choice borders on the last timestep
+        if t == n_steps - 1 and choices[0] >= 0:
+            _draw_choice_on_cell(cell_0, int(choices[0]), agent0_color, scale)
+            _draw_choice_on_cell(cell_1, int(choices[1]), agent1_color, scale)
+
+        row_0.append(cell_0)
+        row_1.append(cell_1)
 
     # Concatenate: each row is T frames side by side, then stack 2 rows
     padding = 4
