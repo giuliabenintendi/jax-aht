@@ -1035,6 +1035,57 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
     logger.log({}, commit=True)
 
 
+def _log_card_game_attention_grid(frames, attn_data, ep_states, tag, video_dir, logger):
+    """Log a 2×T grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
+
+    Each cell shows the scene with the attention heatmap overlaid.
+    The last column shows the agents' card choices as colored borders.
+    """
+    import os
+    import wandb
+    import numpy as np
+    from evaluation.vis_episodes import _overlay_attention
+
+    maps_0 = attn_data.get("agent_0", [])
+    maps_1 = attn_data.get("agent_1", [])
+    if not maps_0 or not maps_1:
+        print("[card_game] Missing attention maps, skipping grid.")
+        return
+
+    n_steps = min(len(maps_0), len(maps_1), len(frames) - 1)
+
+    # Build overlay frames for each agent at each timestep
+    row_0 = []  # agent 0 attention (Blues)
+    row_1 = []  # agent 1 attention (Reds)
+    for t in range(n_steps):
+        frame = frames[t + 1]  # frame after step t
+        row_0.append(_overlay_attention(frame, maps_0[t], "Blues", alpha=0.6))
+        row_1.append(_overlay_attention(frame, maps_1[t], "Reds", alpha=0.6))
+
+    # Concatenate: each row is T frames side by side, then stack 2 rows
+    padding = 4
+    pad_color = np.array([255, 255, 255], dtype=np.uint8)
+    cell_h, cell_w = row_0[0].shape[:2]
+
+    grid_w = n_steps * cell_w + (n_steps - 1) * padding
+    grid_h = 2 * cell_h + padding
+    grid = np.full((grid_h, grid_w, 3), pad_color, dtype=np.uint8)
+
+    for t in range(n_steps):
+        x = t * (cell_w + padding)
+        grid[0:cell_h, x:x + cell_w] = row_0[t]
+        grid[cell_h + padding:grid_h, x:x + cell_w] = row_1[t]
+
+    # Save locally and log to wandb
+    os.makedirs(video_dir, exist_ok=True)
+    grid_path = f"{video_dir}/attention_grid.png"
+    from PIL import Image
+    Image.fromarray(grid).save(grid_path)
+    print(f"[card_game] Saved attention grid: {grid_path} ({grid_w}×{grid_h} px)")
+
+    logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
+
+
 def _render_lbf_eval_frames(inner_env, ep_states):
     """Render LBF eval frames using the Jumanji matplotlib viewer for quality."""
     import matplotlib
@@ -1116,27 +1167,32 @@ def log_eval_video(algorithm_config, env, out, logger):
             from evaluation.vis_episodes import render_episode_frames
             frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
 
-        # Save plain eval video
-        from moviepy import ImageSequenceClip
-        video_path = f"{video_dir}/eval_final.mp4"
-        clip = ImageSequenceClip(frames, fps=10)
-        clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
-                             bitrate='8000k', preset='slow')
         tag = f"Eval/seed_{seed_idx}"
-        logger.log_video(f"{tag}/episode_video", video_path, commit=False)
 
-        # Log attention heatmaps overlaid on rendered frames
-        log_attention_to_wandb(
-            attn_data, logger, step=None, tag_prefix=tag, commit=False,
-            frames=frames,
-        )
+        if env_name == "card-game":
+            # Card game: 2×T grid image (row 0 = agent 0 attention, row 1 = agent 1 attention)
+            _log_card_game_attention_grid(
+                frames, attn_data, ep_states, tag, video_dir, logger,
+            )
+        else:
+            # Other envs: videos + attention overlays
+            from moviepy import ImageSequenceClip
+            video_path = f"{video_dir}/eval_final.mp4"
+            clip = ImageSequenceClip(frames, fps=10)
+            clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
+                                 bitrate='8000k', preset='slow')
+            logger.log_video(f"{tag}/episode_video", video_path, commit=False)
 
-        # Save attention overlay videos (one per agent + combined)
-        attn_video_base = f"{video_dir}/eval_attention.mp4"
-        make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
-        logger.log_video(f"{tag}/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
-        logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
-        logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
+            log_attention_to_wandb(
+                attn_data, logger, step=None, tag_prefix=tag, commit=False,
+                frames=frames,
+            )
+
+            attn_video_base = f"{video_dir}/eval_attention.mp4"
+            make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
+            logger.log_video(f"{tag}/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
+            logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
+            logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
 
         # Multi-episode attention metrics
         import numpy as np
