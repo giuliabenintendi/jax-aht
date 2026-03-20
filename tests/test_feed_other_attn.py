@@ -198,7 +198,7 @@ def test_initialize_agents_feed_other_attn():
 
     config = {
         "ENV_NAME": "overcooked-v1",
-        "ENV_KWARGS": {"layout": "cramped_room", "max_steps": 400},
+        "ENV_KWARGS": {"layout": "cramped_room", "max_steps": 400, "obs_type": "image"},
         "FEED_OTHER_ATTN": True,
         "CONV_FILTERS": 32, "CONV_NUM_BLOCKS": 4,
         "CONV_KERNEL_SIZE": 3, "CONV_STRIDE": 2, "CONV_PADDING": "SAME",
