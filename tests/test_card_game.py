@@ -130,9 +130,14 @@ def test_ego_highlight():
     assert not jnp.array_equal(obs["agent_0"], obs["agent_1"])
 
 
-def test_print_observations():
-    """Print rendered observations for visual inspection (run with pytest -s)."""
+def test_save_observations():
+    """Save rendered observations as upscaled PNGs for visual inspection."""
     import numpy as np
+    from PIL import Image
+    from pathlib import Path
+
+    out_dir = Path("tests/card_game_obs")
+    out_dir.mkdir(exist_ok=True)
 
     env = make_env("card-game", {})
     key = jax.random.PRNGKey(0)
@@ -140,6 +145,7 @@ def test_print_observations():
 
     h = GRID_ROWS * TILE_PIXELS
     w = GRID_COLS * TILE_PIXELS
+    scale = 20  # upscale for visibility
 
     perm = state.env_state.card_permutation
     card_names = ["RED", "BLUE", "GREEN", "YELLOW", "PURPLE"]
@@ -147,34 +153,9 @@ def test_print_observations():
 
     for agent in ["agent_0", "agent_1"]:
         img = (np.array(obs[agent]) * 255).astype(np.uint8).reshape(h, w, 3)
-        print(f"\n{'='*60}")
-        print(f"{agent} observation ({h}×{w} RGB)")
-        print(f"{'='*60}")
-
-        # Print as ASCII art: one char per pixel, using color approximation
-        for row in range(h):
-            line = []
-            for col in range(w):
-                r, g, b = img[row, col]
-                if r == 0 and g == 0 and b == 0:
-                    line.append(".")  # black / empty
-                elif r == 255 and g == 0 and b == 255:
-                    line.append("M")  # magenta ego border
-                elif r > 180 and g < 100 and b < 100:
-                    line.append("R")  # red-ish (agent 0 or card)
-                elif r < 100 and g < 150 and b > 180:
-                    line.append("B")  # blue-ish (agent 1 or card)
-                elif r < 100 and g > 150 and b < 100:
-                    line.append("G")  # green card
-                elif r > 180 and g > 150 and b < 100:
-                    line.append("Y")  # yellow card
-                elif r > 120 and g < 100 and b > 150:
-                    line.append("P")  # purple card
-                elif r > 100 and g > 100 and b > 100:
-                    line.append("#")  # other bright
-                else:
-                    line.append("?")  # unknown
-            print("".join(line))
-
-        print(f"\nLegend: . = black, M = magenta border, R = red, B = blue, "
-              f"G = green, Y = yellow, P = purple")
+        pil_img = Image.fromarray(img).resize(
+            (w * scale, h * scale), Image.NEAREST
+        )
+        path = out_dir / f"{agent}.png"
+        pil_img.save(path)
+        print(f"Saved {path} ({w * scale}×{h * scale} px)")
