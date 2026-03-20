@@ -66,16 +66,15 @@ CARD_COLORS = jnp.array([
     [160, 50, 200],   # purple
 ], dtype=jnp.uint8)
 
-AGENT_0_COLOR = jnp.array([20, 20, 20], dtype=jnp.uint8)      # black
-AGENT_1_COLOR = jnp.array([240, 240, 240], dtype=jnp.uint8)   # white
+AGENT_0_COLOR = jnp.array([255, 140, 0], dtype=jnp.uint8)    # orange
+AGENT_1_COLOR = jnp.array([0, 220, 220], dtype=jnp.uint8)   # cyan
 
-_BG_COLOR = jnp.array([150, 150, 150], dtype=jnp.uint8)  # grey floor
-_BG_TILE = jnp.full((TILE_PIXELS, TILE_PIXELS, 3), _BG_COLOR, dtype=jnp.uint8)
+_EMPTY_TILE = jnp.zeros((TILE_PIXELS, TILE_PIXELS, 3), dtype=jnp.uint8)
 
 
 def _render_tile(mask, color):
-    """Render a tile with a colored shape on grey background."""
-    return jnp.where(mask[:, :, None], color[None, None, :], _BG_TILE)
+    """Render a tile with a colored shape on black background."""
+    return jnp.where(mask[:, :, None], color[None, None, :], _EMPTY_TILE)
 
 
 def render_card_game(card_permutation: jnp.ndarray) -> jnp.ndarray:
@@ -89,7 +88,7 @@ def render_card_game(card_permutation: jnp.ndarray) -> jnp.ndarray:
     """
     h_px = GRID_ROWS * TILE_PIXELS
     w_px = GRID_COLS * TILE_PIXELS
-    img = jnp.full((h_px, w_px, 3), _BG_COLOR, dtype=jnp.uint8)
+    img = jnp.zeros((h_px, w_px, 3), dtype=jnp.uint8)
 
     # Agent 0 at grid (0, 2) — top center, down-pointing
     agent0_tile = _render_tile(_DOWN_TRI_MASK, AGENT_0_COLOR)
