@@ -314,6 +314,27 @@ def _build_run_label(algo_cfg: dict, task_name: str) -> str:
     return " / ".join(parts)
 
 
+def _build_xp_name(algo_cfg: dict, layout: str) -> str:
+    """Build descriptive XP run name from config."""
+    parts = [layout]
+    beta = algo_cfg.get("JA_BETA_MAX", 0)
+    parts.append(f"b{beta}")
+    if algo_cfg.get("USE_DUAL_CRITIC", False):
+        jsd_gae = "jsdgae" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "nojsdgae"
+        parts.append(f"dual_{jsd_gae}")
+    ent = algo_cfg.get("ENT_COEF", 0.01)
+    if ent != 0.01:
+        parts.append(f"ent{ent}")
+    total = algo_cfg.get("TOTAL_TIMESTEPS")
+    if total is not None:
+        total = float(total)
+        parts.append(f"{total/1e6:.0f}M" if total >= 1e6 else f"{total:.0f}")
+    seeds = algo_cfg.get("NUM_SEEDS", 1)
+    if seeds > 1:
+        parts.append(f"s{seeds}")
+    return "_".join(parts)
+
+
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     # Infer config from Hydra if --task not provided
     hydra_cfg = _load_hydra_config(checkpoint_path)
@@ -460,9 +481,16 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
         project="aht-benchmark",
         entity="g-benintendi-university-of-brescia",
         config=label_cfg,
-        tags=[str(label_cfg.get("ALG", "")), layout, beta_prefix, "xp_eval"],
+        tags=[
+            str(label_cfg.get("ALG", "")),
+            f"{task_name}" if "/" in task_name else layout,
+            f"beta={label_cfg.get('JA_BETA_MAX', 0)}",
+            f"ent={label_cfg.get('ENT_COEF', 0.01)}",
+            "xp_eval",
+        ] + (["dual_critic", "jsdgae_on" if label_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "jsdgae_off"]
+             if label_cfg.get("USE_DUAL_CRITIC", False) else []),
         group=f"{task_name}/{label_cfg.get('ALG', '')}",
-        name=f"XP_{beta_prefix}_{layout}",
+        name=f"XP_{_build_xp_name(label_cfg, layout)}",
         dir=run_dir,
     )
     if score_mean is not None:
