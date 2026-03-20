@@ -1019,6 +1019,18 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
         logger.log_item(f"Eval/{mode_name}_jsd_mean", float(jsd_mean), commit=False)
         logger.log_item(f"Eval/{mode_name}_jsd_std", float(jsd_std), commit=False)
 
+        # Per-episode results table
+        table = wandb.Table(
+            columns=["episode", "return", "jsd"],
+            data=[[i, all_returns[i], all_jsds[i]] for i in range(len(all_returns))],
+        )
+        logger.log({
+            f"Eval/{mode_name}_returns_chart": wandb.plot.bar(
+                table, "episode", "return", title=f"{mode_name} per-episode return"),
+            f"Eval/{mode_name}_jsd_chart": wandb.plot.bar(
+                table, "episode", "jsd", title=f"{mode_name} per-episode JSD"),
+        }, commit=False)
+
     logger.log({}, commit=True)
 
 

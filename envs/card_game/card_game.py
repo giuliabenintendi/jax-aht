@@ -45,6 +45,7 @@ _AGENT_POSITIONS = jnp.array([
 class CardGameState:
     card_permutation: chex.Array  # (NUM_CARDS,) card identity at each position
     step_count: chex.Array        # scalar int32
+    agent_choices: chex.Array     # (2,) chosen positions, -1 until decision step
 
 
 def _draw_border(img, row, col, tile_size, color):
@@ -114,6 +115,7 @@ class CardGameEnv(BaseEnv):
         env_state = CardGameState(
             card_permutation=perm,
             step_count=jnp.int32(0),
+            agent_choices=jnp.full(2, -1, dtype=jnp.int32),
         )
         obs = self._make_obs(env_state)
         return obs, WrappedEnvState(
@@ -147,7 +149,13 @@ class CardGameEnv(BaseEnv):
         dones = {agent: done for agent in self.agents}
         dones["__all__"] = done
 
-        new_env_state = env_state.replace(step_count=new_step)
+        # Store choices on decision step, keep -1 otherwise
+        choices = jnp.where(
+            is_decision,
+            jnp.array([a0, a1], dtype=jnp.int32),
+            jnp.full(2, -1, dtype=jnp.int32),
+        )
+        new_env_state = env_state.replace(step_count=new_step, agent_choices=choices)
         obs_st = self._make_obs(new_env_state)
 
         base_reward_arr = jnp.array([reward_val, reward_val])

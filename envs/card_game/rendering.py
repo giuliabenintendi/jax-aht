@@ -115,8 +115,35 @@ def render_card_game(card_permutation: jnp.ndarray) -> jnp.ndarray:
     return img
 
 
+def _draw_choice_border(img, card_pos, color, thickness=2):
+    """Draw a thick border around a card tile (row=1) to indicate an agent's choice.
+
+    Works on the upscaled image. card_pos is the column index (0-4).
+    """
+    import numpy as np
+
+    h, w = img.shape[:2]
+    tile_h = h // GRID_ROWS
+    tile_w = w // GRID_COLS
+
+    y0 = tile_h  # card row = 1
+    x0 = card_pos * tile_w
+
+    # Top and bottom edges
+    img[y0:y0 + thickness, x0:x0 + tile_w] = color
+    img[y0 + tile_h - thickness:y0 + tile_h, x0:x0 + tile_w] = color
+    # Left and right edges
+    img[y0:y0 + tile_h, x0:x0 + thickness] = color
+    img[y0:y0 + tile_h, x0 + tile_w - thickness:x0 + tile_w] = color
+
+    return img
+
+
 def render_card_game_eval_frames(ep_states, scale: int = 32):
     """Render upscaled RGB frames from a list of episode WrappedEnvStates.
+
+    On the decision step (when agent_choices != -1), draws colored borders
+    around the chosen cards: orange for agent 0, magenta for agent 1.
 
     Args:
         ep_states: list of WrappedEnvState (from run_episode_with_states).
@@ -128,6 +155,10 @@ def render_card_game_eval_frames(ep_states, scale: int = 32):
     import numpy as np
     from PIL import Image
 
+    agent0_color = np.array([255, 140, 0], dtype=np.uint8)    # orange
+    agent1_color = np.array([255, 0, 255], dtype=np.uint8)    # magenta
+    border_thickness = max(2, scale // 8)
+
     frames = []
     for state in ep_states:
         img = render_card_game(state.env_state.card_permutation)
@@ -136,5 +167,13 @@ def render_card_game_eval_frames(ep_states, scale: int = 32):
         pil_img = Image.fromarray(img_np).resize(
             (w * scale, h * scale), Image.NEAREST
         )
-        frames.append(np.array(pil_img))
+        frame = np.array(pil_img)
+
+        choices = np.array(state.env_state.agent_choices)
+        if choices[0] >= 0:
+            frame = _draw_choice_border(frame, int(choices[0]), agent0_color, border_thickness)
+        if choices[1] >= 0:
+            frame = _draw_choice_border(frame, int(choices[1]), agent1_color, border_thickness)
+
+        frames.append(frame)
     return frames
