@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Card game entropy sweep: dual critic, JSD GAE off, ent=0.02 and 0.04.
-# All runs use FEED_OTHER_ATTN=true, 1M timesteps, 5 seeds.
+# Card game sweep GPU B: dual critic ent=0.02 and ent=0.04.
 # Usage: ./run_card_game_entropy.sh <gpu>
 
 GPU="${1:?Usage: ./run_card_game_entropy.sh <gpu>}"
@@ -13,7 +12,7 @@ mkdir -p logs
 
 nohup bash -c "
 
-# --- Dual critic, JSD GAE off, entropy=0.02 ---
+# --- Dual critic, JSD GAE off, ent=0.02 ---
 
 for BETA in 0.0 0.001 0.01 0.05; do
     echo \"[\$(date +%H:%M)] Dual critic, beta=\$BETA, ent=0.02\"
@@ -23,7 +22,7 @@ for BETA in 0.0 0.001 0.01 0.05; do
         label=shuffled_cards
 done
 
-# --- Dual critic, JSD GAE off, entropy=0.04 ---
+# --- Dual critic, JSD GAE off, ent=0.04 ---
 
 for BETA in 0.0 0.001 0.01 0.05; do
     echo \"[\$(date +%H:%M)] Dual critic, beta=\$BETA, ent=0.04\"
@@ -33,7 +32,7 @@ for BETA in 0.0 0.001 0.01 0.05; do
         label=shuffled_cards
 done
 
-echo \"[\$(date +%H:%M)] All entropy sweep runs complete\"
+echo \"[\$(date +%H:%M)] GPU B runs complete\"
 " > logs/card_game_entropy.log 2>&1 &
 
-echo "Launched 8 entropy sweep experiments on GPU $GPU (check logs/card_game_entropy.log)"
+echo "Launched 8 runs on GPU $GPU (check logs/card_game_entropy.log)"
