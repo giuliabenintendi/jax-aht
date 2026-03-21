@@ -5,7 +5,7 @@
 
 GPU="${1:?Usage: ./run_card_game_entropy.sh <gpu>}"
 SEEDS=5
-TIMESTEPS=1e6
+TIMESTEPS=2e6
 COMMON="algorithm.NUM_SEEDS=$SEEDS algorithm.TOTAL_TIMESTEPS=$TIMESTEPS algorithm.FEED_OTHER_ATTN=true"
 DUAL="algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false"
 

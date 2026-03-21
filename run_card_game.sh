@@ -6,7 +6,7 @@
 
 GPU="${1:?Usage: ./run_card_game.sh <gpu>}"
 SEEDS=5
-TIMESTEPS=1e6
+TIMESTEPS=2e6
 COMMON="algorithm.NUM_SEEDS=$SEEDS algorithm.TOTAL_TIMESTEPS=$TIMESTEPS algorithm.FEED_OTHER_ATTN=true"
 
 mkdir -p logs
@@ -69,7 +69,67 @@ echo \"[\$(date +%H:%M)] Dual critic (no JSD GAE), beta=0.05\"
     algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false \
     label=shuffled_cards
 
+# --- Dual critic, JSD GAE off, entropy=0.02 ---
+
+echo \"[\$(date +%H:%M)] Dual critic (no JSD GAE), beta=0, ent=0.02\"
+./run_gpu.sh $GPU marl.run \
+    -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+    $COMMON algorithm.JA_BETA_MAX=0.0 algorithm.ENT_COEF=0.02 \
+    algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false \
+    label=shuffled_cards
+
+echo \"[\$(date +%H:%M)] Dual critic (no JSD GAE), beta=0.001, ent=0.02\"
+./run_gpu.sh $GPU marl.run \
+    -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+    $COMMON algorithm.JA_BETA_MAX=0.001 algorithm.ENT_COEF=0.02 \
+    algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false \
+    label=shuffled_cards
+
+echo \"[\$(date +%H:%M)] Dual critic (no JSD GAE), beta=0.01, ent=0.02\"
+./run_gpu.sh $GPU marl.run \
+    -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+    $COMMON algorithm.JA_BETA_MAX=0.01 algorithm.ENT_COEF=0.02 \
+    algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false \
+    label=shuffled_cards
+
+echo \"[\$(date +%H:%M)] Dual critic (no JSD GAE), beta=0.05, ent=0.02\"
+./run_gpu.sh $GPU marl.run \
+    -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+    $COMMON algorithm.JA_BETA_MAX=0.05 algorithm.ENT_COEF=0.02 \
+    algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false \
+    label=shuffled_cards
+
+# --- Dual critic, JSD GAE off, entropy=0.04 ---
+
+echo \"[\$(date +%H:%M)] Dual critic (no JSD GAE), beta=0, ent=0.04\"
+./run_gpu.sh $GPU marl.run \
+    -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+    $COMMON algorithm.JA_BETA_MAX=0.0 algorithm.ENT_COEF=0.04 \
+    algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false \
+    label=shuffled_cards
+
+echo \"[\$(date +%H:%M)] Dual critic (no JSD GAE), beta=0.001, ent=0.04\"
+./run_gpu.sh $GPU marl.run \
+    -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+    $COMMON algorithm.JA_BETA_MAX=0.001 algorithm.ENT_COEF=0.04 \
+    algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false \
+    label=shuffled_cards
+
+echo \"[\$(date +%H:%M)] Dual critic (no JSD GAE), beta=0.01, ent=0.04\"
+./run_gpu.sh $GPU marl.run \
+    -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+    $COMMON algorithm.JA_BETA_MAX=0.01 algorithm.ENT_COEF=0.04 \
+    algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false \
+    label=shuffled_cards
+
+echo \"[\$(date +%H:%M)] Dual critic (no JSD GAE), beta=0.05, ent=0.04\"
+./run_gpu.sh $GPU marl.run \
+    -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+    $COMMON algorithm.JA_BETA_MAX=0.05 algorithm.ENT_COEF=0.04 \
+    algorithm.USE_DUAL_CRITIC=true algorithm.DUAL_CRITIC_ACTOR_JA=false \
+    label=shuffled_cards
+
 echo \"[\$(date +%H:%M)] All card-game runs complete\"
 " > logs/card_game.log 2>&1 &
 
-echo "Launched 8 card-game experiments on GPU $GPU (check logs/card_game.log)"
+echo "Launched 16 card-game experiments on GPU $GPU (check logs/card_game.log)"
