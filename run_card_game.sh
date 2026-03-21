@@ -14,7 +14,7 @@ nohup bash -c "
 
 # --- Single critic, ent=0.01 ---
 
-for BETA in 0.0 0.001 0.01 0.05; do
+for BETA in 0.0 0.001 0.01 0.05 0.1; do
     echo \"[\$(date +%H:%M)] Single critic, beta=\$BETA\"
     ./run_gpu.sh $GPU marl.run \
         -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
@@ -24,7 +24,7 @@ done
 
 # --- Dual critic, JSD GAE off, ent=0.01 ---
 
-for BETA in 0.0 0.001 0.01 0.05; do
+for BETA in 0.0 0.001 0.01 0.05 0.1; do
     echo \"[\$(date +%H:%M)] Dual critic, beta=\$BETA, ent=0.01\"
     ./run_gpu.sh $GPU marl.run \
         -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
