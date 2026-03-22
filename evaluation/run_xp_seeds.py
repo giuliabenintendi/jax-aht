@@ -54,8 +54,16 @@ def load_algo_config() -> dict:
 
 def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 agent_1_param, agent_1_policy,
-                                max_episode_steps, action_sizes):
-    """Run one eval episode, returning LogWrapper info + mean JSD between attention maps."""
+                                max_episode_steps, action_sizes,
+                                feed_attn_dims=None):
+    """Run one eval episode, returning LogWrapper info + mean JSD between attention maps.
+
+    Args:
+        feed_attn_dims: if not None, (img_h, img_w, feat_h, feat_w) for obs augmentation
+            with the other agent's previous attention map (4th channel).
+    """
+    from agents.ja_utils import augment_obs_for_eval
+
     rng, reset_rng = jax.random.split(rng)
     init_obs, init_env_state = env.reset(reset_rng)
     init_done = {k: jnp.zeros((1), dtype=bool) for k in env.agents + ["__all__"]}
@@ -65,6 +73,12 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     init_hstate_0 = agent_0_policy.init_hstate(1, aux_info={"agent_id": 0})
     init_hstate_1 = agent_1_policy.init_hstate(1, aux_info={"agent_id": 1})
 
+    # Initialize uniform attention maps for feed_other_attn
+    if feed_attn_dims is not None:
+        _img_h, _img_w, _feat_h, _feat_w = feed_attn_dims
+        prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+        prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+
     avail_actions = env.get_avail_actions(init_env_state.env_state)
     avail_actions = jax.lax.stop_gradient(avail_actions)
     avail_actions_0 = avail_actions["agent_0"].astype(jnp.float32)
@@ -73,9 +87,15 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     # First step
     rng, act0_rng, act1_rng, step_rng = jax.random.split(rng, 4)
 
+    obs_0 = init_obs["agent_0"]
+    obs_1 = init_obs["agent_1"]
+    if feed_attn_dims is not None:
+        obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
+        obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+
     act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
         params=agent_0_param,
-        obs=init_obs["agent_0"].reshape(1, 1, -1),
+        obs=obs_0.reshape(1, 1, -1),
         done=init_done["agent_0"].reshape(1, 1),
         avail_actions=avail_actions_0,
         hstate=init_hstate_0,
@@ -86,7 +106,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
     act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
         params=agent_1_param,
-        obs=init_obs["agent_1"].reshape(1, 1, -1),
+        obs=obs_1.reshape(1, 1, -1),
         done=init_done["agent_1"].reshape(1, 1),
         avail_actions=avail_actions_1,
         hstate=init_hstate_1,
@@ -112,14 +132,21 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                       for i, k in enumerate(env.agents)}
     obs, env_state, reward, done, dummy_info = env.step(step_rng, init_env_state, env_act)
 
+    # Include prev attention in carry for feed_other_attn
+    if feed_attn_dims is not None:
+        prev_attn_0 = attn_0.squeeze()
+        prev_attn_1 = attn_1.squeeze()
+
     ep_ts = 1
     init_carry = (ep_ts, env_state, obs, rng, done, reward, env_act_onehot,
-                  hstate_0, hstate_1, dummy_info, jsd_sum, jsd_count)
+                  hstate_0, hstate_1, dummy_info, jsd_sum, jsd_count,
+                  attn_0.squeeze(), attn_1.squeeze())
 
     def scan_step(carry, _):
         def take_step(carry_step):
             (ep_ts, env_state, obs, rng, done, reward, act_onehot,
-             hstate_0, hstate_1, last_info, jsd_sum, jsd_count) = carry_step
+             hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
+             prev_a0, prev_a1) = carry_step
 
             avail_actions = env.get_avail_actions(env_state.env_state)
             avail_actions = jax.lax.stop_gradient(avail_actions)
@@ -128,9 +155,15 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
             rng, act0_rng, act1_rng, step_rng = jax.random.split(rng, 4)
 
+            obs_0 = obs["agent_0"]
+            obs_1 = obs["agent_1"]
+            if feed_attn_dims is not None:
+                obs_0 = augment_obs_for_eval(obs_0, prev_a1, _img_h, _img_w)
+                obs_1 = augment_obs_for_eval(obs_1, prev_a0, _img_h, _img_w)
+
             act_0, hstate_0_next, attn_0 = agent_0_policy.get_action_and_attention(
                 params=agent_0_param,
-                obs=obs["agent_0"].reshape(1, 1, -1),
+                obs=obs_0.reshape(1, 1, -1),
                 done=done["agent_0"].reshape(1, 1),
                 avail_actions=avail_actions_0,
                 hstate=hstate_0,
@@ -141,7 +174,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
             act_1, hstate_1_next, attn_1 = agent_1_policy.get_action_and_attention(
                 params=agent_1_param,
-                obs=obs["agent_1"].reshape(1, 1, -1),
+                obs=obs_1.reshape(1, 1, -1),
                 done=done["agent_1"].reshape(1, 1),
                 avail_actions=avail_actions_1,
                 hstate=hstate_1,
@@ -166,10 +199,12 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             obs_next, env_state_next, reward, done_next, info_next = env.step(step_rng, env_state, env_act)
 
             return (ep_ts + 1, env_state_next, obs_next, rng, done_next, reward, env_act_onehot,
-                    hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next)
+                    hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next,
+                    attn_0.squeeze(), attn_1.squeeze())
 
         (ep_ts, env_state, obs, rng, done, reward, act_onehot,
-         hstate_0, hstate_1, last_info, jsd_sum, jsd_count) = carry
+         hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
+         prev_a0, prev_a1) = carry
         new_carry = jax.lax.cond(
             done["__all__"],
             lambda curr_carry: curr_carry,
@@ -179,14 +214,15 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         return new_carry, None
 
     final_carry, _ = jax.lax.scan(scan_step, init_carry, None, length=max_episode_steps)
-    info = final_carry[-3]  # last_info (the LogWrapper metrics)
-    mean_jsd = final_carry[-2] / final_carry[-1]  # jsd_sum / jsd_count
+    info = final_carry[-5]  # last_info
+    mean_jsd = final_carry[-4] / final_carry[-3]  # jsd_sum / jsd_count
     return info, mean_jsd
 
 
 def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
                           agent_1_param, agent_1_policy,
-                          max_episode_steps, num_eps, action_sizes):
+                          max_episode_steps, num_eps, action_sizes,
+                          feed_attn_dims=None):
     """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
@@ -195,6 +231,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
         lambda ep_rng: run_single_episode_with_jsd(
             ep_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, action_sizes,
+            feed_attn_dims=feed_attn_dims,
         )
     )
     all_info, all_jsd = vmap_fn(ep_rngs)
@@ -203,7 +240,8 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
 def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
                      all_agent_1_params, agent_1_policy,
-                     max_episode_steps, num_eps, action_sizes):
+                     max_episode_steps, num_eps, action_sizes,
+                     feed_attn_dims=None):
     """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
     num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
     partner_rngs = jax.random.split(rng, num_partners)
@@ -213,6 +251,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
         return run_episodes_with_jsd(
             partner_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, num_eps, action_sizes,
+            feed_attn_dims=feed_attn_dims,
         )
 
     return jax.vmap(eval_one_partner)(partner_rngs, all_agent_1_params)
@@ -396,9 +435,27 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     # Pre-compute action sizes outside JIT
     action_sizes = {k: int(env.action_space(k).n) for k in env.agents}
 
+    # Compute feed_attn_dims if needed
+    feed_attn = algo_cfg.get("FEED_OTHER_ATTN", False)
+    feed_attn_dims = None
+    if feed_attn:
+        from agents.initialize_agents import _get_image_dims
+        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        _img_h, _img_w, _ = _get_image_dims(env)
+        _feat_h, _feat_w = _compute_resnet_output_dims(
+            _img_h, _img_w,
+            stride=algo_cfg.get("CONV_STRIDE", 2),
+            kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
+            padding=algo_cfg.get("CONV_PADDING", "SAME"),
+            num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
+        )
+        feed_attn_dims = (_img_h, _img_w, _feat_h, _feat_w)
+        print(f"[xp_seeds] feed_other_attn enabled: img=({_img_h},{_img_w}), feat=({_feat_h},{_feat_w})")
+
     # JIT-compile the row function once, then reuse for each i
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
+        feed_attn_dims=feed_attn_dims,
     ))
 
     all_row_metrics = []
