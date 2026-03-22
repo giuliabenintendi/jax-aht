@@ -859,11 +859,18 @@ def run_ja_ippo(config, logger):
         # per-seed-count recompilation, constant memory regardless of NUM_SEEDS.
         print(f"[ja_ippo] Initializing policy and {num_seeds} seeds...")
         policy = init_policy_fn(rngs[0])
-        step_fn, _, _ = make_step_fn(policy)
+        step_fn, chunked_step_fn, _ = make_step_fn(policy)
 
         all_seed_metrics = []
         all_seed_ckpts = []
         all_seed_final_params = []
+
+        # Compute chunk boundaries aligned to checkpoint intervals
+        chunk_boundaries = []
+        for i in range(num_ckpts):
+            chunk_boundaries.append(min((i + 1) * ckpt_interval, num_updates))
+        if chunk_boundaries[-1] < num_updates:
+            chunk_boundaries.append(num_updates)
 
         for seed_idx in range(num_seeds):
             runner_state = init_state_fn(rngs[seed_idx], policy)
@@ -873,24 +880,27 @@ def run_ja_ippo(config, logger):
             seed_metrics = []
             seed_ckpts = []
             steps_done = 0
-            next_ckpt = 0
 
             print(f"[ja_ippo] Seed {seed_idx}/{num_seeds}: training {num_updates} steps...")
-            for ci in range(num_updates):
-                runner_state, update_steps, rew_norm_state, metric = step_fn(
-                    runner_state, update_steps, rew_norm_state)
-                seed_metrics.append(metric)
-                steps_done += 1
+            for chunk_end in chunk_boundaries:
+                chunk_size = chunk_end - steps_done
+                if chunk_size <= 0:
+                    continue
 
-                while next_ckpt <= steps_done and len(seed_ckpts) < num_ckpts:
+                runner_state, update_steps, rew_norm_state, chunk_metrics = chunked_step_fn(
+                    runner_state, update_steps, rew_norm_state, chunk_size)
+                seed_metrics.append(chunk_metrics)
+                steps_done = chunk_end
+
+                # Checkpoint after each chunk
+                if len(seed_ckpts) < num_ckpts:
                     seed_ckpts.append(jax.tree.map(jnp.copy, runner_state[0].params))
-                    next_ckpt += ckpt_interval
 
-                if ci == 0 or ci == num_updates - 1 or (ci + 1) % max(1, num_updates // 10) == 0:
-                    print(f"[ja_ippo]   step {steps_done}/{num_updates}")
+                print(f"[ja_ippo]   step {steps_done}/{num_updates}")
 
             all_seed_final_params.append(runner_state[0].params)
-            all_seed_metrics.append(jax.tree.map(lambda *xs: jnp.stack(xs), *seed_metrics))
+            # Concatenate chunk metrics along the update axis (axis 0)
+            all_seed_metrics.append(jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *seed_metrics))
             all_seed_ckpts.append(jax.tree.map(lambda *xs: jnp.stack(xs), *seed_ckpts))
 
         # Stack across seeds: (num_seeds, ...)
