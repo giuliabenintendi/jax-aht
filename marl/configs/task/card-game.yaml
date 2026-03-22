@@ -3,4 +3,5 @@ ROLLOUT_LENGTH: 128
 ENV_KWARGS:
   max_steps: 8
   obs_type: image
+  shuffle: true
 TASK_NAME: card-game
