@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
-# Run cross-play evaluation on all multi-seed card game checkpoints.
+# Run cross-play evaluation on 2M, 5-seed card game checkpoints.
 # Usage: ./run_card_game_xp.sh <gpu>
 
 GPU="${1:?Usage: ./run_card_game_xp.sh <gpu>}"
 
 mkdir -p logs
 
-# Find all saved_train_run directories under card-game results
-# Skip the 1-seed smoke test run (card-game_ja_ippo_2M_b0.05_feed_attn_21032026)
-CHECKPOINTS=$(find results/card-game -name "saved_train_run" -type d 2>/dev/null)
+# Only select checkpoints with NUM_SEEDS=5 and TOTAL_TIMESTEPS=2000000
+CHECKPOINTS=""
+for d in results/card-game/ja_ippo/shuffled_cards/*/; do
+    cfg="$d/.hydra/config.yaml"
+    [ -f "$cfg" ] || continue
+    seeds=$(grep "NUM_SEEDS" "$cfg" 2>/dev/null | awk '{print $2}')
+    ts=$(grep "TOTAL_TIMESTEPS" "$cfg" 2>/dev/null | awk '{print $2}')
+    if [ "$seeds" = "5" ] && [ "$ts" = "2000000.0" ]; then
+        CHECKPOINTS="$CHECKPOINTS ${d}saved_train_run"
+    fi
+done
 
 if [ -z "$CHECKPOINTS" ]; then
-    echo "No card-game checkpoints found under results/card-game/"
+    echo "No 2M 5-seed card-game checkpoints found"
     exit 1
 fi
 
-echo "Found checkpoints:"
-echo "$CHECKPOINTS"
-echo ""
+COUNT=$(echo $CHECKPOINTS | wc -w)
+echo "Found $COUNT checkpoints for XP eval"
 
 nohup bash -c "
 for CKPT in $CHECKPOINTS; do
@@ -27,4 +34,4 @@ done
 echo \"[\$(date +%H:%M)] All card-game XP evals complete\"
 " > logs/card_game_xp.log 2>&1 &
 
-echo "Launched card-game XP evals on GPU $GPU (check logs/card_game_xp.log)"
+echo "Launched $COUNT card-game XP evals on GPU $GPU (check logs/card_game_xp.log)"
