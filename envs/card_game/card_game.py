@@ -71,8 +71,9 @@ class CardGameEnv(BaseEnv):
     the JA-IPPO agent initialization pipeline.
     """
 
-    def __init__(self, max_steps: int = 10, **kwargs):
+    def __init__(self, max_steps: int = 10, shuffle: bool = True, **kwargs):
         self.max_steps = max_steps
+        self.shuffle = shuffle
         self.num_cards = NUM_CARDS
         self.num_agents = 2
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
@@ -111,7 +112,7 @@ class CardGameEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], WrappedEnvState]:
-        perm = jax.random.permutation(key, self.num_cards)
+        perm = jax.random.permutation(key, self.num_cards) if self.shuffle else jnp.arange(self.num_cards)
         env_state = CardGameState(
             card_permutation=perm,
             step_count=jnp.int32(0),
