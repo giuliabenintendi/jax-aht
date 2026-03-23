@@ -71,7 +71,8 @@ def save_video(env, env_name,
 def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            agent_1_param, agent_1_policy,
                            max_episode_steps, collect_attention=False,
-                           greedy=True, feed_other_attn_dims=None):
+                           greedy=True, feed_other_attn_dims=None,
+                           filter_attn_card_mask=None):
     '''
     Run a single episode and collect states for rendering.
 
@@ -147,6 +148,9 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 greedy=greedy,
                 agent_id=0,
             )
+            if filter_attn_card_mask is not None:
+                from agents.ja_utils import filter_attn_to_cards
+                attn_0 = filter_attn_to_cards(attn_0, filter_attn_card_mask)
             attn_maps["agent_0"].append(attn_0)
         else:
             act_0, hstate_0 = agent_0_policy.get_action(
@@ -172,6 +176,9 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 greedy=greedy,
                 agent_id=1,
             )
+            if filter_attn_card_mask is not None:
+                from agents.ja_utils import filter_attn_to_cards
+                attn_1 = filter_attn_to_cards(attn_1, filter_attn_card_mask)
             attn_maps["agent_1"].append(attn_1)
         else:
             act_1, hstate_1 = agent_1_policy.get_action(

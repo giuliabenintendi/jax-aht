@@ -493,14 +493,9 @@ def make_train_loop(config, env):
 
     # Card band mask: rows covering the card area in the feature map
     if filter_attn_cards:
-        from envs.card_game.rendering import TILE_PIXELS as _TP_cb
-        card_fr = int((1 * _TP_cb + _TP_cb // 2) / (img_h / feat_h))
-        r_lo = max(0, card_fr - 1)
-        r_hi = min(feat_h, card_fr + 2)
-        _card_band = jnp.zeros((feat_h, feat_w))
-        _card_band = _card_band.at[r_lo:r_hi, :].set(1.0)
-        print(f"[ja_ippo] Card band filter: rows {r_lo}-{r_hi-1} of {feat_h}, "
-              f"{int(_card_band.sum())}/{feat_h * feat_w} cells active")
+        from agents.ja_utils import build_card_band_mask
+        _card_band = build_card_band_mask(feat_h, feat_w, img_h)
+        print(f"[ja_ippo] Card band filter: {int(_card_band.sum())}/{feat_h * feat_w} cells active")
 
     # Precompute fixed attention map for hardcoded partner
     if fixed_partner_pos >= 0:
@@ -1199,7 +1194,7 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
 
 def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
-                               feed_attn_dims=None, num_episodes=30, fps=3):
+                               feed_attn_dims=None, filter_attn_card_mask=None, num_episodes=30, fps=3):
     """Run multiple card game episodes and save a video with attention overlays and choices."""
     import os
     import wandb
@@ -1219,6 +1214,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             ep_rng, inner_env, params, policy,
             params, policy, max_steps,
             collect_attention=True,
+            filter_attn_card_mask=filter_attn_card_mask,
             feed_other_attn_dims=feed_attn_dims,
         )
 
@@ -1319,6 +1315,20 @@ def log_eval_video(algorithm_config, env, out, logger):
         )
         feed_attn_dims = (ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
 
+    filter_cards = algorithm_config.get("FILTER_ATTN_CARDS", False)
+    filter_mask = None
+    if filter_cards:
+        from agents.ja_utils import build_card_band_mask
+        ev_img_h_f, ev_img_w_f, _ = _get_image_dims(env)
+        ev_fh, ev_fw = _compute_resnet_output_dims(
+            ev_img_h_f, ev_img_w_f,
+            stride=algorithm_config.get("CONV_STRIDE", 2),
+            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
+            padding=algorithm_config.get("CONV_PADDING", "SAME"),
+            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
+        )
+        filter_mask = build_card_band_mask(ev_fh, ev_fw, ev_img_h_f)
+
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
 
     for seed_idx in range(num_seeds):
@@ -1329,6 +1339,7 @@ def log_eval_video(algorithm_config, env, out, logger):
             final_params, policy, max_steps,
             collect_attention=True,
             feed_other_attn_dims=feed_attn_dims,
+            filter_attn_card_mask=filter_mask,
         )
         print(f"[ja_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
 
@@ -1354,7 +1365,8 @@ def log_eval_video(algorithm_config, env, out, logger):
             )
             _log_card_game_eval_video(
                 inner_env, policy, final_params, max_steps, tag, video_dir, logger,
-                feed_attn_dims=feed_attn_dims, num_episodes=30, fps=3,
+                feed_attn_dims=feed_attn_dims, filter_attn_card_mask=filter_mask,
+                num_episodes=30, fps=3,
             )
         else:
             # Other envs: videos + attention overlays
