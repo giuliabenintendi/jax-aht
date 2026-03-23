@@ -106,6 +106,10 @@ def make_train_scan(config, env):
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
+    fixed_partner_pos = -1  # not supported in scan path
+    _fixed_attn = None
+    feat_h = feat_w = 0
+
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
         return config["LR"] * frac
@@ -261,6 +265,11 @@ def make_train_scan(config, env):
                 )
 
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
+
+                # Override agent 1's attention if hardcoded partner
+                if fixed_partner_pos >= 0:
+                    attn_map = attn_map.at[:, num_envs:, ...].set(
+                        jnp.broadcast_to(_fixed_attn[None, None], (attn_map.shape[0], num_envs, feat_h, feat_w)))
 
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
@@ -462,6 +471,7 @@ def make_train_loop(config, env):
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
+    fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
 
     # Precompute image and feature-map dimensions for attention channel
     img_h, img_w, _ = _get_image_dims(env)
@@ -472,6 +482,14 @@ def make_train_loop(config, env):
         padding=config.get("CONV_PADDING", "SAME"),
         num_blocks=config.get("CONV_NUM_BLOCKS", 4),
     )
+
+    # Precompute fixed attention map for hardcoded partner
+    if fixed_partner_pos >= 0:
+        _fixed_attn = jnp.zeros((feat_h, feat_w))
+        # Card row = 1 of 3 grid rows → feature rows feat_h//3 to 2*feat_h//3
+        card_row = feat_h // 3
+        card_col = round(fixed_partner_pos * feat_w / 5 + feat_w / 10)
+        _fixed_attn = _fixed_attn.at[card_row, min(card_col, feat_w - 1)].set(1.0)
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -672,6 +690,11 @@ def make_train_loop(config, env):
 
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
 
+                # Override agent 1's attention if hardcoded partner
+                if fixed_partner_pos >= 0:
+                    attn_map = attn_map.at[:, num_envs:, ...].set(
+                        jnp.broadcast_to(_fixed_attn[None, None], (attn_map.shape[0], num_envs, feat_h, feat_w)))
+
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
                 r_ja = -jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))
@@ -859,7 +882,19 @@ def run_ja_ippo(config, logger):
         # per-seed-count recompilation, constant memory regardless of NUM_SEEDS.
         print(f"[ja_ippo] Initializing policy and {num_seeds} seeds...")
         policy = init_policy_fn(rngs[0])
+
+        # Assign per-seed fixed partner positions if enabled
+        use_fixed_partner = algorithm_config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1) >= 0
+        if use_fixed_partner:
+            fixed_positions = jax.random.permutation(rng, NUM_CARDS := 5).tolist()
+            if num_seeds > len(fixed_positions):
+                fixed_positions = (fixed_positions * ((num_seeds // len(fixed_positions)) + 1))[:num_seeds]
+            print(f"[ja_ippo] Fixed partner positions: {fixed_positions[:num_seeds]}")
+        else:
+            fixed_positions = [-1] * num_seeds
+
         step_fn, chunked_step_fn, _ = make_step_fn(policy)
+        prev_fixed_pos = algorithm_config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
 
         all_seed_metrics = []
         all_seed_ckpts = []
@@ -873,6 +908,18 @@ def run_ja_ippo(config, logger):
             chunk_boundaries.append(num_updates)
 
         for seed_idx in range(num_seeds):
+            # Recompile step_fn if fixed partner position changed
+            if use_fixed_partner:
+                new_pos = fixed_positions[seed_idx]
+                if new_pos != prev_fixed_pos:
+                    algorithm_config["ENV_KWARGS"]["fixed_partner_pos"] = new_pos
+                    env_inner = env._env
+                    env_inner.fixed_partner_pos = new_pos
+                    init_fn, make_step_fn_new, init_policy_fn_new, init_state_fn = make_train_loop(algorithm_config, env)
+                    step_fn, chunked_step_fn, _ = make_step_fn_new(policy)
+                    prev_fixed_pos = new_pos
+                print(f"[ja_ippo] Seed {seed_idx}: fixed_partner_pos={new_pos}")
+
             runner_state = init_state_fn(rngs[seed_idx], policy)
             update_steps = jnp.zeros((), dtype=jnp.int32)
             rew_norm_state = reward_norm_init()

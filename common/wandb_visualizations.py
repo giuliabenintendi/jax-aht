@@ -51,6 +51,9 @@ def _build_run_string(config: dict) -> str:
     env_kwargs = alg_config.get("ENV_KWARGS", {})
     if env_kwargs.get("shuffle") is False:
         parts.append("no_shuffle")
+    fp = env_kwargs.get("fixed_partner_pos", -1)
+    if fp >= 0:
+        parts.append(f"fixed_partner{fp}")
     num_seeds = alg_config.get("NUM_SEEDS", 1)
     if num_seeds > 1:
         parts.append(f"s{num_seeds}")

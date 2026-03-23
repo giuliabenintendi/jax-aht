@@ -71,9 +71,10 @@ class CardGameEnv(BaseEnv):
     the JA-IPPO agent initialization pipeline.
     """
 
-    def __init__(self, max_steps: int = 10, shuffle: bool = True, **kwargs):
+    def __init__(self, max_steps: int = 10, shuffle: bool = True, fixed_partner_pos: int = -1, **kwargs):
         self.max_steps = max_steps
         self.shuffle = shuffle
+        self.fixed_partner_pos = fixed_partner_pos
         self.num_cards = NUM_CARDS
         self.num_agents = 2
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
@@ -142,6 +143,9 @@ class CardGameEnv(BaseEnv):
         is_decision = new_step >= self.max_steps
         a0 = actions["agent_0"]
         a1 = actions["agent_1"]
+        # Override agent 1's action if fixed partner is set
+        if self.fixed_partner_pos >= 0:
+            a1 = jnp.int32(self.fixed_partner_pos)
         match = jnp.equal(a0, a1)
         reward_val = jnp.where(is_decision & match, 1.0, 0.0)
 
