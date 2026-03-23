@@ -258,25 +258,18 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
 
 def xp_mean_and_sem(xp_matrix):
-    """Compute XP mean and SEM using the pairing scheme from the ZSC literature.
-
-    With n seeds and 2 players, we pair seeds into m = n//2 groups:
-    (0,1), (2,3), (4,5), ... Each group gives one independent XP sample
-    by averaging the two permutations: [M[2i, 2i+1] + M[2i+1, 2i]] / 2.
+    """Compute XP mean and SEM from ALL off-diagonal entries.
 
     Args:
         xp_matrix: (n, n) array where entry (i,j) is the mean return
                    when seed i is agent 0 and seed j is agent 1.
     Returns:
-        (mean, sem) over the m independent XP samples.
+        (mean, sem) over all n*(n-1) off-diagonal entries.
     """
     n = xp_matrix.shape[0]
-    m = n // 2
-    samples = np.zeros(m)
-    for k in range(m):
-        i, j = 2 * k, 2 * k + 1
-        samples[k] = (xp_matrix[i, j] + xp_matrix[j, i]) / 2
-    return np.mean(samples), np.std(samples) / np.sqrt(m)
+    mask = ~np.eye(n, dtype=bool)
+    off_diag = xp_matrix[mask]
+    return np.mean(off_diag), np.std(off_diag) / np.sqrt(len(off_diag))
 
 
 def save_xp_heatmap(matrix_mean: np.ndarray, matrix_std: np.ndarray,
@@ -561,10 +554,15 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     wb_run.summary["XP/sp_jsd"] = sp_jsd
     wb_run.summary["XP/xp_jsd_mean"] = xp_jsd_m
     wb_run.summary["XP/xp_jsd_sem"] = xp_jsd_s
+    sp_jsd_diag = np.diag(jsd_ep_means)
+    wb_run.summary["XP/sp_jsd_sem"] = np.std(sp_jsd_diag) / np.sqrt(len(sp_jsd_diag))
     if score_mean is not None:
-        sp_score = np.diag(score_mean).mean()
+        sp_score_diag = np.diag(score_mean)
+        sp_score = sp_score_diag.mean()
+        sp_score_sem = np.std(sp_score_diag) / np.sqrt(len(sp_score_diag))
         xp_score_m, xp_score_s = xp_mean_and_sem(score_mean)
         wb_run.summary["XP/sp_score"] = sp_score
+        wb_run.summary["XP/sp_score_sem"] = sp_score_sem
         wb_run.summary["XP/xp_score_mean"] = xp_score_m
         wb_run.summary["XP/xp_score_sem"] = xp_score_s
 
