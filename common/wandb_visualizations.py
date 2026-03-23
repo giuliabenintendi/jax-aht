@@ -48,6 +48,9 @@ def _build_run_string(config: dict) -> str:
         parts.append(f"ent{ent_coef}")
     if alg_config.get("FEED_OTHER_ATTN", False):
         parts.append("feed_attn")
+    env_kwargs = alg_config.get("ENV_KWARGS", {})
+    if env_kwargs.get("shuffle") is False:
+        parts.append("no_shuffle")
     num_seeds = alg_config.get("NUM_SEEDS", 1)
     if num_seeds > 1:
         parts.append(f"s{num_seeds}")
@@ -83,6 +86,9 @@ def _build_tags(config) -> list[str]:
         tags.append("feed_attn")
     else:
         tags.append("no_feed_attn")
+    env_kwargs = alg_config.get("ENV_KWARGS", {})
+    if env_kwargs.get("shuffle") is False:
+        tags.append("no_shuffle")
     label = config.get("label", "default_label")
     if label != "default_label":
         tags.append(str(label))
