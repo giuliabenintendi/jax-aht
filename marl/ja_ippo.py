@@ -1174,6 +1174,72 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
 
 
+def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
+                               feed_attn_dims=None, num_episodes=30, fps=3):
+    """Run multiple card game episodes and save a video with attention overlays and choices."""
+    import os
+    import wandb
+    import numpy as np
+    from PIL import Image
+    from moviepy import ImageSequenceClip
+    from evaluation.vis_episodes import run_episode_with_states, _overlay_attention
+    from envs.card_game.rendering import render_card_game, GRID_ROWS, GRID_COLS, TILE_PIXELS
+
+    scale = 20
+    padding = 4
+    all_video_frames = []
+
+    for ep in range(num_episodes):
+        ep_rng = jax.random.PRNGKey(100 + ep)
+        ep_states, attn_data, ep_actions = run_episode_with_states(
+            ep_rng, inner_env, params, policy,
+            params, policy, max_steps,
+            collect_attention=True,
+            feed_other_attn_dims=feed_attn_dims,
+        )
+
+        maps_0 = attn_data.get("agent_0", [])
+        maps_1 = attn_data.get("agent_1", [])
+        if not maps_0 or not maps_1:
+            continue
+
+        n_steps = min(len(maps_0), len(maps_1))
+        base_img = render_card_game(ep_states[0].env_state.card_permutation)
+        base_np = np.array(base_img)
+        base_up = np.array(Image.fromarray(base_np).resize(
+            (base_np.shape[1] * scale, base_np.shape[0] * scale), Image.NEAREST))
+
+        last_action = ep_actions[-1] if ep_actions else (-1, -1)
+
+        for t in range(n_steps):
+            cell_0 = _overlay_attention(base_up, maps_0[t], "Oranges", alpha=0.6).copy()
+            cell_1 = _overlay_attention(base_up, maps_1[t], "RdPu", alpha=0.6).copy()
+
+            # Draw choice borders on decision step
+            if t == n_steps - 1 and last_action[0] >= 0:
+                _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
+                _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
+
+            # Stack vertically: agent 0 on top, agent 1 on bottom
+            cell_h, cell_w = cell_0.shape[:2]
+            frame = np.full((2 * cell_h + padding, cell_w, 3), 255, dtype=np.uint8)
+            frame[:cell_h] = cell_0
+            frame[cell_h + padding:] = cell_1
+            all_video_frames.append(frame)
+
+    if not all_video_frames:
+        print("[card_game] No frames for eval video")
+        return
+
+    os.makedirs(video_dir, exist_ok=True)
+    video_path = f"{video_dir}/eval_card_game.mp4"
+    clip = ImageSequenceClip(all_video_frames, fps=fps)
+    clip.write_videofile(video_path, fps=fps, codec='libx264', audio=False,
+                         bitrate='8000k', preset='slow')
+    logger.log_video(f"{tag}/eval_video", video_path, commit=False)
+    print(f"[card_game] Saved eval video: {video_path} ({len(all_video_frames)} frames, {len(all_video_frames)/fps:.0f}s)")
+
+
 def _render_lbf_eval_frames(inner_env, ep_states):
     """Render LBF eval frames using the Jumanji matplotlib viewer for quality."""
     import matplotlib
@@ -1258,9 +1324,13 @@ def log_eval_video(algorithm_config, env, out, logger):
         tag = f"Eval/seed_{seed_idx}"
 
         if env_name == "card-game":
-            # Card game: 2×T grid image (row 0 = agent 0 attention, row 1 = agent 1 attention)
+            # Card game: 2×T grid image + multi-episode video
             _log_card_game_attention_grid(
                 frames, attn_data, ep_actions, tag, video_dir, logger,
+            )
+            _log_card_game_eval_video(
+                inner_env, policy, final_params, max_steps, tag, video_dir, logger,
+                feed_attn_dims=feed_attn_dims, num_episodes=30, fps=3,
             )
         else:
             # Other envs: videos + attention overlays
