@@ -24,31 +24,49 @@ from agents.ja_utils import augment_obs_for_eval
 
 
 def _save_channel_debug(out_dir, step, obs_flat, prev_attn_partner, attn_own, img_h, img_w, scale, label):
-    """Save debug images for one agent at one step."""
-    # RGB scene
+    """Save debug figure with titles, colorbars, and proper labels."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     scene = np.array(obs_flat[:img_h * img_w * 3]).reshape(img_h, img_w, 3)
-    scene_img = np.array(Image.fromarray((scene * 255).astype(np.uint8)).resize(
+    scene_up = np.array(Image.fromarray((scene * 255).astype(np.uint8)).resize(
         (img_w * scale, img_h * scale), Image.NEAREST))
 
-    # 4th channel (what this agent receives from partner)
-    upsampled = np.array(jax.image.resize(prev_attn_partner, (img_h, img_w), method='nearest'))
-    ch4_norm = (upsampled - upsampled.min()) / (upsampled.max() - upsampled.min() + 1e-8)
-    import matplotlib.cm as cm
-    ch4_resized = np.array(Image.fromarray(ch4_norm.astype(np.float32), mode='F').resize(
-        (img_w * scale, img_h * scale), resample=Image.NEAREST))
-    ch4_img = (cm.hot(ch4_resized)[:, :, :3] * 255).astype(np.uint8)
+    # Upsample attention maps to image resolution for overlay
+    ch4_up = np.array(jax.image.resize(prev_attn_partner, (img_h, img_w), method='nearest'))
+    attn_up = np.array(jax.image.resize(attn_own, (img_h, img_w), method='nearest'))
 
-    # Own attention output
-    attn_np = np.array(attn_own)
-    attn_norm = (attn_np - attn_np.min()) / (attn_np.max() - attn_np.min() + 1e-8)
-    attn_resized = np.array(Image.fromarray(attn_norm.astype(np.float32), mode='F').resize(
-        (img_w * scale, img_h * scale), resample=Image.NEAREST))
-    attn_img = (cm.hot(attn_resized)[:, :, :3] * 255).astype(np.uint8)
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
-    # Stack: scene | 4th channel received | own attention
-    combined = np.concatenate([scene_img, ch4_img, attn_img], axis=1)
+    # Panel 1: Scene
+    axes[0].imshow(scene_up)
+    axes[0].set_title(f"Scene ({label})", fontsize=12)
+    axes[0].axis("off")
+
+    # Panel 2: 4th channel received (raw, not normalized)
+    im1 = axes[1].imshow(np.array(prev_attn_partner), cmap="hot", interpolation="nearest")
+    axes[1].set_title(f"4th channel received\n(feat map {prev_attn_partner.shape})", fontsize=11)
+    axes[1].set_xlabel(f"sum={float(jnp.array(prev_attn_partner).sum()):.3f}")
+    plt.colorbar(im1, ax=axes[1], fraction=0.046)
+
+    # Panel 3: 4th channel upsampled (what agent actually sees)
+    im2 = axes[2].imshow(ch4_up, cmap="hot", interpolation="nearest")
+    axes[2].set_title(f"4th channel upsampled\n({img_h}x{img_w})", fontsize=11)
+    axes[2].set_xlabel(f"min={ch4_up.min():.4f} max={ch4_up.max():.4f}")
+    plt.colorbar(im2, ax=axes[2], fraction=0.046)
+
+    # Panel 4: Agent's own attention output
+    im3 = axes[3].imshow(np.array(attn_own), cmap="hot", interpolation="nearest")
+    axes[3].set_title(f"Own attention output\n(feat map {attn_own.shape})", fontsize=11)
+    axes[3].set_xlabel(f"sum={float(jnp.array(attn_own).sum()):.3f}")
+    plt.colorbar(im3, ax=axes[3], fraction=0.046)
+
+    fig.suptitle(f"Step {step} - {label}", fontsize=14, fontweight="bold")
+    plt.tight_layout()
     path = out_dir / f"step{step}_{label}.png"
-    Image.fromarray(combined).save(path)
+    fig.savefig(path, dpi=100, bbox_inches="tight")
+    plt.close(fig)
     return path
 
 
