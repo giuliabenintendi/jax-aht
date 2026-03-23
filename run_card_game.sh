@@ -8,12 +8,13 @@ mkdir -p logs
 
 nohup bash -c "
 
-echo \"[\$(date +%H:%M)] Single critic, beta=1.0, 5M, 5 seeds, no shuffle\"
+echo \"[\$(date +%H:%M)] b=0.1, LR=8e-4, 5M, 5 seeds\"
 ./run_gpu.sh $GPU marl.run \
     -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
     algorithm.NUM_SEEDS=5 algorithm.TOTAL_TIMESTEPS=5e6 \
-    algorithm.FEED_OTHER_ATTN=true algorithm.JA_BETA_MAX=1.0 \
-    label=no_shuffle_b1.0_5M
+    algorithm.FEED_OTHER_ATTN=true algorithm.JA_BETA_MAX=0.1 \
+    algorithm.LR=8e-4 \
+    label=b0.1_lr8e4_5M
 
 echo \"[\$(date +%H:%M)] Done\"
 " > logs/card_game.log 2>&1 &
