@@ -38,15 +38,11 @@ def test_fixed_attention_maps():
         # Same mapping as in ja_ippo.py
         pixel_col = pos * TILE_PIXELS + TILE_PIXELS // 2
         pixel_row = 1 * TILE_PIXELS + TILE_PIXELS // 2
-        fc = min(round(pixel_col / (img_w / feat_w)), feat_w - 1)
-        fr = min(round(pixel_row / (img_h / feat_h)), feat_h - 1)
+        fc = min(int(pixel_col / (img_w / feat_w)), feat_w - 1)
+        fr = min(int(pixel_row / (img_h / feat_h)), feat_h - 1)
 
-        # Build attention with small blob
         attn = np.zeros((feat_h, feat_w), dtype=np.float32)
         attn[fr, fc] = 1.0
-        if fr + 1 < feat_h:
-            attn[fr + 1, fc] = 0.5
-        attn /= attn.sum()
 
         print(f"Position {pos}: pixel ({pixel_row},{pixel_col}) -> feature ({fr},{fc})")
 
