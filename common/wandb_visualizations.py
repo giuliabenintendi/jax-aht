@@ -48,6 +48,8 @@ def _build_run_string(config: dict) -> str:
         parts.append(f"ent{ent_coef}")
     if alg_config.get("FEED_OTHER_ATTN", False):
         parts.append("feed_attn")
+    if alg_config.get("FILTER_ATTN_CARDS", False):
+        parts.append("filter_cards")
     env_kwargs = alg_config.get("ENV_KWARGS", {})
     if env_kwargs.get("shuffle") is False:
         parts.append("no_shuffle")
@@ -89,6 +91,8 @@ def _build_tags(config) -> list[str]:
         tags.append("feed_attn")
     else:
         tags.append("no_feed_attn")
+    if alg_config.get("FILTER_ATTN_CARDS", False):
+        tags.append("filter_cards")
     env_kwargs = alg_config.get("ENV_KWARGS", {})
     if env_kwargs.get("shuffle") is False:
         tags.append("no_shuffle")

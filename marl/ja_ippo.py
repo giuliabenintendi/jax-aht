@@ -107,7 +107,9 @@ def make_train_scan(config, env):
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     fixed_partner_pos = -1  # not supported in scan path
+    filter_attn_cards = False
     _fixed_attn = None
+    _card_band = None
     feat_h = feat_w = 0
 
     def linear_schedule(count):
@@ -270,6 +272,11 @@ def make_train_scan(config, env):
                 if fixed_partner_pos >= 0:
                     attn_map = attn_map.at[:, num_envs:, ...].set(
                         jnp.broadcast_to(_fixed_attn[None, None], (attn_map.shape[0], num_envs, feat_h, feat_w)))
+
+                # Filter attention to card band only
+                if filter_attn_cards:
+                    masked = attn_map * _card_band[None, None, :, :]
+                    attn_map = masked / (masked.sum(axis=(-2, -1), keepdims=True) + 1e-8)
 
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
@@ -471,6 +478,7 @@ def make_train_loop(config, env):
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
+    filter_attn_cards = config.get("FILTER_ATTN_CARDS", False)
     fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
 
     # Precompute image and feature-map dimensions for attention channel
@@ -482,6 +490,17 @@ def make_train_loop(config, env):
         padding=config.get("CONV_PADDING", "SAME"),
         num_blocks=config.get("CONV_NUM_BLOCKS", 4),
     )
+
+    # Card band mask: rows covering the card area in the feature map
+    if filter_attn_cards:
+        from envs.card_game.rendering import TILE_PIXELS as _TP_cb
+        card_fr = int((1 * _TP_cb + _TP_cb // 2) / (img_h / feat_h))
+        r_lo = max(0, card_fr - 1)
+        r_hi = min(feat_h, card_fr + 2)
+        _card_band = jnp.zeros((feat_h, feat_w))
+        _card_band = _card_band.at[r_lo:r_hi, :].set(1.0)
+        print(f"[ja_ippo] Card band filter: rows {r_lo}-{r_hi-1} of {feat_h}, "
+              f"{int(_card_band.sum())}/{feat_h * feat_w} cells active")
 
     # Precompute fixed attention map for hardcoded partner
     if fixed_partner_pos >= 0:
@@ -700,6 +719,11 @@ def make_train_loop(config, env):
                 if fixed_partner_pos >= 0:
                     attn_map = attn_map.at[:, num_envs:, ...].set(
                         jnp.broadcast_to(_fixed_attn[None, None], (attn_map.shape[0], num_envs, feat_h, feat_w)))
+
+                # Filter attention to card band only
+                if filter_attn_cards:
+                    masked = attn_map * _card_band[None, None, :, :]
+                    attn_map = masked / (masked.sum(axis=(-2, -1), keepdims=True) + 1e-8)
 
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
