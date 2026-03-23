@@ -1319,6 +1319,13 @@ def log_eval_video(algorithm_config, env, out, logger):
               f"agent0={stasis_a0_mean:.4f} +/- {stasis_a0_std:.4f}, "
               f"agent1={stasis_a1_mean:.4f} +/- {stasis_a1_std:.4f}")
 
+        logger.log({
+            f"{tag}/stasis_agent0_mean": stasis_a0_mean,
+            f"{tag}/stasis_agent0_std": stasis_a0_std,
+            f"{tag}/stasis_agent1_mean": stasis_a1_mean,
+            f"{tag}/stasis_agent1_std": stasis_a1_std,
+        }, commit=False)
+
         if is_overcooked and pct_obj_agent0_vals:
             pct_a0_mean = float(np.nanmean(pct_obj_agent0_vals))
             pct_a0_std = float(np.nanstd(pct_obj_agent0_vals))
@@ -1329,11 +1336,20 @@ def log_eval_video(algorithm_config, env, out, logger):
                   f"agent0={pct_a0_mean:.4f} +/- {pct_a0_std:.4f}, "
                   f"agent1={pct_a1_mean:.4f} +/- {pct_a1_std:.4f}")
 
+            logger.log({
+                f"{tag}/pct_objects_agent0_mean": pct_a0_mean,
+                f"{tag}/pct_objects_agent0_std": pct_a0_std,
+                f"{tag}/pct_objects_agent1_mean": pct_a1_mean,
+                f"{tag}/pct_objects_agent1_std": pct_a1_std,
+            }, commit=False)
+
             for agent_label, accum in [("agent_0", category_accum_agent0),
                                         ("agent_1", category_accum_agent1)]:
                 sorted_cats = sorted(accum.items(), key=lambda x: -x[1])[:5]
                 parts = [f"{k}={v / n_eps:.3f}" for k, v in sorted_cats]
                 print(f"[ja_ippo] Seed {seed_idx} {agent_label} top categories: {', '.join(parts)}")
+                for cat, val in sorted_cats:
+                    logger.log({f"{tag}/{agent_label}_attn_{cat}": val / n_eps}, commit=False)
 
 
 
