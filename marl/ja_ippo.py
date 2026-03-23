@@ -485,11 +485,19 @@ def make_train_loop(config, env):
 
     # Precompute fixed attention map for hardcoded partner
     if fixed_partner_pos >= 0:
+        from envs.card_game.rendering import TILE_PIXELS as _TP, GRID_COLS as _GC
+        # Map card center pixel to feature map position
+        # With SAME padding stride=2 applied twice: feat_idx ≈ pixel / 4
+        pixel_col = fixed_partner_pos * _TP + _TP // 2
+        pixel_row = 1 * _TP + _TP // 2  # card row = grid row 1
+        fc = min(round(pixel_col / (img_w / feat_w)), feat_w - 1)
+        fr = min(round(pixel_row / (img_h / feat_h)), feat_h - 1)
+        # Use a small 2x2 blob for softer attention
         _fixed_attn = jnp.zeros((feat_h, feat_w))
-        # Card row = 1 of 3 grid rows → feature rows feat_h//3 to 2*feat_h//3
-        card_row = feat_h // 3
-        card_col = round(fixed_partner_pos * feat_w / 5 + feat_w / 10)
-        _fixed_attn = _fixed_attn.at[card_row, min(card_col, feat_w - 1)].set(1.0)
+        _fixed_attn = _fixed_attn.at[fr, fc].set(1.0)
+        if fr + 1 < feat_h:
+            _fixed_attn = _fixed_attn.at[fr + 1, fc].set(0.5)
+        _fixed_attn = _fixed_attn / _fixed_attn.sum()  # normalize to distribution
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]

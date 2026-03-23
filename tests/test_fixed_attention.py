@@ -21,7 +21,6 @@ def test_fixed_attention_maps():
     out_dir = Path("tests/fixed_attention_maps")
     out_dir.mkdir(exist_ok=True)
 
-    # Image and feature map dims
     img_h = GRID_ROWS * TILE_PIXELS  # 21
     img_w = GRID_COLS * TILE_PIXELS  # 35
     feat_h, feat_w = _compute_resnet_output_dims(
@@ -29,49 +28,46 @@ def test_fixed_attention_maps():
     )
     print(f"Image: {img_h}x{img_w}, Feature map: {feat_h}x{feat_w}")
 
-    # Render a fixed card layout (no shuffle)
     perm = jnp.arange(NUM_CARDS)
     img = render_card_game(perm)
     img_np = np.array(img)
 
     scale = 32
-    base_pil = Image.fromarray(img_np).resize(
-        (img_w * scale, img_h * scale), Image.NEAREST
-    )
 
     for pos in range(NUM_CARDS):
-        # Create fixed attention map (same as in ja_ippo.py)
+        # Same mapping as in ja_ippo.py
+        pixel_col = pos * TILE_PIXELS + TILE_PIXELS // 2
+        pixel_row = 1 * TILE_PIXELS + TILE_PIXELS // 2
+        fc = min(round(pixel_col / (img_w / feat_w)), feat_w - 1)
+        fr = min(round(pixel_row / (img_h / feat_h)), feat_h - 1)
+
+        # Build attention with small blob
         attn = np.zeros((feat_h, feat_w), dtype=np.float32)
-        card_row = feat_h // 3
-        card_col = round(pos * feat_w / 5 + feat_w / 10)
-        card_col = min(card_col, feat_w - 1)
-        attn[card_row, card_col] = 1.0
+        attn[fr, fc] = 1.0
+        if fr + 1 < feat_h:
+            attn[fr + 1, fc] = 0.5
+        attn /= attn.sum()
 
-        print(f"Position {pos}: feature map ({card_row}, {card_col})")
-        print(f"  Attention map:\n{attn}")
+        print(f"Position {pos}: pixel ({pixel_row},{pixel_col}) -> feature ({fr},{fc})")
 
-        # Upsample attention to image size
+        # Upsample to image size
         attn_resized = np.array(
             Image.fromarray(attn, mode='F').resize(
                 (img_w * scale, img_h * scale), resample=Image.NEAREST
             )
         )
 
-        # Overlay: red channel where attention is nonzero
-        frame = np.array(base_pil).copy()
-        mask = attn_resized > 0.5
-        frame[mask] = [255, 0, 0]
-
-        # Also draw a semi-transparent overlay
-        alpha = 0.5
-        overlay = frame.copy()
+        # Overlay
+        base = np.array(Image.fromarray(img_np).resize(
+            (img_w * scale, img_h * scale), Image.NEAREST
+        ))
         import matplotlib.cm as cm
-        heatmap = cm.Reds(attn_resized)[:, :, :3] * 255
-        blended = (1 - alpha * attn_resized[:, :, None]) * frame + alpha * attn_resized[:, :, None] * heatmap
+        a_norm = attn_resized / (attn_resized.max() + 1e-8)
+        heatmap = (cm.Reds(a_norm)[:, :, :3] * 255).astype(np.uint8)
+        alpha = 0.6
+        blended = ((1 - alpha * a_norm[:, :, None]) * base + alpha * a_norm[:, :, None] * heatmap)
         result = np.clip(blended, 0, 255).astype(np.uint8)
 
-        path = out_dir / f"card_pos_{pos}_attn_row{card_row}_col{card_col}.png"
+        path = out_dir / f"card_pos_{pos}.png"
         Image.fromarray(result).save(path)
         print(f"  Saved {path}")
-
-    print(f"\nAll maps saved to {out_dir}/")
