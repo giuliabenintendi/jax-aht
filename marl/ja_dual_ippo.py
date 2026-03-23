@@ -619,7 +619,7 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
     for seed_idx in range(num_seeds):
         final_params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
 
-        ep_states, attn_data, _ = run_episode_with_states(
+        ep_states, attn_data, ep_actions = run_episode_with_states(
             jax.random.PRNGKey(42 + seed_idx), inner_env, final_params, policy,
             final_params, policy, max_steps,
             collect_attention=True,
@@ -639,24 +639,31 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
             from evaluation.vis_episodes import render_episode_frames
             frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
 
-        from moviepy import ImageSequenceClip
-        video_path = f"{video_dir}/eval_final.mp4"
-        clip = ImageSequenceClip(frames, fps=10)
-        clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
-                             bitrate='8000k', preset='slow')
         tag = f"Eval/seed_{seed_idx}"
-        logger.log_video(f"{tag}/episode_video", video_path, commit=False)
 
-        log_attention_to_wandb(
-            attn_data, logger, step=None, tag_prefix=tag, commit=False,
-            frames=frames,
-        )
+        if env_name == "card-game":
+            from marl.ja_ippo import _log_card_game_attention_grid
+            _log_card_game_attention_grid(
+                frames, attn_data, ep_actions, tag, video_dir, logger,
+            )
+        else:
+            from moviepy import ImageSequenceClip
+            video_path = f"{video_dir}/eval_final.mp4"
+            clip = ImageSequenceClip(frames, fps=10)
+            clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
+                                 bitrate='8000k', preset='slow')
+            logger.log_video(f"{tag}/episode_video", video_path, commit=False)
 
-        attn_video_base = f"{video_dir}/eval_attention.mp4"
-        make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
-        logger.log_video(f"{tag}/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
-        logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
-        logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
+            log_attention_to_wandb(
+                attn_data, logger, step=None, tag_prefix=tag, commit=False,
+                frames=frames,
+            )
+
+            attn_video_base = f"{video_dir}/eval_attention.mp4"
+            make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
+            logger.log_video(f"{tag}/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
+            logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
+            logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
 
         # Multi-episode attention metrics
         num_eval_episodes = int(algorithm_config.get("NUM_EVAL_EPISODES", 64))
