@@ -645,12 +645,135 @@ def print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds):
     print(f"  JSD:  SP = {sp_jsd_mean:.4f} +/- {sp_jsd_sem:.4f}  |  XP = {xp_jsd_mean:.4f} +/- {xp_jsd_sem:.4f}")
 
 
+def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
+    """Cross-play evaluation loading one seed from each of multiple checkpoints.
+
+    Used for fixed-partner experiments where each seed was trained separately.
+    """
+    # Use first checkpoint for config
+    hydra_cfg = _load_hydra_config(checkpoint_paths[0])
+    if task_name is not None:
+        task_cfg = load_task_config(task_name)
+        algo_cfg = load_algo_config()
+    else:
+        if hydra_cfg is None:
+            raise ValueError("No --task provided and no .hydra/config.yaml found")
+        algo_cfg = hydra_cfg["algorithm"]
+        task_cfg = {"ENV_NAME": algo_cfg["ENV_NAME"],
+                    "ENV_KWARGS": algo_cfg["ENV_KWARGS"],
+                    "ROLLOUT_LENGTH": algo_cfg["ROLLOUT_LENGTH"]}
+        task_name = hydra_cfg.get("TASK_NAME", algo_cfg["ENV_NAME"])
+
+    # Remove fixed_partner_pos from env kwargs for eval (agents use their own attention)
+    eval_env_kwargs = dict(task_cfg["ENV_KWARGS"])
+    eval_env_kwargs.pop("fixed_partner_pos", None)
+    env = make_env(task_cfg["ENV_NAME"], eval_env_kwargs)
+    env = LogWrapper(env)
+
+    # Initialize policy
+    rng = jax.random.PRNGKey(EVAL_SEED)
+    rng, init_rng = jax.random.split(rng)
+    use_dual = algo_cfg.get("USE_DUAL_CRITIC", False)
+    init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
+    policy, init_params = init_fn(algo_cfg, env, init_rng)
+
+    # Load one seed from each checkpoint
+    seed_params = []
+    for i, ckpt_path in enumerate(checkpoint_paths):
+        run_data = load_train_run(ckpt_path)
+        params = run_data["final_params"]
+        # Take seed 0 from each checkpoint (each has 1 seed)
+        params_0 = jax.tree.map(lambda x: x[0], params)
+        num_params = sum(x.size for x in jax.tree.leaves(params_0))
+        print(f"  checkpoint {i}: {ckpt_path} ({num_params} params)")
+        seed_params.append(params_0)
+
+    num_seeds = len(seed_params)
+    print(f"[xp_seeds] multi-checkpoint mode: {num_seeds} seeds from {num_seeds} checkpoints")
+
+    stacked_params = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_params)
+
+    max_steps = task_cfg["ROLLOUT_LENGTH"]
+    rng, eval_rng = jax.random.split(rng)
+    outer_rngs = jax.random.split(eval_rng, num_seeds)
+    action_sizes = {k: int(env.action_space(k).n) for k in env.agents}
+
+    # Compute feed_attn_dims
+    feed_attn = algo_cfg.get("FEED_OTHER_ATTN", False)
+    feed_attn_dims = None
+    if feed_attn:
+        from agents.initialize_agents import _get_image_dims
+        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        _img_h, _img_w, _ = _get_image_dims(env)
+        _feat_h, _feat_w = _compute_resnet_output_dims(
+            _img_h, _img_w,
+            stride=algo_cfg.get("CONV_STRIDE", 2),
+            kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
+            padding=algo_cfg.get("CONV_PADDING", "SAME"),
+            num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
+        )
+        feed_attn_dims = (_img_h, _img_w, _feat_h, _feat_w)
+        print(f"[xp_seeds] feed_other_attn enabled")
+
+    row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
+        rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
+        feed_attn_dims=feed_attn_dims,
+    ))
+
+    all_row_metrics = []
+    jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
+    start_time = time.time()
+    for i in range(num_seeds):
+        print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
+        row_metrics, row_jsds = row_fn(outer_rngs[i], seed_params[i])
+        jsd_matrix[i] = np.array(row_jsds)
+        all_row_metrics.append(row_metrics)
+        for j in range(num_seeds):
+            ret = np.array(row_metrics["returned_episode_returns"][j]).mean()
+            jsd_val = np.array(row_jsds[j]).mean()
+            tag = "SP" if i == j else "XP"
+            print(f"  [{tag}] {i}x{j}: return={ret:.2f} jsd={jsd_val:.4f}", end="")
+        print()
+
+    elapsed = time.time() - start_time
+    print(f"[xp_seeds] evaluation done in {elapsed:.1f}s")
+
+    # Build score matrix
+    score_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
+    for i in range(num_seeds):
+        score_matrix[i] = np.array(all_row_metrics[i]["returned_episode_returns"])
+
+    score_mean = score_matrix.mean(axis=-1)
+    score_std = score_matrix.std(axis=-1)
+    jsd_ep_means = jsd_matrix.mean(axis=-1)
+
+    # Print summary
+    sp_scores = np.diag(score_mean)
+    sp_mean = np.mean(sp_scores)
+    sp_sem = np.std(sp_scores) / np.sqrt(len(sp_scores))
+    xp_mean, xp_sem = xp_mean_and_sem(score_mean)
+    print(f"  Score: SP = {sp_mean:.4f} +/- {sp_sem:.4f}  |  XP = {xp_mean:.4f} +/- {xp_sem:.4f}")
+
+    sp_jsd = np.diag(jsd_ep_means)
+    sp_jsd_mean = np.mean(sp_jsd)
+    sp_jsd_sem = np.std(sp_jsd) / np.sqrt(len(sp_jsd))
+    xp_jsd_mean, xp_jsd_sem = xp_mean_and_sem(jsd_ep_means)
+    print(f"  JSD:   SP = {sp_jsd_mean:.4f} +/- {sp_jsd_sem:.4f}  |  XP = {xp_jsd_mean:.4f} +/- {xp_jsd_sem:.4f}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cross-play evaluation across seeds")
     parser.add_argument("--task", default=None,
                         help="Task config name (default: inferred from Hydra config)")
-    parser.add_argument("--checkpoint", required=True,
-                        help="Path to saved_train_run directory")
+    parser.add_argument("--checkpoint", default=None,
+                        help="Path to saved_train_run directory (single multi-seed checkpoint)")
+    parser.add_argument("--checkpoints", nargs="+", default=None,
+                        help="Paths to multiple 1-seed checkpoints for multi-checkpoint XP")
     args = parser.parse_args()
 
-    run_xp_evaluation(args.task, args.checkpoint)
+    if args.checkpoints:
+        run_xp_multi_checkpoint(args.task, args.checkpoints)
+    elif args.checkpoint:
+        run_xp_evaluation(args.task, args.checkpoint)
+    else:
+        parser.error("Either --checkpoint or --checkpoints is required")
