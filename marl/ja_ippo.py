@@ -1101,11 +1101,15 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     # Get choices from the last action taken
     last_action = ep_actions[-1] if ep_actions else (-1, -1)
 
+    # Use initial frame for all overlays (cards don't change within episode;
+    # the last frame in ep_states is the auto-reset with new shuffle)
+    base_frame = frames[0]
+
     # Build overlay frames for each agent at each timestep
-    row_0 = []  # agent 0 attention (Blues)
-    row_1 = []  # agent 1 attention (Reds)
+    row_0 = []  # agent 0 attention (Oranges)
+    row_1 = []  # agent 1 attention (RdPu)
     for t in range(n_steps):
-        frame = frames[t + 1]
+        frame = base_frame
         cell_0 = _overlay_attention(frame, maps_0[t], "Oranges", alpha=0.6).copy()
         cell_1 = _overlay_attention(frame, maps_1[t], "RdPu", alpha=0.6).copy()
 
