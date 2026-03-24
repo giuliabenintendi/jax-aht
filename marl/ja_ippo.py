@@ -108,6 +108,7 @@ def make_train_scan(config, env):
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     fixed_partner_pos = -1  # not supported in scan path
     filter_attn_cards = False
+    filter_attn_top1 = False
     _fixed_attn = None
     _card_band = None
     feat_h = feat_w = 0
@@ -274,7 +275,12 @@ def make_train_scan(config, env):
                         jnp.broadcast_to(_fixed_attn[None, None], (attn_map.shape[0], num_envs, feat_h, feat_w)))
 
                 # Filter attention to card band only
-                if filter_attn_cards:
+                if filter_attn_top1:
+                    masked = attn_map * _card_band[None, None, :, :]
+                    flat = masked.reshape(*masked.shape[:2], -1)
+                    top_idx = jnp.argmax(flat, axis=-1, keepdims=True)
+                    attn_map = jnp.zeros_like(flat).at[jnp.arange(flat.shape[0])[:, None], jnp.arange(flat.shape[1])[None, :], top_idx].set(1.0).reshape(attn_map.shape)
+                elif filter_attn_cards:
                     masked = attn_map * _card_band[None, None, :, :]
                     attn_map = masked / (masked.sum(axis=(-2, -1), keepdims=True) + 1e-8)
 
@@ -479,6 +485,7 @@ def make_train_loop(config, env):
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
     filter_attn_cards = config.get("FILTER_ATTN_CARDS", False)
+    filter_attn_top1 = config.get("FILTER_ATTN_TOP1", False)
     fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
 
     # Precompute image and feature-map dimensions for attention channel
@@ -492,10 +499,11 @@ def make_train_loop(config, env):
     )
 
     # Card band mask: rows covering the card area in the feature map
-    if filter_attn_cards:
+    if filter_attn_cards or filter_attn_top1:
         from agents.ja_utils import build_card_band_mask
         _card_band = build_card_band_mask(feat_h, feat_w, img_h)
-        print(f"[ja_ippo] Card band filter: {int(_card_band.sum())}/{feat_h * feat_w} cells active")
+        mode = "top1" if filter_attn_top1 else "renorm"
+        print(f"[ja_ippo] Card band filter ({mode}): {int(_card_band.sum())}/{feat_h * feat_w} cells active")
 
     # Precompute fixed attention map for hardcoded partner
     if fixed_partner_pos >= 0:
@@ -717,7 +725,12 @@ def make_train_loop(config, env):
                         jnp.broadcast_to(_fixed_attn[None, None], (attn_map.shape[0], num_envs, feat_h, feat_w)))
 
                 # Filter attention to card band only
-                if filter_attn_cards:
+                if filter_attn_top1:
+                    masked = attn_map * _card_band[None, None, :, :]
+                    flat = masked.reshape(*masked.shape[:2], -1)
+                    top_idx = jnp.argmax(flat, axis=-1, keepdims=True)
+                    attn_map = jnp.zeros_like(flat).at[jnp.arange(flat.shape[0])[:, None], jnp.arange(flat.shape[1])[None, :], top_idx].set(1.0).reshape(attn_map.shape)
+                elif filter_attn_cards:
                     masked = attn_map * _card_band[None, None, :, :]
                     attn_map = masked / (masked.sum(axis=(-2, -1), keepdims=True) + 1e-8)
 
@@ -1195,7 +1208,7 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
 
 def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
-                               feed_attn_dims=None, filter_attn_card_mask=None, num_episodes=30, fps=3):
+                               feed_attn_dims=None, filter_attn_card_mask=None, filter_top1=False, num_episodes=30, fps=3):
     """Run multiple card game episodes and save a video with attention overlays and choices."""
     import os
     import wandb
@@ -1216,6 +1229,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             params, policy, max_steps,
             collect_attention=True,
             filter_attn_card_mask=filter_attn_card_mask,
+            filter_top1=filter_top1,
             feed_other_attn_dims=feed_attn_dims,
         )
 
@@ -1317,8 +1331,9 @@ def log_eval_video(algorithm_config, env, out, logger):
         feed_attn_dims = (ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
 
     filter_cards = algorithm_config.get("FILTER_ATTN_CARDS", False)
+    filter_top1 = algorithm_config.get("FILTER_ATTN_TOP1", False)
     filter_mask = None
-    if filter_cards:
+    if filter_cards or filter_top1:
         from agents.ja_utils import build_card_band_mask
         ev_img_h_f, ev_img_w_f, _ = _get_image_dims(env)
         ev_fh, ev_fw = _compute_resnet_output_dims(
@@ -1341,6 +1356,7 @@ def log_eval_video(algorithm_config, env, out, logger):
             collect_attention=True,
             feed_other_attn_dims=feed_attn_dims,
             filter_attn_card_mask=filter_mask,
+            filter_top1=filter_top1,
         )
         print(f"[ja_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
 
@@ -1366,7 +1382,7 @@ def log_eval_video(algorithm_config, env, out, logger):
             )
             _log_card_game_eval_video(
                 inner_env, policy, final_params, max_steps, tag, video_dir, logger,
-                feed_attn_dims=feed_attn_dims, filter_attn_card_mask=filter_mask,
+                feed_attn_dims=feed_attn_dims, filter_attn_card_mask=filter_mask, filter_top1=filter_top1,
                 num_episodes=30, fps=3,
             )
         else:

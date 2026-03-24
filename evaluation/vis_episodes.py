@@ -72,7 +72,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            agent_1_param, agent_1_policy,
                            max_episode_steps, collect_attention=False,
                            greedy=True, feed_other_attn_dims=None,
-                           filter_attn_card_mask=None):
+                           filter_attn_card_mask=None,
+                           filter_top1=False):
     '''
     Run a single episode and collect states for rendering.
 
@@ -149,8 +150,12 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 agent_id=0,
             )
             if filter_attn_card_mask is not None:
-                from agents.ja_utils import filter_attn_to_cards
-                attn_0 = filter_attn_to_cards(attn_0, filter_attn_card_mask)
+                if filter_top1:
+                    from agents.ja_utils import filter_attn_top1_cards
+                    attn_0 = filter_attn_top1_cards(attn_0, filter_attn_card_mask)
+                else:
+                    from agents.ja_utils import filter_attn_to_cards
+                    attn_0 = filter_attn_to_cards(attn_0, filter_attn_card_mask)
             attn_maps["agent_0"].append(attn_0)
         else:
             act_0, hstate_0 = agent_0_policy.get_action(

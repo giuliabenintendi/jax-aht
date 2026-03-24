@@ -42,3 +42,4 @@ USE_DUAL_CRITIC: false          # dual critic (V_ext + V_int) for separate rewar
 DUAL_CRITIC_ACTOR_JA: false     # include JA advantage in policy gradient (requires USE_DUAL_CRITIC)
 FEED_OTHER_ATTN: false          # feed other agent's previous attention map as 4th image channel
 FILTER_ATTN_CARDS: false        # mask attention to card band only (rows 2-3 of feature map), renormalize
+FILTER_ATTN_TOP1: false         # mask to card band then keep only argmax position

@@ -163,6 +163,16 @@ def filter_attn_to_cards(attn, card_mask):
     return masked / (masked.sum(axis=(-2, -1), keepdims=True) + 1e-8)
 
 
+def filter_attn_top1_cards(attn, card_mask):
+    """Mask to card band, then keep only the argmax position."""
+    masked = attn * card_mask
+    flat = masked.reshape(-1)
+    top_idx = jnp.argmax(flat)
+    result = jnp.zeros_like(flat)
+    result = result.at[top_idx].set(1.0)
+    return result.reshape(attn.shape)
+
+
 def augment_obs_for_eval(obs_flat, other_attn, img_h, img_w):
     """Append other agent's attention as 4th channel during eval.
 
