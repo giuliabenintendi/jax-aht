@@ -36,7 +36,7 @@ CONV_PADDING: SAME
 
 # JA intrinsic reward (paper Appendix A)
 JA_BETA_MAX: 0.05
-JA_WARMUP_ENV_STEPS: 700000
+JA_WARMUP_ENV_STEPS: 3500000
 NORMALIZE_REWARDS: false        # reference code uses no normalization (Lee et al. 2021)
 USE_DUAL_CRITIC: false          # dual critic (V_ext + V_int) for separate reward baselines
 DUAL_CRITIC_ACTOR_JA: false     # include JA advantage in policy gradient (requires USE_DUAL_CRITIC)
