@@ -664,7 +664,7 @@ def make_train_loop(config, env):
             rgb = img_part.reshape(num_actors, img_h, img_w, 3)
             augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
             result = augmented.reshape(num_actors, -1)
-            if communication:
+            if extra.shape[1] > 0:
                 result = jnp.concatenate([result, extra], axis=-1)
             return result
 
