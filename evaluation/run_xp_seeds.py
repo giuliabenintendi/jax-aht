@@ -361,6 +361,12 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
     if total is not None:
         total = float(total)
         parts.append(f"{total/1e6:.0f}M" if total >= 1e6 else f"{total:.0f}")
+    if algo_cfg.get("FEED_OTHER_ATTN", False):
+        parts.append("feed_attn")
+    if algo_cfg.get("FILTER_ATTN_TOP1", False):
+        parts.append("top1_cards")
+    elif algo_cfg.get("FILTER_ATTN_CARDS", False):
+        parts.append("filter_cards")
     seeds = algo_cfg.get("NUM_SEEDS", 1)
     if seeds > 1:
         parts.append(f"s{seeds}")
