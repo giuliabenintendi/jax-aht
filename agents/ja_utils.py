@@ -178,5 +178,6 @@ def augment_obs_for_eval(obs_flat, other_attn, img_h, img_w):
         Augmented flat obs, shape (..., img_h * img_w * 4)
     """
     upsampled = jax.image.resize(other_attn, (img_h, img_w), method='nearest')
-    attn_channel = upsampled.reshape(-1)
-    return jnp.concatenate([obs_flat, attn_channel], axis=-1)
+    rgb = obs_flat.reshape(img_h, img_w, 3)
+    augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
+    return augmented.reshape(-1)

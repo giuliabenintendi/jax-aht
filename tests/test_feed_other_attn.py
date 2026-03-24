@@ -114,21 +114,23 @@ def test_dual_critic_policy_4ch():
 
 
 def test_augment_obs_for_eval():
-    """augment_obs_for_eval produces correct shape and values."""
+    """augment_obs_for_eval produces correct shape and channel layout.
+
+    Reshape to (H, W, 4) — the way the network unpacks it — and verify
+    that channels 0-2 are RGB and channel 3 is the attention mask.
+    """
     obs_flat = jnp.ones(IMG_H * IMG_W * 3) * 0.5
     attn = jnp.ones((FEAT_H, FEAT_W)) / (FEAT_H * FEAT_W)
 
     augmented = augment_obs_for_eval(obs_flat, attn, IMG_H, IMG_W)
 
     assert augmented.shape == (IMG_H * IMG_W * 4,)
-    # First 3 channels unchanged
-    assert jnp.allclose(augmented[:IMG_H * IMG_W * 3], 0.5)
-    # 4th channel is upsampled uniform attention
-    attn_channel = augmented[IMG_H * IMG_W * 3:]
-    assert attn_channel.shape == (IMG_H * IMG_W,)
-    # Uniform attention upsampled should have value 1/(feat_h*feat_w)
+
+    image = augmented.reshape(IMG_H, IMG_W, 4)
+    assert jnp.allclose(image[:, :, :3], 0.5)
+
     expected_val = 1.0 / (FEAT_H * FEAT_W)
-    assert jnp.allclose(attn_channel, expected_val, atol=1e-6)
+    assert jnp.allclose(image[:, :, 3], expected_val, atol=1e-6)
 
 
 def test_augment_obs_nearest_neighbor():
@@ -138,12 +140,14 @@ def test_augment_obs_nearest_neighbor():
     attn = attn.at[0, 0].set(1.0)
 
     augmented = augment_obs_for_eval(jnp.zeros(IMG_H * IMG_W * 3), attn, IMG_H, IMG_W)
-    attn_channel = augmented[IMG_H * IMG_W * 3:].reshape(IMG_H, IMG_W)
+    image = augmented.reshape(IMG_H, IMG_W, 4)
+    attn_channel = image[:, :, 3]
 
     # Top-left block should be 1.0, rest should be 0.0
-    # Block size: ceil(IMG_H/FEAT_H) x ceil(IMG_W/FEAT_W) = 4x4
     assert attn_channel[0, 0] == 1.0
     assert attn_channel[IMG_H - 1, IMG_W - 1] == 0.0
+    # RGB channels should be untouched (all zeros)
+    assert jnp.allclose(image[:, :, :3], 0.0)
 
 
 def test_swap_and_reset_logic():
@@ -271,27 +275,40 @@ def test_visualize_4th_channel():
     # Upsample to pixel resolution (same as what the training loop does)
     upsampled = np.array(jax.image.resize(attn_jnp, (IMG_H, IMG_W), method='nearest'))
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    # Use gridspec for consistent panel sizes: RGB and upsampled share the same
+    # pixel aspect (IMG_H x IMG_W), feature map is smaller (FEAT_H x FEAT_W)
+    fig = plt.figure(figsize=(14, 5))
+    gs = fig.add_gridspec(1, 3, width_ratios=[IMG_W, IMG_W, IMG_W], wspace=0.35)
 
-    axes[0].imshow(rgb)
-    axes[0].set_title(f"RGB obs (agent 0)\n{IMG_H}x{IMG_W}x3")
-    axes[0].axis("off")
+    ax0 = fig.add_subplot(gs[0])
+    ax0.imshow(rgb, aspect="equal")
+    ax0.set_title(f"RGB obs (agent 0)\n{IMG_H}x{IMG_W}x3")
+    ax0.axis("off")
 
-    im1 = axes[1].imshow(attn, cmap="hot", interpolation="nearest")
-    axes[1].set_title(f"Other's attention (feat map)\n{FEAT_H}x{FEAT_W}")
+    ax1 = fig.add_subplot(gs[1])
+    im1 = ax1.imshow(attn, cmap="hot", interpolation="nearest", aspect="equal",
+                      extent=[0, IMG_W, IMG_H, 0])
+    ax1.set_title(f"Other's attention (feat map)\n{FEAT_H}x{FEAT_W}")
+    # Annotate values on the feature-map grid
+    cell_w = IMG_W / FEAT_W
+    cell_h = IMG_H / FEAT_H
     for r in range(FEAT_H):
         for c in range(FEAT_W):
             v = attn[r, c]
-            if v > 0.01:
-                axes[1].text(c, r, f"{v:.2f}", ha="center", va="center",
-                             fontsize=7, color="white" if v > 0.15 else "black")
-    plt.colorbar(im1, ax=axes[1], fraction=0.046)
+            if v > 0.005:
+                ax1.text(c * cell_w + cell_w / 2, r * cell_h + cell_h / 2,
+                         f"{v:.3f}", ha="center", va="center",
+                         fontsize=5, color="white" if v > 0.05 else "black")
+    plt.colorbar(im1, ax=ax1, fraction=0.046)
 
-    im2 = axes[2].imshow(upsampled, cmap="hot", interpolation="nearest")
-    axes[2].set_title(f"4th channel (upsampled)\n{IMG_H}x{IMG_W}")
-    plt.colorbar(im2, ax=axes[2], fraction=0.046)
+    ax2 = fig.add_subplot(gs[2])
+    im2 = ax2.imshow(upsampled, cmap="hot", interpolation="nearest", aspect="equal")
+    ax2.set_title(f"4th channel (upsampled)\n{IMG_H}x{IMG_W}")
+    plt.colorbar(im2, ax=ax2, fraction=0.046)
 
-    fig.suptitle("FEED_OTHER_ATTN: what the 4th image channel looks like", fontweight="bold")
+    fig.suptitle("FEED_OTHER_ATTN: what the 4th image channel looks like\n"
+                 "(untrained network — attention is near-uniform, will sharpen with training)",
+                 fontweight="bold", fontsize=10)
     plt.tight_layout()
 
     out_path = "tests/feed_other_attn_vis.png"

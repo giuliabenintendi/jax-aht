@@ -206,8 +206,9 @@ def make_train_loop(config, env):
             upsampled = jax.image.resize(
                 prev_other_attn, (num_actors, img_h, img_w), method='nearest',
             )
-            attn_channel = upsampled.reshape(num_actors, img_h * img_w)
-            return jnp.concatenate([obs_batch, attn_channel], axis=-1)
+            rgb = obs_batch.reshape(num_actors, img_h, img_w, 3)
+            augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
+            return augmented.reshape(num_actors, -1)
 
         def _swap_and_reset_attn(attn_map, done_batch):
             """Swap attention maps between agents, reset to uniform on done."""
