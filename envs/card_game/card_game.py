@@ -101,6 +101,8 @@ class CardGameEnv(BaseEnv):
         return jaxmarl_spaces.Box(0.0, 1.0, (self._obs_dim,))
 
     def action_space(self, agent: str):
+        if self.communication:
+            return jaxmarl_spaces.Discrete(num_categories=self.num_cards * self.num_cards)
         return jaxmarl_spaces.Discrete(num_categories=self.num_cards)
 
     def _make_obs(self, env_state: CardGameState) -> Dict[str, jnp.ndarray]:
@@ -156,8 +158,20 @@ class CardGameEnv(BaseEnv):
 
         # Reward only on the final (decision) step
         is_decision = new_step >= self.max_steps
-        a0 = actions["agent_0"]
-        a1 = actions["agent_1"]
+        raw_a0 = actions["agent_0"]
+        raw_a1 = actions["agent_1"]
+
+        # Decode joint action into card choice and message
+        if self.communication:
+            a0 = raw_a0 // self.num_cards
+            a1 = raw_a1 // self.num_cards
+            new_messages = jnp.array(
+                [raw_a0 % self.num_cards, raw_a1 % self.num_cards], dtype=jnp.int32)
+        else:
+            a0 = raw_a0
+            a1 = raw_a1
+            new_messages = env_state.messages
+
         # Override agent 1's action if fixed partner is set
         if self.fixed_partner_pos >= 0:
             a1 = jnp.int32(self.fixed_partner_pos)
@@ -168,13 +182,6 @@ class CardGameEnv(BaseEnv):
         done = is_decision
         dones = {agent: done for agent in self.agents}
         dones["__all__"] = done
-
-        # Update messages if communication is enabled
-        if self.communication:
-            new_messages = jnp.array(
-                [actions["agent_0_msg"], actions["agent_1_msg"]], dtype=jnp.int32)
-        else:
-            new_messages = env_state.messages
 
         # Store choices on decision step, keep -1 otherwise
         choices = jnp.where(
@@ -218,7 +225,8 @@ class CardGameEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
-        return {agent: jnp.ones(self.num_cards) for agent in self.agents}
+        n = self.num_cards * self.num_cards if self.communication else self.num_cards
+        return {agent: jnp.ones(n) for agent in self.agents}
 
     @partial(jax.jit, static_argnums=(0,))
     def get_step_count(self, state: WrappedEnvState) -> jnp.array:

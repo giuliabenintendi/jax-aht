@@ -189,7 +189,7 @@ class JAImageActorCritic(nn.Module):
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
     num_channels: int = 3
-    message_dim: int = 0  # >0 enables communication output head
+    message_dim: int = 0  # >0 enables communication (partner message input via obs)
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -239,15 +239,6 @@ class JAImageActorCritic(nn.Module):
         action_logits = jnp.clip(action_logits, -20.0, 20.0)
         pi = distrax.Categorical(logits=action_logits)
 
-        # Message head (shared actor backbone)
-        if self.message_dim > 0:
-            msg_logits = nn.Dense(
-                self.message_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
-                name="message_proj",
-            )(actor_out)
-            msg_logits = jnp.clip(msg_logits, -20.0, 20.0)
-            msg_pi = distrax.Categorical(logits=msg_logits)
-
         # Critic path
         critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
@@ -269,6 +260,4 @@ class JAImageActorCritic(nn.Module):
         )(critic_out)
 
         new_hidden = (actor_lstm_state, critic_lstm_state)
-        if self.message_dim > 0:
-            return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map, msg_pi
         return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map

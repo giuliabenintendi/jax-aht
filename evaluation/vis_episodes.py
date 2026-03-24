@@ -138,32 +138,21 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
         # Get actions for both agents
         rng, act_rng, part_rng, step_rng = jax.random.split(rng, 4)
-        has_comm = getattr(agent_0_policy, 'message_dim', 0) > 0
+        has_comm = getattr(env, 'communication', False)
+        num_cards = getattr(env, 'num_cards', 5)
 
         # Get ego action (optionally with attention)
         if collect_attention and hasattr(agent_0_policy, 'get_action_and_attention'):
-            if has_comm:
-                act_0, hstate_0, attn_0, msg_0 = agent_0_policy.get_action_and_attention(
-                    params=agent_0_param,
-                    obs=obs_0_reshaped,
-                    done=done_0_reshaped,
-                    avail_actions=avail_actions_0,
-                    hstate=hstate_0,
-                    rng=act_rng,
-                    greedy=greedy,
-                    agent_id=0,
-                )
-            else:
-                act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
-                    params=agent_0_param,
-                    obs=obs_0_reshaped,
-                    done=done_0_reshaped,
-                    avail_actions=avail_actions_0,
-                    hstate=hstate_0,
-                    rng=act_rng,
-                    greedy=greedy,
-                    agent_id=0,
-                )
+            act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
+                params=agent_0_param,
+                obs=obs_0_reshaped,
+                done=done_0_reshaped,
+                avail_actions=avail_actions_0,
+                hstate=hstate_0,
+                rng=act_rng,
+                greedy=greedy,
+                agent_id=0,
+            )
             if filter_attn_card_mask is not None:
                 if filter_top1:
                     from agents.ja_utils import filter_attn_top1_cards
@@ -186,28 +175,16 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
         # Get partner action (optionally with attention)
         if collect_attention and hasattr(agent_1_policy, 'get_action_and_attention'):
-            if has_comm:
-                act_1, hstate_1, attn_1, msg_1 = agent_1_policy.get_action_and_attention(
-                    params=agent_1_param,
-                    obs=obs_1_reshaped,
-                    done=done_1_reshaped,
-                    avail_actions=avail_actions_1,
-                    hstate=hstate_1,
-                    rng=part_rng,
-                    greedy=greedy,
-                    agent_id=1,
-                )
-            else:
-                act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
-                    params=agent_1_param,
-                    obs=obs_1_reshaped,
-                    done=done_1_reshaped,
-                    avail_actions=avail_actions_1,
-                    hstate=hstate_1,
-                    rng=part_rng,
-                    greedy=greedy,
-                    agent_id=1,
-                )
+            act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
+                params=agent_1_param,
+                obs=obs_1_reshaped,
+                done=done_1_reshaped,
+                avail_actions=avail_actions_1,
+                hstate=hstate_1,
+                rng=part_rng,
+                greedy=greedy,
+                agent_id=1,
+            )
             # Override agent 1's attention if fixed partner
             if fixed_partner_attn is not None:
                 attn_1 = fixed_partner_attn[None, None]  # match shape
@@ -236,22 +213,21 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             prev_attn_0 = attn_0.squeeze()  # (feat_h, feat_w)
             prev_attn_1 = attn_1.squeeze()  # (feat_h, feat_w)
 
-        # Take step in environment
+        # Take step in environment (joint action encodes card choice + message)
         both_actions = [act_0, act_1]
         env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
-        if has_comm:
-            env_act["agent_0_msg"] = msg_0.squeeze()
-            env_act["agent_1_msg"] = msg_1.squeeze()
         obs, env_state, reward, done, info = env.step(step_rng, env_state, env_act)
 
         # Add state and actions to the lists for rendering
-        # Use the overridden action if fixed partner is active
         fp = getattr(env, 'fixed_partner_pos', -1)
         act_1_record = int(fp) if fp >= 0 else int(act_1)
         ep_states.append(env_state)
-        ep_actions.append((int(act_0), act_1_record))
         if has_comm:
-            ep_messages.append((int(msg_0.squeeze()), int(msg_1.squeeze())))
+            # Decode joint action: card_choice = action // num_cards, message = action % num_cards
+            ep_actions.append((int(act_0) // num_cards, act_1_record // num_cards if fp < 0 else act_1_record))
+            ep_messages.append((int(act_0) % num_cards, int(act_1) % num_cards))
+        else:
+            ep_actions.append((int(act_0), act_1_record))
 
         step += 1
 

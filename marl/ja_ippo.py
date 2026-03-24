@@ -40,7 +40,6 @@ class JATransition(NamedTuple):
     info: jnp.ndarray
     avail_actions: jnp.ndarray
     ja_reward: jnp.ndarray       # (NUM_ACTORS,) — raw JA intrinsic reward (unscaled)
-    message: jnp.ndarray         # (NUM_ACTORS,) — message sent this step (0 when no communication)
 
 
 class RewardNormState(NamedTuple):
@@ -305,7 +304,6 @@ def make_train_scan(config, env):
                     info=info,
                     avail_actions=avail_actions_batch,
                     ja_reward=r_ja_batch,
-                    message=jnp.zeros_like(action),
                 )
                 runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
                 return runner_state, (transition, intrinsic)
@@ -321,7 +319,7 @@ def make_train_scan(config, env):
             last_avail = jax.vmap(env.get_avail_actions)(env_state.env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
-            _last_val_out = policy.get_action_value_policy(
+            _, last_val, _, _, _ = policy.get_action_value_policy(
                 params=train_state.params,
                 obs=last_obs_batch.reshape(1, num_actors, -1),
                 done=last_done_batch.reshape(1, num_actors),
@@ -329,7 +327,7 @@ def make_train_scan(config, env):
                 hstate=hstate,
                 rng=jax.random.PRNGKey(0),
             )
-            last_val = _last_val_out[1].squeeze()
+            last_val = last_val.squeeze()
 
             def _calculate_gae(traj_batch, last_val):
                 def _get_advantages(gae_and_next_value, transition):
@@ -489,8 +487,6 @@ def make_train_loop(config, env):
     filter_attn_cards = config.get("FILTER_ATTN_CARDS", False)
     filter_attn_top1 = config.get("FILTER_ATTN_TOP1", False)
     fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
-    communication = config.get("COMMUNICATION", False)
-    message_dim = env.action_space(env.agents[0]).n if communication else 0
 
     # Precompute image and feature-map dimensions for attention channel
     img_h, img_w, _ = _get_image_dims(env)
@@ -584,28 +580,16 @@ def make_train_loop(config, env):
                     init_hstate, traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(params, traj_batch, gae, targets):
-                        if communication:
-                            _, value, pi, _, _, _, msg_pi = policy.get_action_value_policy(
-                                params=params,
-                                obs=traj_batch.obs,
-                                done=traj_batch.done,
-                                avail_actions=traj_batch.avail_actions,
-                                hstate=init_hstate,
-                                rng=jax.random.PRNGKey(0),
-                            )
-                            log_prob = pi.log_prob(traj_batch.action) + msg_pi.log_prob(traj_batch.message)
-                            entropy = (pi.entropy() + msg_pi.entropy()).mean()
-                        else:
-                            _, value, pi, _, _ = policy.get_action_value_policy(
-                                params=params,
-                                obs=traj_batch.obs,
-                                done=traj_batch.done,
-                                avail_actions=traj_batch.avail_actions,
-                                hstate=init_hstate,
-                                rng=jax.random.PRNGKey(0),
-                            )
-                            log_prob = pi.log_prob(traj_batch.action)
-                            entropy = pi.entropy().mean()
+                        _, value, pi, _, _ = policy.get_action_value_policy(
+                            params=params,
+                            obs=traj_batch.obs,
+                            done=traj_batch.done,
+                            avail_actions=traj_batch.avail_actions,
+                            hstate=init_hstate,
+                            rng=jax.random.PRNGKey(0),
+                        )
+                        log_prob = pi.log_prob(traj_batch.action)
+                        entropy = pi.entropy().mean()
 
                         value_pred_clipped = traj_batch.value + (
                             value - traj_batch.value
@@ -719,43 +703,22 @@ def make_train_loop(config, env):
                 avail_actions_batch = jax.lax.stop_gradient(
                     batchify(avail_actions, env.agents, num_actors).astype(jnp.float32))
 
-                if communication:
-                    action, value, pi, new_hstate, attn_map, message, msg_pi = policy.get_action_value_policy(
-                        params=train_state.params,
-                        obs=last_obs_batch.reshape(1, num_actors, -1),
-                        done=last_done_batch.reshape(1, num_actors),
-                        avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
-                        hstate=hstate,
-                        rng=act_rng,
-                    )
-                    log_prob = pi.log_prob(action) + msg_pi.log_prob(message)
-                    action = action.squeeze()
-                    message = message.squeeze()
-                    log_prob = log_prob.squeeze()
-                    value = value.squeeze()
+                action, value, pi, new_hstate, attn_map = policy.get_action_value_policy(
+                    params=train_state.params,
+                    obs=last_obs_batch.reshape(1, num_actors, -1),
+                    done=last_done_batch.reshape(1, num_actors),
+                    avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
+                    hstate=hstate,
+                    rng=act_rng,
+                )
 
-                    env_act = unbatchify(action, env.agents, num_envs, env.num_agents)
-                    env_act = {k: v.flatten() for k, v in env_act.items()}
-                    env_msg = unbatchify(message, env.agents, num_envs, env.num_agents)
-                    for k, v in env_msg.items():
-                        env_act[f"{k}_msg"] = v.flatten()
-                else:
-                    action, value, pi, new_hstate, attn_map = policy.get_action_value_policy(
-                        params=train_state.params,
-                        obs=last_obs_batch.reshape(1, num_actors, -1),
-                        done=last_done_batch.reshape(1, num_actors),
-                        avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
-                        hstate=hstate,
-                        rng=act_rng,
-                    )
-                    log_prob = pi.log_prob(action)
-                    action = action.squeeze()
-                    log_prob = log_prob.squeeze()
-                    value = value.squeeze()
-                    message = jnp.zeros_like(action)
+                log_prob = pi.log_prob(action)
+                action = action.squeeze()
+                log_prob = log_prob.squeeze()
+                value = value.squeeze()
 
-                    env_act = unbatchify(action, env.agents, num_envs, env.num_agents)
-                    env_act = {k: v.flatten() for k, v in env_act.items()}
+                env_act = unbatchify(action, env.agents, num_envs, env.num_agents)
+                env_act = {k: v.flatten() for k, v in env_act.items()}
 
                 rng, _rng = jax.random.split(rng)
                 rng_step = jax.random.split(_rng, config["NUM_ENVS"])
@@ -801,7 +764,6 @@ def make_train_loop(config, env):
                     info=info,
                     avail_actions=avail_actions_batch,
                     ja_reward=r_ja_batch,
-                    message=message,
                 )
 
                 if feed_other_attn:
@@ -828,7 +790,7 @@ def make_train_loop(config, env):
             last_avail = jax.vmap(env.get_avail_actions)(env_state.env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
-            _last_val_out = policy.get_action_value_policy(
+            _, last_val, _, _, _ = policy.get_action_value_policy(
                 params=train_state.params,
                 obs=last_obs_batch.reshape(1, num_actors, -1),
                 done=last_done_batch.reshape(1, num_actors),
@@ -836,7 +798,7 @@ def make_train_loop(config, env):
                 hstate=hstate,
                 rng=jax.random.PRNGKey(0),
             )
-            last_val = _last_val_out[1].squeeze()
+            last_val = last_val.squeeze()
 
             def _calculate_gae(traj_batch, last_val):
                 def _get_advantages(gae_and_next_value, transition):
@@ -1094,38 +1056,21 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
                         obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
                         obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
 
-                    communication = algorithm_config.get("COMMUNICATION", False)
                     rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
-                    if communication:
-                        act_0, hstate_0, attn_0, msg_0 = policy.get_action_and_attention(
-                            params=params,
-                            obs=obs_0.reshape(1, 1, -1),
-                            done=done["agent_0"].reshape(1, 1),
-                            avail_actions=avail_actions["agent_0"].astype(jnp.float32),
-                            hstate=hstate_0, rng=rng0, greedy=greedy,
-                        )
-                        act_1, hstate_1, attn_1, msg_1 = policy.get_action_and_attention(
-                            params=params,
-                            obs=obs_1.reshape(1, 1, -1),
-                            done=done["agent_1"].reshape(1, 1),
-                            avail_actions=avail_actions["agent_1"].astype(jnp.float32),
-                            hstate=hstate_1, rng=rng1, greedy=greedy,
-                        )
-                    else:
-                        act_0, hstate_0, attn_0 = policy.get_action_and_attention(
-                            params=params,
-                            obs=obs_0.reshape(1, 1, -1),
-                            done=done["agent_0"].reshape(1, 1),
-                            avail_actions=avail_actions["agent_0"].astype(jnp.float32),
-                            hstate=hstate_0, rng=rng0, greedy=greedy,
-                        )
-                        act_1, hstate_1, attn_1 = policy.get_action_and_attention(
-                            params=params,
-                            obs=obs_1.reshape(1, 1, -1),
-                            done=done["agent_1"].reshape(1, 1),
-                            avail_actions=avail_actions["agent_1"].astype(jnp.float32),
-                            hstate=hstate_1, rng=rng1, greedy=greedy,
-                        )
+                    act_0, hstate_0, attn_0 = policy.get_action_and_attention(
+                        params=params,
+                        obs=obs_0.reshape(1, 1, -1),
+                        done=done["agent_0"].reshape(1, 1),
+                        avail_actions=avail_actions["agent_0"].astype(jnp.float32),
+                        hstate=hstate_0, rng=rng0, greedy=greedy,
+                    )
+                    act_1, hstate_1, attn_1 = policy.get_action_and_attention(
+                        params=params,
+                        obs=obs_1.reshape(1, 1, -1),
+                        done=done["agent_1"].reshape(1, 1),
+                        avail_actions=avail_actions["agent_1"].astype(jnp.float32),
+                        hstate=hstate_1, rng=rng1, greedy=greedy,
+                    )
 
                     if feed_attn:
                         prev_attn_0 = attn_0.squeeze()
@@ -1136,9 +1081,6 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
                     ep_jsds.append(jsd_val)
 
                     env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1.squeeze()}
-                    if communication:
-                        env_act["agent_0_msg"] = msg_0.squeeze()
-                        env_act["agent_1_msg"] = msg_1.squeeze()
                     obs, env_state, reward, done, info = inner_env.step(step_rng, env_state, env_act)
                     total_reward += float(reward["agent_0"])
                     step += 1
