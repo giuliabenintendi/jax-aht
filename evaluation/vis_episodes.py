@@ -73,7 +73,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            max_episode_steps, collect_attention=False,
                            greedy=True, feed_other_attn_dims=None,
                            filter_attn_card_mask=None,
-                           filter_top1=False):
+                           filter_top1=False,
+                           fixed_partner_attn=None):
     '''
     Run a single episode and collect states for rendering.
 
@@ -181,7 +182,10 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 greedy=greedy,
                 agent_id=1,
             )
-            if filter_attn_card_mask is not None:
+            # Override agent 1's attention if fixed partner
+            if fixed_partner_attn is not None:
+                attn_1 = fixed_partner_attn[None, None]  # match shape
+            elif filter_attn_card_mask is not None:
                 if filter_top1:
                     from agents.ja_utils import filter_attn_top1_cards
                     attn_1 = filter_attn_top1_cards(attn_1, filter_attn_card_mask)

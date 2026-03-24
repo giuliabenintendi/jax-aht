@@ -1208,7 +1208,8 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
 
 def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
-                               feed_attn_dims=None, filter_attn_card_mask=None, filter_top1=False, num_episodes=30, fps=3):
+                               feed_attn_dims=None, filter_attn_card_mask=None, filter_top1=False,
+                               fixed_partner_attn=None, num_episodes=30, fps=3):
     """Run multiple card game episodes and save a video with attention overlays and choices."""
     import os
     import wandb
@@ -1231,6 +1232,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             filter_attn_card_mask=filter_attn_card_mask,
             filter_top1=filter_top1,
             feed_other_attn_dims=feed_attn_dims,
+            fixed_partner_attn=fixed_partner_attn,
         )
 
         maps_0 = attn_data.get("agent_0", [])
@@ -1345,6 +1347,26 @@ def log_eval_video(algorithm_config, env, out, logger):
         )
         filter_mask = build_card_band_mask(ev_fh, ev_fw, ev_img_h_f)
 
+    # Build fixed partner attention for eval visualization
+    fixed_partner_pos_eval = algorithm_config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
+    fixed_partner_attn_eval = None
+    if fixed_partner_pos_eval >= 0:
+        ev_img_h_fp, ev_img_w_fp, _ = _get_image_dims(env)
+        ev_fh_fp, ev_fw_fp = _compute_resnet_output_dims(
+            ev_img_h_fp, ev_img_w_fp,
+            stride=algorithm_config.get("CONV_STRIDE", 2),
+            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
+            padding=algorithm_config.get("CONV_PADDING", "SAME"),
+            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
+        )
+        from envs.card_game.rendering import TILE_PIXELS as _TP_eval
+        pixel_col = fixed_partner_pos_eval * _TP_eval + _TP_eval // 2
+        pixel_row = 1 * _TP_eval + _TP_eval // 2
+        fc = min(int(pixel_col / (ev_img_h_fp / ev_fh_fp)), ev_fw_fp - 1)
+        fr = min(int(pixel_row / (ev_img_h_fp / ev_fh_fp)), ev_fh_fp - 1)
+        fixed_partner_attn_eval = jnp.zeros((ev_fh_fp, ev_fw_fp))
+        fixed_partner_attn_eval = fixed_partner_attn_eval.at[fr, fc].set(1.0)
+
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
 
     for seed_idx in range(num_seeds):
@@ -1357,6 +1379,7 @@ def log_eval_video(algorithm_config, env, out, logger):
             feed_other_attn_dims=feed_attn_dims,
             filter_attn_card_mask=filter_mask,
             filter_top1=filter_top1,
+            fixed_partner_attn=fixed_partner_attn_eval,
         )
         print(f"[ja_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
 
@@ -1383,7 +1406,7 @@ def log_eval_video(algorithm_config, env, out, logger):
             _log_card_game_eval_video(
                 inner_env, policy, final_params, max_steps, tag, video_dir, logger,
                 feed_attn_dims=feed_attn_dims, filter_attn_card_mask=filter_mask, filter_top1=filter_top1,
-                num_episodes=30, fps=3,
+                fixed_partner_attn=fixed_partner_attn_eval, num_episodes=30, fps=3,
             )
         else:
             # Other envs: videos + attention overlays
