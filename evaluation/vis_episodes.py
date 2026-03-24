@@ -182,8 +182,12 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 agent_id=1,
             )
             if filter_attn_card_mask is not None:
-                from agents.ja_utils import filter_attn_to_cards
-                attn_1 = filter_attn_to_cards(attn_1, filter_attn_card_mask)
+                if filter_top1:
+                    from agents.ja_utils import filter_attn_top1_cards
+                    attn_1 = filter_attn_top1_cards(attn_1, filter_attn_card_mask)
+                else:
+                    from agents.ja_utils import filter_attn_to_cards
+                    attn_1 = filter_attn_to_cards(attn_1, filter_attn_card_mask)
             attn_maps["agent_1"].append(attn_1)
         else:
             act_1, hstate_1 = agent_1_policy.get_action(
