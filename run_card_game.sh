@@ -8,15 +8,18 @@ mkdir -p logs
 
 nohup bash -c "
 
-echo \"[\$(date +%H:%M)] feed_attn, b=0.1, LR=8e-4, 5M, 5 seeds\"
-./run_gpu.sh $GPU marl.run \
-    -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
-    algorithm.NUM_SEEDS=5 algorithm.TOTAL_TIMESTEPS=5e6 \
-    algorithm.FEED_OTHER_ATTN=true algorithm.JA_BETA_MAX=0.1 \
-    algorithm.LR=8e-4 \
-    label=feed_attn_5M
+for POS in 0 1 2 3 4; do
+    echo \"[\$(date +%H:%M)] fixed_partner\$POS, b=0.5, LR=8e-4, 2M\"
+    ./run_gpu.sh $GPU marl.run \
+        -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+        algorithm.NUM_SEEDS=1 algorithm.TOTAL_TIMESTEPS=2e6 \
+        algorithm.FEED_OTHER_ATTN=true algorithm.JA_BETA_MAX=0.5 \
+        algorithm.LR=8e-4 algorithm.JA_WARMUP_ENV_STEPS=1000000 \
+        task.ENV_KWARGS.fixed_partner_pos=\$POS \
+        label=fixed_partner\$POS
+done
 
 echo \"[\$(date +%H:%M)] Done\"
 " > logs/card_game.log 2>&1 &
 
-echo "Launched card-game on GPU $GPU (check logs/card_game.log)"
+echo "Launched 5 fixed-partner card-game runs on GPU $GPU (check logs/card_game.log)"
