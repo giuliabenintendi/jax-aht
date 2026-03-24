@@ -321,7 +321,7 @@ def make_train_scan(config, env):
             last_avail = jax.vmap(env.get_avail_actions)(env_state.env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
-            _, last_val, _, _, _ = policy.get_action_value_policy(
+            _last_val_out = policy.get_action_value_policy(
                 params=train_state.params,
                 obs=last_obs_batch.reshape(1, num_actors, -1),
                 done=last_done_batch.reshape(1, num_actors),
@@ -329,7 +329,7 @@ def make_train_scan(config, env):
                 hstate=hstate,
                 rng=jax.random.PRNGKey(0),
             )
-            last_val = last_val.squeeze()
+            last_val = _last_val_out[1].squeeze()
 
             def _calculate_gae(traj_batch, last_val):
                 def _get_advantages(gae_and_next_value, transition):
@@ -828,7 +828,7 @@ def make_train_loop(config, env):
             last_avail = jax.vmap(env.get_avail_actions)(env_state.env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
-            _, last_val, _, _, _ = policy.get_action_value_policy(
+            _last_val_out = policy.get_action_value_policy(
                 params=train_state.params,
                 obs=last_obs_batch.reshape(1, num_actors, -1),
                 done=last_done_batch.reshape(1, num_actors),
@@ -836,7 +836,7 @@ def make_train_loop(config, env):
                 hstate=hstate,
                 rng=jax.random.PRNGKey(0),
             )
-            last_val = last_val.squeeze()
+            last_val = _last_val_out[1].squeeze()
 
             def _calculate_gae(traj_batch, last_val):
                 def _get_advantages(gae_and_next_value, transition):
