@@ -212,8 +212,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         obs, env_state, reward, done, info = env.step(step_rng, env_state, env_act)
 
         # Add state and actions to the lists for rendering
+        # Use the overridden action if fixed partner is active
+        fp = getattr(env, 'fixed_partner_pos', -1)
+        act_1_record = int(fp) if fp >= 0 else int(act_1)
         ep_states.append(env_state)
-        ep_actions.append((int(act_0), int(act_1)))
+        ep_actions.append((int(act_0), act_1_record))
 
         step += 1
 
