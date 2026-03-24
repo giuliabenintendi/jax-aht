@@ -133,7 +133,9 @@ def initialize_ja_image_agent(config, env, rng):
     img_h, img_w, num_scalars = _get_image_dims(env)
     num_channels = 4 if config.get("FEED_OTHER_ATTN", False) else 3
     communication = config.get("COMMUNICATION", False)
-    message_dim = env.action_space(env.agents[0]).n if communication else 0
+    inner = env._env if hasattr(env, '_env') else env
+    num_cards = getattr(inner, 'num_cards', 5)
+    message_dim = num_cards if communication else 0
     obs_dim = img_h * img_w * num_channels + message_dim
 
     policy = JAImageActorCriticPolicy(
