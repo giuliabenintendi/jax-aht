@@ -347,7 +347,11 @@ def _build_run_label(algo_cfg: dict, task_name: str) -> str:
 
 
 def _build_xp_name(algo_cfg: dict, layout: str) -> str:
-    """Build descriptive XP run name from config."""
+    """Build descriptive XP run name from config.
+
+    Mirrors _build_run_string in wandb_visualizations.py but without
+    alg prefix (already in the wandb name as XP_) and without date.
+    """
     parts = [layout]
     beta = algo_cfg.get("JA_BETA_MAX", 0)
     parts.append(f"b{beta}")
@@ -361,6 +365,8 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
     if total is not None:
         total = float(total)
         parts.append(f"{total/1e6:.0f}M" if total >= 1e6 else f"{total:.0f}")
+    if algo_cfg.get("COMMUNICATION", False):
+        parts.append("comm")
     if algo_cfg.get("FEED_OTHER_ATTN", False):
         parts.append("feed_attn")
     if algo_cfg.get("FILTER_ATTN_TOP1", False):
