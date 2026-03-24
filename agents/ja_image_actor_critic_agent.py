@@ -26,6 +26,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         lstm_hidden_dim: int = 64,
         spatial_basis_depth: int = 8,
         num_channels: int = 3,
+        message_dim: int = 0,
     ):
         # Skip JAActorCriticPolicy.__init__ — we set self.network directly
         # but still call AgentPolicy.__init__ for action_dim/obs_dim
@@ -34,6 +35,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
 
         self.img_height = img_height
         self.img_width = img_width
+        self.message_dim = message_dim
         self.network = JAImageActorCritic(
             action_dim=action_dim,
             img_height=img_height,
@@ -49,5 +51,6 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             lstm_hidden_dim=lstm_hidden_dim,
             spatial_basis_depth=spatial_basis_depth,
             num_channels=num_channels,
+            message_dim=message_dim,
         )
         self.lstm_hidden_dim = lstm_hidden_dim

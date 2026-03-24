@@ -89,7 +89,7 @@ def compute_metrics(checkpoint_path: str, num_episodes: int = 64,
 
         for ep in range(num_episodes):
             ep_rng = jax.random.PRNGKey(42 + seed_idx * 10000 + ep)
-            ep_states, attn_data, _ = run_episode_with_states(
+            ep_states, attn_data, _, _ = run_episode_with_states(
                 ep_rng, inner_env, params, policy,
                 params, policy, max_steps, collect_attention=True,
             )

@@ -620,7 +620,7 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
     for seed_idx in range(num_seeds):
         final_params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
 
-        ep_states, attn_data, ep_actions = run_episode_with_states(
+        ep_states, attn_data, ep_actions, _ = run_episode_with_states(
             jax.random.PRNGKey(42 + seed_idx), inner_env, final_params, policy,
             final_params, policy, max_steps,
             collect_attention=True,
@@ -709,7 +709,7 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
 
         for ep in range(1, num_eval_episodes):
             ep_rng = jax.random.PRNGKey(42 + seed_idx * 10000 + ep)
-            ep_states_extra, attn_data_extra, _ = run_episode_with_states(
+            ep_states_extra, attn_data_extra, _, _ = run_episode_with_states(
                 ep_rng, inner_env, final_params, policy,
                 final_params, policy, max_steps,
                 collect_attention=True,

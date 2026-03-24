@@ -52,6 +52,7 @@ class JAImageScannedLSTM(nn.Module):
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
     num_channels: int = 3
+    message_dim: int = 0  # >0 enables communication (partner message one-hot appended to obs)
 
     def setup(self):
         self.feat_h, self.feat_w = _compute_resnet_output_dims(
@@ -137,6 +138,11 @@ class JAImageScannedLSTM(nn.Module):
 
         attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
 
+        # Concatenate partner's message one-hot if communication is enabled
+        if self.message_dim > 0:
+            msg_input = obs_flat[:, self._img_flat_dim:self._img_flat_dim + self.message_dim]
+            attended_flat = jnp.concatenate([attended_flat, msg_input], axis=-1)
+
         # FC layers before LSTM
         lstm_input = nn.Dense(
             self.fc_hidden_dim,
@@ -183,6 +189,7 @@ class JAImageActorCritic(nn.Module):
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
     num_channels: int = 3
+    message_dim: int = 0  # >0 enables communication output head
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -204,6 +211,7 @@ class JAImageActorCritic(nn.Module):
             lstm_hidden_dim=self.lstm_hidden_dim,
             spatial_basis_depth=self.spatial_basis_depth,
             num_channels=self.num_channels,
+            message_dim=self.message_dim,
         )
 
         # Actor path
@@ -231,6 +239,15 @@ class JAImageActorCritic(nn.Module):
         action_logits = jnp.clip(action_logits, -20.0, 20.0)
         pi = distrax.Categorical(logits=action_logits)
 
+        # Message head (shared actor backbone)
+        if self.message_dim > 0:
+            msg_logits = nn.Dense(
+                self.message_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
+                name="message_proj",
+            )(actor_out)
+            msg_logits = jnp.clip(msg_logits, -20.0, 20.0)
+            msg_pi = distrax.Categorical(logits=msg_logits)
+
         # Critic path
         critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
@@ -252,4 +269,6 @@ class JAImageActorCritic(nn.Module):
         )(critic_out)
 
         new_hidden = (actor_lstm_state, critic_lstm_state)
+        if self.message_dim > 0:
+            return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map, msg_pi
         return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map

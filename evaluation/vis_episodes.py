@@ -36,7 +36,7 @@ def save_video(env, env_name,
         rng, episode_rng = jax.random.split(rng)
         
         # Run a single episode and collect states
-        episode_states, _ = run_episode_with_states(
+        episode_states, _, _ = run_episode_with_states(
             episode_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps
         )
@@ -109,6 +109,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
     # Collect states and actions for rendering
     ep_states = [env_state]
     ep_actions = []
+    ep_messages = []  # (msg_0, msg_1) per step, empty if no communication
     attn_maps = {"agent_0": [], "agent_1": []}
 
     # Run episode until done or max steps reached
@@ -137,19 +138,32 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
         # Get actions for both agents
         rng, act_rng, part_rng, step_rng = jax.random.split(rng, 4)
+        has_comm = getattr(agent_0_policy, 'message_dim', 0) > 0
 
         # Get ego action (optionally with attention)
         if collect_attention and hasattr(agent_0_policy, 'get_action_and_attention'):
-            act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
-                params=agent_0_param,
-                obs=obs_0_reshaped,
-                done=done_0_reshaped,
-                avail_actions=avail_actions_0,
-                hstate=hstate_0,
-                rng=act_rng,
-                greedy=greedy,
-                agent_id=0,
-            )
+            if has_comm:
+                act_0, hstate_0, attn_0, msg_0 = agent_0_policy.get_action_and_attention(
+                    params=agent_0_param,
+                    obs=obs_0_reshaped,
+                    done=done_0_reshaped,
+                    avail_actions=avail_actions_0,
+                    hstate=hstate_0,
+                    rng=act_rng,
+                    greedy=greedy,
+                    agent_id=0,
+                )
+            else:
+                act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
+                    params=agent_0_param,
+                    obs=obs_0_reshaped,
+                    done=done_0_reshaped,
+                    avail_actions=avail_actions_0,
+                    hstate=hstate_0,
+                    rng=act_rng,
+                    greedy=greedy,
+                    agent_id=0,
+                )
             if filter_attn_card_mask is not None:
                 if filter_top1:
                     from agents.ja_utils import filter_attn_top1_cards
@@ -172,16 +186,28 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
         # Get partner action (optionally with attention)
         if collect_attention and hasattr(agent_1_policy, 'get_action_and_attention'):
-            act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
-                params=agent_1_param,
-                obs=obs_1_reshaped,
-                done=done_1_reshaped,
-                avail_actions=avail_actions_1,
-                hstate=hstate_1,
-                rng=part_rng,
-                greedy=greedy,
-                agent_id=1,
-            )
+            if has_comm:
+                act_1, hstate_1, attn_1, msg_1 = agent_1_policy.get_action_and_attention(
+                    params=agent_1_param,
+                    obs=obs_1_reshaped,
+                    done=done_1_reshaped,
+                    avail_actions=avail_actions_1,
+                    hstate=hstate_1,
+                    rng=part_rng,
+                    greedy=greedy,
+                    agent_id=1,
+                )
+            else:
+                act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
+                    params=agent_1_param,
+                    obs=obs_1_reshaped,
+                    done=done_1_reshaped,
+                    avail_actions=avail_actions_1,
+                    hstate=hstate_1,
+                    rng=part_rng,
+                    greedy=greedy,
+                    agent_id=1,
+                )
             # Override agent 1's attention if fixed partner
             if fixed_partner_attn is not None:
                 attn_1 = fixed_partner_attn[None, None]  # match shape
@@ -213,6 +239,9 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         # Take step in environment
         both_actions = [act_0, act_1]
         env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
+        if has_comm:
+            env_act["agent_0_msg"] = msg_0.squeeze()
+            env_act["agent_1_msg"] = msg_1.squeeze()
         obs, env_state, reward, done, info = env.step(step_rng, env_state, env_act)
 
         # Add state and actions to the lists for rendering
@@ -221,12 +250,14 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         act_1_record = int(fp) if fp >= 0 else int(act_1)
         ep_states.append(env_state)
         ep_actions.append((int(act_0), act_1_record))
+        if has_comm:
+            ep_messages.append((int(msg_0.squeeze()), int(msg_1.squeeze())))
 
         step += 1
 
     if collect_attention:
-        return ep_states, attn_maps, ep_actions
-    return ep_states, ep_actions
+        return ep_states, attn_maps, ep_actions, ep_messages
+    return ep_states, ep_actions, ep_messages
 
 def _render_heatmap_panel(attn, title, cmap, target_height, figwidth=3.0):
     """Render a single attention heatmap with grid, numbers, and colorbar.

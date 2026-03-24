@@ -43,6 +43,7 @@ class JAActorCriticPolicy(AgentPolicy):
         super().__init__(action_dim, obs_dim)
         self.obs_height = obs_height
         self.obs_width = obs_width
+        self.message_dim = 0
         self.network = JAActorCritic(
             action_dim=action_dim,
             obs_height=obs_height,
@@ -81,15 +82,28 @@ class JAActorCriticPolicy(AgentPolicy):
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
                    aux_obs=None, env_state=None, greedy=False, agent_id=None):
         hidden = self._unpack_hstate(hstate)
-        new_hidden, pi, _, _ = self.network.apply(
-            params, hidden, (obs, done, avail_actions)
-        )
+        if self.message_dim > 0:
+            new_hidden, pi, _, _, msg_pi = self.network.apply(
+                params, hidden, (obs, done, avail_actions)
+            )
+        else:
+            new_hidden, pi, _, _ = self.network.apply(
+                params, hidden, (obs, done, avail_actions)
+            )
         action = jax.lax.cond(
             greedy,
             lambda: pi.mode(),
             lambda: pi.sample(seed=rng),
         )
         new_hstate = self._pack_hstate(*new_hidden)
+        if self.message_dim > 0:
+            rng2 = jax.random.fold_in(rng, 1)
+            message = jax.lax.cond(
+                greedy,
+                lambda: msg_pi.mode(),
+                lambda: msg_pi.sample(seed=rng2),
+            )
+            return action, new_hstate, message
         return action, new_hstate
 
     @partial(jax.jit, static_argnums=(0,))
@@ -98,19 +112,33 @@ class JAActorCriticPolicy(AgentPolicy):
         """Like get_action, but also returns the attention map.
 
         Returns:
-            (action, new_hstate, attn_map)
+            Without communication: (action, new_hstate, attn_map)
+            With communication: (action, new_hstate, attn_map, message)
             attn_map shape: (1, batch, H, W)
         """
         hidden = self._unpack_hstate(hstate)
-        new_hidden, pi, _, attn_map = self.network.apply(
-            params, hidden, (obs, done, avail_actions)
-        )
+        if self.message_dim > 0:
+            new_hidden, pi, _, attn_map, msg_pi = self.network.apply(
+                params, hidden, (obs, done, avail_actions)
+            )
+        else:
+            new_hidden, pi, _, attn_map = self.network.apply(
+                params, hidden, (obs, done, avail_actions)
+            )
         action = jax.lax.cond(
             greedy,
             lambda: pi.mode(),
             lambda: pi.sample(seed=rng),
         )
         new_hstate = self._pack_hstate(*new_hidden)
+        if self.message_dim > 0:
+            rng2 = jax.random.fold_in(rng, 1)
+            message = jax.lax.cond(
+                greedy,
+                lambda: msg_pi.mode(),
+                lambda: msg_pi.sample(seed=rng2),
+            )
+            return action, new_hstate, attn_map, message
         return action, new_hstate, attn_map
 
     @partial(jax.jit, static_argnums=(0,))
@@ -119,16 +147,27 @@ class JAActorCriticPolicy(AgentPolicy):
         """Get actions, values, policy, and attention map.
 
         Returns:
-            (action, value, pi, new_hstate, attn_map)
+            Without communication: (action, value, pi, new_hstate, attn_map)
+            With communication: (action, value, pi, new_hstate, attn_map, message, msg_pi)
             attn_map shape: (seq_len, batch, H, W)
         """
         hidden = self._unpack_hstate(hstate)
-        new_hidden, pi, val, attn_map = self.network.apply(
-            params, hidden, (obs, done, avail_actions)
-        )
-        action = pi.sample(seed=rng)
-        new_hstate = self._pack_hstate(*new_hidden)
-        return action, val, pi, new_hstate, attn_map
+        if self.message_dim > 0:
+            new_hidden, pi, val, attn_map, msg_pi = self.network.apply(
+                params, hidden, (obs, done, avail_actions)
+            )
+            action = pi.sample(seed=rng)
+            rng2 = jax.random.fold_in(rng, 1)
+            message = msg_pi.sample(seed=rng2)
+            new_hstate = self._pack_hstate(*new_hidden)
+            return action, val, pi, new_hstate, attn_map, message, msg_pi
+        else:
+            new_hidden, pi, val, attn_map = self.network.apply(
+                params, hidden, (obs, done, avail_actions)
+            )
+            action = pi.sample(seed=rng)
+            new_hstate = self._pack_hstate(*new_hidden)
+            return action, val, pi, new_hstate, attn_map
 
     def init_hstate(self, batch_size, aux_info=None):
         """Initialize packed hidden state: (1, batch, 4*lstm_hidden_dim)."""

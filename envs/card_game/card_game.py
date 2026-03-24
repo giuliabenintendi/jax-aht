@@ -46,6 +46,7 @@ class CardGameState:
     card_permutation: chex.Array  # (NUM_CARDS,) card identity at each position
     step_count: chex.Array        # scalar int32
     agent_choices: chex.Array     # (2,) chosen positions, -1 until decision step
+    messages: chex.Array          # (2,) last message per agent, int32
 
 
 def _draw_border(img, row, col, tile_size, color):
@@ -71,10 +72,12 @@ class CardGameEnv(BaseEnv):
     the JA-IPPO agent initialization pipeline.
     """
 
-    def __init__(self, max_steps: int = 10, shuffle: bool = True, fixed_partner_pos: int = -1, **kwargs):
+    def __init__(self, max_steps: int = 10, shuffle: bool = True, fixed_partner_pos: int = -1,
+                 communication: bool = False, **kwargs):
         self.max_steps = max_steps
         self.shuffle = shuffle
         self.fixed_partner_pos = fixed_partner_pos
+        self.communication = communication
         self.num_cards = NUM_CARDS
         self.num_agents = 2
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
@@ -88,6 +91,8 @@ class CardGameEnv(BaseEnv):
         self._img_h = self.grid_height * self.tile_size
         self._img_w = self.grid_width * self.tile_size
         self._obs_dim = self._img_h * self._img_w * 3
+        if self.communication:
+            self._obs_dim += self.num_cards  # partner's message as one-hot
 
         self.observation_spaces = {a: self.observation_space(a) for a in self.agents}
         self.action_spaces = {a: self.action_space(a) for a in self.agents}
@@ -99,7 +104,11 @@ class CardGameEnv(BaseEnv):
         return jaxmarl_spaces.Discrete(num_categories=self.num_cards)
 
     def _make_obs(self, env_state: CardGameState) -> Dict[str, jnp.ndarray]:
-        """Render image with per-agent ego highlight (magenta border)."""
+        """Render image with per-agent ego highlight (magenta border).
+
+        When communication is enabled, appends the partner's last message
+        as a one-hot vector (NUM_CARDS floats) to the flat observation.
+        """
         img = render_card_game(env_state.card_permutation)
 
         obs = {}
@@ -108,7 +117,12 @@ class CardGameEnv(BaseEnv):
             agent_img = _draw_border(
                 img, row, col, self.tile_size, _EGO_HIGHLIGHT_COLOR
             )
-            obs[self.agents[i]] = agent_img.flatten().astype(jnp.float32) / 255.0
+            flat = agent_img.flatten().astype(jnp.float32) / 255.0
+            if self.communication:
+                partner_msg = env_state.messages[1 - i]
+                msg_onehot = jax.nn.one_hot(partner_msg, self.num_cards)
+                flat = jnp.concatenate([flat, msg_onehot])
+            obs[self.agents[i]] = flat
         return obs
 
     @partial(jax.jit, static_argnums=(0,))
@@ -118,6 +132,7 @@ class CardGameEnv(BaseEnv):
             card_permutation=perm,
             step_count=jnp.int32(0),
             agent_choices=jnp.full(2, -1, dtype=jnp.int32),
+            messages=jnp.zeros(2, dtype=jnp.int32),
         )
         obs = self._make_obs(env_state)
         return obs, WrappedEnvState(
@@ -154,13 +169,21 @@ class CardGameEnv(BaseEnv):
         dones = {agent: done for agent in self.agents}
         dones["__all__"] = done
 
+        # Update messages if communication is enabled
+        if self.communication:
+            new_messages = jnp.array(
+                [actions["agent_0_msg"], actions["agent_1_msg"]], dtype=jnp.int32)
+        else:
+            new_messages = env_state.messages
+
         # Store choices on decision step, keep -1 otherwise
         choices = jnp.where(
             is_decision,
             jnp.array([a0, a1], dtype=jnp.int32),
             jnp.full(2, -1, dtype=jnp.int32),
         )
-        new_env_state = env_state.replace(step_count=new_step, agent_choices=choices)
+        new_env_state = env_state.replace(
+            step_count=new_step, agent_choices=choices, messages=new_messages)
         obs_st = self._make_obs(new_env_state)
 
         base_reward_arr = jnp.array([reward_val, reward_val])

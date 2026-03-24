@@ -544,7 +544,7 @@ def log_eval_video(algorithm_config, env, out, logger):
 
     # Run one eval episode collecting states + attention maps
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
-    ep_states, attn_data, _ = run_episode_with_states(
+    ep_states, attn_data, _, _ = run_episode_with_states(
         jax.random.PRNGKey(42), inner_env, final_params_0, policy,
         final_params_1, policy, max_steps,
         collect_attention=True,

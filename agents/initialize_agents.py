@@ -132,7 +132,9 @@ def initialize_ja_image_agent(config, env, rng):
     """Initialize a Joint Attention agent with image observations."""
     img_h, img_w, num_scalars = _get_image_dims(env)
     num_channels = 4 if config.get("FEED_OTHER_ATTN", False) else 3
-    obs_dim = img_h * img_w * num_channels
+    communication = config.get("COMMUNICATION", False)
+    message_dim = env.action_space(env.agents[0]).n if communication else 0
+    obs_dim = img_h * img_w * num_channels + message_dim
 
     policy = JAImageActorCriticPolicy(
         action_dim=env.action_space(env.agents[0]).n,
@@ -150,6 +152,7 @@ def initialize_ja_image_agent(config, env, rng):
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
         spatial_basis_depth=config.get("JA_SPATIAL_BASIS_DEPTH", 8),
         num_channels=num_channels,
+        message_dim=message_dim,
     )
 
     rng, init_rng = jax.random.split(rng)
