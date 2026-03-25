@@ -223,9 +223,15 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         act_1_record = int(fp) if fp >= 0 else int(act_1)
         ep_states.append(env_state)
         if has_comm:
-            # Decode joint action: card_choice = action // num_cards, message = action % num_cards
-            ep_actions.append((int(act_0) // num_cards, act_1_record // num_cards if fp < 0 else act_1_record))
-            ep_messages.append((int(act_0) % num_cards, int(act_1) % num_cards))
+            # Decode: 0-24 = card+msg, 25-29 = msg only (deliberation)
+            n_card_msg = num_cards * num_cards
+            a0_int, a1_int = int(act_0), int(act_1)
+            card_0 = a0_int // num_cards if a0_int < n_card_msg else -1
+            card_1 = (act_1_record // num_cards if fp < 0 else act_1_record) if a1_int < n_card_msg else -1
+            msg_0 = a0_int % num_cards if a0_int < n_card_msg else a0_int - n_card_msg
+            msg_1 = a1_int % num_cards if a1_int < n_card_msg else a1_int - n_card_msg
+            ep_actions.append((card_0, card_1))
+            ep_messages.append((msg_0, msg_1))
         else:
             ep_actions.append((int(act_0), act_1_record))
 

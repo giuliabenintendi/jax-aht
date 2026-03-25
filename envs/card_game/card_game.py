@@ -102,7 +102,10 @@ class CardGameEnv(BaseEnv):
 
     def action_space(self, agent: str):
         if self.communication:
-            return jaxmarl_spaces.Discrete(num_categories=self.num_cards * self.num_cards)
+            # 0-24: pick card (a//5) + send message (a%5) — legal on decision step
+            # 25-29: send message (a-25) only — legal during deliberation
+            return jaxmarl_spaces.Discrete(
+                num_categories=self.num_cards * self.num_cards + self.num_cards)
         return jaxmarl_spaces.Discrete(num_categories=self.num_cards)
 
     def _make_obs(self, env_state: CardGameState) -> Dict[str, jnp.ndarray]:
@@ -161,12 +164,20 @@ class CardGameEnv(BaseEnv):
         raw_a0 = actions["agent_0"]
         raw_a1 = actions["agent_1"]
 
-        # Decode joint action into card choice and message
+        # Decode action into card choice and message
         if self.communication:
-            a0 = raw_a0 // self.num_cards
-            a1 = raw_a1 // self.num_cards
-            new_messages = jnp.array(
-                [raw_a0 % self.num_cards, raw_a1 % self.num_cards], dtype=jnp.int32)
+            n_card_msg = self.num_cards * self.num_cards  # 25
+            is_card_action = raw_a0 < n_card_msg
+            # Card+message (0-24): card = a//5, msg = a%5
+            # Message-only (25-29): no card, msg = a-25
+            a0 = jnp.where(is_card_action, raw_a0 // self.num_cards, jnp.int32(-1))
+            msg0 = jnp.where(is_card_action, raw_a0 % self.num_cards, raw_a0 - n_card_msg)
+
+            is_card_action_1 = raw_a1 < n_card_msg
+            a1 = jnp.where(is_card_action_1, raw_a1 // self.num_cards, jnp.int32(-1))
+            msg1 = jnp.where(is_card_action_1, raw_a1 % self.num_cards, raw_a1 - n_card_msg)
+
+            new_messages = jnp.array([msg0, msg1], dtype=jnp.int32)
         else:
             a0 = raw_a0
             a1 = raw_a1
@@ -226,8 +237,23 @@ class CardGameEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
-        n = self.num_cards * self.num_cards if self.communication else self.num_cards
-        return {agent: jnp.ones(n) for agent in self.agents}
+        if not self.communication:
+            return {agent: jnp.ones(self.num_cards) for agent in self.agents}
+
+        # Next step will increment step_count by 1
+        next_step = state.env_state.step_count + 1
+        is_decision = next_step >= self.max_steps
+
+        n_card_msg = self.num_cards * self.num_cards  # 25
+        n_msg_only = self.num_cards                    # 5
+
+        # Decision step: card+message actions (0-24) legal
+        # Deliberation: message-only actions (25-29) legal
+        card_msg_mask = jnp.where(is_decision, jnp.ones(n_card_msg), jnp.zeros(n_card_msg))
+        msg_only_mask = jnp.where(is_decision, jnp.zeros(n_msg_only), jnp.ones(n_msg_only))
+        mask = jnp.concatenate([card_msg_mask, msg_only_mask])
+
+        return {agent: mask for agent in self.agents}
 
     @partial(jax.jit, static_argnums=(0,))
     def get_step_count(self, state: WrappedEnvState) -> jnp.array:
