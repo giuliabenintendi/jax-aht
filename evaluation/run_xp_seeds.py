@@ -258,18 +258,30 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
 
 def xp_mean_and_sem(xp_matrix):
-    """Compute XP mean and SEM from ALL off-diagonal entries.
+    """Compute XP mean and SEM using seed pairing (ZSC convention).
+
+    Pairs adjacent seeds (0,1), (2,3), ..., averages each pair
+    bidirectionally, then computes SEM over the m=n//2 independent
+    pair means. Drops the last seed if n is odd.
 
     Args:
-        xp_matrix: (n, n) array where entry (i,j) is the mean return
+        xp_matrix: (n, n) array where entry (i,j) is the mean metric
                    when seed i is agent 0 and seed j is agent 1.
     Returns:
-        (mean, sem) over all n*(n-1) off-diagonal entries.
+        (mean, sem) over m independent pair samples.
     """
     n = xp_matrix.shape[0]
-    mask = ~np.eye(n, dtype=bool)
-    off_diag = xp_matrix[mask]
-    return np.mean(off_diag), np.std(off_diag) / np.sqrt(len(off_diag))
+    m = n // 2
+    if m == 0:
+        mask = ~np.eye(n, dtype=bool)
+        off_diag = xp_matrix[mask]
+        return np.mean(off_diag), 0.0
+    pair_means = []
+    for k in range(m):
+        i, j = 2 * k, 2 * k + 1
+        pair_means.append((xp_matrix[i, j] + xp_matrix[j, i]) / 2.0)
+    pair_means = np.array(pair_means)
+    return np.mean(pair_means), np.std(pair_means) / np.sqrt(m)
 
 
 def save_xp_heatmap(matrix_mean: np.ndarray, matrix_std: np.ndarray,
