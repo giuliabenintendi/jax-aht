@@ -1232,7 +1232,8 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
 def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
                                feed_attn_dims=None,
-                               fixed_partner_attn=None, num_episodes=30, fps=3):
+                               fixed_partner_attn=None, filter_top1=False,
+                               num_episodes=30, fps=3):
     """Run multiple card game episodes and save a video with attention spots and choices."""
     import os
     import wandb
@@ -1255,6 +1256,15 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             feed_other_attn_dims=feed_attn_dims,
             fixed_partner_attn=fixed_partner_attn,
         )
+
+        if filter_top1:
+            def _top1_np(attn):
+                a = np.array(attn).squeeze()
+                out = np.zeros_like(a)
+                out.flat[np.argmax(a)] = 1.0
+                return out
+            for agent_key in ("agent_0", "agent_1"):
+                attn_data[agent_key] = [_top1_np(m) for m in attn_data.get(agent_key, [])]
 
         maps_0 = attn_data.get("agent_0", [])
         maps_1 = attn_data.get("agent_1", [])
@@ -1390,6 +1400,17 @@ def log_eval_video(algorithm_config, env, out, logger):
             feed_other_attn_dims=feed_attn_dims,
             fixed_partner_attn=fixed_partner_attn_eval,
         )
+        # Apply top1 filter to collected attention maps (match training behavior)
+        if algorithm_config.get("FILTER_ATTN_TOP1", False):
+            import numpy as _np
+            def _top1_np(attn):
+                a = _np.array(attn).squeeze()
+                out = _np.zeros_like(a)
+                out.flat[_np.argmax(a)] = 1.0
+                return out
+            for agent_key in ("agent_0", "agent_1"):
+                attn_data[agent_key] = [_top1_np(m) for m in attn_data.get(agent_key, [])]
+
         print(f"[ja_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
 
         video_dir = f"{savedir}/videos/seed_{seed_idx}"
@@ -1416,7 +1437,9 @@ def log_eval_video(algorithm_config, env, out, logger):
             _log_card_game_eval_video(
                 inner_env, policy, final_params, max_steps, tag, video_dir, logger,
                 feed_attn_dims=feed_attn_dims,
-                fixed_partner_attn=fixed_partner_attn_eval, num_episodes=30, fps=3,
+                fixed_partner_attn=fixed_partner_attn_eval,
+                filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
+                num_episodes=30, fps=3,
             )
         else:
             # Other envs: videos + attention overlays
