@@ -995,6 +995,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
     num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
 
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
+    eval_filter_top1 = algorithm_config.get("FILTER_ATTN_TOP1", False)
     if feed_attn:
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(
@@ -1004,6 +1005,12 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
             padding=algorithm_config.get("CONV_PADDING", "SAME"),
             num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
         )
+
+    def _apply_top1(attn):
+        """Filter attention to global argmax (single spike)."""
+        flat = attn.reshape(-1)
+        idx = jnp.argmax(flat)
+        return jnp.zeros_like(flat).at[idx].set(1.0).reshape(attn.shape)
 
     for mode_name, greedy in [("greedy", True), ("stochastic", False)]:
         all_returns = []
@@ -1053,6 +1060,10 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
                         avail_actions=avail_actions["agent_1"].astype(jnp.float32),
                         hstate=hstate_1, rng=rng1, greedy=greedy,
                     )
+
+                    if eval_filter_top1:
+                        attn_0 = _apply_top1(attn_0.squeeze())[None, None]
+                        attn_1 = _apply_top1(attn_1.squeeze())[None, None]
 
                     if feed_attn:
                         prev_attn_0 = attn_0.squeeze()
@@ -1142,51 +1153,17 @@ def _draw_message_on_cell(cell, msg_pos, scale):
     _draw_box(cell, 1, msg_pos, tile_h, tile_w, brown, thickness)
 
 
-def _draw_attention_spot(frame, attn_map, cmap_name, radius=6):
-    """Draw a filled circle at the argmax position of the attention map.
-
-    Maps the argmax from feature-map coordinates to pixel coordinates,
-    then draws a colored dot using the peak color from the given colormap.
-    """
-    import numpy as np
-    import matplotlib.cm as cm
-
-    attn = np.array(attn_map).squeeze()
-    feat_h, feat_w = attn.shape
-    frame_h, frame_w = frame.shape[:2]
-
-    # Find argmax position in feature space
-    flat_idx = np.argmax(attn)
-    row, col = divmod(int(flat_idx), feat_w)
-
-    # Map to pixel coordinates (center of the cell)
-    cell_h = frame_h / feat_h
-    cell_w = frame_w / feat_w
-    py = int(row * cell_h + cell_h / 2)
-    px = int(col * cell_w + cell_w / 2)
-
-    # Get color from colormap at peak intensity
-    cmap = getattr(cm, cmap_name)
-    color = (np.array(cmap(1.0)[:3]) * 255).astype(np.uint8)
-
-    # Draw filled circle via mask
-    out = frame.copy()
-    yy, xx = np.ogrid[:frame_h, :frame_w]
-    mask = (yy - py) ** 2 + (xx - px) ** 2 <= radius ** 2
-    out[mask] = color
-    return out
-
-
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger, ep_messages=None):
     """Log a 2×T grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
 
-    Each cell shows the scene with the attention argmax spot overlaid.
+    Each cell shows the scene with the attention heatmap overlaid.
     The last column shows the agents' card choices as thick colored borders
     drawn on top of the spot marker.
     """
     import os
     import wandb
     import numpy as np
+    from evaluation.vis_episodes import _overlay_attention
 
     maps_0 = attn_data.get("agent_0", [])
     maps_1 = attn_data.get("agent_1", [])
@@ -1213,8 +1190,8 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     row_1 = []  # agent 1 attention (RdPu)
     for t in range(n_steps):
         frame = base_frame
-        cell_0 = _draw_attention_spot(frame, maps_0[t], "Oranges")
-        cell_1 = _draw_attention_spot(frame, maps_1[t], "RdPu")
+        cell_0 = _overlay_attention(frame, maps_0[t], "Oranges", alpha=0.6).copy()
+        cell_1 = _overlay_attention(frame, maps_1[t], "RdPu", alpha=0.6).copy()
 
         # Draw message borders (brown) on every timestep
         if ep_messages and t < len(ep_messages):
@@ -1262,7 +1239,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
     import numpy as np
     from PIL import Image
     from moviepy import ImageSequenceClip
-    from evaluation.vis_episodes import run_episode_with_states
+    from evaluation.vis_episodes import run_episode_with_states, _overlay_attention
     from envs.card_game.rendering import render_card_game, GRID_ROWS, GRID_COLS, TILE_PIXELS
 
     scale = 20
@@ -1293,8 +1270,8 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
         last_action = ep_actions[-1] if ep_actions else (-1, -1)
 
         for t in range(n_steps):
-            cell_0 = _draw_attention_spot(base_up, maps_0[t], "Oranges")
-            cell_1 = _draw_attention_spot(base_up, maps_1[t], "RdPu")
+            cell_0 = _overlay_attention(base_up, maps_0[t], "Oranges", alpha=0.6).copy()
+            cell_1 = _overlay_attention(base_up, maps_1[t], "RdPu", alpha=0.6).copy()
 
             # Draw message borders (brown) on every timestep
             if ep_messages and t < len(ep_messages):
