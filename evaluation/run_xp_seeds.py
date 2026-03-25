@@ -398,7 +398,10 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     label_cfg = hydra_cfg["algorithm"] if hydra_cfg else algo_cfg
     run_label = _build_run_label(label_cfg, task_name)
 
-    env = make_env(task_cfg["ENV_NAME"], task_cfg["ENV_KWARGS"])
+    env_kwargs = dict(task_cfg["ENV_KWARGS"])
+    if algo_cfg.get("COMMUNICATION", False):
+        env_kwargs["communication"] = True
+    env = make_env(task_cfg["ENV_NAME"], env_kwargs)
     env = LogWrapper(env)
 
     # Load all seeds from single checkpoint
@@ -679,6 +682,8 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     # Remove fixed_partner_pos from env kwargs for eval (agents use their own attention)
     eval_env_kwargs = dict(task_cfg["ENV_KWARGS"])
     eval_env_kwargs.pop("fixed_partner_pos", None)
+    if algo_cfg.get("COMMUNICATION", False):
+        eval_env_kwargs["communication"] = True
     env = make_env(task_cfg["ENV_NAME"], eval_env_kwargs)
     env = LogWrapper(env)
 
