@@ -281,7 +281,7 @@ def xp_mean_and_sem(xp_matrix):
         i, j = 2 * k, 2 * k + 1
         pair_means.append((xp_matrix[i, j] + xp_matrix[j, i]) / 2.0)
     pair_means = np.array(pair_means)
-    return np.mean(pair_means), np.std(pair_means) / np.sqrt(m)
+    return np.mean(pair_means), np.std(pair_means, ddof=1) / np.sqrt(m)
 
 
 def save_xp_heatmap(matrix_mean: np.ndarray, matrix_std: np.ndarray,
