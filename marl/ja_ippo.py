@@ -1125,10 +1125,11 @@ def _draw_box(cell, row, col, tile_h, tile_w, color, thickness):
     cell[y0:y0 + tile_h, x0 + tile_w - thickness:x0 + tile_w] = color
 
 
-def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale):
+def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_col=None):
     """Draw white borders around the agent tile and its chosen card.
 
-    Agent 0 is at grid (0, 2), agent 1 at (2, 2). Cards are at row 1.
+    Agent 0 is at grid (0, 2), agent 1 at (2, 2).
+    For static: card at (1, choice_pos). For dynamic: card at (card_row, card_col).
     """
     from envs.card_game.rendering import GRID_ROWS, GRID_COLS
     tile_h = cell.shape[0] // GRID_ROWS
@@ -1136,8 +1137,9 @@ def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale):
     thickness = max(2, scale // 8)
     white = [255, 255, 255]
 
-    # Border around the chosen card (row 1)
-    _draw_box(cell, 1, choice_pos, tile_h, tile_w, white, thickness)
+    # Border around the chosen card
+    col = card_col if card_col is not None else choice_pos
+    _draw_box(cell, card_row, col, tile_h, tile_w, white, thickness)
     # Border around the agent tile
     agent_row = 0 if agent_idx == 0 else 2
     _draw_box(cell, agent_row, 2, tile_h, tile_w, white, thickness)
@@ -1153,7 +1155,8 @@ def _draw_message_on_cell(cell, msg_pos, scale):
     _draw_box(cell, 1, msg_pos, tile_h, tile_w, brown, thickness)
 
 
-def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger, ep_messages=None):
+def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger,
+                                  ep_messages=None, card_positions=None):
     """Log a 2×T grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
 
     Each cell shows the scene with the attention heatmap overlaid.
@@ -1200,8 +1203,17 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
         # Draw choice borders on the last timestep
         if t == n_steps - 1 and last_action[0] >= 0:
-            _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
-            _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
+            if card_positions is not None:
+                r0, c0 = int(card_positions[last_action[0]][0]), int(card_positions[last_action[0]][1])
+                _draw_choice_on_cell(cell_0, last_action[0], 0, scale, card_row=r0, card_col=c0)
+            else:
+                _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
+        if t == n_steps - 1 and last_action[1] >= 0:
+            if card_positions is not None:
+                r1, c1 = int(card_positions[last_action[1]][0]), int(card_positions[last_action[1]][1])
+                _draw_choice_on_cell(cell_1, last_action[1], 1, scale, card_row=r1, card_col=c1)
+            else:
+                _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
 
         row_0.append(cell_0)
         row_1.append(cell_1)
@@ -1295,8 +1307,17 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
 
             # Draw choice borders on decision step
             if t == n_steps - 1 and last_action[0] >= 0:
-                _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
-                _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
+                es_ep = ep_states[0].env_state
+                if hasattr(es_ep, 'card_positions'):
+                    _cp = np.array(es_ep.card_positions)
+                    r0, c0 = int(_cp[last_action[0]][0]), int(_cp[last_action[0]][1])
+                    _draw_choice_on_cell(cell_0, last_action[0], 0, scale, card_row=r0, card_col=c0)
+                    if last_action[1] >= 0:
+                        r1, c1 = int(_cp[last_action[1]][0]), int(_cp[last_action[1]][1])
+                        _draw_choice_on_cell(cell_1, last_action[1], 1, scale, card_row=r1, card_col=c1)
+                else:
+                    _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
+                    _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
 
             # Stack vertically: agent 0 on top, agent 1 on bottom
             cell_h, cell_w = cell_0.shape[:2]
@@ -1438,9 +1459,15 @@ def log_eval_video(algorithm_config, env, out, logger):
 
         if env_name in ("card-game", "card-game-dynamic"):
             # Card game: 2×T grid image + multi-episode video
+            # Pass card positions for dynamic env (border drawing)
+            _card_pos = None
+            es0 = ep_states[0].env_state
+            if hasattr(es0, 'card_positions'):
+                import numpy as _np
+                _card_pos = _np.array(es0.card_positions)
             _log_card_game_attention_grid(
                 frames, attn_data, ep_actions, tag, video_dir, logger,
-                ep_messages=ep_messages,
+                ep_messages=ep_messages, card_positions=_card_pos,
             )
             _log_card_game_eval_video(
                 inner_env, policy, final_params, max_steps, tag, video_dir, logger,
