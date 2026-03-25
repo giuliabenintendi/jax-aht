@@ -175,11 +175,8 @@ class CardGameEnv(BaseEnv):
         # Override agent 1's action if fixed partner is set
         if self.fixed_partner_pos >= 0:
             a1 = jnp.int32(self.fixed_partner_pos)
-        # With communication, both card AND message must match for reward
-        if self.communication:
-            match = jnp.equal(raw_a0, raw_a1)
-        else:
-            match = jnp.equal(a0, a1)
+        # Reward based on card choice match only (message is a coordination tool)
+        match = jnp.equal(a0, a1)
         reward_val = jnp.where(is_decision & match, 1.0, 0.0)
 
         reward = {agent: reward_val for agent in self.agents}
