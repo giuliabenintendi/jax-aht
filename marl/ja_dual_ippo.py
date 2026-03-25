@@ -150,10 +150,10 @@ def make_train_loop(config, env):
                         value_loss_int = _clipped_value_loss(val_int, traj_batch.value_int, targets_int)
                         value_loss = value_loss_ext + value_loss_int
 
-                        # Scalarized advantage: always use task, optionally add JA
+                        # Scalarized advantage: normalize independently, then sum (RND pattern)
                         gae = (adv_ext - adv_ext.mean()) / (adv_ext.std() + 1e-8)
                         if use_jsd_in_actor:
-                            gae = gae + adv_int
+                            gae = gae + (adv_int - adv_int.mean()) / (adv_int.std() + 1e-8)
 
                         ratio = jnp.exp(log_prob - traj_batch.log_prob)
                         loss_actor1 = ratio * gae
