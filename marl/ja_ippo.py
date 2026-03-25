@@ -1272,7 +1272,12 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             continue
 
         n_steps = min(len(maps_0), len(maps_1))
-        base_img = render_card_game(ep_states[0].env_state.card_permutation)
+        es0 = ep_states[0].env_state
+        if hasattr(es0, 'card_permutation'):
+            base_img = render_card_game(es0.card_permutation)
+        else:
+            from envs.card_game.rendering_dynamic import render_card_game as render_dynamic
+            base_img = render_dynamic(es0.card_positions, es0.card_present)
         base_np = np.array(base_img)
         base_up = np.array(Image.fromarray(base_np).resize(
             (base_np.shape[1] * scale, base_np.shape[0] * scale), Image.NEAREST))
@@ -1422,13 +1427,16 @@ def log_eval_video(algorithm_config, env, out, logger):
         elif env_name == "card-game":
             from envs.card_game.rendering import render_card_game_eval_frames
             frames = render_card_game_eval_frames(ep_states, scale=32)
+        elif env_name == "card-game-dynamic":
+            from envs.card_game.rendering_dynamic import render_card_game_eval_frames as render_dynamic_frames
+            frames = render_dynamic_frames(ep_states, scale=32)
         else:
             from evaluation.vis_episodes import render_episode_frames
             frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
 
         tag = f"Eval/seed_{seed_idx}"
 
-        if env_name == "card-game":
+        if env_name in ("card-game", "card-game-dynamic"):
             # Card game: 2×T grid image + multi-episode video
             _log_card_game_attention_grid(
                 frames, attn_data, ep_actions, tag, video_dir, logger,
