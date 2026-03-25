@@ -382,9 +382,7 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
     if algo_cfg.get("FEED_OTHER_ATTN", False):
         parts.append("feed_attn")
     if algo_cfg.get("FILTER_ATTN_TOP1", False):
-        parts.append("top1_cards")
-    elif algo_cfg.get("FILTER_ATTN_CARDS", False):
-        parts.append("filter_cards")
+        parts.append("top1")
     seeds = algo_cfg.get("NUM_SEEDS", 1)
     if seeds > 1:
         parts.append(f"s{seeds}")
