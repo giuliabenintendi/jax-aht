@@ -49,9 +49,10 @@ def _build_run_string(config: dict) -> str:
     env_kwargs = alg_config.get("ENV_KWARGS", {})
     max_cards = env_kwargs.get("max_cards", None)
     if max_cards is not None:
-        # Dynamic env with configurable card count — include num_colors
-        from envs.card_game.rendering_dynamic import NUM_COLORS
+        from envs.card_game.rendering_dynamic import NUM_COLORS, GRID_ROWS, GRID_COLS
         parts.append(f"{NUM_COLORS}c")
+        if GRID_ROWS != 3 or GRID_COLS != 5:
+            parts.append(f"{GRID_ROWS}x{GRID_COLS}")
     if alg_config.get("COMMUNICATION", False):
         parts.append("comm")
     if alg_config.get("FEED_OTHER_ATTN", False):
@@ -102,8 +103,10 @@ def _build_tags(config) -> list[str]:
         tags.append("top1")
     env_kwargs = alg_config.get("ENV_KWARGS", {})
     if env_kwargs.get("max_cards") is not None:
-        from envs.card_game.rendering_dynamic import NUM_COLORS
+        from envs.card_game.rendering_dynamic import NUM_COLORS, GRID_ROWS as _GR, GRID_COLS as _GC
         tags.append(f"{NUM_COLORS}cards")
+        if _GR != 3 or _GC != 5:
+            tags.append(f"grid{_GR}x{_GC}")
     if env_kwargs.get("shuffle") is False:
         tags.append("no_shuffle")
     label = config.get("label", "default_label")
