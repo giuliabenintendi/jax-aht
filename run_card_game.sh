@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Static card game sweep. 300k steps, 6 seeds, warmup=70%.
+# Static card game sweep. 250k steps, 6 seeds, warmup=70%.
 # 80 runs: 8 entropy x 5 beta x 2 feed_attn
 # Usage: ./run_card_game.sh <gpu> <group>
 
@@ -8,7 +8,7 @@ GROUP="${2:?Usage: ./run_card_game.sh <gpu> <group>}"
 
 mkdir -p logs
 
-CMD="./run_gpu.sh $GPU marl.run -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game algorithm.NUM_SEEDS=6 algorithm.TOTAL_TIMESTEPS=3e5 algorithm.LR=8e-4 algorithm.JA_WARMUP_ENV_STEPS=210000"
+CMD="./run_gpu.sh $GPU marl.run -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game algorithm.NUM_SEEDS=6 algorithm.TOTAL_TIMESTEPS=2.5e5 algorithm.LR=8e-4 algorithm.JA_WARMUP_ENV_STEPS=175000"
 
 if [ "$GROUP" = "1" ]; then
 nohup bash -c "
@@ -16,7 +16,7 @@ for ENT in 0.01 0.05; do
 for BETA in 0.0 0.1 0.25 0.5 1.0; do
 for FEED in true false; do
   echo \"[\$(date +%H:%M)] ent=\$ENT beta=\$BETA feed=\$FEED\"
-  $CMD algorithm.ENT_COEF=\$ENT algorithm.JA_BETA_MAX=\$BETA algorithm.FEED_OTHER_ATTN=\$FEED label=static_ent\${ENT}_b\${BETA}_feed\${FEED}_s6
+  $CMD algorithm.ENT_COEF=\$ENT algorithm.JA_BETA_MAX=\$BETA algorithm.FEED_OTHER_ATTN=\$FEED label=sweep1_ent\${ENT}_b\${BETA}_feed\${FEED}_s6
 done; done; done
 echo \"[\$(date +%H:%M)] Done\"
 " > logs/card_game_g1.log 2>&1 &
@@ -28,7 +28,7 @@ for ENT in 0.1 0.2; do
 for BETA in 0.0 0.1 0.25 0.5 1.0; do
 for FEED in true false; do
   echo \"[\$(date +%H:%M)] ent=\$ENT beta=\$BETA feed=\$FEED\"
-  $CMD algorithm.ENT_COEF=\$ENT algorithm.JA_BETA_MAX=\$BETA algorithm.FEED_OTHER_ATTN=\$FEED label=static_ent\${ENT}_b\${BETA}_feed\${FEED}_s6
+  $CMD algorithm.ENT_COEF=\$ENT algorithm.JA_BETA_MAX=\$BETA algorithm.FEED_OTHER_ATTN=\$FEED label=sweep1_ent\${ENT}_b\${BETA}_feed\${FEED}_s6
 done; done; done
 echo \"[\$(date +%H:%M)] Done\"
 " > logs/card_game_g2.log 2>&1 &
@@ -40,7 +40,7 @@ for ENT in 0.3 0.5; do
 for BETA in 0.0 0.1 0.25 0.5 1.0; do
 for FEED in true false; do
   echo \"[\$(date +%H:%M)] ent=\$ENT beta=\$BETA feed=\$FEED\"
-  $CMD algorithm.ENT_COEF=\$ENT algorithm.JA_BETA_MAX=\$BETA algorithm.FEED_OTHER_ATTN=\$FEED label=static_ent\${ENT}_b\${BETA}_feed\${FEED}_s6
+  $CMD algorithm.ENT_COEF=\$ENT algorithm.JA_BETA_MAX=\$BETA algorithm.FEED_OTHER_ATTN=\$FEED label=sweep1_ent\${ENT}_b\${BETA}_feed\${FEED}_s6
 done; done; done
 echo \"[\$(date +%H:%M)] Done\"
 " > logs/card_game_g3.log 2>&1 &
@@ -52,7 +52,7 @@ for ENT in 0.8 1.0; do
 for BETA in 0.0 0.1 0.25 0.5 1.0; do
 for FEED in true false; do
   echo \"[\$(date +%H:%M)] ent=\$ENT beta=\$BETA feed=\$FEED\"
-  $CMD algorithm.ENT_COEF=\$ENT algorithm.JA_BETA_MAX=\$BETA algorithm.FEED_OTHER_ATTN=\$FEED label=static_ent\${ENT}_b\${BETA}_feed\${FEED}_s6
+  $CMD algorithm.ENT_COEF=\$ENT algorithm.JA_BETA_MAX=\$BETA algorithm.FEED_OTHER_ATTN=\$FEED label=sweep1_ent\${ENT}_b\${BETA}_feed\${FEED}_s6
 done; done; done
 echo \"[\$(date +%H:%M)] Done\"
 " > logs/card_game_g4.log 2>&1 &
