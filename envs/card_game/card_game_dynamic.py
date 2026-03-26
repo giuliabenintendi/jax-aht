@@ -1,24 +1,21 @@
-"""Card Game environment with dynamic card positions.
+"""Card Game environment with dynamic card positions (10 colors, max 5 shown).
 
 Two agents observe colored cards placed at random grid positions. During
 deliberation steps they can only "do nothing" (or send messages if
 communication is enabled). On the decision step they pick a color.
 Reward +1 if both pick the same color, 0 otherwise.
 
-Each episode: 2-5 cards (uniform random) placed at random free cells on
-a 3×5 grid. Agents fixed at (0,2) and (2,2). Actions are color-based
-(pick by color identity, not position). Unavailable colors are masked.
+10 possible colors, min_cards to max_cards shown per episode (default 2-5),
+placed at random free cells on a 3x5 grid. Agents fixed at (0,2) and (2,2).
+Actions are color-based (pick by color identity). Unavailable colors masked.
 
-Layout (3×5 grid, TILE_PIXELS=7 → 21×35 px):
-  Row 0-2, Col 0-4: cards at random positions, agents at fixed positions.
+Actions (no communication): Discrete(C+1)
+  0..(C-1): pick color i (decision step, only if present)
+  C: do nothing (deliberation only)
 
-Actions (no communication):
-  0-4: pick color i (only legal on decision step, only if color is present)
-  5: do nothing (only legal during deliberation)
-
-Actions (with communication):
-  0-24: pick color (a//5) + send message (a%5) — decision step only
-  25-29: send message (a-25) — deliberation only
+Actions (with communication): Discrete(C*C + C)
+  0..(C*C-1): pick color (a//C) + message (a%C) — decision only
+  C*C..(C*C+C-1): message only (a - C*C) — deliberation only
 """
 from functools import partial
 from typing import Dict, Tuple, Optional
@@ -87,12 +84,14 @@ class CardGameEnv(BaseEnv):
 
     def __init__(self, max_steps: int = 10, shuffle: bool = True,
                  fixed_partner_pos: int = -1, communication: bool = False,
-                 **kwargs):
+                 max_cards: int = 5, min_cards: int = 2, **kwargs):
         self.max_steps = max_steps
         self.shuffle = shuffle
         self.fixed_partner_pos = fixed_partner_pos
         self.communication = communication
         self.num_colors = NUM_COLORS
+        self.max_cards = min(max_cards, NUM_COLORS)
+        self.min_cards = min_cards
         self.num_agents = 2
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
         self.name = "CardGame"
@@ -121,11 +120,11 @@ class CardGameEnv(BaseEnv):
 
     def action_space(self, agent: str):
         if self.communication:
-            # 0-24: pick color (a//5) + message (a%5) — decision
-            # 25-29: message only (a-25) — deliberation
+            # 0..(C*C-1): pick color (a//C) + message (a%C) — decision
+            # C*C..(C*C+C-1): message only (a - C*C) — deliberation
             return jaxmarl_spaces.Discrete(
                 num_categories=self.num_colors * self.num_colors + self.num_colors)
-        # 0-4: pick color, 5: do nothing
+        # 0..(C-1): pick color, C: do nothing
         return jaxmarl_spaces.Discrete(num_categories=self.num_colors + 1)
 
     def _make_obs(self, env_state: CardGameState) -> Dict[str, jnp.ndarray]:
@@ -154,8 +153,8 @@ class CardGameEnv(BaseEnv):
     def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], WrappedEnvState]:
         key1, key2, key3 = jax.random.split(key, 3)
 
-        # How many cards this episode: uniform 2-5
-        num_cards = jax.random.randint(key1, (), 2, self.num_colors + 1)
+        # How many cards this episode: uniform [min_cards, max_cards]
+        num_cards = jax.random.randint(key1, (), self.min_cards, self.max_cards + 1)
 
         # Which colors are present (first num_cards of a shuffled order)
         if self.shuffle:
@@ -167,14 +166,33 @@ class CardGameEnv(BaseEnv):
         card_present_by_color = jnp.zeros(self.num_colors, dtype=jnp.bool_)
         card_present_by_color = card_present_by_color.at[order].set(card_present)
 
-        # Random positions for cards on free cells (LBF pattern)
+        # Random positions on free cells — sample max_cards positions
+        # (only the first num_cards are used, rest masked by card_present)
         pos_indices = jax.random.choice(
-            key3, _ALL_CELLS, shape=(self.num_colors,),
+            key3, _ALL_CELLS, shape=(self.max_cards,),
             p=_FREE_MASK, replace=False,
         )
-        rows = pos_indices // GRID_COLS
-        cols = pos_indices % GRID_COLS
-        card_positions = jnp.stack([rows, cols], axis=-1)  # (NUM_COLORS, 2)
+        # Assign positions to present colors: each present color gets a unique position
+        # Colors not present get a dummy position (0,0) — masked in rendering
+        all_positions = jnp.zeros((self.num_colors, 2), dtype=jnp.int32)
+        present_idx = 0
+        # Use scan to assign positions to present colors in order
+        def assign_pos(carry, i):
+            positions, pos_idx = carry
+            is_present = card_present_by_color[i]
+            row = pos_indices[pos_idx] // GRID_COLS
+            col = pos_indices[pos_idx] % GRID_COLS
+            positions = jnp.where(
+                is_present,
+                positions.at[i].set(jnp.array([row, col])),
+                positions,
+            )
+            pos_idx = jnp.where(is_present, pos_idx + 1, pos_idx)
+            return (positions, pos_idx), None
+
+        (card_positions, _), _ = jax.lax.scan(
+            assign_pos, (all_positions, jnp.int32(0)), jnp.arange(self.num_colors)
+        )
 
         env_state = CardGameState(
             card_positions=card_positions,

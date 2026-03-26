@@ -14,7 +14,7 @@ TILE_PIXELS = 7
 
 GRID_ROWS = 3
 GRID_COLS = 5
-NUM_COLORS = 5
+NUM_COLORS = 10
 
 # Pixel coordinate grids for mask definitions
 _Y, _X = jnp.meshgrid(
@@ -44,11 +44,16 @@ _UP_TRI_MASK = (
 
 # 5 maximally distinct card colors
 CARD_COLORS = jnp.array([
-    [220, 50, 50],    # red
-    [50, 100, 220],   # blue
-    [50, 180, 50],    # green
-    [220, 200, 50],   # yellow
-    [160, 50, 200],   # purple
+    [220, 50, 50],    # 0: red
+    [50, 100, 220],   # 1: blue
+    [50, 180, 50],    # 2: green
+    [220, 200, 50],   # 3: yellow
+    [160, 50, 200],   # 4: purple
+    [50, 220, 220],   # 5: cyan
+    [220, 130, 50],   # 6: orange-brown
+    [180, 50, 100],   # 7: dark pink
+    [100, 180, 220],  # 8: light blue
+    [180, 220, 50],   # 9: lime
 ], dtype=jnp.uint8)
 
 AGENT_0_COLOR = jnp.array([255, 140, 0], dtype=jnp.uint8)    # orange
