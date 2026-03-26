@@ -12,8 +12,8 @@ import jax.numpy as jnp
 
 TILE_PIXELS = 7
 
-GRID_ROWS = 3
-GRID_COLS = 5
+GRID_ROWS = 6
+GRID_COLS = 10
 NUM_COLORS = 10
 
 # Pixel coordinate grids for mask definitions
@@ -81,15 +81,15 @@ def render_card_game(card_positions, card_present):
     w_px = GRID_COLS * TILE_PIXELS
     img = jnp.zeros((h_px, w_px, 3), dtype=jnp.uint8)
 
-    # Agent 0 at grid (0, 2) — top center, down-pointing
+    # Agent 0 at top center, down-pointing
     agent0_tile = _render_tile(_DOWN_TRI_MASK, AGENT_0_COLOR)
-    img = jax.lax.dynamic_update_slice(img, agent0_tile, (0, 2 * TILE_PIXELS, 0))
+    img = jax.lax.dynamic_update_slice(
+        img, agent0_tile, (0, (GRID_COLS // 2) * TILE_PIXELS, 0))
 
-    # Agent 1 at grid (2, 2) — bottom center, up-pointing
+    # Agent 1 at bottom center, up-pointing
     agent1_tile = _render_tile(_UP_TRI_MASK, AGENT_1_COLOR)
     img = jax.lax.dynamic_update_slice(
-        img, agent1_tile, (2 * TILE_PIXELS, 2 * TILE_PIXELS, 0)
-    )
+        img, agent1_tile, ((GRID_ROWS - 1) * TILE_PIXELS, (GRID_COLS // 2) * TILE_PIXELS, 0))
 
     # Cards at dynamic positions (LBF pattern: scan + conditional rendering)
     def draw_card(img, i):

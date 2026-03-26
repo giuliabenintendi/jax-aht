@@ -37,10 +37,10 @@ from envs.card_game.rendering_dynamic import (
 
 _EGO_HIGHLIGHT_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)
 
-# Fixed agent grid positions
+# Fixed agent grid positions (center of top and bottom rows)
 _AGENT_POSITIONS = jnp.array([
-    [0, 2],  # agent 0: top center
-    [2, 2],  # agent 1: bottom center
+    [0, GRID_COLS // 2],              # agent 0: top center
+    [GRID_ROWS - 1, GRID_COLS // 2],  # agent 1: bottom center
 ], dtype=jnp.int32)
 
 # All grid cells as flat indices (0..14)
