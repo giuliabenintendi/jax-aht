@@ -50,7 +50,7 @@ CARD_COLORS = jnp.array([
     [220, 200, 50],   # 3: yellow
     [160, 50, 200],   # 4: purple
     [50, 220, 220],   # 5: cyan
-    [220, 130, 50],   # 6: orange-brown
+    [50, 200, 150],   # 6: teal
     [180, 50, 100],   # 7: dark pink
     [100, 180, 220],  # 8: light blue
     [180, 220, 50],   # 9: lime
