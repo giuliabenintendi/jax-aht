@@ -26,6 +26,7 @@ from flax.linen.initializers import constant, orthogonal
 import jax
 import jax.numpy as jnp
 
+from agents.action_masking import mask_action_logits
 from agents.ja_utils import make_sinusoidal_spatial_basis
 
 
@@ -288,9 +289,7 @@ class JAActorCritic(nn.Module):
             name="actor_proj",
         )(actor_embed)
 
-        unavail_actions = 1 - avail_actions
-        action_logits = action_logits - (unavail_actions * 1e10)
-        action_logits = jnp.clip(action_logits, -20.0, 20.0)
+        action_logits = mask_action_logits(action_logits, avail_actions)
         pi = distrax.Categorical(logits=action_logits)
 
         # --- Critic path (own conv, attention, LSTM — no shared weights) ---

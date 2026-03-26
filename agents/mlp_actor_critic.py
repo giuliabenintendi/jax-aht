@@ -6,6 +6,8 @@ import flax.linen as nn
 from flax.linen.initializers import constant, orthogonal
 import jax.numpy as jnp
 
+from agents.action_masking import mask_action_logits
+
 
 class ActorCritic(nn.Module):
     action_dim: Sequence[int]
@@ -32,10 +34,7 @@ class ActorCritic(nn.Module):
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
         )(actor_mean)
 
-        # Mask unavailable actions if avail_actions is provided
-        unavail_actions = 1 - avail_actions
-        actor_mean = actor_mean - (unavail_actions * 1e10)
-        actor_mean = jnp.clip(actor_mean, -20.0, 20.0)
+        actor_mean = mask_action_logits(actor_mean, avail_actions)
 
         pi = distrax.Categorical(logits=actor_mean)
 
@@ -78,10 +77,7 @@ class ActorWithDoubleCritic(nn.Module):
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
         )(actor_mean)
 
-        # Mask unavailable actions if avail_actions is provided
-        unavail_actions = 1 - avail_actions
-        actor_mean = actor_mean - (unavail_actions * 1e10)
-        actor_mean = jnp.clip(actor_mean, -20.0, 20.0)
+        actor_mean = mask_action_logits(actor_mean, avail_actions)
 
         pi = distrax.Categorical(logits=actor_mean)
 
@@ -137,10 +133,7 @@ class ActorWithConditionalCritic(nn.Module):
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
         )(actor_mean)
 
-        # Mask unavailable actions if avail_actions is provided
-        unavail_actions = 1 - avail_actions
-        actor_mean = actor_mean - (unavail_actions * 1e10)
-        actor_mean = jnp.clip(actor_mean, -20.0, 20.0)
+        actor_mean = mask_action_logits(actor_mean, avail_actions)
 
         pi = distrax.Categorical(logits=actor_mean)
 

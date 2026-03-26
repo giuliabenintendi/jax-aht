@@ -303,22 +303,22 @@ class CardGameEnv(BaseEnv):
         present = state.env_state.card_present  # (NUM_COLORS,) bool
 
         if self.communication:
-            n_pick_msg = self.num_colors * self.num_colors  # 25
-            n_msg_only = self.num_colors  # 5
+            n_pick_msg = self.num_colors * self.num_colors
+            n_msg_only = self.num_colors
 
-            # Decision: pick+msg actions (0-24), only for present colors
-            # For each of the 25 actions, check if the color (a//5) is present
+            # Decision: pick+msg actions (0..C*C-1), only for present colors
+            # For each action, check if the selected color (a//C) is present.
             pick_msg_mask = present[jnp.arange(n_pick_msg) // self.num_colors]
             pick_msg_avail = jnp.where(is_decision, pick_msg_mask, jnp.zeros(n_pick_msg))
 
-            # Deliberation: message-only actions (25-29)
+            # Deliberation: message-only actions (C*C..C*C+C-1).
             msg_only_avail = jnp.where(is_decision, jnp.zeros(n_msg_only), jnp.ones(n_msg_only))
 
             mask = jnp.concatenate([pick_msg_avail, msg_only_avail])
         else:
-            # Decision: pick color (0-4) if present, no do-nothing
+            # Decision: pick color (0..C-1) if present, no do-nothing.
             color_avail = jnp.where(is_decision, present.astype(jnp.float32), jnp.zeros(self.num_colors))
-            # Deliberation: only do-nothing (5)
+            # Deliberation: only do-nothing (C).
             noop_avail = jnp.where(is_decision, jnp.zeros(1), jnp.ones(1))
             mask = jnp.concatenate([color_avail, noop_avail])
 

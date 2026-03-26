@@ -13,6 +13,8 @@ from jax.nn.initializers import lecun_normal, normal
 from jax import random
 from jax.numpy.linalg import eigh
 
+from agents.action_masking import mask_action_logits
+
 
 class SequenceLayer(nn.Module):
     """ Defines a single S5 layer, with S5 SSM, nonlinearity, etc.
@@ -675,9 +677,7 @@ class S5ActorCritic(nn.Module):
             actor_mean = nn.leaky_relu(actor_mean)
         actor_mean = self.action_decoder(actor_mean)
 
-        unavail_actions = 1 - avail_actions
-        action_logits = actor_mean - (unavail_actions * 1e10)
-        action_logits = jnp.clip(action_logits, -20.0, 20.0)
+        action_logits = mask_action_logits(actor_mean, avail_actions)
 
         pi = distrax.Categorical(logits=action_logits)
 

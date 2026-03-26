@@ -8,6 +8,8 @@ from flax.linen.initializers import constant, orthogonal
 import jax
 import jax.numpy as jnp
 
+from agents.action_masking import mask_action_logits
+
 
 class ScannedRNN(nn.Module):
     @functools.partial(
@@ -66,9 +68,7 @@ class RNNActorCritic(nn.Module):
         actor_mean = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
         )(actor_mean)
-        unavail_actions = 1 - avail_actions
-        action_logits = actor_mean - (unavail_actions * 1e10)
-        action_logits = jnp.clip(action_logits, -20.0, 20.0)
+        action_logits = mask_action_logits(actor_mean, avail_actions)
 
         pi = distrax.Categorical(logits=action_logits)
 
