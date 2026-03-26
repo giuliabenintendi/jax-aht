@@ -752,9 +752,9 @@ def make_train_loop(config, env):
                     log_prob=log_prob,
                     obs=last_obs_batch,
                     other_attn=(
-                        prev_other_attn[None, ...]
+                        prev_other_attn
                         if feed_other_attn and feed_other_attn_mode == "feature_gate"
-                        else jnp.zeros((1, num_actors, feat_h, feat_w), dtype=last_obs_batch.dtype)
+                        else jnp.zeros((num_actors, feat_h, feat_w), dtype=last_obs_batch.dtype)
                     ),
                     info=info,
                     avail_actions=avail_actions_batch,
