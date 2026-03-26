@@ -1128,21 +1128,22 @@ def _draw_box(cell, row, col, tile_h, tile_w, color, thickness):
 def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_col=None):
     """Draw white borders around the agent tile and its chosen card.
 
-    Agent 0 is at grid (0, 2), agent 1 at (2, 2).
-    For static: card at (1, choice_pos). For dynamic: card at (card_row, card_col).
+    Derives grid dimensions from the frame shape and TILE_PIXELS.
+    Works for both static (3x5) and dynamic (6x10) grids.
     """
-    from envs.card_game.rendering import GRID_ROWS, GRID_COLS
-    tile_h = cell.shape[0] // GRID_ROWS
-    tile_w = cell.shape[1] // GRID_COLS
+    tile_h = scale * 7
+    tile_w = scale * 7
+    frame_h, frame_w = cell.shape[:2]
+    grid_rows = frame_h // tile_h
+    grid_cols = frame_w // tile_w
     thickness = max(2, scale // 8)
     white = [255, 255, 255]
 
-    # Border around the chosen card
     col = card_col if card_col is not None else choice_pos
     _draw_box(cell, card_row, col, tile_h, tile_w, white, thickness)
-    # Border around the agent tile
-    agent_row = 0 if agent_idx == 0 else 2
-    _draw_box(cell, agent_row, 2, tile_h, tile_w, white, thickness)
+    agent_row = 0 if agent_idx == 0 else grid_rows - 1
+    agent_col = grid_cols // 2
+    _draw_box(cell, agent_row, agent_col, tile_h, tile_w, white, thickness)
 
 
 def _draw_message_on_cell(cell, msg_pos, scale):
@@ -1177,7 +1178,12 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
     n_steps = min(len(maps_0), len(maps_1), len(frames) - 1)
 
-    scale = frames[0].shape[0] // 3  # tile height = img_height / GRID_ROWS
+    # frames come from render_card_game_eval_frames(scale=32)
+    # tile_px = scale * 7. Recover scale from the frame height.
+    # frame_h = grid_rows * 7 * scale → scale = frame_h / (grid_rows * 7)
+    # But we can just use: one tile = frame_h / grid_rows pixels, scale = tile / 7
+    # Since frames[0] was rendered at scale=32, tile = 32*7=224 px per grid cell
+    scale = 32
 
     agent0_color = np.array([255, 140, 0], dtype=np.uint8)    # orange
     agent1_color = np.array([255, 0, 255], dtype=np.uint8)    # magenta
