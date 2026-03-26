@@ -72,7 +72,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            agent_1_param, agent_1_policy,
                            max_episode_steps, collect_attention=False,
                            greedy=True, feed_other_attn_dims=None,
-                           fixed_partner_attn=None):
+                           fixed_partner_attn=None,
+                           feed_other_attn_mode="channel"):
     '''
     Run a single episode and collect states for rendering.
 
@@ -123,10 +124,15 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         obs_0, obs_1 = obs["agent_0"], obs["agent_1"]
         prev_done_0, prev_done_1 = done["agent_0"], done["agent_1"]
 
+        aux_obs_0 = None
+        aux_obs_1 = None
         # Augment obs with other agent's previous attention as 4th channel
-        if feed_other_attn_dims is not None:
+        if feed_other_attn_dims is not None and feed_other_attn_mode == "channel":
             obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
             obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+        elif feed_other_attn_dims is not None and feed_other_attn_mode == "feature_gate":
+            aux_obs_0 = prev_attn_1.reshape(1, 1, _feat_h, _feat_w)
+            aux_obs_1 = prev_attn_0.reshape(1, 1, _feat_h, _feat_w)
 
         # Reshape inputs for policies
         obs_0_reshaped = obs_0.reshape(1, 1, -1)
@@ -150,6 +156,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 rng=act_rng,
                 greedy=greedy,
                 agent_id=0,
+                aux_obs=aux_obs_0,
             )
             attn_maps["agent_0"].append(attn_0)
         else:
@@ -161,6 +168,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_0,
                 rng=act_rng,
                 greedy=greedy,
+                aux_obs=aux_obs_0,
             )
         act_0 = act_0.squeeze()
 
@@ -175,6 +183,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 rng=part_rng,
                 greedy=greedy,
                 agent_id=1,
+                aux_obs=aux_obs_1,
             )
             # Override agent 1's attention if fixed partner
             if fixed_partner_attn is not None:
@@ -189,6 +198,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_1,
                 rng=part_rng,
                 greedy=greedy,
+                aux_obs=aux_obs_1,
             )
         act_1 = act_1.squeeze()
 
@@ -837,5 +847,4 @@ if __name__ == "__main__":
         max_episode_steps=100 if env_name == "lbf" or env_name == "lbf-reward-shaping" else 400, num_eps=1, 
         savevideo=True, 
         save_dir=f"results/{env_name}/videos/", save_name="ego-vs-ego-test")
-
 

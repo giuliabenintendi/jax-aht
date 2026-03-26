@@ -55,7 +55,8 @@ def load_algo_config() -> dict:
 def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 agent_1_param, agent_1_policy,
                                 max_episode_steps, action_sizes,
-                                feed_attn_dims=None):
+                                feed_attn_dims=None,
+                                feed_attn_mode="channel"):
     """Run one eval episode, returning LogWrapper info + mean JSD between attention maps.
 
     Args:
@@ -89,9 +90,14 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
     obs_0 = init_obs["agent_0"]
     obs_1 = init_obs["agent_1"]
-    if feed_attn_dims is not None:
+    aux_obs_0 = None
+    aux_obs_1 = None
+    if feed_attn_dims is not None and feed_attn_mode == "channel":
         obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
         obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+    elif feed_attn_dims is not None and feed_attn_mode == "feature_gate":
+        aux_obs_0 = prev_attn_1.reshape(1, 1, _feat_h, _feat_w)
+        aux_obs_1 = prev_attn_0.reshape(1, 1, _feat_h, _feat_w)
 
     act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
         params=agent_0_param,
@@ -101,6 +107,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         hstate=init_hstate_0,
         rng=act0_rng,
         greedy=True,
+        aux_obs=aux_obs_0,
     )
     act_0 = act_0.squeeze()
 
@@ -112,6 +119,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         hstate=init_hstate_1,
         rng=act1_rng,
         greedy=True,
+        aux_obs=aux_obs_1,
     )
     act_1 = act_1.squeeze()
 
@@ -157,9 +165,14 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
             obs_0 = obs["agent_0"]
             obs_1 = obs["agent_1"]
-            if feed_attn_dims is not None:
+            aux_obs_0 = None
+            aux_obs_1 = None
+            if feed_attn_dims is not None and feed_attn_mode == "channel":
                 obs_0 = augment_obs_for_eval(obs_0, prev_a1, _img_h, _img_w)
                 obs_1 = augment_obs_for_eval(obs_1, prev_a0, _img_h, _img_w)
+            elif feed_attn_dims is not None and feed_attn_mode == "feature_gate":
+                aux_obs_0 = prev_a1.reshape(1, 1, _feat_h, _feat_w)
+                aux_obs_1 = prev_a0.reshape(1, 1, _feat_h, _feat_w)
 
             act_0, hstate_0_next, attn_0 = agent_0_policy.get_action_and_attention(
                 params=agent_0_param,
@@ -169,6 +182,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_0,
                 rng=act0_rng,
                 greedy=True,
+                aux_obs=aux_obs_0,
             )
             act_0 = act_0.squeeze()
 
@@ -180,6 +194,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_1,
                 rng=act1_rng,
                 greedy=True,
+                aux_obs=aux_obs_1,
             )
             act_1 = act_1.squeeze()
 
@@ -222,7 +237,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
                           agent_1_param, agent_1_policy,
                           max_episode_steps, num_eps, action_sizes,
-                          feed_attn_dims=None):
+                          feed_attn_dims=None,
+                          feed_attn_mode="channel"):
     """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
@@ -232,6 +248,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
             ep_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, action_sizes,
             feed_attn_dims=feed_attn_dims,
+            feed_attn_mode=feed_attn_mode,
         )
     )
     all_info, all_jsd = vmap_fn(ep_rngs)
@@ -241,7 +258,8 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
 def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
                      all_agent_1_params, agent_1_policy,
                      max_episode_steps, num_eps, action_sizes,
-                     feed_attn_dims=None):
+                     feed_attn_dims=None,
+                     feed_attn_mode="channel"):
     """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
     num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
     partner_rngs = jax.random.split(rng, num_partners)
@@ -252,6 +270,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
             partner_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, num_eps, action_sizes,
             feed_attn_dims=feed_attn_dims,
+            feed_attn_mode=feed_attn_mode,
         )
 
     return jax.vmap(eval_one_partner)(partner_rngs, all_agent_1_params)
@@ -474,6 +493,7 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims,
+        feed_attn_mode=algo_cfg.get("FEED_OTHER_ATTN_MODE", "channel"),
     ))
 
     all_row_metrics = []
@@ -745,6 +765,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims,
+        feed_attn_mode=algo_cfg.get("FEED_OTHER_ATTN_MODE", "channel"),
     ))
 
     all_row_metrics = []

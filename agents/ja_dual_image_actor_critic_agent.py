@@ -11,6 +11,7 @@ import jax.numpy as jnp
 
 from agents.agent_interface import AgentPolicy
 from agents.ja_dual_image_actor_critic import JADualImageActorCritic
+from agents.ja_image_actor_critic import _compute_resnet_output_dims
 
 
 class JADualImageActorCriticPolicy(AgentPolicy):
@@ -37,10 +38,16 @@ class JADualImageActorCriticPolicy(AgentPolicy):
         lstm_hidden_dim: int = 64,
         spatial_basis_depth: int = 8,
         num_channels: int = 3,
+        feed_other_attn_mode: str = "channel",
+        partner_attn_gain: float = 1.0,
     ):
         super().__init__(action_dim, obs_dim)
         self.img_height = img_height
         self.img_width = img_width
+        self.feed_other_attn_mode = feed_other_attn_mode
+        self.feat_h, self.feat_w = _compute_resnet_output_dims(
+            img_height, img_width, conv_stride, conv_kernel_size, conv_padding, conv_num_blocks,
+        )
         self.network = JADualImageActorCritic(
             action_dim=action_dim,
             img_height=img_height,
@@ -56,8 +63,16 @@ class JADualImageActorCriticPolicy(AgentPolicy):
             lstm_hidden_dim=lstm_hidden_dim,
             spatial_basis_depth=spatial_basis_depth,
             num_channels=num_channels,
+            feed_other_attn_mode=feed_other_attn_mode,
+            partner_attn_gain=partner_attn_gain,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
+
+    def _format_other_attn(self, aux_obs, obs):
+        if aux_obs is not None:
+            return aux_obs
+        seq_len, batch_size = obs.shape[:2]
+        return jnp.zeros((seq_len, batch_size, self.feat_h, self.feat_w), dtype=obs.dtype)
 
     def _pack_hstate(self, actor_lstm_state, critic_lstm_state):
         """Pack ((actor_h, actor_c), (critic_h, critic_c)) -> (1, batch, 4*dim)."""
@@ -80,8 +95,9 @@ class JADualImageActorCriticPolicy(AgentPolicy):
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
                    aux_obs=None, env_state=None, greedy=False, agent_id=None):
         hidden = self._unpack_hstate(hstate)
+        other_attn = self._format_other_attn(aux_obs, obs)
         new_hidden, pi, _, _, _ = self.network.apply(
-            params, hidden, (obs, done, avail_actions)
+            params, hidden, (obs, done, avail_actions, other_attn)
         )
         action = jax.lax.cond(
             greedy,
@@ -93,10 +109,11 @@ class JADualImageActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action_and_attention(self, params, obs, done, avail_actions, hstate, rng,
-                                 greedy=False, agent_id=None):
+                                 greedy=False, agent_id=None, aux_obs=None):
         hidden = self._unpack_hstate(hstate)
+        other_attn = self._format_other_attn(aux_obs, obs)
         new_hidden, pi, _, _, attn_map = self.network.apply(
-            params, hidden, (obs, done, avail_actions)
+            params, hidden, (obs, done, avail_actions, other_attn)
         )
         action = jax.lax.cond(
             greedy,
@@ -111,8 +128,9 @@ class JADualImageActorCriticPolicy(AgentPolicy):
                                 aux_obs=None, env_state=None):
         """Returns (action, (val_ext, val_int), pi, new_hstate, attn_map)."""
         hidden = self._unpack_hstate(hstate)
+        other_attn = self._format_other_attn(aux_obs, obs)
         new_hidden, pi, val_ext, val_int, attn_map = self.network.apply(
-            params, hidden, (obs, done, avail_actions)
+            params, hidden, (obs, done, avail_actions, other_attn)
         )
         action = pi.sample(seed=rng)
         new_hstate = self._pack_hstate(*new_hidden)
@@ -131,5 +149,6 @@ class JADualImageActorCriticPolicy(AgentPolicy):
         dummy_obs = jnp.zeros((seq_len, batch_size, self.obs_dim))
         dummy_done = jnp.zeros((seq_len, batch_size))
         dummy_avail = jnp.ones((seq_len, batch_size, self.action_dim))
-        dummy_x = (dummy_obs, dummy_done, dummy_avail)
+        dummy_other_attn = jnp.zeros((seq_len, batch_size, self.feat_h, self.feat_w))
+        dummy_x = (dummy_obs, dummy_done, dummy_avail, dummy_other_attn)
         return self.network.init(rng, hidden, dummy_x)

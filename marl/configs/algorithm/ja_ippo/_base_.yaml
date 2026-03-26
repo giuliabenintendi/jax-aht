@@ -41,4 +41,6 @@ NORMALIZE_REWARDS: false        # reference code uses no normalization (Lee et a
 USE_DUAL_CRITIC: false          # dual critic (V_ext + V_int) for separate reward baselines
 DUAL_CRITIC_ACTOR_JA: false     # include JA advantage in policy gradient (requires USE_DUAL_CRITIC)
 FEED_OTHER_ATTN: false          # feed other agent's previous attention map as 4th image channel
+FEED_OTHER_ATTN_MODE: channel   # channel | feature_gate
+PARTNER_ATTN_GAIN: 1.0          # feature_gate mode only: residual boost strength
 FILTER_ATTN_TOP1: false         # keep only global argmax of attention map
