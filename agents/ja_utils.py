@@ -163,6 +163,9 @@ def augment_obs_for_eval(obs_flat, other_attn, img_h, img_w):
     extra = obs_flat[img_flat_dim:]
 
     upsampled = jax.image.resize(other_attn, (img_h, img_w), method='nearest')
+    # Normalize to [0, 1] so attention channel matches RGB scale
+    attn_max = jnp.max(upsampled)
+    upsampled = upsampled / jnp.maximum(attn_max, 1e-8)
     rgb = img_part.reshape(img_h, img_w, 3)
     augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
     result = augmented.reshape(-1)

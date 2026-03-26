@@ -647,6 +647,9 @@ def make_train_loop(config, env):
             upsampled = jax.image.resize(
                 prev_other_attn, (num_actors, img_h, img_w), method='nearest',
             )
+            # Normalize to [0, 1] so attention channel matches RGB scale
+            attn_max = jnp.max(upsampled, axis=(-2, -1), keepdims=True)
+            upsampled = upsampled / jnp.maximum(attn_max, 1e-8)
             rgb = img_part.reshape(num_actors, img_h, img_w, 3)
             augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
             result = augmented.reshape(num_actors, -1)
