@@ -46,13 +46,18 @@ def _build_run_string(config: dict) -> str:
     ent_coef = alg_config.get("ENT_COEF", 0.01)
     if ent_coef != 0.01:
         parts.append(f"ent{ent_coef}")
+    env_kwargs = alg_config.get("ENV_KWARGS", {})
+    max_cards = env_kwargs.get("max_cards", None)
+    if max_cards is not None:
+        # Dynamic env with configurable card count — include num_colors
+        from envs.card_game.rendering_dynamic import NUM_COLORS
+        parts.append(f"{NUM_COLORS}c")
     if alg_config.get("COMMUNICATION", False):
         parts.append("comm")
     if alg_config.get("FEED_OTHER_ATTN", False):
         parts.append("feed_attn")
     if alg_config.get("FILTER_ATTN_TOP1", False):
         parts.append("top1")
-    env_kwargs = alg_config.get("ENV_KWARGS", {})
     if env_kwargs.get("shuffle") is False:
         parts.append("no_shuffle")
     fp = env_kwargs.get("fixed_partner_pos", -1)
@@ -96,6 +101,9 @@ def _build_tags(config) -> list[str]:
     if alg_config.get("FILTER_ATTN_TOP1", False):
         tags.append("top1")
     env_kwargs = alg_config.get("ENV_KWARGS", {})
+    if env_kwargs.get("max_cards") is not None:
+        from envs.card_game.rendering_dynamic import NUM_COLORS
+        tags.append(f"{NUM_COLORS}cards")
     if env_kwargs.get("shuffle") is False:
         tags.append("no_shuffle")
     label = config.get("label", "default_label")
