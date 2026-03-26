@@ -1,18 +1,21 @@
-"""Card Game environment for testing joint attention.
+"""Card Game environment for testing joint attention (static positions).
 
-Two agents observe 5 shuffled colored cards for several deliberation steps,
-then simultaneously pick a card position. Reward +1 if both pick the same
-position, 0 otherwise. The only coordination channel is the partner's
-spatial attention map (fed as a 4th observation channel by JA-IPPO).
+Two agents observe 5 shuffled colored cards at fixed positions (row 1)
+for several deliberation steps, then simultaneously pick a color.
+Reward +1 if both pick the same color, 0 otherwise.
 
 Layout (3×5 grid, TILE_PIXELS=7 → 21×35 px):
   Row 0: [ ] [ ] [agent_0 ▽] [ ] [ ]
   Row 1: [card] [card] [card] [card] [card]
   Row 2: [ ] [ ] [agent_1 △] [ ] [ ]
 
-Actions: 0-4 (pick card at that position). Ignored during deliberation steps.
-Episode: max_steps total (default 10). Steps 1..max_steps-1 are deliberation,
-step max_steps is the decision step.
+Actions (no communication):
+  0-4: pick color i (only legal on decision step)
+  5: do nothing (only legal during deliberation)
+
+Actions (with communication):
+  0-24: pick color (a//5) + send message (a%5) — decision only
+  25-29: send message (a-25) — deliberation only
 """
 from functools import partial
 from typing import Dict, Tuple, Optional
@@ -106,7 +109,7 @@ class CardGameEnv(BaseEnv):
             # 25-29: send message (a-25) — deliberation only
             return jaxmarl_spaces.Discrete(
                 num_categories=self.num_cards * self.num_cards + self.num_cards)
-        # 0-4: pick card at position, 5: do nothing
+        # 0-4: pick color, 5: do nothing
         return jaxmarl_spaces.Discrete(num_categories=self.num_cards + 1)
 
     def _make_obs(self, env_state: CardGameState) -> Dict[str, jnp.ndarray]:
@@ -180,7 +183,7 @@ class CardGameEnv(BaseEnv):
 
             new_messages = jnp.array([msg0, msg1], dtype=jnp.int32)
         else:
-            # 0-4: pick position, 5: do nothing → -1
+            # 0-4: pick color, 5: do nothing → -1
             a0 = jnp.where(raw_a0 < self.num_cards, raw_a0, jnp.int32(-1))
             a1 = jnp.where(raw_a1 < self.num_cards, raw_a1, jnp.int32(-1))
             new_messages = env_state.messages
@@ -188,7 +191,7 @@ class CardGameEnv(BaseEnv):
         # Override agent 1's action if fixed partner is set
         if self.fixed_partner_pos >= 0:
             a1 = jnp.int32(self.fixed_partner_pos)
-        # Reward based on card choice match only (message is a coordination tool)
+        # Reward based on color match
         match = jnp.equal(a0, a1)
         reward_val = jnp.where(is_decision & match, 1.0, 0.0)
 

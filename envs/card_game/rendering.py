@@ -170,10 +170,14 @@ def render_card_game_eval_frames(ep_states, scale: int = 32):
         frame = np.array(pil_img)
 
         choices = np.array(state.env_state.agent_choices)
+        perm = np.array(state.env_state.card_permutation)
         if choices[0] >= 0:
-            frame = _draw_choice_border(frame, int(choices[0]), agent0_color, border_thickness)
+            # Find position of chosen color
+            pos_0 = int(np.where(perm == choices[0])[0][0])
+            frame = _draw_choice_border(frame, pos_0, agent0_color, border_thickness)
         if choices[1] >= 0:
-            frame = _draw_choice_border(frame, int(choices[1]), agent1_color, border_thickness)
+            pos_1 = int(np.where(perm == choices[1])[0][0])
+            frame = _draw_choice_border(frame, pos_1, agent1_color, border_thickness)
 
         frames.append(frame)
     return frames

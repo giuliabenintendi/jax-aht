@@ -1156,7 +1156,8 @@ def _draw_message_on_cell(cell, msg_pos, scale):
 
 
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger,
-                                  ep_messages=None, card_positions=None):
+                                  ep_messages=None, card_positions=None,
+                                  card_permutation=None):
     """Log a 2×T grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
 
     Each cell shows the scene with the attention heatmap overlaid.
@@ -1206,12 +1207,18 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
             if card_positions is not None:
                 r0, c0 = int(card_positions[last_action[0]][0]), int(card_positions[last_action[0]][1])
                 _draw_choice_on_cell(cell_0, last_action[0], 0, scale, card_row=r0, card_col=c0)
+            elif card_permutation is not None:
+                col0 = int(np.where(card_permutation == last_action[0])[0][0])
+                _draw_choice_on_cell(cell_0, col0, 0, scale)
             else:
                 _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
         if t == n_steps - 1 and last_action[1] >= 0:
             if card_positions is not None:
                 r1, c1 = int(card_positions[last_action[1]][0]), int(card_positions[last_action[1]][1])
                 _draw_choice_on_cell(cell_1, last_action[1], 1, scale, card_row=r1, card_col=c1)
+            elif card_permutation is not None:
+                col1 = int(np.where(card_permutation == last_action[1])[0][0])
+                _draw_choice_on_cell(cell_1, col1, 1, scale)
             else:
                 _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
 
@@ -1315,6 +1322,13 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                     if last_action[1] >= 0:
                         r1, c1 = int(_cp[last_action[1]][0]), int(_cp[last_action[1]][1])
                         _draw_choice_on_cell(cell_1, last_action[1], 1, scale, card_row=r1, card_col=c1)
+                elif hasattr(es_ep, 'card_permutation'):
+                    _perm = np.array(es_ep.card_permutation)
+                    col0 = int(np.where(_perm == last_action[0])[0][0])
+                    _draw_choice_on_cell(cell_0, col0, 0, scale)
+                    if last_action[1] >= 0:
+                        col1 = int(np.where(_perm == last_action[1])[0][0])
+                        _draw_choice_on_cell(cell_1, col1, 1, scale)
                 else:
                     _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
                     _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
@@ -1459,15 +1473,19 @@ def log_eval_video(algorithm_config, env, out, logger):
 
         if env_name in ("card-game", "card-game-dynamic"):
             # Card game: 2×T grid image + multi-episode video
-            # Pass card positions for dynamic env (border drawing)
+            # Pass card layout for border drawing
+            import numpy as _np
             _card_pos = None
+            _card_perm = None
             es0 = ep_states[0].env_state
             if hasattr(es0, 'card_positions'):
-                import numpy as _np
                 _card_pos = _np.array(es0.card_positions)
+            if hasattr(es0, 'card_permutation'):
+                _card_perm = _np.array(es0.card_permutation)
             _log_card_game_attention_grid(
                 frames, attn_data, ep_actions, tag, video_dir, logger,
                 ep_messages=ep_messages, card_positions=_card_pos,
+                card_permutation=_card_perm,
             )
             _log_card_game_eval_video(
                 inner_env, policy, final_params, max_steps, tag, video_dir, logger,
