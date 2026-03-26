@@ -101,6 +101,9 @@ def _build_tags(config) -> list[str]:
     label = config.get("label", "default_label")
     if label != "default_label":
         tags.append(str(label))
+        # Add sweep tag if label starts with "sweep"
+        if str(label).lower().startswith("sweep"):
+            tags.append("SWEEP")
     return tags
 
 
