@@ -1317,6 +1317,9 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                 es_ep = ep_states[0].env_state
                 if hasattr(es_ep, 'card_positions'):
                     _cp = np.array(es_ep.card_positions)
+                    _pres = np.array(es_ep.card_present)
+                    # TEMP DEBUG — remove after identifying the border bug
+                    print(f"[DEBUG] ep={ep} a0={last_action[0]} a1={last_action[1]} present={_pres} pos={_cp}")
                     r0, c0 = int(_cp[last_action[0]][0]), int(_cp[last_action[0]][1])
                     _draw_choice_on_cell(cell_0, last_action[0], 0, scale, card_row=r0, card_col=c0)
                     if last_action[1] >= 0:
