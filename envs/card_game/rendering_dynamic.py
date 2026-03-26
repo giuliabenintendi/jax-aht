@@ -44,16 +44,16 @@ _UP_TRI_MASK = (
 
 # 5 maximally distinct card colors
 CARD_COLORS = jnp.array([
-    [220, 50, 50],    # 0: red
-    [50, 100, 220],   # 1: blue
-    [50, 180, 50],    # 2: green
-    [220, 200, 50],   # 3: yellow
-    [160, 50, 200],   # 4: purple
-    [50, 220, 220],   # 5: cyan
-    [50, 200, 150],   # 6: teal
-    [180, 50, 100],   # 7: dark pink
-    [100, 180, 220],  # 8: light blue
-    [180, 220, 50],   # 9: lime
+    [230, 25, 25],    # 0: red
+    [25, 50, 230],    # 1: blue
+    [25, 200, 25],    # 2: green
+    [240, 220, 25],   # 3: yellow
+    [150, 25, 220],   # 4: purple
+    [25, 220, 220],   # 5: cyan
+    [255, 150, 200],  # 6: pink
+    [140, 100, 50],   # 7: brown
+    [255, 255, 255],  # 8: white
+    [128, 128, 128],  # 9: gray
 ], dtype=jnp.uint8)
 
 AGENT_0_COLOR = jnp.array([255, 140, 0], dtype=jnp.uint8)    # orange
