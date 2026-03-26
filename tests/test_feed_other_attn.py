@@ -86,34 +86,6 @@ def test_single_critic_policy_4ch():
     assert attn_map.shape == (1, 2, FEAT_H, FEAT_W)
 
 
-def test_single_critic_policy_feature_gate():
-    """Feature-gate mode keeps RGB obs and accepts partner attn separately."""
-    rng = jax.random.PRNGKey(0)
-    obs_dim = IMG_H * IMG_W * 3
-
-    policy = JAImageActorCriticPolicy(
-        action_dim=ACTION_DIM, obs_dim=obs_dim,
-        img_height=IMG_H, img_width=IMG_W, num_channels=3,
-        lstm_hidden_dim=64, feed_other_attn_mode="feature_gate",
-        partner_attn_gain=1.0,
-    )
-    params = policy.init_params(rng)
-    hstate = policy.init_hstate(2)
-
-    dummy_obs = jnp.zeros((1, 2, obs_dim))
-    dummy_done = jnp.zeros((1, 2))
-    dummy_avail = jnp.ones((1, 2, ACTION_DIM))
-    dummy_other_attn = jnp.ones((1, 2, FEAT_H, FEAT_W)) / (FEAT_H * FEAT_W)
-
-    action, value, pi, new_hstate, attn_map = policy.get_action_value_policy(
-        params=params, obs=dummy_obs, done=dummy_done,
-        avail_actions=dummy_avail, hstate=hstate, rng=rng,
-        aux_obs=dummy_other_attn,
-    )
-    assert action.shape == (1, 2)
-    assert attn_map.shape == (1, 2, FEAT_H, FEAT_W)
-
-
 def test_dual_critic_policy_4ch():
     """JADualImageActorCriticPolicy with num_channels=4 inits and runs."""
     rng = jax.random.PRNGKey(0)
@@ -257,14 +229,6 @@ def test_initialize_agents_feed_other_attn():
     policy_3ch, _ = initialize_ja_image_agent(config, env, rng)
     assert policy_3ch.obs_dim == IMG_H * IMG_W * 3
     assert policy_3ch.network.num_channels == 3
-
-    # Feature-gate mode keeps 3-channel obs while enabling feed_other_attn
-    config["FEED_OTHER_ATTN"] = True
-    config["FEED_OTHER_ATTN_MODE"] = "feature_gate"
-    policy_gate, _ = initialize_ja_image_agent(config, env, rng)
-    assert policy_gate.obs_dim == IMG_H * IMG_W * 3
-    assert policy_gate.network.num_channels == 3
-    assert policy_gate.network.feed_other_attn_mode == "feature_gate"
 
 
 def test_visualize_4th_channel():

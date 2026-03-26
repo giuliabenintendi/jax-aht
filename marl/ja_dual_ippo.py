@@ -39,7 +39,6 @@ class JADualTransition(NamedTuple):
     reward_int: jnp.ndarray      # beta * (-JSD)
     log_prob: jnp.ndarray
     obs: jnp.ndarray
-    other_attn: jnp.ndarray
     info: jnp.ndarray
     avail_actions: jnp.ndarray
     ja_reward: jnp.ndarray       # raw -JSD (unscaled), for logging
@@ -67,7 +66,6 @@ def make_train_loop(config, env):
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     use_jsd_in_actor = config.get("DUAL_CRITIC_ACTOR_JA", False)
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
-    feed_other_attn_mode = config.get("FEED_OTHER_ATTN_MODE", "channel")
 
     # Precompute image and feature-map dimensions for attention channel
     img_h, img_w, _ = _get_image_dims(env)
@@ -137,7 +135,6 @@ def make_train_loop(config, env):
                             avail_actions=traj_batch.avail_actions,
                             hstate=init_hstate,
                             rng=jax.random.PRNGKey(0),
-                            aux_obs=traj_batch.other_attn,
                         )
                         log_prob = pi.log_prob(traj_batch.action)
 
@@ -241,11 +238,8 @@ def make_train_loop(config, env):
                 last_done_batch = batchify(last_done, env.agents, num_actors)
 
                 # Augment obs with other agent's previous attention as 4th channel
-                if feed_other_attn and feed_other_attn_mode == "channel":
+                if feed_other_attn:
                     last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
-                other_attn_input = None
-                if feed_other_attn and feed_other_attn_mode == "feature_gate":
-                    other_attn_input = prev_other_attn[None, ...]
 
                 avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
                 avail_actions_batch = jax.lax.stop_gradient(
@@ -258,7 +252,6 @@ def make_train_loop(config, env):
                     avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
                     hstate=hstate,
                     rng=act_rng,
-                    aux_obs=other_attn_input,
                 )
 
                 log_prob = pi.log_prob(action)
@@ -296,11 +289,6 @@ def make_train_loop(config, env):
                     reward_int=ja_beta * r_ja_batch,
                     log_prob=log_prob,
                     obs=last_obs_batch,
-                    other_attn=(
-                        prev_other_attn
-                        if feed_other_attn and feed_other_attn_mode == "feature_gate"
-                        else jnp.zeros((num_actors, feat_h, feat_w), dtype=last_obs_batch.dtype)
-                    ),
                     info=info,
                     avail_actions=avail_actions_batch,
                     ja_reward=r_ja_batch,
@@ -326,11 +314,8 @@ def make_train_loop(config, env):
             # Bootstrap values
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
-            if feed_other_attn and feed_other_attn_mode == "channel":
+            if feed_other_attn:
                 last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
-            last_other_attn = None
-            if feed_other_attn and feed_other_attn_mode == "feature_gate":
-                last_other_attn = prev_other_attn[None, ...]
             last_avail = jax.vmap(env.get_avail_actions)(env_state.env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
@@ -341,7 +326,6 @@ def make_train_loop(config, env):
                 avail_actions=last_avail_batch.reshape(1, num_actors, -1),
                 hstate=hstate,
                 rng=jax.random.PRNGKey(0),
-                aux_obs=last_other_attn,
             )
             last_val_ext = last_val_ext.squeeze()
             last_val_int = last_val_int.squeeze()
@@ -490,7 +474,6 @@ def log_greedy_eval(algorithm_config, env, out, logger, policy, num_episodes=64)
     num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
 
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
-    feed_attn_mode = algorithm_config.get("FEED_OTHER_ATTN_MODE", "channel")
     if feed_attn:
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(
@@ -530,14 +513,9 @@ def log_greedy_eval(algorithm_config, env, out, logger, policy, num_episodes=64)
 
                     obs_0 = obs["agent_0"]
                     obs_1 = obs["agent_1"]
-                    aux_obs_0 = None
-                    aux_obs_1 = None
-                    if feed_attn and feed_attn_mode == "channel":
+                    if feed_attn:
                         obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
                         obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
-                    elif feed_attn and feed_attn_mode == "feature_gate":
-                        aux_obs_0 = prev_attn_1.reshape(1, 1, _feat_h, _feat_w)
-                        aux_obs_1 = prev_attn_0.reshape(1, 1, _feat_h, _feat_w)
 
                     rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
                     act_0, hstate_0, attn_0 = policy.get_action_and_attention(
@@ -545,14 +523,14 @@ def log_greedy_eval(algorithm_config, env, out, logger, policy, num_episodes=64)
                         obs=obs_0.reshape(1, 1, -1),
                         done=done["agent_0"].reshape(1, 1),
                         avail_actions=avail_actions["agent_0"].astype(jnp.float32),
-                        hstate=hstate_0, rng=rng0, greedy=greedy, aux_obs=aux_obs_0,
+                        hstate=hstate_0, rng=rng0, greedy=greedy,
                     )
                     act_1, hstate_1, attn_1 = policy.get_action_and_attention(
                         params=params,
                         obs=obs_1.reshape(1, 1, -1),
                         done=done["agent_1"].reshape(1, 1),
                         avail_actions=avail_actions["agent_1"].astype(jnp.float32),
-                        hstate=hstate_1, rng=rng1, greedy=greedy, aux_obs=aux_obs_1,
+                        hstate=hstate_1, rng=rng1, greedy=greedy,
                     )
 
                     if feed_attn:
@@ -647,7 +625,6 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
             final_params, policy, max_steps,
             collect_attention=True,
             feed_other_attn_dims=feed_attn_dims,
-            feed_other_attn_mode=algorithm_config.get("FEED_OTHER_ATTN_MODE", "channel"),
         )
         print(f"[ja_dual_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
 
@@ -741,7 +718,6 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
                 final_params, policy, max_steps,
                 collect_attention=True,
                 feed_other_attn_dims=feed_attn_dims,
-                feed_other_attn_mode=algorithm_config.get("FEED_OTHER_ATTN_MODE", "channel"),
             )
             _accumulate_episode(attn_data_extra, ep_states_extra)
 

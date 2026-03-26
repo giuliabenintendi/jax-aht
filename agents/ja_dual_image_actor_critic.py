@@ -33,12 +33,10 @@ class JADualImageActorCritic(nn.Module):
     lstm_hidden_dim: int = 64
     spatial_basis_depth: int = 8
     num_channels: int = 3
-    feed_other_attn_mode: str = "channel"
-    partner_attn_gain: float = 1.0
 
     @nn.compact
     def __call__(self, hidden, x):
-        obs, dones, avail_actions, other_attn = x
+        obs, dones, avail_actions = x
 
         actor_lstm_state, critic_lstm_state = hidden
 
@@ -56,14 +54,12 @@ class JADualImageActorCritic(nn.Module):
             lstm_hidden_dim=self.lstm_hidden_dim,
             spatial_basis_depth=self.spatial_basis_depth,
             num_channels=self.num_channels,
-            feed_other_attn_mode=self.feed_other_attn_mode,
-            partner_attn_gain=self.partner_attn_gain,
         )
 
         # Actor path (identical to single-critic version)
         actor_lstm_state, (actor_embed, attn_map) = JAImageScannedLSTM(
             **rnn_kwargs, name="actor_lstm",
-        )(actor_lstm_state, (obs, dones, other_attn))
+        )(actor_lstm_state, (obs, dones))
 
         actor_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
@@ -86,7 +82,7 @@ class JADualImageActorCritic(nn.Module):
         # Critic path — shared trunk
         critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
-        )(critic_lstm_state, (obs, dones, other_attn))
+        )(critic_lstm_state, (obs, dones))
 
         critic_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),

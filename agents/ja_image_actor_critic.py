@@ -54,8 +54,6 @@ class JAImageScannedLSTM(nn.Module):
     spatial_basis_depth: int = 8
     num_channels: int = 3
     message_dim: int = 0  # >0 enables communication (partner message one-hot appended to obs)
-    feed_other_attn_mode: str = "channel"
-    partner_attn_gain: float = 1.0
 
     def setup(self):
         self.feat_h, self.feat_w = _compute_resnet_output_dims(
@@ -78,7 +76,7 @@ class JAImageScannedLSTM(nn.Module):
     @nn.compact
     def __call__(self, carry, x):
         lstm_h, lstm_c = carry
-        obs_flat, dones, other_attn = x
+        obs_flat, dones = x
 
         batch_size = obs_flat.shape[0]
         m, cm = self.num_heads, self.head_features
@@ -102,11 +100,6 @@ class JAImageScannedLSTM(nn.Module):
             padding=self.conv_padding,
             name="resnet_encoder",
         )(image)
-
-        if self.feed_other_attn_mode == "feature_gate":
-            attn_max = jnp.max(other_attn, axis=(-2, -1), keepdims=True)
-            gate = other_attn / jnp.maximum(attn_max, 1e-8)
-            features = features * (1.0 + self.partner_attn_gain * gate[..., None])
 
         # Append spatial basis, compute K and V via 1x1 conv
         spatial = jnp.broadcast_to(
@@ -198,12 +191,10 @@ class JAImageActorCritic(nn.Module):
     spatial_basis_depth: int = 8
     num_channels: int = 3
     message_dim: int = 0  # >0 enables communication (partner message input via obs)
-    feed_other_attn_mode: str = "channel"
-    partner_attn_gain: float = 1.0
 
     @nn.compact
     def __call__(self, hidden, x):
-        obs, dones, avail_actions, other_attn = x
+        obs, dones, avail_actions = x
 
         actor_lstm_state, critic_lstm_state = hidden
 
@@ -222,14 +213,12 @@ class JAImageActorCritic(nn.Module):
             spatial_basis_depth=self.spatial_basis_depth,
             num_channels=self.num_channels,
             message_dim=self.message_dim,
-            feed_other_attn_mode=self.feed_other_attn_mode,
-            partner_attn_gain=self.partner_attn_gain,
         )
 
         # Actor path
         actor_lstm_state, (actor_embed, attn_map) = JAImageScannedLSTM(
             **rnn_kwargs, name="actor_lstm",
-        )(actor_lstm_state, (obs, dones, other_attn))
+        )(actor_lstm_state, (obs, dones))
 
         actor_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
@@ -252,7 +241,7 @@ class JAImageActorCritic(nn.Module):
         # Critic path
         critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
             **rnn_kwargs, name="critic_lstm",
-        )(critic_lstm_state, (obs, dones, other_attn))
+        )(critic_lstm_state, (obs, dones))
 
         critic_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
