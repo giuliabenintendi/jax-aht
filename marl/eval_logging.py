@@ -355,12 +355,6 @@ def log_eval_video(algorithm_config, env, out, logger):
               f"agent0={stasis_a0_mean:.4f} +/- {stasis_a0_std:.4f}, "
               f"agent1={stasis_a1_mean:.4f} +/- {stasis_a1_std:.4f}")
 
-        logger.log({
-            f"{tag}/stasis_agent0_mean": stasis_a0_mean,
-            f"{tag}/stasis_agent0_std": stasis_a0_std,
-            f"{tag}/stasis_agent1_mean": stasis_a1_mean,
-            f"{tag}/stasis_agent1_std": stasis_a1_std,
-        }, commit=False)
 
         if is_overcooked and pct_obj_agent0_vals:
             pct_a0_mean = float(np.nanmean(pct_obj_agent0_vals))
