@@ -62,6 +62,7 @@ def make_train_loop(config, env):
     num_actors = config["NUM_ACTORS"]
     ja_beta_max = config.get("JA_BETA_MAX", 0.01)
     ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
+    ja_beta_decay = config.get("JA_BETA_DECAY", False)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     use_jsd_in_actor = config.get("DUAL_CRITIC_ACTOR_JA", False)
@@ -203,10 +204,13 @@ def make_train_loop(config, env):
 
         def _augment_obs_with_attn(obs_batch, prev_other_attn):
             """Append upsampled other-agent attention as 4th image channel."""
+            rgb = obs_batch.reshape(num_actors, img_h, img_w, 3)
             upsampled = jax.image.resize(
                 prev_other_attn, (num_actors, img_h, img_w), method='nearest',
             )
-            rgb = obs_batch.reshape(num_actors, img_h, img_w, 3)
+            # Normalize to [0, 1] so attention channel matches RGB scale
+            attn_max = jnp.max(upsampled, axis=(-2, -1), keepdims=True)
+            upsampled = upsampled / jnp.maximum(attn_max, 1e-8)
             augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
             return augmented.reshape(num_actors, -1)
 
@@ -221,10 +225,16 @@ def make_train_loop(config, env):
             return jnp.where(done_batch[:, None, None], uniform[None], swapped)
 
         def _single_step(runner_state, update_steps):
-            ja_beta = jnp.minimum(
-                ja_beta_max,
-                ja_beta_max * update_steps / jnp.maximum(ja_warmup_updates, 1.0),
-            )
+            if ja_beta_decay:
+                ja_beta = jnp.maximum(
+                    0.0,
+                    ja_beta_max * (1.0 - update_steps / jnp.maximum(ja_warmup_updates, 1.0)),
+                )
+            else:
+                ja_beta = jnp.minimum(
+                    ja_beta_max,
+                    ja_beta_max * update_steps / jnp.maximum(ja_warmup_updates, 1.0),
+                )
 
             def _env_step(runner_state, unused):
                 if feed_other_attn:
@@ -410,6 +420,10 @@ def make_train_loop(config, env):
 
 def run_ja_dual_ippo(config, logger):
     algorithm_config = dict(config.algorithm)
+    if algorithm_config.get("COMMUNICATION", False):
+        env_kwargs = dict(algorithm_config["ENV_KWARGS"])
+        env_kwargs["communication"] = True
+        algorithm_config["ENV_KWARGS"] = env_kwargs
     env = make_env(algorithm_config["ENV_NAME"], algorithm_config["ENV_KWARGS"])
     env = LogWrapper(env)
 
@@ -487,6 +501,11 @@ def run_ja_dual_ippo(config, logger):
     log_metrics(config, out, logger)
     log_greedy_eval(algorithm_config, env, out, logger, policy)
     log_eval_video(algorithm_config, env, out, logger, policy)
+
+    if num_seeds > 1:
+        from marl.ja_ippo import log_xp_eval
+        log_xp_eval(algorithm_config, env, out)
+
     return out
 
 
