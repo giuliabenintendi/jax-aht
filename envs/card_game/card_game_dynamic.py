@@ -144,7 +144,11 @@ class CardGameEnv(BaseEnv):
         countdown = countdown / jnp.maximum(jnp.float32(self.max_steps - 1), 1.0)
         phase_scalars = jnp.array([is_decision, countdown], dtype=jnp.float32)
         for i in range(self.num_agents):
-            flat = img.flatten().astype(jnp.float32) / 255.0
+            row, col = _AGENT_POSITIONS[i]
+            agent_img = _draw_border(
+                img, row, col, self.tile_size, _EGO_HIGHLIGHT_COLOR
+            )
+            flat = agent_img.flatten().astype(jnp.float32) / 255.0
             if self.communication:
                 partner_msg = env_state.messages[1 - i]
                 msg_onehot = jax.nn.one_hot(partner_msg, self.num_colors)
