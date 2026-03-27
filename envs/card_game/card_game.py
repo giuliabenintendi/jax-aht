@@ -161,7 +161,7 @@ class CardGameEnv(BaseEnv):
             card_permutation=perm,
             step_count=jnp.int32(0),
             agent_choices=jnp.full(2, -1, dtype=jnp.int32),
-            messages=jnp.zeros(2, dtype=jnp.int32),
+            messages=jnp.full(2, -1, dtype=jnp.int32),
         )
         obs = self._make_obs(env_state)
         return obs, WrappedEnvState(
