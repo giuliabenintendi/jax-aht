@@ -666,7 +666,7 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
         tag = f"Eval/seed_{seed_idx}"
 
         if env_name == "card-game":
-            from marl.ja_ippo import _log_card_game_attention_grid, _log_card_game_eval_video
+            from marl.eval_card_game import _log_card_game_attention_grid, _log_card_game_eval_video
             _log_card_game_attention_grid(
                 frames, attn_data, ep_actions, tag, video_dir, logger,
             )

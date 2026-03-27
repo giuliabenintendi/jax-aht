@@ -84,7 +84,7 @@ def main():
 
         # Render frames
         if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
-            from marl.ja_ippo import _render_lbf_eval_frames
+            from marl.eval_lbf import _render_lbf_eval_frames
             frames = _render_lbf_eval_frames(inner_env, ep_states)
         else:
             frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
