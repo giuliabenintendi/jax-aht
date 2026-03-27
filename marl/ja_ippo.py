@@ -1149,14 +1149,17 @@ def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_co
     _draw_box(cell, agent_row, agent_col, tile_h, tile_w, white, thickness)
 
 
-def _draw_message_on_cell(cell, msg_pos, scale):
-    """Draw a brown border around the card at msg_pos (row 1) to show the message."""
-    from envs.card_game.rendering import GRID_ROWS, GRID_COLS
-    tile_h = cell.shape[0] // GRID_ROWS
-    tile_w = cell.shape[1] // GRID_COLS
+def _draw_message_on_cell(cell, msg_pos, scale, color=None):
+    """Draw a border around the card at msg_pos (row 1) in the partner's color."""
+    tile_h = scale * 7
+    tile_w = scale * 7
+    frame_h, frame_w = cell.shape[:2]
+    grid_rows = frame_h // tile_h
+    grid_cols = frame_w // tile_w
     thickness = max(2, scale // 8)
-    brown = [139, 90, 43]
-    _draw_box(cell, 1, msg_pos, tile_h, tile_w, brown, thickness)
+    if color is None:
+        color = [139, 90, 43]  # fallback brown
+    _draw_box(cell, 1, msg_pos, tile_h, tile_w, color, thickness)
 
 
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger,
@@ -1206,10 +1209,10 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
         cell_0 = _overlay_attention(frame, maps_0[t], "Oranges", alpha=0.6).copy()
         cell_1 = _overlay_attention(frame, maps_1[t], "RdPu", alpha=0.6).copy()
 
-        # Draw message borders (brown) on every timestep
+        # Draw partner's message border in partner's color
         if ep_messages and t < len(ep_messages):
-            _draw_message_on_cell(cell_0, ep_messages[t][0], scale)
-            _draw_message_on_cell(cell_1, ep_messages[t][1], scale)
+            _draw_message_on_cell(cell_0, ep_messages[t][1], scale, color=agent1_color)
+            _draw_message_on_cell(cell_1, ep_messages[t][0], scale, color=agent0_color)
 
         # Draw choice borders on the last timestep
         if t == n_steps - 1 and last_action[0] >= 0:
@@ -1316,10 +1319,12 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             cell_0 = _overlay_attention(base_up, maps_0[t], "Oranges", alpha=0.6).copy()
             cell_1 = _overlay_attention(base_up, maps_1[t], "RdPu", alpha=0.6).copy()
 
-            # Draw message borders (brown) on every timestep
+            # Draw partner's message border in partner's color
             if ep_messages and t < len(ep_messages):
-                _draw_message_on_cell(cell_0, ep_messages[t][0], scale)
-                _draw_message_on_cell(cell_1, ep_messages[t][1], scale)
+                a0_color = [255, 140, 0]    # orange
+                a1_color = [255, 0, 255]    # magenta
+                _draw_message_on_cell(cell_0, ep_messages[t][1], scale, color=a1_color)
+                _draw_message_on_cell(cell_1, ep_messages[t][0], scale, color=a0_color)
 
             # Draw choice borders on decision step
             if t == n_steps - 1 and last_action[0] >= 0:
@@ -1470,7 +1475,10 @@ def log_eval_video(algorithm_config, env, out, logger):
             frames = _render_lbf_eval_frames(inner_env, ep_states)
         elif env_name == "card-game":
             from envs.card_game.rendering import render_card_game_eval_frames
-            frames = render_card_game_eval_frames(ep_states, scale=32)
+            frames = render_card_game_eval_frames(
+                ep_states, scale=32,
+                communication=algorithm_config.get("COMMUNICATION", False),
+            )
         elif env_name == "card-game-dynamic":
             from envs.card_game.rendering_dynamic import render_card_game_eval_frames as render_dynamic_frames
             frames = render_dynamic_frames(ep_states, scale=32)
