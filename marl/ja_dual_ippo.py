@@ -587,10 +587,11 @@ def log_greedy_eval(algorithm_config, env, out, logger, policy, num_episodes=64)
         print(f"[eval] {mode_name} overall ({len(all_returns)} eps): "
               f"return={ret_mean:.1f} ± {ret_std:.1f}  "
               f"jsd={jsd_mean:.4f} ± {jsd_std:.4f}")
-        logger.log_item(f"Eval/{mode_name}_return_mean", float(ret_mean), commit=False)
-        logger.log_item(f"Eval/{mode_name}_jsd_mean", float(jsd_mean), commit=False)
-
-    logger.log({}, commit=True)
+        import wandb
+        wandb.run.summary[f"Eval/{mode_name}_return_mean"] = float(ret_mean)
+        wandb.run.summary[f"Eval/{mode_name}_return_std"] = float(ret_std)
+        wandb.run.summary[f"Eval/{mode_name}_jsd_mean"] = float(jsd_mean)
+        wandb.run.summary[f"Eval/{mode_name}_jsd_std"] = float(jsd_std)
 
 
 def _render_lbf_eval_frames(inner_env, ep_states):
