@@ -7,7 +7,7 @@ from PIL import Image
 from moviepy import ImageSequenceClip
 
 from evaluation.vis_episodes import run_episode_with_states, _overlay_attention
-from marl.eval_utils import _draw_choice_on_cell, _draw_message_on_cell
+from marl.eval_utils import _draw_choice_on_cell, _draw_message_on_cell, _draw_decision_square
 
 
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger,
@@ -58,6 +58,11 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
         if ep_messages and t < len(ep_messages):
             _draw_message_on_cell(cell_0, ep_messages[t][1], scale, color=agent1_color)
             _draw_message_on_cell(cell_1, ep_messages[t][0], scale, color=agent0_color)
+
+        # Draw decision square on last timestep
+        if t == n_steps - 1:
+            _draw_decision_square(cell_0, scale)
+            _draw_decision_square(cell_1, scale)
 
         # Draw choice borders on the last timestep
         if t == n_steps - 1 and last_action[0] >= 0:
@@ -164,6 +169,11 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                 a1_color = [255, 0, 255]    # magenta
                 _draw_message_on_cell(cell_0, ep_messages[t][1], scale, color=a1_color)
                 _draw_message_on_cell(cell_1, ep_messages[t][0], scale, color=a0_color)
+
+            # Draw decision square on last timestep
+            if t == n_steps - 1:
+                _draw_decision_square(cell_0, scale)
+                _draw_decision_square(cell_1, scale)
 
             # Draw choice borders on decision step
             if t == n_steps - 1 and last_action[0] >= 0:

@@ -33,13 +33,19 @@ def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_co
 
 
 def _draw_message_on_cell(cell, msg_pos, scale, color=None):
-    """Draw a border around the card at msg_pos (row 1) in the partner's color."""
+    """Draw a dot at center of card at msg_pos (row 1) in the partner's color."""
     tile_h = scale * 7
     tile_w = scale * 7
-    frame_h, frame_w = cell.shape[:2]
-    grid_rows = frame_h // tile_h
-    grid_cols = frame_w // tile_w
-    thickness = max(2, scale // 8)
     if color is None:
-        color = [139, 90, 43]  # fallback brown
-    _draw_box(cell, 1, msg_pos, tile_h, tile_w, color, thickness)
+        color = [139, 90, 43]
+    # Dot at center of card tile (row 1)
+    cy = 1 * tile_h + tile_h // 2
+    cx = msg_pos * tile_w + tile_w // 2
+    dot_r = max(2, scale // 4)
+    cell[cy - dot_r:cy + dot_r + 1, cx - dot_r:cx + dot_r + 1] = color
+
+
+def _draw_decision_square(cell, scale):
+    """Draw a white square at top-left to indicate decision step."""
+    size = max(3, scale // 3)
+    cell[0:size, 0:size] = [255, 255, 255]
