@@ -145,7 +145,8 @@ class CardGameEnv(BaseEnv):
                 color_3x3 = jnp.broadcast_to(partner_colors[i], (3, 3, 3))
                 agent_img = jax.lax.cond(
                     has_msg,
-                    lambda img: img.at[dot_y-1:dot_y+2, dot_x-1:dot_x+2, :].set(color_3x3),
+                    lambda img: jax.lax.dynamic_update_slice(
+                        img, color_3x3, (dot_y - 1, dot_x - 1, 0)),
                     lambda img: img,
                     agent_img,
                 )
