@@ -37,6 +37,8 @@ class JADualImageActorCriticPolicy(AgentPolicy):
         lstm_hidden_dim: int = 64,
         spatial_basis_depth: int = 8,
         num_channels: int = 3,
+        scalar_dim: int = 0,
+        scalar_embed_dim: int = 5,
     ):
         super().__init__(action_dim, obs_dim)
         self.img_height = img_height
@@ -56,6 +58,8 @@ class JADualImageActorCriticPolicy(AgentPolicy):
             lstm_hidden_dim=lstm_hidden_dim,
             spatial_basis_depth=spatial_basis_depth,
             num_channels=num_channels,
+            scalar_dim=scalar_dim,
+            scalar_embed_dim=scalar_embed_dim,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
 

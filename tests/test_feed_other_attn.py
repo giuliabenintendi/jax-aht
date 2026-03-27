@@ -61,6 +61,26 @@ def test_scanned_lstm_num_channels_4():
     assert attn_map.shape == (1, batch_size, FEAT_H, FEAT_W)
 
 
+def test_scanned_lstm_with_scalar_suffix():
+    """Image JA accepts extra scalar features appended after the image."""
+    rng = jax.random.PRNGKey(0)
+    lstm = JAImageScannedLSTM(
+        img_height=IMG_H, img_width=IMG_W, num_channels=3, scalar_dim=2
+    )
+
+    batch_size = 4
+    obs_dim = IMG_H * IMG_W * 3 + 2
+    carry = JAImageScannedLSTM.initialize_carry(batch_size, 64)
+    dummy_obs = jnp.zeros((1, batch_size, obs_dim))
+    dummy_done = jnp.zeros((1, batch_size))
+
+    params = lstm.init(rng, carry, (dummy_obs, dummy_done))
+    (_, _), (lstm_out, attn_map) = lstm.apply(params, carry, (dummy_obs, dummy_done))
+
+    assert lstm_out.shape == (1, batch_size, 64)
+    assert attn_map.shape == (1, batch_size, FEAT_H, FEAT_W)
+
+
 def test_single_critic_policy_4ch():
     """JAImageActorCriticPolicy with num_channels=4 inits and runs."""
     rng = jax.random.PRNGKey(0)

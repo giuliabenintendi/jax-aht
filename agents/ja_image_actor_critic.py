@@ -54,6 +54,8 @@ class JAImageScannedLSTM(nn.Module):
     spatial_basis_depth: int = 8
     num_channels: int = 3
     message_dim: int = 0  # >0 enables communication (partner message one-hot appended to obs)
+    scalar_dim: int = 0   # >0 appends extra scalar features after any message suffix
+    scalar_embed_dim: int = 5
 
     def setup(self):
         self.feat_h, self.feat_w = _compute_resnet_output_dims(
@@ -139,10 +141,26 @@ class JAImageScannedLSTM(nn.Module):
 
         attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
 
+        suffix_parts = []
+        suffix_start = self._img_flat_dim
+
         # Concatenate partner's message one-hot if communication is enabled
         if self.message_dim > 0:
-            msg_input = obs_flat[:, self._img_flat_dim:self._img_flat_dim + self.message_dim]
-            attended_flat = jnp.concatenate([attended_flat, msg_input], axis=-1)
+            msg_input = obs_flat[:, suffix_start:suffix_start + self.message_dim]
+            suffix_parts.append(msg_input)
+            suffix_start += self.message_dim
+
+        if self.scalar_dim > 0:
+            scalar_input = obs_flat[:, suffix_start:suffix_start + self.scalar_dim]
+            scalar_embed = nn.Dense(
+                self.scalar_embed_dim,
+                kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                name="scalar_embed",
+            )(scalar_input)
+            suffix_parts.append(scalar_embed)
+
+        if suffix_parts:
+            attended_flat = jnp.concatenate([attended_flat] + suffix_parts, axis=-1)
 
         # FC layers before LSTM
         lstm_input = nn.Dense(
@@ -191,6 +209,8 @@ class JAImageActorCritic(nn.Module):
     spatial_basis_depth: int = 8
     num_channels: int = 3
     message_dim: int = 0  # >0 enables communication (partner message input via obs)
+    scalar_dim: int = 0
+    scalar_embed_dim: int = 5
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -213,6 +233,8 @@ class JAImageActorCritic(nn.Module):
             spatial_basis_depth=self.spatial_basis_depth,
             num_channels=self.num_channels,
             message_dim=self.message_dim,
+            scalar_dim=self.scalar_dim,
+            scalar_embed_dim=self.scalar_embed_dim,
         )
 
         # Actor path

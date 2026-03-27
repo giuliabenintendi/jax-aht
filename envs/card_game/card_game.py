@@ -93,9 +93,11 @@ class CardGameEnv(BaseEnv):
 
         self._img_h = self.grid_height * self.tile_size
         self._img_w = self.grid_width * self.tile_size
+        self.num_scalar_obs = 2  # upcoming action phase: decision flag + normalized countdown
         self._obs_dim = self._img_h * self._img_w * 3
         if self.communication:
             self._obs_dim += self.num_cards  # partner's message as one-hot
+        self._obs_dim += self.num_scalar_obs
 
         self.observation_spaces = {a: self.observation_space(a) for a in self.agents}
         self.action_spaces = {a: self.action_space(a) for a in self.agents}
@@ -121,6 +123,11 @@ class CardGameEnv(BaseEnv):
         img = render_card_game(env_state.card_permutation)
 
         obs = {}
+        next_step = env_state.step_count + 1
+        is_decision = (next_step >= self.max_steps).astype(jnp.float32)
+        countdown = jnp.maximum(self.max_steps - next_step, 0).astype(jnp.float32)
+        countdown = countdown / jnp.maximum(jnp.float32(self.max_steps - 1), 1.0)
+        phase_scalars = jnp.array([is_decision, countdown], dtype=jnp.float32)
         for i in range(self.num_agents):
             row, col = _AGENT_POSITIONS[i]
             agent_img = _draw_border(
@@ -131,6 +138,7 @@ class CardGameEnv(BaseEnv):
                 partner_msg = env_state.messages[1 - i]
                 msg_onehot = jax.nn.one_hot(partner_msg, self.num_cards)
                 flat = jnp.concatenate([flat, msg_onehot])
+            flat = jnp.concatenate([flat, phase_scalars])
             obs[self.agents[i]] = flat
         return obs
 

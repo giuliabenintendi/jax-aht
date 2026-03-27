@@ -120,12 +120,13 @@ def _get_image_dims(env):
     Works for OvercookedImageWrapper, OvercookedFOVWrapper, and LBFImageWrapper.
     """
     wrapper = env._env if hasattr(env, '_env') else env
+    num_scalars = getattr(wrapper, 'num_scalar_obs', 0)
     if hasattr(wrapper, 'fov_px'):
-        return wrapper.fov_px, wrapper.fov_px, 0
+        return wrapper.fov_px, wrapper.fov_px, num_scalars
     else:
         img_h = wrapper.grid_height * wrapper.tile_size
         img_w = wrapper.grid_width * wrapper.tile_size
-        return img_h, img_w, 0
+        return img_h, img_w, num_scalars
 
 
 def initialize_ja_image_agent(config, env, rng):
@@ -136,7 +137,7 @@ def initialize_ja_image_agent(config, env, rng):
     inner = env._env if hasattr(env, '_env') else env
     num_cards = getattr(inner, 'num_cards', 5)
     message_dim = num_cards if communication else 0
-    obs_dim = img_h * img_w * num_channels + message_dim
+    obs_dim = img_h * img_w * num_channels + message_dim + num_scalars
 
     policy = JAImageActorCriticPolicy(
         action_dim=env.action_space(env.agents[0]).n,
@@ -155,6 +156,8 @@ def initialize_ja_image_agent(config, env, rng):
         spatial_basis_depth=config.get("JA_SPATIAL_BASIS_DEPTH", 8),
         num_channels=num_channels,
         message_dim=message_dim,
+        scalar_dim=num_scalars,
+        scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
     )
 
     rng, init_rng = jax.random.split(rng)
@@ -166,7 +169,7 @@ def initialize_ja_dual_image_agent(config, env, rng):
     """Initialize a Joint Attention dual-critic agent with image observations."""
     img_h, img_w, num_scalars = _get_image_dims(env)
     num_channels = 4 if config.get("FEED_OTHER_ATTN", False) else 3
-    obs_dim = img_h * img_w * num_channels
+    obs_dim = img_h * img_w * num_channels + num_scalars
 
     policy = JADualImageActorCriticPolicy(
         action_dim=env.action_space(env.agents[0]).n,
@@ -184,6 +187,8 @@ def initialize_ja_dual_image_agent(config, env, rng):
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
         spatial_basis_depth=config.get("JA_SPATIAL_BASIS_DEPTH", 8),
         num_channels=num_channels,
+        scalar_dim=num_scalars,
+        scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
     )
 
     rng, init_rng = jax.random.split(rng)
