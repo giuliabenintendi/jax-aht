@@ -389,68 +389,105 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
     return "_".join(parts)
 
 
-def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
-    # Infer config from Hydra if --task not provided
-    hydra_cfg = _load_hydra_config(checkpoint_path)
-    if task_name is not None:
-        task_cfg = load_task_config(task_name)
-        algo_cfg = load_algo_config()
-    else:
-        if hydra_cfg is None:
-            raise ValueError("No --task provided and no .hydra/config.yaml found")
-        algo_cfg = hydra_cfg["algorithm"]
-        task_cfg = {"ENV_NAME": algo_cfg["ENV_NAME"],
-                    "ENV_KWARGS": algo_cfg["ENV_KWARGS"],
-                    "ROLLOUT_LENGTH": algo_cfg["ROLLOUT_LENGTH"]}
-        task_name = hydra_cfg.get("TASK_NAME", algo_cfg["ENV_NAME"])
+def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
+                      task_name, run_dir, wb_run=None):
+    """Log XP results to wandb. Creates a new run if `wb_run` is None."""
+    import wandb
 
-    # Use Hydra config for label if available, fall back to algo_cfg
-    label_cfg = hydra_cfg["algorithm"] if hydra_cfg else algo_cfg
-    run_label = _build_run_label(label_cfg, task_name)
+    created_run = False
+    if wb_run is None:
+        layout = task_name.split("/")[-1] if "/" in task_name else task_name
+        wb_run = wandb.init(
+            project="aht-benchmark",
+            entity="g-benintendi-university-of-brescia",
+            config=algo_cfg,
+            tags=[
+                str(algo_cfg.get("ALG", "")),
+                f"{task_name}" if "/" in task_name else layout,
+                f"beta={algo_cfg.get('JA_BETA_MAX', 0)}",
+                f"ent={algo_cfg.get('ENT_COEF', 0.01)}",
+                "xp_eval",
+            ] + (["dual_critic", "jsdgae_on" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "jsdgae_off"]
+                 if algo_cfg.get("USE_DUAL_CRITIC", False) else []),
+            group=f"{task_name}/{algo_cfg.get('ALG', '')}",
+            name=f"XP_{_build_xp_name(algo_cfg, layout)}",
+            dir=run_dir,
+        )
+        created_run = True
 
-    env_kwargs = dict(task_cfg["ENV_KWARGS"])
-    if algo_cfg.get("COMMUNICATION", False):
-        env_kwargs["communication"] = True
-    env = make_env(task_cfg["ENV_NAME"], env_kwargs)
-    env = LogWrapper(env)
+    if score_mean is not None:
+        wb_run.log({"XP/score_matrix": wandb.Image(os.path.join(xp_dir, "xp_score_matrix.png"))}, commit=False)
+    wb_run.log({"XP/jsd_matrix": wandb.Image(os.path.join(xp_dir, "xp_jsd_matrix.png"))}, commit=False)
 
-    # Load all seeds from single checkpoint
-    run_data = load_train_run(checkpoint_path)
-    all_final_params = run_data["final_params"]
-    num_seeds = jax.tree.leaves(all_final_params)[0].shape[0]
+    jsd_ep_means = jsd_matrix.mean(axis=-1)
+    sp_jsd = np.diag(jsd_ep_means).mean()
+    xp_jsd_m, xp_jsd_s = xp_mean_and_sem(jsd_ep_means)
+    wb_run.summary["XP/sp_jsd"] = sp_jsd
+    wb_run.summary["XP/xp_jsd_mean"] = xp_jsd_m
+    wb_run.summary["XP/xp_jsd_sem"] = xp_jsd_s
+    sp_jsd_diag = np.diag(jsd_ep_means)
+    wb_run.summary["XP/sp_jsd_sem"] = np.std(sp_jsd_diag) / np.sqrt(len(sp_jsd_diag))
+    if score_mean is not None:
+        sp_score_diag = np.diag(score_mean)
+        sp_score = sp_score_diag.mean()
+        sp_score_sem = np.std(sp_score_diag) / np.sqrt(len(sp_score_diag))
+        xp_score_m, xp_score_s = xp_mean_and_sem(score_mean)
+        wb_run.summary["XP/sp_score"] = sp_score
+        wb_run.summary["XP/sp_score_sem"] = sp_score_sem
+        wb_run.summary["XP/xp_score_mean"] = xp_score_m
+        wb_run.summary["XP/xp_score_sem"] = xp_score_s
+
+    wandb.save(os.path.join(xp_dir, "xp_score_matrix.csv"), base_path=xp_dir)
+    wandb.save(os.path.join(xp_dir, "xp_jsd_matrix.csv"), base_path=xp_dir)
+
+    if created_run:
+        wb_run.finish()
+        print(f"[xp_seeds] wandb run: {wb_run.url}")
+
+
+def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
+                       savedir: str, task_name: str | None = None,
+                       wb_run=None):
+    """Run cross-play evaluation from pre-built objects.
+
+    Called either from standalone CLI or from training loops after multi-seed runs.
+
+    Args:
+        env: the LogWrapper-wrapped environment
+        policy: the shared policy (same for all seeds)
+        stacked_params: pytree with leading dim = num_seeds
+        algo_cfg: algorithm config dict
+        savedir: directory to save XP results
+        task_name: task name for labels (e.g. "overcooked-v1-image/cramped_room")
+        wb_run: existing wandb run to log to. If None, creates a new one.
+    """
+    num_seeds = jax.tree.leaves(stacked_params)[0].shape[0]
     if num_seeds < 2:
         print(f"[xp_seeds] SKIP: only {num_seeds} seed(s) — need at least 2 for cross-play")
         return
-    print(f"[xp_seeds] task={task_name}, seeds={num_seeds}, episodes={NUM_EVAL_EPISODES}")
 
-    # Initialize policy
-    rng = jax.random.PRNGKey(EVAL_SEED)
-    rng, init_rng = jax.random.split(rng)
-    use_dual = algo_cfg.get("USE_DUAL_CRITIC", False)
-    init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
-    policy, init_params = init_fn(algo_cfg, env, init_rng)
+    env_name = algo_cfg.get("ENV_NAME", "")
+    if task_name is None:
+        task_name = env_name
+    run_label = _build_run_label(algo_cfg, task_name)
+
+    print(f"[xp_seeds] task={task_name}, seeds={num_seeds}, episodes={NUM_EVAL_EPISODES}")
 
     # Extract per-seed params and check for NaN
     seed_params = []
     for i in range(num_seeds):
-        params_i = jax.tree.map(lambda x: x[i], all_final_params)
-        assert jax.tree.structure(params_i) == jax.tree.structure(init_params), \
-            f"Param structure mismatch for seed {i}"
+        params_i = jax.tree.map(lambda x: x[i], stacked_params)
         num_nan = sum(int(jnp.isnan(x).sum()) for x in jax.tree.leaves(params_i))
         num_params = sum(x.size for x in jax.tree.leaves(params_i))
         status = f"OK ({num_params} params)" if num_nan == 0 else f"WARNING: {num_nan}/{num_params} NaN params!"
         seed_params.append(params_i)
         print(f"  seed {i}: {status}")
 
-    # Build NxN cross-play matrix
-    # Stack all seed params into a single pytree with leading dim = num_seeds
-    stacked_params = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_params)
-
-    max_steps = task_cfg["ROLLOUT_LENGTH"]
+    max_steps = int(algo_cfg.get("ROLLOUT_LENGTH", algo_cfg.get("ENV_KWARGS", {}).get("max_steps", 400)))
+    rng = jax.random.PRNGKey(EVAL_SEED)
     rng, eval_rng = jax.random.split(rng)
     outer_rngs = jax.random.split(eval_rng, num_seeds)
 
-    # Pre-compute action sizes outside JIT
     action_sizes = {k: int(env.action_space(k).n) for k in env.agents}
 
     # Compute feed_attn_dims if needed
@@ -470,7 +507,6 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
         feed_attn_dims = (_img_h, _img_w, _feat_h, _feat_w)
         print(f"[xp_seeds] feed_other_attn enabled: img=({_img_h},{_img_w}), feat=({_feat_h},{_feat_w})")
 
-    # JIT-compile the row function once, then reuse for each i
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims,
@@ -482,12 +518,9 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     for i in range(num_seeds):
         print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
         row_metrics, row_jsds = row_fn(outer_rngs[i], seed_params[i])
-        # row_metrics: pytree with leaves (num_seeds, num_eps, ...)
-        # row_jsds: (num_seeds, num_eps)
         jsd_matrix[i] = np.array(row_jsds)
         all_row_metrics.append(row_metrics)
 
-        # Print per-partner results
         for j in range(num_seeds):
             ret = np.array(row_metrics["returned_episode_returns"][j]).mean()
             jsd_mean = float(row_jsds[j].mean())
@@ -499,8 +532,7 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     elapsed = time.time() - start_time
     print(f"[xp_seeds] evaluation done in {elapsed:.1f}s")
 
-    # Print full matrix and SP vs XP summary
-    metric_names = get_metric_names(task_cfg["ENV_NAME"])
+    metric_names = get_metric_names(env_name)
     seed_names = [f"seed_{i}" for i in range(num_seeds)]
     for metric_name in metric_names:
         print_xp_table(xp_metrics, metric_name, seed_names)
@@ -508,23 +540,20 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
     print_jsd_table(jsd_matrix, seed_names)
     print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds)
 
-    # Build beta prefix for filenames
-    beta = label_cfg.get("JA_BETA_MAX", "unknown")
+    # Save heatmaps and CSVs
+    beta = algo_cfg.get("JA_BETA_MAX", "unknown")
     beta_prefix = f"BETA{beta}"
 
-    # Save heatmaps and CSVs next to checkpoint
-    run_dir = os.path.dirname(checkpoint_path)
-    xp_dir = os.path.join(run_dir, "xp_results")
+    xp_dir = os.path.join(savedir, "xp_results")
     os.makedirs(xp_dir, exist_ok=True)
 
-    # Central results folder: results/<env>/<layout>/ja_ippo/xp_results/
-    central_xp_dir = os.path.join(run_dir, "..", "xp_results")
+    central_xp_dir = os.path.join(savedir, "..", "xp_results")
     os.makedirs(central_xp_dir, exist_ok=True)
 
     score_mean = score_std = None
     if "base_return" in xp_metrics:
-        score_data = np.array(xp_metrics["base_return"]).mean(axis=-1)  # (N, N, eps)
-        score_mean = score_data.mean(axis=-1)  # (N, N)
+        score_data = np.array(xp_metrics["base_return"]).mean(axis=-1)
+        score_mean = score_data.mean(axis=-1)
         score_std = score_data.std(axis=-1)
         for d in (xp_dir, central_xp_dir):
             prefix = "" if d == xp_dir else f"{beta_prefix}_"
@@ -534,8 +563,7 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
             save_xp_csv(score_mean, score_std,
                          os.path.join(d, f"{prefix}xp_score_matrix.csv"), label="episode_return")
 
-    # JSD heatmap
-    jsd_mean = jsd_matrix.mean(axis=-1)  # (N, N)
+    jsd_mean = jsd_matrix.mean(axis=-1)
     jsd_std = jsd_matrix.std(axis=-1)
     for d in (xp_dir, central_xp_dir):
         prefix = "" if d == xp_dir else f"{beta_prefix}_"
@@ -548,54 +576,45 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
 
     print(f"[xp_seeds] results saved to {xp_dir} and {central_xp_dir}")
 
-    # Log to wandb
-    import wandb
-    env_name = task_cfg["ENV_NAME"]
-    layout = task_name.split("/")[-1] if "/" in task_name else task_name
-    wb_run = wandb.init(
-        project="aht-benchmark",
-        entity="g-benintendi-university-of-brescia",
-        config=label_cfg,
-        tags=[
-            str(label_cfg.get("ALG", "")),
-            f"{task_name}" if "/" in task_name else layout,
-            f"beta={label_cfg.get('JA_BETA_MAX', 0)}",
-            f"ent={label_cfg.get('ENT_COEF', 0.01)}",
-            "xp_eval",
-        ] + (["dual_critic", "jsdgae_on" if label_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "jsdgae_off"]
-             if label_cfg.get("USE_DUAL_CRITIC", False) else []),
-        group=f"{task_name}/{label_cfg.get('ALG', '')}",
-        name=f"XP_{_build_xp_name(label_cfg, layout)}",
-        dir=run_dir,
-    )
-    if score_mean is not None:
-        wb_run.log({"XP/score_matrix": wandb.Image(os.path.join(xp_dir, "xp_score_matrix.png"))}, commit=False)
-    wb_run.log({"XP/jsd_matrix": wandb.Image(os.path.join(xp_dir, "xp_jsd_matrix.png"))}, commit=False)
+    _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
+                      task_name, savedir, wb_run=wb_run)
 
-    # Log SP vs XP summary as scalars
-    jsd_ep_means = jsd_matrix.mean(axis=-1)
-    sp_jsd = np.diag(jsd_ep_means).mean()
-    xp_jsd_m, xp_jsd_s = xp_mean_and_sem(jsd_ep_means)
-    wb_run.summary["XP/sp_jsd"] = sp_jsd
-    wb_run.summary["XP/xp_jsd_mean"] = xp_jsd_m
-    wb_run.summary["XP/xp_jsd_sem"] = xp_jsd_s
-    sp_jsd_diag = np.diag(jsd_ep_means)
-    wb_run.summary["XP/sp_jsd_sem"] = np.std(sp_jsd_diag) / np.sqrt(len(sp_jsd_diag))
-    if score_mean is not None:
-        sp_score_diag = np.diag(score_mean)
-        sp_score = sp_score_diag.mean()
-        sp_score_sem = np.std(sp_score_diag) / np.sqrt(len(sp_score_diag))
-        xp_score_m, xp_score_s = xp_mean_and_sem(score_mean)
-        wb_run.summary["XP/sp_score"] = sp_score
-        wb_run.summary["XP/sp_score_sem"] = sp_score_sem
-        wb_run.summary["XP/xp_score_mean"] = xp_score_m
-        wb_run.summary["XP/xp_score_sem"] = xp_score_s
 
-    # Upload CSVs to wandb Files
-    wandb.save(os.path.join(xp_dir, "xp_score_matrix.csv"), base_path=xp_dir)
-    wandb.save(os.path.join(xp_dir, "xp_jsd_matrix.csv"), base_path=xp_dir)
-    wb_run.finish()
-    print(f"[xp_seeds] wandb run: {wb_run.url}")
+def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
+    """Standalone XP evaluation from a saved checkpoint."""
+    hydra_cfg = _load_hydra_config(checkpoint_path)
+    if task_name is not None:
+        task_cfg = load_task_config(task_name)
+        algo_cfg = load_algo_config()
+    else:
+        if hydra_cfg is None:
+            raise ValueError("No --task provided and no .hydra/config.yaml found")
+        algo_cfg = hydra_cfg["algorithm"]
+        task_cfg = {"ENV_NAME": algo_cfg["ENV_NAME"],
+                    "ENV_KWARGS": algo_cfg["ENV_KWARGS"],
+                    "ROLLOUT_LENGTH": algo_cfg["ROLLOUT_LENGTH"]}
+        task_name = hydra_cfg.get("TASK_NAME", algo_cfg["ENV_NAME"])
+
+    label_cfg = hydra_cfg["algorithm"] if hydra_cfg else algo_cfg
+
+    env_kwargs = dict(task_cfg["ENV_KWARGS"])
+    if algo_cfg.get("COMMUNICATION", False):
+        env_kwargs["communication"] = True
+    env = make_env(task_cfg["ENV_NAME"], env_kwargs)
+    env = LogWrapper(env)
+
+    run_data = load_train_run(checkpoint_path)
+    all_final_params = run_data["final_params"]
+
+    rng = jax.random.PRNGKey(EVAL_SEED)
+    rng, init_rng = jax.random.split(rng)
+    use_dual = algo_cfg.get("USE_DUAL_CRITIC", False)
+    init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
+    policy, _init_params = init_fn(algo_cfg, env, init_rng)
+
+    run_dir = os.path.dirname(checkpoint_path)
+    run_xp_from_params(env, policy, all_final_params, label_cfg,
+                       savedir=run_dir, task_name=task_name)
 
 
 def print_xp_table(xp_metrics, metric_name, seed_names):

@@ -600,10 +600,18 @@ def run_ja_ippo(config, logger):
     log_metrics(config, out, logger)
     log_greedy_eval(algorithm_config, env, out, logger)
     log_eval_video(algorithm_config, env, out, logger)
+
+    if num_seeds > 1:
+        log_xp_eval(algorithm_config, env, out)
+
     return out
 
 
-def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
+from marl.eval_logging import log_greedy_eval, log_eval_video  # noqa: E402
+from marl.eval_card_game import _log_card_game_attention_grid, _log_card_game_eval_video  # noqa: E402, F401
+from marl.eval_lbf import _render_lbf_eval_frames  # noqa: E402, F401
+### EXTRACT_START_REMOVE ###
+def _old_log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
     """Run greedy and stochastic eval episodes, print per-episode and summary stats."""
     import wandb
     from agents.ja_utils import jsd_divergence, augment_obs_for_eval
@@ -718,21 +726,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
               f"return={ret_mean:.1f} ± {ret_std:.1f}  "
               f"jsd={jsd_mean:.4f} ± {jsd_std:.4f}")
         logger.log_item(f"Eval/{mode_name}_return_mean", float(ret_mean), commit=False)
-        logger.log_item(f"Eval/{mode_name}_return_std", float(ret_std), commit=False)
         logger.log_item(f"Eval/{mode_name}_jsd_mean", float(jsd_mean), commit=False)
-        logger.log_item(f"Eval/{mode_name}_jsd_std", float(jsd_std), commit=False)
-
-        # Per-episode results table
-        table = wandb.Table(
-            columns=["episode", "return", "jsd"],
-            data=[[i, all_returns[i], all_jsds[i]] for i in range(len(all_returns))],
-        )
-        logger.log({
-            f"Eval/{mode_name}_returns_chart": wandb.plot.bar(
-                table, "episode", "return", title=f"{mode_name} per-episode return"),
-            f"Eval/{mode_name}_jsd_chart": wandb.plot.bar(
-                table, "episode", "jsd", title=f"{mode_name} per-episode JSD"),
-        }, commit=False)
 
     logger.log({}, commit=True)
 
@@ -1213,13 +1207,6 @@ def log_eval_video(algorithm_config, env, out, logger):
               f"agent0={stasis_a0_mean:.4f} +/- {stasis_a0_std:.4f}, "
               f"agent1={stasis_a1_mean:.4f} +/- {stasis_a1_std:.4f}")
 
-        logger.log({
-            f"{tag}/stasis_agent0_mean": stasis_a0_mean,
-            f"{tag}/stasis_agent0_std": stasis_a0_std,
-            f"{tag}/stasis_agent1_mean": stasis_a1_mean,
-            f"{tag}/stasis_agent1_std": stasis_a1_std,
-        }, commit=False)
-
         if is_overcooked and pct_obj_agent0_vals:
             pct_a0_mean = float(np.nanmean(pct_obj_agent0_vals))
             pct_a0_std = float(np.nanstd(pct_obj_agent0_vals))
@@ -1230,21 +1217,31 @@ def log_eval_video(algorithm_config, env, out, logger):
                   f"agent0={pct_a0_mean:.4f} +/- {pct_a0_std:.4f}, "
                   f"agent1={pct_a1_mean:.4f} +/- {pct_a1_std:.4f}")
 
-            logger.log({
-                f"{tag}/pct_objects_agent0_mean": pct_a0_mean,
-                f"{tag}/pct_objects_agent0_std": pct_a0_std,
-                f"{tag}/pct_objects_agent1_mean": pct_a1_mean,
-                f"{tag}/pct_objects_agent1_std": pct_a1_std,
-            }, commit=False)
-
             for agent_label, accum in [("agent_0", category_accum_agent0),
                                         ("agent_1", category_accum_agent1)]:
                 sorted_cats = sorted(accum.items(), key=lambda x: -x[1])[:5]
                 parts = [f"{k}={v / n_eps:.3f}" for k, v in sorted_cats]
                 print(f"[ja_ippo] Seed {seed_idx} {agent_label} top categories: {', '.join(parts)}")
-                for cat, val in sorted_cats:
-                    logger.log({f"{tag}/{agent_label}_attn_{cat}": val / n_eps}, commit=False)
+### EXTRACT_END_REMOVE ###
 
+
+def log_xp_eval(algorithm_config, env, out):
+    """Run cross-play evaluation when NUM_SEEDS > 1, log to active wandb run."""
+    import wandb
+    from evaluation.run_xp_seeds import run_xp_from_params
+
+    obs_type = _get_obs_type(algorithm_config)
+    init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
+    rng = jax.random.PRNGKey(0)
+    policy, _ = init_fn(algorithm_config, env, rng)
+
+    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    run_xp_from_params(
+        env, policy, out["final_params"], algorithm_config,
+        savedir=savedir,
+        task_name=algorithm_config.get("ENV_NAME"),
+        wb_run=wandb.run,
+    )
 
 
 def log_metrics(config, out, logger):
