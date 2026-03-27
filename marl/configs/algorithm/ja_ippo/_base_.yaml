@@ -37,7 +37,6 @@ CONV_PADDING: SAME
 # JA intrinsic reward (paper Appendix A)
 JA_BETA_MAX: 0.05
 JA_WARMUP_ENV_STEPS: 3500000
-JA_BETA_DECAY: false            # true = start at beta_max and decay to 0
 USE_DUAL_CRITIC: false          # dual critic (V_ext + V_int) for separate reward baselines
 DUAL_CRITIC_ACTOR_JA: false     # include JA advantage in policy gradient (requires USE_DUAL_CRITIC)
 FEED_OTHER_ATTN: false          # feed other agent's previous attention map as 4th image channel

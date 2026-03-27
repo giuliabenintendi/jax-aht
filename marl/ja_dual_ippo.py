@@ -62,7 +62,6 @@ def make_train_loop(config, env):
     num_actors = config["NUM_ACTORS"]
     ja_beta_max = config.get("JA_BETA_MAX", 0.01)
     ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
-    ja_beta_decay = config.get("JA_BETA_DECAY", False)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     use_jsd_in_actor = config.get("DUAL_CRITIC_ACTOR_JA", False)
@@ -225,16 +224,10 @@ def make_train_loop(config, env):
             return jnp.where(done_batch[:, None, None], uniform[None], swapped)
 
         def _single_step(runner_state, update_steps):
-            if ja_beta_decay:
-                ja_beta = jnp.maximum(
-                    0.0,
-                    ja_beta_max * (1.0 - update_steps / jnp.maximum(ja_warmup_updates, 1.0)),
-                )
-            else:
-                ja_beta = jnp.minimum(
-                    ja_beta_max,
-                    ja_beta_max * update_steps / jnp.maximum(ja_warmup_updates, 1.0),
-                )
+            ja_beta = jnp.minimum(
+                ja_beta_max,
+                ja_beta_max * update_steps / jnp.maximum(ja_warmup_updates, 1.0),
+            )
 
             def _env_step(runner_state, unused):
                 if feed_other_attn:
