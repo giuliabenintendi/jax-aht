@@ -142,16 +142,16 @@ class CardGameEnv(BaseEnv):
                 card_row = 1
                 dot_y = card_row * self.tile_size + self.tile_size // 2
                 dot_x = msg_pos * self.tile_size + self.tile_size // 2
-                color_3x3 = jnp.broadcast_to(partner_colors[i], (3, 3, 3))
+                color_2x2 = jnp.broadcast_to(partner_colors[i], (2, 2, 3))
                 agent_img = jax.lax.cond(
                     has_msg,
                     lambda img: jax.lax.dynamic_update_slice(
-                        img, color_3x3, (dot_y - 1, dot_x - 1, 0)),
+                        img, color_2x2, (dot_y, dot_x, 0)),
                     lambda img: img,
                     agent_img,
                 )
-            # Draw white 3x3 square at top-left when decision time
-            decision_img = agent_img.at[0:3, 0:3, :].set(white[None, None, :])
+            # Draw white 4x4 square at top-left when decision time
+            decision_img = agent_img.at[0:4, 0:4, :].set(white[None, None, :])
             agent_img = jnp.where(is_decision, decision_img, agent_img)
             flat = agent_img.flatten().astype(jnp.float32) / 255.0
             obs[self.agents[i]] = flat

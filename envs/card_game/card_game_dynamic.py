@@ -145,7 +145,7 @@ class CardGameEnv(BaseEnv):
                 img, row, col, self.tile_size, _EGO_HIGHLIGHT_COLOR
             )
             # Draw white 3x3 square at top-left when decision time
-            decision_img = agent_img.at[0:3, 0:3, :].set(white[None, None, :])
+            decision_img = agent_img.at[0:4, 0:4, :].set(white[None, None, :])
             agent_img = jnp.where(is_decision, decision_img, agent_img)
             flat = agent_img.flatten().astype(jnp.float32) / 255.0
             if self.communication:

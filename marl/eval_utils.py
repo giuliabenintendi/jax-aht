@@ -38,14 +38,14 @@ def _draw_message_on_cell(cell, msg_pos, scale, color=None):
     tile_w = scale * 7
     if color is None:
         color = [139, 90, 43]
-    # Dot at center of card tile (row 1)
+    # 2x2 dot at center of card tile (row 1), scaled up
     cy = 1 * tile_h + tile_h // 2
     cx = msg_pos * tile_w + tile_w // 2
-    dot_r = max(2, scale // 4)
-    cell[cy - dot_r:cy + dot_r + 1, cx - dot_r:cx + dot_r + 1] = color
+    dot_size = scale * 2  # 2 pixels at obs level, scaled
+    cell[cy:cy + dot_size, cx:cx + dot_size] = color
 
 
 def _draw_decision_square(cell, scale):
     """Draw a white square at top-left to indicate decision step."""
-    size = max(3, scale // 3)
+    size = scale * 4  # 4 pixels at obs level, scaled
     cell[0:size, 0:size] = [255, 255, 255]
