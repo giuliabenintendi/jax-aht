@@ -388,7 +388,22 @@ def make_train_loop(config, env):
         def step_fn(runner_state, update_steps):
             return _single_step(runner_state, update_steps)
 
-        return step_fn, _single_step
+        @functools.partial(jax.jit, static_argnums=(2,))
+        def chunked_step_fn(runner_state, update_steps, chunk_size):
+            def _scan_body(carry, _):
+                rs, us = carry
+                rs, us, metric = _single_step(rs, us)
+                return (rs, us), metric
+
+            (runner_state, update_steps), metrics = jax.lax.scan(
+                _scan_body,
+                (runner_state, update_steps),
+                None,
+                length=chunk_size,
+            )
+            return runner_state, update_steps, metrics
+
+        return step_fn, chunked_step_fn, _single_step
 
     return make_step_fn, init_policy, init_state
 
@@ -416,7 +431,9 @@ def run_ja_dual_ippo(config, logger):
 
     print(f"[ja_dual_ippo] Initializing policy and {num_seeds} seeds...")
     policy = init_policy_fn(rngs[0])
-    step_fn, _ = make_step_fn(policy)
+    step_fn, chunked_step_fn, _ = make_step_fn(policy)
+
+    chunk_size = algorithm_config.get("SCAN_CHUNK_SIZE", 7)
 
     all_seed_metrics = []
     all_seed_ckpts = []
@@ -432,20 +449,27 @@ def run_ja_dual_ippo(config, logger):
         next_ckpt = 0
 
         print(f"[ja_dual_ippo] Seed {seed_idx}/{num_seeds}: training {num_updates} steps...")
-        for ci in range(num_updates):
-            runner_state, update_steps, metric = step_fn(runner_state, update_steps)
-            seed_metrics.append(metric)
+        while steps_done < num_updates:
+            remaining = num_updates - steps_done
+            cs = min(chunk_size, remaining)
+            if cs > 0:
+                next_ckpt_in = max(1, (next_ckpt * ckpt_interval) - steps_done) if next_ckpt < num_ckpts else remaining
+                cs = min(cs, next_ckpt_in)
+            runner_state, update_steps, chunk_metrics = chunked_step_fn(
+                runner_state, update_steps, cs)
+            seed_metrics.append(chunk_metrics)
+            steps_done += cs
             steps_done += 1
 
-            while next_ckpt <= steps_done and len(seed_ckpts) < num_ckpts:
+            while next_ckpt * ckpt_interval <= steps_done and len(seed_ckpts) < num_ckpts:
                 seed_ckpts.append(jax.tree.map(jnp.copy, runner_state[0].params))
-                next_ckpt += ckpt_interval
+                next_ckpt += 1
 
-            if ci == 0 or ci == num_updates - 1 or (ci + 1) % max(1, num_updates // 10) == 0:
+            if steps_done >= num_updates or steps_done % max(1, num_updates // 10) < cs:
                 print(f"[ja_dual_ippo]   step {steps_done}/{num_updates}")
 
         all_seed_final_params.append(runner_state[0].params)
-        all_seed_metrics.append(jax.tree.map(lambda *xs: jnp.stack(xs), *seed_metrics))
+        all_seed_metrics.append(jax.tree.map(lambda *xs: jnp.concatenate(xs), *seed_metrics))
         all_seed_ckpts.append(jax.tree.map(lambda *xs: jnp.stack(xs), *seed_ckpts))
 
     stacked_params = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_final_params)
