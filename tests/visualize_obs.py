@@ -1,4 +1,6 @@
 """Quick test to visualize card game observations at different steps."""
+import os
+os.makedirs("tests/obs_imgs", exist_ok=True)
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,8 +16,8 @@ def save_obs(obs_dict, prefix):
     for agent in ["agent_0", "agent_1"]:
         flat = np.array(obs_dict[agent])
         img = (flat[:21*35*3].reshape(21, 35, 3) * 255).astype(np.uint8)
-        Image.fromarray(img).resize((350, 210), Image.NEAREST).save(f"/tmp/{prefix}_{agent}.png")
-        print(f"Saved /tmp/{prefix}_{agent}.png")
+        Image.fromarray(img).resize((350, 210), Image.NEAREST).save(f"tests/obs_imgs/{prefix}_{agent}.png")
+        print(f"Saved tests/obs_imgs/{prefix}_{agent}.png")
 
 # Reset: no message, no decision square
 save_obs(obs, "obs_reset")
