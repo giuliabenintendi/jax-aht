@@ -115,7 +115,7 @@ class CardGameEnv(BaseEnv):
         return jaxmarl_spaces.Discrete(num_categories=self.num_cards + 1)
 
     def _make_obs(self, env_state: CardGameState) -> Dict[str, jnp.ndarray]:
-        """Render image with per-agent ego highlight (magenta border).
+        """Render image observation for each agent.
 
         When communication is enabled, appends the partner's last message
         as a one-hot vector (NUM_CARDS floats) to the flat observation.
@@ -129,11 +129,7 @@ class CardGameEnv(BaseEnv):
         countdown = countdown / jnp.maximum(jnp.float32(self.max_steps - 1), 1.0)
         phase_scalars = jnp.array([is_decision, countdown], dtype=jnp.float32)
         for i in range(self.num_agents):
-            row, col = _AGENT_POSITIONS[i]
-            agent_img = _draw_border(
-                img, row, col, self.tile_size, _EGO_HIGHLIGHT_COLOR
-            )
-            flat = agent_img.flatten().astype(jnp.float32) / 255.0
+            flat = img.flatten().astype(jnp.float32) / 255.0
             if self.communication:
                 partner_msg = env_state.messages[1 - i]
                 msg_onehot = jax.nn.one_hot(partner_msg, self.num_cards)

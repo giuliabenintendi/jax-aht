@@ -27,3 +27,4 @@ __pycache__/
 *.pyc
 dist/
 build/
+tests/card_game_obs/
