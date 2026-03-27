@@ -266,26 +266,16 @@ def make_train_loop(config, env):
             return update_state[0], loss_info
 
         def _augment_obs_with_attn(obs_batch, prev_other_attn):
-            """Append upsampled other-agent attention as 4th image channel.
-
-            Preserves any message suffix appended after the image data.
-            """
-            img_flat_dim = img_h * img_w * 3
-            img_part = obs_batch[:, :img_flat_dim]
-            extra = obs_batch[:, img_flat_dim:]  # message one-hot or empty
-
+            """Append upsampled other-agent attention as 4th image channel."""
+            rgb = obs_batch.reshape(num_actors, img_h, img_w, 3)
             upsampled = jax.image.resize(
                 prev_other_attn, (num_actors, img_h, img_w), method='nearest',
             )
             # Normalize to [0, 1] so attention channel matches RGB scale
             attn_max = jnp.max(upsampled, axis=(-2, -1), keepdims=True)
             upsampled = upsampled / jnp.maximum(attn_max, 1e-8)
-            rgb = img_part.reshape(num_actors, img_h, img_w, 3)
             augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
-            result = augmented.reshape(num_actors, -1)
-            if extra.shape[1] > 0:
-                result = jnp.concatenate([result, extra], axis=-1)
-            return result
+            return augmented.reshape(num_actors, -1)
 
         def _swap_and_reset_attn(attn_map, done_batch):
             """Swap attention maps between agents, reset to uniform on done."""

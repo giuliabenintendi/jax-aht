@@ -148,29 +148,11 @@ def inferred_attention(
 
 
 def augment_obs_for_eval(obs_flat, other_attn, img_h, img_w):
-    """Append other agent's attention as 4th channel during eval.
-
-    Used by eval loops where agents are called individually (batch_size=1).
-    Preserves any suffix after the image data (e.g. communication message).
-
-    Args:
-        obs_flat: flat obs, shape (img_h * img_w * 3 [+ message_dim],)
-        other_attn: other agent's attention map, shape (feat_h, feat_w)
-        img_h: pixel height of the image observation
-        img_w: pixel width of the image observation
-
-    Returns:
-        Augmented flat obs, shape (img_h * img_w * 4 [+ message_dim],)
-    """
-    img_flat_dim = img_h * img_w * 3
-    img_part = obs_flat[:img_flat_dim]
-    extra = obs_flat[img_flat_dim:]
-
+    """Append other agent's attention as 4th channel during eval."""
+    rgb = obs_flat.reshape(img_h, img_w, 3)
     upsampled = jax.image.resize(other_attn, (img_h, img_w), method='nearest')
     # Normalize to [0, 1] so attention channel matches RGB scale
     attn_max = jnp.max(upsampled)
     upsampled = upsampled / jnp.maximum(attn_max, 1e-8)
-    rgb = img_part.reshape(img_h, img_w, 3)
     augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
-    result = augmented.reshape(-1)
-    return jnp.concatenate([result, extra])
+    return augmented.reshape(-1)
