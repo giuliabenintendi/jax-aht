@@ -28,9 +28,7 @@ from common.save_load_utils import save_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
-from marl.eval_logging import log_greedy_eval, log_eval_video  # noqa: F401
-from marl.eval_card_game import _log_card_game_attention_grid, _log_card_game_eval_video  # noqa: F401
-from marl.eval_lbf import _render_lbf_eval_frames  # noqa: F401
+from marl.eval_logging import log_greedy_eval, log_eval_video
 
 
 class JATransition(NamedTuple):
