@@ -142,9 +142,10 @@ class CardGameEnv(BaseEnv):
                 card_row = 1
                 dot_y = card_row * self.tile_size + self.tile_size // 2
                 dot_x = msg_pos * self.tile_size + self.tile_size // 2
+                color_3x3 = jnp.broadcast_to(partner_colors[i], (3, 3, 3))
                 agent_img = jax.lax.cond(
                     has_msg,
-                    lambda img: img.at[dot_y, dot_x, :].set(partner_colors[i]),
+                    lambda img: img.at[dot_y-1:dot_y+2, dot_x-1:dot_x+2, :].set(color_3x3),
                     lambda img: img,
                     agent_img,
                 )
