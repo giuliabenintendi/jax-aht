@@ -33,6 +33,8 @@ from envs.card_game.rendering import (
     GRID_ROWS,
     GRID_COLS,
     NUM_CARDS,
+    AGENT_0_COLOR,
+    AGENT_1_COLOR,
 )
 
 _EGO_HIGHLIGHT_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)
@@ -95,8 +97,7 @@ class CardGameEnv(BaseEnv):
         self._img_w = self.grid_width * self.tile_size
         self.num_scalar_obs = 2  # upcoming action phase: decision flag + normalized countdown
         self._obs_dim = self._img_h * self._img_w * 3
-        if self.communication:
-            self._obs_dim += self.num_cards  # partner's message as one-hot
+        # Communication message is rendered visually (border), not as one-hot
         self._obs_dim += self.num_scalar_obs
 
         self.observation_spaces = {a: self.observation_space(a) for a in self.agents}
@@ -117,23 +118,38 @@ class CardGameEnv(BaseEnv):
     def _make_obs(self, env_state: CardGameState) -> Dict[str, jnp.ndarray]:
         """Render image observation for each agent.
 
-        When communication is enabled, appends the partner's last message
-        as a one-hot vector (NUM_CARDS floats) to the flat observation.
+        Each agent sees: ego border (white) + partner message border (partner color)
+        around the card the partner messaged about.
         """
         img = render_card_game(env_state.card_permutation)
 
         obs = {}
+        partner_colors = [AGENT_1_COLOR, AGENT_0_COLOR]  # agent i sees partner's color
         next_step = env_state.step_count + 1
         is_decision = (next_step >= self.max_steps).astype(jnp.float32)
         countdown = jnp.maximum(self.max_steps - next_step, 0).astype(jnp.float32)
         countdown = countdown / jnp.maximum(jnp.float32(self.max_steps - 1), 1.0)
         phase_scalars = jnp.array([is_decision, countdown], dtype=jnp.float32)
         for i in range(self.num_agents):
-            flat = img.flatten().astype(jnp.float32) / 255.0
+            row, col = _AGENT_POSITIONS[i]
+            agent_img = _draw_border(
+                img, row, col, self.tile_size, _EGO_HIGHLIGHT_COLOR
+            )
             if self.communication:
                 partner_msg = env_state.messages[1 - i]
-                msg_onehot = jax.nn.one_hot(partner_msg, self.num_cards)
-                flat = jnp.concatenate([flat, msg_onehot])
+                # Find the position of the messaged color via card_permutation
+                # card_permutation[pos] = color, so we need pos where color == msg
+                # Use argmin on |perm - msg| to find the position (exact match = 0)
+                msg_pos = jnp.argmin(jnp.abs(env_state.card_permutation - partner_msg))
+                # Draw border only if partner has sent a valid message (>= 0)
+                has_msg = partner_msg >= 0
+                agent_img = jax.lax.cond(
+                    has_msg,
+                    lambda img: _draw_border(img, 1, msg_pos, self.tile_size, partner_colors[i]),
+                    lambda img: img,
+                    agent_img,
+                )
+            flat = agent_img.flatten().astype(jnp.float32) / 255.0
             flat = jnp.concatenate([flat, phase_scalars])
             obs[self.agents[i]] = flat
         return obs
