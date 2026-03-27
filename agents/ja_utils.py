@@ -15,21 +15,25 @@ import jax.numpy as jnp
 from envs.overcooked.po_utils import cone_forward_lateral
 
 
-def jsd_divergence(p: jnp.ndarray, q: jnp.ndarray, eps: float = 1e-8) -> jnp.ndarray:
+def jsd_divergence(p: jnp.ndarray, q: jnp.ndarray, eps: float = 1e-7) -> jnp.ndarray:
     """Jensen-Shannon Divergence between two distributions.
+
+    Matches DeepMind reference: eps added to p, q before log division.
 
     Args:
         p: distribution of shape (..., H, W), must sum to 1 over last two dims
         q: distribution of shape (..., H, W), must sum to 1 over last two dims
-        eps: small constant for numerical stability
+        eps: numerical stability constant (1e-7 matches tf.keras.backend.epsilon)
 
     Returns:
         JSD value (scalar or batch), non-negative. 0 when p == q.
     """
-    m = 0.5 * (p + q)
-    kl_pm = jnp.sum(p * (jnp.log(p + eps) - jnp.log(m + eps)), axis=(-2, -1))
-    kl_qm = jnp.sum(q * (jnp.log(q + eps) - jnp.log(m + eps)), axis=(-2, -1))
-    return 0.5 * kl_pm + 0.5 * kl_qm
+    p = p + eps
+    q = q + eps
+    m = (p + q) / 2
+    kl_pm = jnp.sum(p * jnp.log(p / m), axis=(-2, -1))
+    kl_qm = jnp.sum(q * jnp.log(q / m), axis=(-2, -1))
+    return (kl_pm + kl_qm) / 2
 
 
 def make_sinusoidal_spatial_basis(h: int, w: int, depth: int = 8) -> jnp.ndarray:
