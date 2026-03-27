@@ -105,7 +105,6 @@ def make_train_scan(config, env):
     ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
-    normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     fixed_partner_pos = -1  # not supported in scan path
     filter_attn_top1 = False
     _fixed_attn = None
@@ -350,14 +349,11 @@ def make_train_scan(config, env):
             # Save raw env reward before combining
             raw_env_reward = traj_batch.reward
 
-            # Combined normalization (matching paper): add intrinsic to raw, normalize together
+            # Combined reward normalization (matches DeepMind reference)
             combined_raw = raw_env_reward + intrinsic_batch
-            if normalize_rewards:
-                rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
-                combined = reward_norm_apply(rew_norm_state, combined_raw)
-                traj_batch = traj_batch._replace(reward=combined)
-            else:
-                traj_batch = traj_batch._replace(reward=combined_raw)
+            rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
+            combined = reward_norm_apply(rew_norm_state, combined_raw)
+            traj_batch = traj_batch._replace(reward=combined)
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
@@ -476,7 +472,6 @@ def make_train_loop(config, env):
     ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
-    normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
     filter_attn_top1 = config.get("FILTER_ATTN_TOP1", False)
     fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
@@ -812,14 +807,11 @@ def make_train_loop(config, env):
             # Save raw env reward before combining
             raw_env_reward = traj_batch.reward
 
-            # Combined normalization (matching paper): add intrinsic to raw, normalize together
+            # Combined reward normalization (matches DeepMind reference)
             combined_raw = raw_env_reward + intrinsic_batch
-            if normalize_rewards:
-                rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
-                combined = reward_norm_apply(rew_norm_state, combined_raw)
-                traj_batch = traj_batch._replace(reward=combined)
-            else:
-                traj_batch = traj_batch._replace(reward=combined_raw)
+            rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
+            combined = reward_norm_apply(rew_norm_state, combined_raw)
+            traj_batch = traj_batch._replace(reward=combined)
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 

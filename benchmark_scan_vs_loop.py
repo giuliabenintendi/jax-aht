@@ -68,7 +68,6 @@ CONFIG = {
     "CONV_PADDING": "SAME",
     "JA_BETA_MAX": 0.05,
     "JA_WARMUP_ENV_STEPS": 700_000,
-    "NORMALIZE_REWARDS": True,
     "OBS_TYPE": "image",
 }
 
