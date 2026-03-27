@@ -44,8 +44,10 @@ def _build_run_string(config: dict) -> str:
         jsd_gae = "jsdgae" if alg_config.get("DUAL_CRITIC_ACTOR_JA", False) else "nojsdgae"
         parts.append(f"dual_{jsd_gae}")
     ent_coef = alg_config.get("ENT_COEF", 0.01)
-    if ent_coef != 0.01:
-        parts.append(f"ent{ent_coef}")
+    parts.append(f"ent{ent_coef}")
+    label = config.get("label", "default_label")
+    if str(label).lower().startswith("sweep"):
+        parts.insert(0, "SWEEP")
     env_kwargs = alg_config.get("ENV_KWARGS", {})
     max_cards = env_kwargs.get("max_cards", None)
     if max_cards is not None:
@@ -111,8 +113,6 @@ def _build_tags(config) -> list[str]:
         tags.append("no_shuffle")
     label = config.get("label", "default_label")
     if label != "default_label":
-        tags.append(str(label))
-        # Add sweep tag if label starts with "sweep"
         if str(label).lower().startswith("sweep"):
             tags.append("SWEEP")
     return tags
