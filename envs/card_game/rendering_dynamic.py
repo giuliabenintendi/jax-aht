@@ -56,9 +56,8 @@ CARD_COLORS = jnp.array([
     [128, 128, 128],  # 9: gray
 ], dtype=jnp.uint8)
 
-# Matched-saturation/value pair to avoid one agent becoming the dominant beacon.
-AGENT_0_COLOR = jnp.array([255, 153, 51], dtype=jnp.uint8)   # warm orange
-AGENT_1_COLOR = jnp.array([51, 153, 255], dtype=jnp.uint8)   # cool azure
+AGENT_0_COLOR = jnp.array([255, 140, 0], dtype=jnp.uint8)    # orange
+AGENT_1_COLOR = jnp.array([255, 0, 255], dtype=jnp.uint8)   # magenta
 
 _EMPTY_TILE = jnp.zeros((TILE_PIXELS, TILE_PIXELS, 3), dtype=jnp.uint8)
 
