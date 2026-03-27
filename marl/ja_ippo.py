@@ -1475,10 +1475,7 @@ def log_eval_video(algorithm_config, env, out, logger):
             frames = _render_lbf_eval_frames(inner_env, ep_states)
         elif env_name == "card-game":
             from envs.card_game.rendering import render_card_game_eval_frames
-            frames = render_card_game_eval_frames(
-                ep_states, scale=32,
-                communication=algorithm_config.get("COMMUNICATION", False),
-            )
+            frames = render_card_game_eval_frames(ep_states, scale=32)
         elif env_name == "card-game-dynamic":
             from envs.card_game.rendering_dynamic import render_card_game_eval_frames as render_dynamic_frames
             frames = render_dynamic_frames(ep_states, scale=32)
