@@ -5,6 +5,7 @@ from omegaconf import OmegaConf
 from common.wandb_visualizations import Logger
 from marl.ippo import run_ippo
 from marl.ja_ippo import run_ja_ippo
+from marl.ja_ippo_no_share import run_ja_ippo_no_share
 from marl.image_ippo import run_image_ippo
 from marl.ja_dual_ippo import run_ja_dual_ippo
 
@@ -21,6 +22,8 @@ def main(config):
             run_ja_dual_ippo(config, wandb_logger)
         else:
             run_ja_ippo(config, wandb_logger)
+    elif config.algorithm["ALG"] == "ja_ippo_no_share":
+        run_ja_ippo_no_share(config, wandb_logger)
     elif config.algorithm["ALG"] == "image_ippo":
         run_image_ippo(config, wandb_logger)
     else:

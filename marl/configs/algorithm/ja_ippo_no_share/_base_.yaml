@@ -1,0 +1,8 @@
+# @package algorithm
+# JA-IPPO without parameter sharing — each agent has its own network.
+# Inherits all hyperparameters from ja_ippo base.
+defaults:
+  - /algorithm/ja_ippo/_base_
+  - _self_
+
+ALG: ja_ippo_no_share
