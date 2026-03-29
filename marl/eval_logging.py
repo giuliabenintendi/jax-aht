@@ -234,7 +234,7 @@ def log_eval_video(algorithm_config, env, out, logger):
         # Render frames from episode states
         if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
             frames = _render_lbf_eval_frames(inner_env, ep_states)
-        elif env_name == "card-game":
+        elif env_name in ("card-game", "card-game-flip"):
             from envs.card_game.rendering import render_card_game_eval_frames
             frames = render_card_game_eval_frames(ep_states, scale=32)
         elif env_name == "card-game-dynamic":
@@ -246,7 +246,7 @@ def log_eval_video(algorithm_config, env, out, logger):
 
         tag = f"Eval/seed_{seed_idx}"
 
-        if env_name in ("card-game", "card-game-dynamic"):
+        if env_name in ("card-game", "card-game-dynamic", "card-game-flip"):
             # Card game: 2xT grid image + multi-episode video
             # Pass card layout for border drawing
             import numpy as _np

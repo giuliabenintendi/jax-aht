@@ -113,6 +113,10 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         from envs.card_game.card_game import CardGameEnv
         env = CardGameEnv(**env_kwargs)
 
+    elif env_name == 'card-game-flip':
+        from envs.card_game.card_game_flip import CardFlipEnv
+        env = CardFlipEnv(**env_kwargs)
+
     elif env_name == 'card-game-dynamic':
         from envs.card_game.card_game_dynamic import CardGameEnv as DynamicCardGameEnv
         env = DynamicCardGameEnv(**env_kwargs)

@@ -68,6 +68,7 @@ CARD_COLORS = jnp.array([
 
 AGENT_0_COLOR = jnp.array([255, 140, 0], dtype=jnp.uint8)    # orange
 AGENT_1_COLOR = jnp.array([255, 0, 255], dtype=jnp.uint8)   # magenta
+GRAY_COLOR = jnp.array([128, 128, 128], dtype=jnp.uint8)     # hidden card
 
 _EMPTY_TILE = jnp.zeros((TILE_PIXELS, TILE_PIXELS, 3), dtype=jnp.uint8)
 
@@ -77,11 +78,13 @@ def _render_tile(mask, color):
     return jnp.where(mask[:, :, None], color[None, None, :], _EMPTY_TILE)
 
 
-def render_card_game(card_permutation: jnp.ndarray) -> jnp.ndarray:
+def render_card_game(card_permutation: jnp.ndarray, revealed=None) -> jnp.ndarray:
     """Render the card game scene.
 
     Args:
         card_permutation: (5,) int array — card identity at each position.
+        revealed: optional (5,) bool array — which cards are visible.
+                  If None, all cards shown. If provided, unrevealed = gray.
 
     Returns:
         (GRID_ROWS * TILE_PIXELS, GRID_COLS * TILE_PIXELS, 3) uint8 RGB image.
@@ -104,6 +107,8 @@ def render_card_game(card_permutation: jnp.ndarray) -> jnp.ndarray:
     def draw_card(img, i):
         card_id = card_permutation[i]
         color = CARD_COLORS[card_id]
+        if revealed is not None:
+            color = jnp.where(revealed[i], color, GRAY_COLOR)
         card_tile = _render_tile(_CARD_MASK, color)
         img = jax.lax.dynamic_update_slice(
             img, card_tile, (TILE_PIXELS, i * TILE_PIXELS, 0)
