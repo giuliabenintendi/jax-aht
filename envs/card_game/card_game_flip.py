@@ -66,7 +66,7 @@ class CardFlipEnv(BaseEnv):
         obs_type: str = "image",
         **kwargs,
     ):
-        super().__init__(num_agents=2)
+        self.num_agents = 2
         self.max_steps = max_steps
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
         self.name = "CardFlip"
