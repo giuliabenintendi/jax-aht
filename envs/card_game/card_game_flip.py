@@ -16,7 +16,7 @@ import jax
 import jax.numpy as jnp
 from flax import struct
 
-from jaxmarl import spaces as jaxmarl_spaces
+from jaxmarl.environments import spaces as jaxmarl_spaces
 from envs.base_env import BaseEnv, WrappedEnvState
 from envs.card_game.rendering import (
     render_card_game,
