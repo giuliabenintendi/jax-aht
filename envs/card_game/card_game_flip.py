@@ -91,7 +91,8 @@ class CardFlipEnv(BaseEnv):
         return jaxmarl_spaces.Box(0.0, 1.0, (self._obs_dim,))
 
     def action_space(self, agent: str):
-        return jaxmarl_spaces.Discrete(num_categories=NUM_CARDS)
+        # 0-4: flip position (deliberation), 5-9: pick color (decision)
+        return jaxmarl_spaces.Discrete(num_categories=NUM_CARDS * 2)
 
     def _make_obs(self, env_state: CardFlipState) -> Dict[str, jnp.ndarray]:
         """Render per-agent observation with only their revealed cards visible."""
@@ -142,18 +143,22 @@ class CardFlipEnv(BaseEnv):
         new_step = env_state.step_count + 1
 
         is_decision = new_step >= self.max_steps
-        a0 = actions["agent_0"]
-        a1 = actions["agent_1"]
+        raw_a0 = actions["agent_0"]
+        raw_a1 = actions["agent_1"]
 
-        # Deliberation: flip card at chosen position
-        new_revealed_0 = env_state.revealed_0.at[a0].set(True)
-        new_revealed_1 = env_state.revealed_1.at[a1].set(True)
-        # Only update revealed during deliberation, freeze during decision
+        # Deliberation (actions 0-4): flip position
+        pos_0 = raw_a0  # position to flip (only used during deliberation)
+        pos_1 = raw_a1
+        new_revealed_0 = env_state.revealed_0.at[pos_0].set(True)
+        new_revealed_1 = env_state.revealed_1.at[pos_1].set(True)
+        # Only update revealed during deliberation
         new_revealed_0 = jnp.where(is_decision, env_state.revealed_0, new_revealed_0)
         new_revealed_1 = jnp.where(is_decision, env_state.revealed_1, new_revealed_1)
 
-        # Decision: reward if both pick same color
-        match = jnp.equal(a0, a1)
+        # Decision (actions 5-9): pick color (action - 5 = color index)
+        color_0 = raw_a0 - self.num_cards
+        color_1 = raw_a1 - self.num_cards
+        match = jnp.equal(color_0, color_1)
         reward_val = jnp.where(is_decision & match, 1.0, 0.0)
 
         reward = {agent: reward_val for agent in self.agents}
@@ -163,7 +168,7 @@ class CardFlipEnv(BaseEnv):
 
         choices = jnp.where(
             is_decision,
-            jnp.array([a0, a1], dtype=jnp.int32),
+            jnp.array([color_0, color_1], dtype=jnp.int32),
             jnp.full(2, -1, dtype=jnp.int32),
         )
         new_env_state = CardFlipState(
@@ -207,9 +212,32 @@ class CardFlipEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
-        # All 5 actions always available
-        mask = jnp.ones(self.num_cards, dtype=jnp.float32)
-        return {agent: mask for agent in self.agents}
+        next_step = state.env_state.step_count + 1
+        is_decision = next_step >= self.max_steps
+
+        # Deliberation: positions 0-4 available, colors 5-9 masked
+        pos_avail = jnp.where(is_decision, jnp.zeros(self.num_cards), jnp.ones(self.num_cards))
+
+        # Decision: only REVEALED colors available (5+color_id)
+        # Map revealed positions to colors via card_permutation
+        perm = state.env_state.card_permutation
+        # For each color, check if any revealed position has that color
+        revealed_colors_0 = jnp.zeros(self.num_cards, dtype=jnp.float32)
+        revealed_colors_1 = jnp.zeros(self.num_cards, dtype=jnp.float32)
+        for i in range(self.num_cards):
+            color_i = perm[i]
+            revealed_colors_0 = revealed_colors_0.at[color_i].set(
+                jnp.maximum(revealed_colors_0[color_i], state.env_state.revealed_0[i].astype(jnp.float32)))
+            revealed_colors_1 = revealed_colors_1.at[color_i].set(
+                jnp.maximum(revealed_colors_1[color_i], state.env_state.revealed_1[i].astype(jnp.float32)))
+
+        color_avail_0 = jnp.where(is_decision, revealed_colors_0, jnp.zeros(self.num_cards))
+        color_avail_1 = jnp.where(is_decision, revealed_colors_1, jnp.zeros(self.num_cards))
+
+        mask_0 = jnp.concatenate([pos_avail, color_avail_0])
+        mask_1 = jnp.concatenate([pos_avail, color_avail_1])
+
+        return {"agent_0": mask_0, "agent_1": mask_1}
 
     @partial(jax.jit, static_argnums=(0,))
     def get_step_count(self, state: WrappedEnvState) -> jnp.array:
