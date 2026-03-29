@@ -148,9 +148,11 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
 
         n_steps = min(len(maps_0), len(maps_1))
         es0 = ep_states[0].env_state
-        if hasattr(es0, 'card_permutation'):
+        is_flip_game = hasattr(es0, 'revealed_0')
+
+        if hasattr(es0, 'card_permutation') and not hasattr(es0, 'card_positions'):
             base_img = render_card_game(es0.card_permutation)
-        else:
+        elif hasattr(es0, 'card_positions'):
             from envs.card_game.rendering_dynamic import render_card_game as render_dynamic
             base_img = render_dynamic(es0.card_positions, es0.card_present)
         base_np = np.array(base_img)
@@ -160,8 +162,19 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
         last_action = ep_actions[-1] if ep_actions else (-1, -1)
 
         for t in range(n_steps):
-            cell_0 = _overlay_attention(base_up, maps_0[t], "Oranges", alpha=0.6).copy()
-            cell_1 = _overlay_attention(base_up, maps_1[t], "RdPu", alpha=0.6).copy()
+            if is_flip_game:
+                es_t = ep_states[t].env_state
+                img_0 = np.array(render_card_game(es_t.card_permutation, revealed=es_t.revealed_0))
+                img_1 = np.array(render_card_game(es_t.card_permutation, revealed=es_t.revealed_1))
+                base_up_0 = np.array(Image.fromarray(img_0).resize(
+                    (img_0.shape[1] * scale, img_0.shape[0] * scale), Image.NEAREST))
+                base_up_1 = np.array(Image.fromarray(img_1).resize(
+                    (img_1.shape[1] * scale, img_1.shape[0] * scale), Image.NEAREST))
+            else:
+                base_up_0 = base_up
+                base_up_1 = base_up
+            cell_0 = _overlay_attention(base_up_0, maps_0[t], "Oranges", alpha=0.6).copy()
+            cell_1 = _overlay_attention(base_up_1, maps_1[t], "RdPu", alpha=0.6).copy()
 
             # Draw partner's message border in partner's color
             if ep_messages and t < len(ep_messages):
