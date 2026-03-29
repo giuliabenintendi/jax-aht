@@ -66,23 +66,31 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
         # Draw choice borders on the last timestep
         if t == n_steps - 1 and last_action[0] >= 0:
+            # For flip game, decision actions are 5-9 (color index = action - 5)
+            choice_0 = last_action[0] - 5 if last_action[0] >= 5 else last_action[0]
+            choice_1 = last_action[1] - 5 if last_action[1] >= 5 else last_action[1]
             if card_positions is not None:
-                r0, c0 = int(card_positions[last_action[0]][0]), int(card_positions[last_action[0]][1])
-                _draw_choice_on_cell(cell_0, last_action[0], 0, scale, card_row=r0, card_col=c0)
+                r0, c0 = int(card_positions[choice_0][0]), int(card_positions[choice_0][1])
+                _draw_choice_on_cell(cell_0, choice_0, 0, scale, card_row=r0, card_col=c0)
             elif card_permutation is not None:
-                col0 = int(np.where(card_permutation == last_action[0])[0][0])
-                _draw_choice_on_cell(cell_0, col0, 0, scale)
+                matches = np.where(card_permutation == choice_0)[0]
+                if len(matches) > 0:
+                    col0 = int(matches[0])
+                    _draw_choice_on_cell(cell_0, col0, 0, scale)
             else:
-                _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
+                _draw_choice_on_cell(cell_0, choice_0, 0, scale)
         if t == n_steps - 1 and last_action[1] >= 0:
+            choice_1 = last_action[1] - 5 if last_action[1] >= 5 else last_action[1]
             if card_positions is not None:
-                r1, c1 = int(card_positions[last_action[1]][0]), int(card_positions[last_action[1]][1])
-                _draw_choice_on_cell(cell_1, last_action[1], 1, scale, card_row=r1, card_col=c1)
+                r1, c1 = int(card_positions[choice_1][0]), int(card_positions[choice_1][1])
+                _draw_choice_on_cell(cell_1, choice_1, 1, scale, card_row=r1, card_col=c1)
             elif card_permutation is not None:
-                col1 = int(np.where(card_permutation == last_action[1])[0][0])
-                _draw_choice_on_cell(cell_1, col1, 1, scale)
+                matches = np.where(card_permutation == choice_1)[0]
+                if len(matches) > 0:
+                    col1 = int(matches[0])
+                    _draw_choice_on_cell(cell_1, col1, 1, scale)
             else:
-                _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
+                _draw_choice_on_cell(cell_1, choice_1, 1, scale)
 
         row_0.append(cell_0)
         row_1.append(cell_1)
@@ -190,24 +198,27 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
 
             # Draw choice borders on decision step
             if t == n_steps - 1 and last_action[0] >= 0:
+                choice_0 = last_action[0] - 5 if last_action[0] >= 5 else last_action[0]
+                choice_1 = last_action[1] - 5 if last_action[1] >= 5 else last_action[1]
                 es_ep = ep_states[0].env_state
                 if hasattr(es_ep, 'card_positions'):
                     _cp = np.array(es_ep.card_positions)
-                    r0, c0 = int(_cp[last_action[0]][0]), int(_cp[last_action[0]][1])
-                    _draw_choice_on_cell(cell_0, last_action[0], 0, scale, card_row=r0, card_col=c0)
-                    if last_action[1] >= 0:
-                        r1, c1 = int(_cp[last_action[1]][0]), int(_cp[last_action[1]][1])
-                        _draw_choice_on_cell(cell_1, last_action[1], 1, scale, card_row=r1, card_col=c1)
+                    r0, c0 = int(_cp[choice_0][0]), int(_cp[choice_0][1])
+                    _draw_choice_on_cell(cell_0, choice_0, 0, scale, card_row=r0, card_col=c0)
+                    if choice_1 >= 0:
+                        r1, c1 = int(_cp[choice_1][0]), int(_cp[choice_1][1])
+                        _draw_choice_on_cell(cell_1, choice_1, 1, scale, card_row=r1, card_col=c1)
                 elif hasattr(es_ep, 'card_permutation'):
                     _perm = np.array(es_ep.card_permutation)
-                    col0 = int(np.where(_perm == last_action[0])[0][0])
-                    _draw_choice_on_cell(cell_0, col0, 0, scale)
-                    if last_action[1] >= 0:
-                        col1 = int(np.where(_perm == last_action[1])[0][0])
-                        _draw_choice_on_cell(cell_1, col1, 1, scale)
+                    matches_0 = np.where(_perm == choice_0)[0]
+                    if len(matches_0) > 0:
+                        _draw_choice_on_cell(cell_0, int(matches_0[0]), 0, scale)
+                    matches_1 = np.where(_perm == choice_1)[0]
+                    if len(matches_1) > 0:
+                        _draw_choice_on_cell(cell_1, int(matches_1[0]), 1, scale)
                 else:
-                    _draw_choice_on_cell(cell_0, last_action[0], 0, scale)
-                    _draw_choice_on_cell(cell_1, last_action[1], 1, scale)
+                    _draw_choice_on_cell(cell_0, choice_0, 0, scale)
+                    _draw_choice_on_cell(cell_1, choice_1, 1, scale)
 
             # Stack vertically: agent 0 on top, agent 1 on bottom
             cell_h, cell_w = cell_0.shape[:2]
