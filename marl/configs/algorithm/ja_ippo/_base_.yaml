@@ -24,6 +24,9 @@ JA_NUM_HEADS: 4
 JA_HEAD_FEATURES: 16
 JA_SPATIAL_BASIS_DEPTH: 8
 JA_SCALAR_EMBED_DIM: 5        # symbolic JA only
+JA_ATTN_MODE: dot_product     # dot_product | gaussian_gaze (image JA only)
+JA_USE_GLOBAL_BYPASS: false   # concatenate pooled CNN features around the attention readout
+JA_GAZE_MIN_SIGMA: 0.5        # minimum Gaussian spread in feature-map cells
 FC_HIDDEN_DIM: 256
 LSTM_HIDDEN_DIM: 128
 

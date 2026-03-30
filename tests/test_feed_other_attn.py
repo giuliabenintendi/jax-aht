@@ -81,6 +81,32 @@ def test_scanned_lstm_with_scalar_suffix():
     assert attn_map.shape == (1, batch_size, FEAT_H, FEAT_W)
 
 
+def test_scanned_lstm_gaussian_gaze_with_bypass():
+    """Gaussian-gaze mode returns a normalized gaze map and valid LSTM output."""
+    rng = jax.random.PRNGKey(0)
+    lstm = JAImageScannedLSTM(
+        img_height=IMG_H,
+        img_width=IMG_W,
+        num_channels=3,
+        attn_mode="gaussian_gaze",
+        use_global_bypass=True,
+    )
+
+    batch_size = 3
+    obs_dim = IMG_H * IMG_W * 3
+    carry = JAImageScannedLSTM.initialize_carry(batch_size, 64)
+    dummy_obs = jnp.zeros((1, batch_size, obs_dim))
+    dummy_done = jnp.zeros((1, batch_size))
+
+    params = lstm.init(rng, carry, (dummy_obs, dummy_done))
+    (_, _), (lstm_out, attn_map) = lstm.apply(params, carry, (dummy_obs, dummy_done))
+
+    assert lstm_out.shape == (1, batch_size, 64)
+    assert attn_map.shape == (1, batch_size, FEAT_H, FEAT_W)
+    assert jnp.allclose(attn_map.sum(axis=(-2, -1)), 1.0, atol=1e-5)
+    assert jnp.all(attn_map >= 0.0)
+
+
 def test_single_critic_policy_4ch():
     """JAImageActorCriticPolicy with num_channels=4 inits and runs."""
     rng = jax.random.PRNGKey(0)
@@ -249,6 +275,36 @@ def test_initialize_agents_feed_other_attn():
     policy_3ch, _ = initialize_ja_image_agent(config, env, rng)
     assert policy_3ch.obs_dim == IMG_H * IMG_W * 3
     assert policy_3ch.network.num_channels == 3
+
+
+def test_initialize_agents_gaussian_gaze():
+    """Image JA agent initialization propagates gaussian-gaze config knobs."""
+    from envs import make_env
+    from envs.log_wrapper import LogWrapper
+
+    config = {
+        "ENV_NAME": "overcooked-v1",
+        "ENV_KWARGS": {"layout": "cramped_room", "max_steps": 400, "obs_type": "image"},
+        "FEED_OTHER_ATTN": False,
+        "CONV_FILTERS": 32,
+        "CONV_NUM_BLOCKS": 4,
+        "CONV_KERNEL_SIZE": 3,
+        "CONV_STRIDE": 2,
+        "CONV_PADDING": "SAME",
+        "FC_HIDDEN_DIM": 64,
+        "LSTM_HIDDEN_DIM": 64,
+        "JA_ATTN_MODE": "gaussian_gaze",
+        "JA_USE_GLOBAL_BYPASS": True,
+        "JA_GAZE_MIN_SIGMA": 0.75,
+    }
+    env = make_env(config["ENV_NAME"], config["ENV_KWARGS"])
+    env = LogWrapper(env)
+    rng = jax.random.PRNGKey(0)
+
+    policy, _ = initialize_ja_image_agent(config, env, rng)
+    assert policy.network.attn_mode == "gaussian_gaze"
+    assert policy.network.use_global_bypass is True
+    assert np.isclose(policy.network.gaze_min_sigma, 0.75)
 
 
 def test_visualize_4th_channel():

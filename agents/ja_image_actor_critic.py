@@ -3,9 +3,13 @@
 Per-agent architecture:
   obs (flat) -> unpack image (H_px, W_px, num_channels)
   Image -> ResNet encoder -> features F  (H_out, W_out, filters)
-  F + sinusoidal spatial basis -> 1x1 Conv -> Keys K, Values V
-  Q = Dense(concat(h, c)) — query from own LSTM state
-  Multi-head attention: softmax(Q . K) -> attended O
+  Dot-product mode:
+    F + sinusoidal spatial basis -> 1x1 Conv -> Keys K, Values V
+    Q = Dense(concat(h, c)) — query from own LSTM state
+    Multi-head attention: softmax(Q . K) -> attended O
+  Gaussian gaze mode:
+    concat(h, c) -> (mu_x, mu_y, sigma_x, sigma_y) -> Gaussian gaze map
+    Weighted glimpse from F, optionally concatenated with a global summary
   Concat(O) -> FC -> FC -> LSTM -> projection
 
 When FEED_OTHER_ATTN is enabled, num_channels=4: the 4th channel is the
@@ -56,8 +60,13 @@ class JAImageScannedLSTM(nn.Module):
     message_dim: int = 0  # >0 enables communication (partner message one-hot appended to obs)
     scalar_dim: int = 0   # >0 appends extra scalar features after any message suffix
     scalar_embed_dim: int = 5
+    attn_mode: str = "dot_product"
+    use_global_bypass: bool = False
+    gaze_min_sigma: float = 0.5
 
     def setup(self):
+        if self.attn_mode not in ("dot_product", "gaussian_gaze"):
+            raise ValueError(f"Unknown attn_mode: {self.attn_mode}")
         self.feat_h, self.feat_w = _compute_resnet_output_dims(
             self.img_height, self.img_width,
             self.conv_stride, self.conv_kernel_size,
@@ -67,6 +76,11 @@ class JAImageScannedLSTM(nn.Module):
             self.feat_h, self.feat_w, self.spatial_basis_depth,
         )
         self._img_flat_dim = self.img_height * self.img_width * self.num_channels
+        self._grid_y, self._grid_x = jnp.meshgrid(
+            jnp.arange(self.feat_h, dtype=jnp.float32),
+            jnp.arange(self.feat_w, dtype=jnp.float32),
+            indexing="ij",
+        )
 
     @functools.partial(
         nn.scan,
@@ -110,36 +124,60 @@ class JAImageScannedLSTM(nn.Module):
         )
         features_with_pos = jnp.concatenate([features, spatial], axis=-1)
 
-        keys = nn.Conv(
-            features=m * cm, kernel_size=(1, 1),
-            kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-            name="key_conv",
-        )(features_with_pos)
-        keys = keys.reshape(batch_size, fh * fw, m, cm)
-
-        values = nn.Conv(
-            features=m * cm, kernel_size=(1, 1),
-            kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-            name="value_conv",
-        )(features_with_pos)
-        values = values.reshape(batch_size, fh * fw, m, cm)
-
         # Query from own LSTM state
         own_state = jnp.concatenate([lstm_h, lstm_c], axis=-1)
-        queries = nn.Dense(
-            m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-            name="query_ffn",
-        )(own_state)
-        queries = queries.reshape(batch_size, m, cm)
+        global_summary = features.mean(axis=(1, 2))
 
-        # Multi-head spatial attention
-        attn_logits = jnp.einsum("bnmc,bmc->bnm", keys, queries)
-        attn_weights = jax.nn.softmax(attn_logits, axis=1)
+        if self.attn_mode == "gaussian_gaze":
+            gaze_params = nn.Dense(
+                4, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
+                name="gaze_ffn",
+            )(own_state)
+            mu_x_raw, mu_y_raw, sigma_x_raw, sigma_y_raw = jnp.split(gaze_params, 4, axis=-1)
 
-        attended = jnp.einsum("bnm,bnmc->bmc", attn_weights, values)
-        attended_flat = attended.reshape(batch_size, m * cm)
+            mu_x = jax.nn.sigmoid(mu_x_raw) * jnp.asarray(fw - 1, dtype=jnp.float32)
+            mu_y = jax.nn.sigmoid(mu_y_raw) * jnp.asarray(fh - 1, dtype=jnp.float32)
+            sigma_x = nn.softplus(sigma_x_raw) + self.gaze_min_sigma
+            sigma_y = nn.softplus(sigma_y_raw) + self.gaze_min_sigma
 
-        attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
+            dx2 = jnp.square((self._grid_x[None, ...] - mu_x[:, None, None, 0]) / sigma_x[:, None, None, 0])
+            dy2 = jnp.square((self._grid_y[None, ...] - mu_y[:, None, None, 0]) / sigma_y[:, None, None, 0])
+            gaze_logits = -0.5 * (dx2 + dy2)
+            attn_weights_flat = jax.nn.softmax(gaze_logits.reshape(batch_size, fh * fw), axis=-1)
+            attn_map = attn_weights_flat.reshape(batch_size, fh, fw)
+
+            glimpse = (features * attn_map[..., None]).sum(axis=(1, 2))
+            attended_parts = [glimpse]
+        else:
+            keys = nn.Conv(
+                features=m * cm, kernel_size=(1, 1),
+                kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+                name="key_conv",
+            )(features_with_pos)
+            keys = keys.reshape(batch_size, fh * fw, m, cm)
+
+            values = nn.Conv(
+                features=m * cm, kernel_size=(1, 1),
+                kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+                name="value_conv",
+            )(features_with_pos)
+            values = values.reshape(batch_size, fh * fw, m, cm)
+
+            queries = nn.Dense(
+                m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+                name="query_ffn",
+            )(own_state)
+            queries = queries.reshape(batch_size, m, cm)
+
+            attn_logits = jnp.einsum("bnmc,bmc->bnm", keys, queries)
+            attn_weights = jax.nn.softmax(attn_logits, axis=1)
+            attended = jnp.einsum("bnm,bnmc->bmc", attn_weights, values)
+            attended_parts = [attended.reshape(batch_size, m * cm)]
+            attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
+
+        if self.use_global_bypass:
+            attended_parts.append(global_summary)
+        attended_flat = jnp.concatenate(attended_parts, axis=-1)
 
         suffix_parts = []
         suffix_start = self._img_flat_dim
@@ -211,6 +249,9 @@ class JAImageActorCritic(nn.Module):
     message_dim: int = 0  # >0 enables communication (partner message input via obs)
     scalar_dim: int = 0
     scalar_embed_dim: int = 5
+    attn_mode: str = "dot_product"
+    use_global_bypass: bool = False
+    gaze_min_sigma: float = 0.5
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -235,6 +276,9 @@ class JAImageActorCritic(nn.Module):
             message_dim=self.message_dim,
             scalar_dim=self.scalar_dim,
             scalar_embed_dim=self.scalar_embed_dim,
+            attn_mode=self.attn_mode,
+            use_global_bypass=self.use_global_bypass,
+            gaze_min_sigma=self.gaze_min_sigma,
         )
 
         # Actor path
