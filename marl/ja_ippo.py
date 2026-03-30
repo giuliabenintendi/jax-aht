@@ -105,6 +105,7 @@ def make_train_loop(config, env):
     num_actors = config["NUM_ACTORS"]
     ja_beta_max = config.get("JA_BETA_MAX", 0.01)
     ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
+    normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
@@ -432,11 +433,13 @@ def make_train_loop(config, env):
             # Save raw env reward before combining
             raw_env_reward = traj_batch.reward
 
-            # Combined reward normalization (matches DeepMind reference)
             combined_raw = raw_env_reward + intrinsic_batch
-            rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
-            combined = reward_norm_apply(rew_norm_state, combined_raw)
-            traj_batch = traj_batch._replace(reward=combined)
+            if normalize_rewards:
+                rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
+                combined = reward_norm_apply(rew_norm_state, combined_raw)
+                traj_batch = traj_batch._replace(reward=combined)
+            else:
+                traj_batch = traj_batch._replace(reward=combined_raw)
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
