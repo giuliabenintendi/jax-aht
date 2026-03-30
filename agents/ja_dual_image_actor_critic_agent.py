@@ -39,9 +39,6 @@ class JADualImageActorCriticPolicy(AgentPolicy):
         num_channels: int = 3,
         scalar_dim: int = 0,
         scalar_embed_dim: int = 5,
-        attn_mode: str = "dot_product",
-        use_global_bypass: bool = False,
-        gaze_min_sigma: float = 0.5,
     ):
         super().__init__(action_dim, obs_dim)
         self.img_height = img_height
@@ -63,9 +60,6 @@ class JADualImageActorCriticPolicy(AgentPolicy):
             num_channels=num_channels,
             scalar_dim=scalar_dim,
             scalar_embed_dim=scalar_embed_dim,
-            attn_mode=attn_mode,
-            use_global_bypass=use_global_bypass,
-            gaze_min_sigma=gaze_min_sigma,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
 

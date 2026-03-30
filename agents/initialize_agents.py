@@ -156,9 +156,6 @@ def initialize_ja_image_agent(config, env, rng):
         message_dim=message_dim,
         scalar_dim=num_scalars,
         scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
-        attn_mode=config.get("JA_ATTN_MODE", "dot_product"),
-        use_global_bypass=config.get("JA_USE_GLOBAL_BYPASS", False),
-        gaze_min_sigma=config.get("JA_GAZE_MIN_SIGMA", 0.5),
     )
 
     rng, init_rng = jax.random.split(rng)
@@ -190,9 +187,6 @@ def initialize_ja_dual_image_agent(config, env, rng):
         num_channels=num_channels,
         scalar_dim=num_scalars,
         scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
-        attn_mode=config.get("JA_ATTN_MODE", "dot_product"),
-        use_global_bypass=config.get("JA_USE_GLOBAL_BYPASS", False),
-        gaze_min_sigma=config.get("JA_GAZE_MIN_SIGMA", 0.5),
     )
 
     rng, init_rng = jax.random.split(rng)

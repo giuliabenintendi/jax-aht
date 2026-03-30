@@ -35,9 +35,6 @@ class JADualImageActorCritic(nn.Module):
     num_channels: int = 3
     scalar_dim: int = 0
     scalar_embed_dim: int = 5
-    attn_mode: str = "dot_product"
-    use_global_bypass: bool = False
-    gaze_min_sigma: float = 0.5
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -61,9 +58,6 @@ class JADualImageActorCritic(nn.Module):
             num_channels=self.num_channels,
             scalar_dim=self.scalar_dim,
             scalar_embed_dim=self.scalar_embed_dim,
-            attn_mode=self.attn_mode,
-            use_global_bypass=self.use_global_bypass,
-            gaze_min_sigma=self.gaze_min_sigma,
         )
 
         # Actor path (identical to single-critic version)

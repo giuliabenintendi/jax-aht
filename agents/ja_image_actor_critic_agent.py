@@ -29,9 +29,6 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         message_dim: int = 0,
         scalar_dim: int = 0,
         scalar_embed_dim: int = 5,
-        attn_mode: str = "dot_product",
-        use_global_bypass: bool = False,
-        gaze_min_sigma: float = 0.5,
     ):
         # Skip JAActorCriticPolicy.__init__ — we set self.network directly
         # but still call AgentPolicy.__init__ for action_dim/obs_dim
@@ -59,8 +56,5 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             message_dim=message_dim,
             scalar_dim=scalar_dim,
             scalar_embed_dim=scalar_embed_dim,
-            attn_mode=attn_mode,
-            use_global_bypass=use_global_bypass,
-            gaze_min_sigma=gaze_min_sigma,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
