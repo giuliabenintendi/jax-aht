@@ -9,7 +9,7 @@ from agents.gaze_image_actor_critic import GazeImageActorCritic
 
 
 class GazeImageActorCriticPolicy(AgentPolicy):
-    """Packed-LSTM policy wrapper around GazeImageActorCritic."""
+    """Packed actor/critic-LSTM policy wrapper around GazeImageActorCritic."""
 
     def __init__(
         self,
@@ -48,14 +48,20 @@ class GazeImageActorCriticPolicy(AgentPolicy):
             num_channels=num_channels,
         )
 
-    def _pack_hstate(self, lstm_state):
-        h, c = lstm_state
-        return jnp.concatenate([h, c], axis=-1)[None, ...]
+    def _pack_hstate(self, actor_lstm_state, critic_lstm_state):
+        actor_h, actor_c = actor_lstm_state
+        critic_h, critic_c = critic_lstm_state
+        packed = jnp.concatenate([actor_h, actor_c, critic_h, critic_c], axis=-1)
+        return packed[None, ...]
 
     def _unpack_hstate(self, hstate):
         flat = hstate.squeeze(0)
         d = self.lstm_hidden_dim
-        return flat[..., :d], flat[..., d:]
+        actor_h = flat[..., 0:d]
+        actor_c = flat[..., d:2 * d]
+        critic_h = flat[..., 2 * d:3 * d]
+        critic_c = flat[..., 3 * d:4 * d]
+        return (actor_h, actor_c), (critic_h, critic_c)
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
@@ -69,7 +75,7 @@ class GazeImageActorCriticPolicy(AgentPolicy):
             lambda: pi.mode(),
             lambda: pi.sample(seed=rng),
         )
-        new_hstate = self._pack_hstate(new_hidden)
+        new_hstate = self._pack_hstate(*new_hidden)
         return action, new_hstate
 
     @partial(jax.jit, static_argnums=(0,))
@@ -84,7 +90,7 @@ class GazeImageActorCriticPolicy(AgentPolicy):
             lambda: pi.mode(),
             lambda: pi.sample(seed=rng),
         )
-        new_hstate = self._pack_hstate(new_hidden)
+        new_hstate = self._pack_hstate(*new_hidden)
         return action, new_hstate, aux["attn_map"]
 
     @partial(jax.jit, static_argnums=(0,))
@@ -95,7 +101,7 @@ class GazeImageActorCriticPolicy(AgentPolicy):
             params, hidden, (obs, done, avail_actions)
         )
         action = pi.sample(seed=rng)
-        new_hstate = self._pack_hstate(new_hidden)
+        new_hstate = self._pack_hstate(*new_hidden)
         return action, value, pi, new_hstate, aux
 
     @partial(jax.jit, static_argnums=(0,))
@@ -106,7 +112,7 @@ class GazeImageActorCriticPolicy(AgentPolicy):
 
     def init_hstate(self, batch_size, aux_info=None):
         d = self.lstm_hidden_dim
-        return jnp.zeros((1, batch_size, 2 * d))
+        return jnp.zeros((1, batch_size, 4 * d))
 
     def init_params(self, rng):
         batch_size = 1

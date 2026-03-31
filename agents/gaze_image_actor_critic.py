@@ -1,22 +1,24 @@
-"""Gaze-based image actor-critic with a Gaussian foveal attention module.
+"""Gaussian-gaze actor-critic for image observations.
 
-This is an adaptation of "Gaze on the Prize" for the existing JaxAHT image
-pipeline. The core design is:
+Per-agent architecture:
+  obs (flat) -> unpack image (H_px, W_px, num_channels)
+  Image -> ResNet encoder -> features F  (H_out, W_out, filters)
+  F -> Gaussian gaze head -> attention map A
+  F * A -> foveated features -> FC -> FC -> LSTM -> projection
 
-  obs -> ResNet encoder -> feature map
-      -> Gaussian gaze head -> spatial attention map
-      -> foveated feature map -> FC -> LSTM -> actor / critic heads
-
-The module also exposes a contrastive-feature method that reuses the same gaze
-parameters on detached visual features for return-guided triplet learning.
+The actor and critic use separate recurrent trunks, matching the existing JA
+image policy structure. The actor trunk also exposes a contrastive feature path
+under the same parameter scope, so auxiliary triplet learning reuses the same
+visual and gaze parameters that were initialized during the forward pass.
 """
 import functools
-import numpy as np
+
 import distrax
 import flax.linen as nn
 from flax.linen.initializers import constant, orthogonal
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from agents.action_masking import mask_action_logits
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
@@ -32,19 +34,7 @@ def gaussian_attention_from_params(
     sigma_y: jnp.ndarray,
     rho: jnp.ndarray,
 ):
-    """Construct a normalized 2D Gaussian attention map on a feature grid.
-
-    Args:
-        feat_h: feature-map height
-        feat_w: feature-map width
-        mu_x, mu_y: center coordinates in [-1, 1]
-        sigma_x, sigma_y: positive spread parameters in normalized coordinates
-        rho: correlation term in [-1, 1]
-
-    Returns:
-        Attention map of shape (..., feat_h, feat_w), normalized over the last
-        two axes.
-    """
+    """Construct a normalized correlated 2D Gaussian over the feature grid."""
     ys = jnp.linspace(-1.0, 1.0, feat_h)
     xs = jnp.linspace(-1.0, 1.0, feat_w)
     grid_y, grid_x = jnp.meshgrid(ys, xs, indexing="ij")
@@ -57,11 +47,12 @@ def gaussian_attention_from_params(
 
     dx = grid_x - mu_x
     dy = grid_y - mu_y
-    inv_norm = 1.0 / jnp.maximum(2.0 * (1.0 - rho ** 2), 1e-6)
+    sigma_prod = jnp.maximum(sigma_x * sigma_y, 1e-6)
+    inv_norm = 1.0 / jnp.maximum(2.0 * (1.0 - rho**2), 1e-6)
     mahal = (
         (dx / jnp.maximum(sigma_x, 1e-6)) ** 2
         + (dy / jnp.maximum(sigma_y, 1e-6)) ** 2
-        - 2.0 * rho * dx * dy / jnp.maximum(sigma_x * sigma_y, 1e-6)
+        - 2.0 * rho * dx * dy / sigma_prod
     )
     attn_logits = -inv_norm * mahal
     attn = jnp.exp(attn_logits - jnp.max(attn_logits, axis=(-2, -1), keepdims=True))
@@ -69,7 +60,8 @@ def gaussian_attention_from_params(
 
 
 class GaussianGazeHead(nn.Module):
-    """Predict a normalized 2D Gaussian attention map over CNN features."""
+    """Predict a normalized Gaussian attention map over CNN features."""
+
     feat_h: int
     feat_w: int
     hidden_dim: int = 64
@@ -78,17 +70,9 @@ class GaussianGazeHead(nn.Module):
     target_sigma_x: float = 0.45
     target_sigma_y: float = 0.45
 
-    def setup(self):
-        ys = jnp.linspace(-1.0, 1.0, self.feat_h)
-        xs = jnp.linspace(-1.0, 1.0, self.feat_w)
-        grid_y, grid_x = jnp.meshgrid(ys, xs, indexing="ij")
-        self.grid_x = grid_x
-        self.grid_y = grid_y
-
     @nn.compact
     def __call__(self, feature_maps: jnp.ndarray):
         pooled = feature_maps.mean(axis=(1, 2))
-
         hidden = nn.Dense(
             self.hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
@@ -108,10 +92,10 @@ class GaussianGazeHead(nn.Module):
         sigma_x = nn.softplus(raw[:, 2]) + self.min_sigma
         sigma_y = nn.softplus(raw[:, 3]) + self.min_sigma
         rho = self.max_rho * jnp.tanh(raw[:, 4])
-        attn = gaussian_attention_from_params(
+
+        attn_map = gaussian_attention_from_params(
             self.feat_h, self.feat_w, mu_x, mu_y, sigma_x, sigma_y, rho
         )
-
         spread_loss = (
             (jnp.log(sigma_x) - np.log(self.target_sigma_x)) ** 2
             + (jnp.log(sigma_y) - np.log(self.target_sigma_y)) ** 2
@@ -123,11 +107,12 @@ class GaussianGazeHead(nn.Module):
             "sigma_y": sigma_y,
             "rho": rho,
         }
-        return attn, spread_loss, gaze_stats
+        return attn_map, spread_loss, gaze_stats
 
 
 class GazeImageScannedLSTM(nn.Module):
-    """Scanned module: CNN -> Gaussian gaze -> foveation -> FC -> LSTM."""
+    """Scanned recurrent image trunk with Gaussian foveation."""
+
     img_height: int
     img_width: int
     num_channels: int = 3
@@ -151,71 +136,64 @@ class GazeImageScannedLSTM(nn.Module):
             self.conv_padding,
             self.conv_num_blocks,
         )
-
-    @functools.partial(
-        nn.scan,
-        variable_broadcast="params",
-        in_axes=0,
-        out_axes=0,
-        split_rngs={"params": False},
-    )
-    @nn.compact
-    def __call__(self, carry, x):
-        lstm_h, lstm_c = carry
-        obs_flat, dones = x
-        batch_size = obs_flat.shape[0]
-
-        zero_h = jnp.zeros((batch_size, self.lstm_hidden_dim), dtype=obs_flat.dtype)
-        zero_c = jnp.zeros((batch_size, self.lstm_hidden_dim), dtype=obs_flat.dtype)
-        lstm_h = jnp.where(dones[:, None], zero_h, lstm_h)
-        lstm_c = jnp.where(dones[:, None], zero_c, lstm_c)
-
-        image = obs_flat[:, :self._img_flat_dim].reshape(
-            obs_flat.shape[0], self.img_height, self.img_width, self.num_channels
-        )
-        feature_maps = ResNetEncoder(
+        self.resnet_encoder = ResNetEncoder(
             num_blocks=self.conv_num_blocks,
             filters=self.conv_filters,
             kernel_size=self.conv_kernel_size,
             stride=self.conv_stride,
             padding=self.conv_padding,
             name="resnet_encoder",
-        )(image)
-        feature_embed = feature_maps.mean(axis=(1, 2))
-
-        attn_map, spread_loss, gaze_stats = GaussianGazeHead(
+        )
+        self.gaze_head = GaussianGazeHead(
             feat_h=self.feat_h,
             feat_w=self.feat_w,
             hidden_dim=self.gaze_hidden_dim,
             name="gaze_head",
-        )(feature_maps)
-
-        weighted = feature_maps * attn_map[..., None]
-        weighted_flat = weighted.reshape(weighted.shape[0], -1)
-        contrastive_repr = nn.Dense(
+        )
+        self.contrastive_proj = nn.Dense(
             self.contrastive_dim,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
             name="contrastive_proj",
-        )(weighted_flat)
-        contrastive_repr = nn.tanh(contrastive_repr)
-
-        lstm_input = nn.relu(nn.Dense(
+        )
+        self.input_fc1 = nn.Dense(
             self.fc_hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
             name="input_fc1",
-        )(weighted_flat))
-        lstm_input = nn.relu(nn.Dense(
+        )
+        self.input_fc2 = nn.Dense(
             self.fc_hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
             name="input_fc2",
-        )(lstm_input))
-        new_carry, lstm_out = nn.OptimizedLSTMCell(
+        )
+        self.shared_lstm = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
             name="shared_lstm",
-        )((lstm_h, lstm_c), lstm_input)
+        )
+
+    @staticmethod
+    def initialize_carry(batch_size, hidden_size):
+        return (
+            jnp.zeros((batch_size, hidden_size)),
+            jnp.zeros((batch_size, hidden_size)),
+        )
+
+    def _encode_gaze_features(self, obs_flat, stop_gradient=False):
+        image = obs_flat[:, :self._img_flat_dim].reshape(
+            obs_flat.shape[0], self.img_height, self.img_width, self.num_channels
+        )
+        feature_maps = self.resnet_encoder(image)
+        if stop_gradient:
+            feature_maps = jax.lax.stop_gradient(feature_maps)
+
+        feature_embed = feature_maps.mean(axis=(1, 2))
+        attn_map, spread_loss, gaze_stats = self.gaze_head(feature_maps)
+        weighted = feature_maps * attn_map[..., None]
+        weighted_flat = weighted.reshape(weighted.shape[0], -1)
+        contrastive_repr = self.contrastive_proj(weighted_flat)
+        contrastive_repr = nn.tanh(contrastive_repr)
 
         aux = {
             "attn_map": attn_map,
@@ -226,19 +204,44 @@ class GazeImageScannedLSTM(nn.Module):
             "gaze_mu_y": gaze_stats["mu_y"],
             "gaze_sigma_x": gaze_stats["sigma_x"],
             "gaze_sigma_y": gaze_stats["sigma_y"],
+            "gaze_rho": gaze_stats["rho"],
         }
+        return weighted_flat, aux
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    def __call__(self, carry, x):
+        lstm_h, lstm_c = carry
+        obs_flat, dones = x
+        batch_size = obs_flat.shape[0]
+
+        zero_h, zero_c = self.initialize_carry(batch_size, self.lstm_hidden_dim)
+        lstm_h = jnp.where(dones[:, None], zero_h, lstm_h)
+        lstm_c = jnp.where(dones[:, None], zero_c, lstm_c)
+
+        weighted_flat, aux = self._encode_gaze_features(obs_flat, stop_gradient=False)
+
+        lstm_input = self.input_fc1(weighted_flat)
+        lstm_input = nn.relu(lstm_input)
+        lstm_input = self.input_fc2(lstm_input)
+        lstm_input = nn.relu(lstm_input)
+
+        new_carry, lstm_out = self.shared_lstm((lstm_h, lstm_c), lstm_input)
         return new_carry, (lstm_out, aux)
 
-    @staticmethod
-    def initialize_carry(batch_size, hidden_size):
-        return (
-            jnp.zeros((batch_size, hidden_size)),
-            jnp.zeros((batch_size, hidden_size)),
-        )
+    def encode_contrastive(self, obs_flat: jnp.ndarray):
+        _, aux = self._encode_gaze_features(obs_flat, stop_gradient=True)
+        return aux
 
 
 class GazeImageActorCritic(nn.Module):
-    """Shared-trunk image actor-critic with Gaussian gaze."""
+    """Actor-critic with Gaussian gaze and separate actor/critic trunks."""
+
     action_dim: int
     img_height: int
     img_width: int
@@ -254,15 +257,22 @@ class GazeImageActorCritic(nn.Module):
     contrastive_dim: int = 128
 
     def setup(self):
-        self._img_flat_dim = self.img_height * self.img_width * self.num_channels
-        self.feat_h, self.feat_w = _compute_resnet_output_dims(
-            self.img_height,
-            self.img_width,
-            self.conv_stride,
-            self.conv_kernel_size,
-            self.conv_padding,
-            self.conv_num_blocks,
+        trunk_kwargs = dict(
+            img_height=self.img_height,
+            img_width=self.img_width,
+            num_channels=self.num_channels,
+            conv_filters=self.conv_filters,
+            conv_num_blocks=self.conv_num_blocks,
+            conv_kernel_size=self.conv_kernel_size,
+            conv_stride=self.conv_stride,
+            conv_padding=self.conv_padding,
+            fc_hidden_dim=self.fc_hidden_dim,
+            lstm_hidden_dim=self.lstm_hidden_dim,
+            gaze_hidden_dim=self.gaze_hidden_dim,
+            contrastive_dim=self.contrastive_dim,
         )
+        self.actor_lstm = GazeImageScannedLSTM(**trunk_kwargs, name="actor_lstm")
+        self.critic_lstm = GazeImageScannedLSTM(**trunk_kwargs, name="critic_lstm")
         self.actor_fc1 = nn.Dense(
             self.fc_hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
@@ -300,72 +310,28 @@ class GazeImageActorCritic(nn.Module):
             name="critic_proj",
         )
 
-    @nn.compact
     def __call__(self, hidden, x):
         obs, dones, avail_actions = x
-        (new_h, new_c), (lstm_out, aux) = GazeImageScannedLSTM(
-            img_height=self.img_height,
-            img_width=self.img_width,
-            num_channels=self.num_channels,
-            conv_filters=self.conv_filters,
-            conv_num_blocks=self.conv_num_blocks,
-            conv_kernel_size=self.conv_kernel_size,
-            conv_stride=self.conv_stride,
-            conv_padding=self.conv_padding,
-            fc_hidden_dim=self.fc_hidden_dim,
-            lstm_hidden_dim=self.lstm_hidden_dim,
-            gaze_hidden_dim=self.gaze_hidden_dim,
-            contrastive_dim=self.contrastive_dim,
-            name="gaze_lstm",
-        )(hidden, (obs, dones))
+        actor_lstm_state, critic_lstm_state = hidden
 
-        actor_out = nn.relu(self.actor_fc1(lstm_out))
+        actor_lstm_state, (actor_embed, actor_aux) = self.actor_lstm(
+            actor_lstm_state, (obs, dones)
+        )
+        actor_out = nn.relu(self.actor_fc1(actor_embed))
         actor_out = nn.relu(self.actor_fc2(actor_out))
         action_logits = self.actor_proj(actor_out)
         action_logits = mask_action_logits(action_logits, avail_actions)
         pi = distrax.Categorical(logits=action_logits)
 
-        critic_out = nn.relu(self.critic_fc1(lstm_out))
+        critic_lstm_state, (critic_embed, _) = self.critic_lstm(
+            critic_lstm_state, (obs, dones)
+        )
+        critic_out = nn.relu(self.critic_fc1(critic_embed))
         critic_out = nn.relu(self.critic_fc2(critic_out))
         value = self.critic_proj(critic_out)
 
-        return (new_h, new_c), pi, jnp.squeeze(value, axis=-1), aux
+        new_hidden = (actor_lstm_state, critic_lstm_state)
+        return new_hidden, pi, jnp.squeeze(value, axis=-1), actor_aux
 
-    @nn.compact
     def contrastive_features(self, obs: jnp.ndarray):
-        image = obs[:, :self._img_flat_dim].reshape(
-            obs.shape[0], self.img_height, self.img_width, self.num_channels
-        )
-        feature_maps = ResNetEncoder(
-            num_blocks=self.conv_num_blocks,
-            filters=self.conv_filters,
-            kernel_size=self.conv_kernel_size,
-            stride=self.conv_stride,
-            padding=self.conv_padding,
-            name="resnet_encoder",
-        )(image)
-        feature_maps = jax.lax.stop_gradient(feature_maps)
-        attn_map, spread_loss, gaze_stats = GaussianGazeHead(
-            feat_h=self.feat_h,
-            feat_w=self.feat_w,
-            hidden_dim=self.gaze_hidden_dim,
-            name="gaze_head",
-        )(feature_maps)
-        weighted = feature_maps * attn_map[..., None]
-        weighted_flat = weighted.reshape(weighted.shape[0], -1)
-        contrastive_repr = nn.Dense(
-            self.contrastive_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="contrastive_proj",
-        )(weighted_flat)
-        contrastive_repr = nn.tanh(contrastive_repr)
-        return {
-            "contrastive_repr": contrastive_repr,
-            "attn_map": attn_map,
-            "spread_loss": spread_loss,
-            "gaze_mu_x": gaze_stats["mu_x"],
-            "gaze_mu_y": gaze_stats["mu_y"],
-            "gaze_sigma_x": gaze_stats["sigma_x"],
-            "gaze_sigma_y": gaze_stats["sigma_y"],
-        }
+        return self.actor_lstm.encode_contrastive(obs)
