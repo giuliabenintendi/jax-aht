@@ -27,6 +27,8 @@ class GazeImageActorCriticPolicy(AgentPolicy):
         gaze_hidden_dim: int = 64,
         contrastive_dim: int = 128,
         num_channels: int = 3,
+        target_sigma_x: float = 0.30,
+        target_sigma_y: float = 0.30,
     ):
         super().__init__(action_dim, obs_dim)
         self.img_height = img_height
@@ -46,6 +48,8 @@ class GazeImageActorCriticPolicy(AgentPolicy):
             gaze_hidden_dim=gaze_hidden_dim,
             contrastive_dim=contrastive_dim,
             num_channels=num_channels,
+            target_sigma_x=target_sigma_x,
+            target_sigma_y=target_sigma_y,
         )
 
     def _pack_hstate(self, actor_lstm_state, critic_lstm_state):

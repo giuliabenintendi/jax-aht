@@ -240,6 +240,8 @@ def initialize_gaze_image_agent(config, env, rng):
         gaze_hidden_dim=config.get("GAZE_HIDDEN_DIM", 64),
         contrastive_dim=config.get("CONTRASTIVE_DIM", 128),
         num_channels=num_channels,
+        target_sigma_x=config.get("GAZE_TARGET_SIGMA_X", 0.30),
+        target_sigma_y=config.get("GAZE_TARGET_SIGMA_Y", 0.30),
     )
 
     rng, init_rng = jax.random.split(rng)

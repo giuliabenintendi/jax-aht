@@ -125,6 +125,8 @@ class GazeImageScannedLSTM(nn.Module):
     lstm_hidden_dim: int = 64
     gaze_hidden_dim: int = 64
     contrastive_dim: int = 128
+    target_sigma_x: float = 0.30
+    target_sigma_y: float = 0.30
 
     def setup(self):
         self._img_flat_dim = self.img_height * self.img_width * self.num_channels
@@ -148,6 +150,8 @@ class GazeImageScannedLSTM(nn.Module):
             feat_h=self.feat_h,
             feat_w=self.feat_w,
             hidden_dim=self.gaze_hidden_dim,
+            target_sigma_x=self.target_sigma_x,
+            target_sigma_y=self.target_sigma_y,
             name="gaze_head",
         )
         self.contrastive_proj = nn.Dense(
@@ -255,6 +259,8 @@ class GazeImageActorCritic(nn.Module):
     lstm_hidden_dim: int = 64
     gaze_hidden_dim: int = 64
     contrastive_dim: int = 128
+    target_sigma_x: float = 0.30
+    target_sigma_y: float = 0.30
 
     def setup(self):
         trunk_kwargs = dict(
@@ -270,6 +276,8 @@ class GazeImageActorCritic(nn.Module):
             lstm_hidden_dim=self.lstm_hidden_dim,
             gaze_hidden_dim=self.gaze_hidden_dim,
             contrastive_dim=self.contrastive_dim,
+            target_sigma_x=self.target_sigma_x,
+            target_sigma_y=self.target_sigma_y,
         )
         self.actor_lstm = GazeImageScannedLSTM(**trunk_kwargs, name="actor_lstm")
         self.critic_lstm = GazeImageScannedLSTM(**trunk_kwargs, name="critic_lstm")
