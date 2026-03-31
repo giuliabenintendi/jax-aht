@@ -306,6 +306,77 @@ def test_combined_wrappers_reward():
     assert float(reward["agent_0"]) == 1.0
 
 
+def test_save_op_observations():
+    """Save PNGs showing ground truth vs each agent's OP-transformed view."""
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+    from pathlib import Path
+    from envs.card_game.rendering import GRID_ROWS, GRID_COLS, render_card_game
+
+    out_dir = Path("tests/card_game_op_obs")
+    out_dir.mkdir(exist_ok=True)
+
+    h = GRID_ROWS * TILE_PIXELS
+    w = GRID_COLS * TILE_PIXELS
+    scale = 20
+    card_names = ["RED", "BLUE", "GREEN", "YELLOW", "PURPLE"]
+
+    base = CardGameEnv(max_steps=8, shuffle=False)
+    env = CardGamePositionShuffleWrapper(base)
+    env = CardGameRecolouringWrapper(env)
+
+    key = jax.random.PRNGKey(0)
+    obs, state = env.reset(key)
+
+    # Ground truth: canonical order (shuffle=False)
+    gt_img = np.array(render_card_game(jnp.arange(NUM_CARDS)))
+    gt_pil = Image.fromarray(gt_img).resize((w * scale, h * scale), Image.NEAREST)
+    gt_pil.save(out_dir / "ground_truth.png")
+
+    pos_perm_0 = np.array(state.env_state.per_agent_perm["agent_0"])
+    pos_perm_1 = np.array(state.env_state.per_agent_perm["agent_1"])
+    recolour_0 = np.array(state.per_agent_recolouring["agent_0"])
+    recolour_1 = np.array(state.per_agent_recolouring["agent_1"])
+    inv_0 = np.array(state.per_agent_inv_recolouring["agent_0"])
+    inv_1 = np.array(state.per_agent_inv_recolouring["agent_1"])
+
+    print(f"\nGround truth: {card_names}")
+    print(f"Agent 0 pos perm:  {pos_perm_0} → [{', '.join(card_names[c] for c in pos_perm_0)}]")
+    print(f"Agent 0 recolour:  {recolour_0} (GT color c appears as {recolour_0})")
+    print(f"Agent 0 inv:       {inv_0} (visual color v → GT {inv_0})")
+    print(f"Agent 1 pos perm:  {pos_perm_1} → [{', '.join(card_names[c] for c in pos_perm_1)}]")
+    print(f"Agent 1 recolour:  {recolour_1} (GT color c appears as {recolour_1})")
+    print(f"Agent 1 inv:       {inv_1} (visual color v → GT {inv_1})")
+
+    # What each agent sees (combined effect)
+    print("\nAgent 0 sees at each position:")
+    for pos in range(NUM_CARDS):
+        gt_color = pos_perm_0[pos]
+        visual_color = recolour_0[gt_color]
+        print(f"  pos {pos}: GT {card_names[gt_color]} appears as {card_names[visual_color]}")
+
+    print("Agent 1 sees at each position:")
+    for pos in range(NUM_CARDS):
+        gt_color = pos_perm_1[pos]
+        visual_color = recolour_1[gt_color]
+        print(f"  pos {pos}: GT {card_names[gt_color]} appears as {card_names[visual_color]}")
+
+    for agent in ["agent_0", "agent_1"]:
+        img = (np.array(obs[agent]) * 255).astype(np.uint8).reshape(h, w, 3)
+        pil_img = Image.fromarray(img).resize((w * scale, h * scale), Image.NEAREST)
+        pil_img.save(out_dir / f"{agent}_op_view.png")
+        print(f"Saved {out_dir / agent}_op_view.png")
+
+    # Simulate a decision: both agents output action 0 in their recoloured space
+    # Show what GT color that maps to
+    for a_idx, (agent, inv) in enumerate(
+            [("agent_0", inv_0), ("agent_1", inv_1)]):
+        for visual_action in range(NUM_CARDS):
+            gt_action = inv[visual_action]
+            print(f"  {agent} picks visual {card_names[visual_action]} "
+                  f"→ GT {card_names[gt_action]}")
+
+
 def test_combined_wrappers_obs_correctness():
     """With both wrappers, obs reflects position shuffle AND recolouring."""
     base = CardGameEnv(max_steps=8, shuffle=False)
