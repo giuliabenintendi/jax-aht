@@ -84,6 +84,7 @@ class GaussianGazeHead(nn.Module):
         self.grid_x = grid_x
         self.grid_y = grid_y
 
+    @nn.compact
     def __call__(self, feature_maps: jnp.ndarray):
         pooled = feature_maps.mean(axis=(1, 2))
 
