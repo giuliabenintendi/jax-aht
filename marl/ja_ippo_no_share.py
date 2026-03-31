@@ -318,7 +318,7 @@ def make_train_loop(config, env):
                 if feed_other_attn:
                     last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
 
-                avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
+                avail_actions = jax.vmap(env.get_avail_actions)(env_state)
                 avail_actions_batch = jax.lax.stop_gradient(
                     batchify(avail_actions, env.agents, num_actors).astype(jnp.float32))
 
@@ -420,7 +420,7 @@ def make_train_loop(config, env):
             last_done_batch = batchify(last_done, env.agents, num_actors)
             if feed_other_attn:
                 last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
-            last_avail = jax.vmap(env.get_avail_actions)(env_state.env_state)
+            last_avail = jax.vmap(env.get_avail_actions)(env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
 

@@ -86,7 +86,7 @@ def make_train(config, env):
                 last_obs_batch = batchify(last_obs, env.agents, num_actors)
                 last_done_batch = batchify(last_done, env.agents, num_actors)
 
-                avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
+                avail_actions = jax.vmap(env.get_avail_actions)(env_state)
                 avail_actions_batch = jax.lax.stop_gradient(
                     batchify(avail_actions, env.agents, num_actors).astype(jnp.float32))
 
@@ -136,7 +136,7 @@ def make_train(config, env):
             train_state, env_state, last_obs, last_done, hstate, rng = runner_state
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
-            last_avail = jax.vmap(env.get_avail_actions)(env_state.env_state)
+            last_avail = jax.vmap(env.get_avail_actions)(env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
 
