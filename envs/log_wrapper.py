@@ -80,3 +80,6 @@ class LogWrapper(JaxMARLWrapper):
             state)
 
         return obs, state, reward, done, info
+
+    def get_avail_actions(self, state: LogEnvState):
+        return self._env.get_avail_actions(state.env_state)
