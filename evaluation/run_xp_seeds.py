@@ -55,7 +55,7 @@ def load_algo_config() -> dict:
 def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 agent_1_param, agent_1_policy,
                                 max_episode_steps, action_sizes,
-                                feed_attn_dims=None):
+                                feed_attn_dims=None, greedy_eval=True):
     """Run one eval episode, returning LogWrapper info + mean JSD between attention maps.
 
     Args:
@@ -100,7 +100,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         avail_actions=avail_actions_0,
         hstate=init_hstate_0,
         rng=act0_rng,
-        greedy=True,
+        greedy=greedy_eval,
     )
     act_0 = act_0.squeeze()
 
@@ -111,7 +111,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         avail_actions=avail_actions_1,
         hstate=init_hstate_1,
         rng=act1_rng,
-        greedy=True,
+        greedy=greedy_eval,
     )
     act_1 = act_1.squeeze()
 
@@ -168,7 +168,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_0,
                 hstate=hstate_0,
                 rng=act0_rng,
-                greedy=True,
+                greedy=greedy_eval,
             )
             act_0 = act_0.squeeze()
 
@@ -179,7 +179,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 avail_actions=avail_actions_1,
                 hstate=hstate_1,
                 rng=act1_rng,
-                greedy=True,
+                greedy=greedy_eval,
             )
             act_1 = act_1.squeeze()
 
@@ -222,7 +222,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
                           agent_1_param, agent_1_policy,
                           max_episode_steps, num_eps, action_sizes,
-                          feed_attn_dims=None):
+                          feed_attn_dims=None, greedy_eval=True):
     """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
@@ -232,6 +232,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
             ep_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, action_sizes,
             feed_attn_dims=feed_attn_dims,
+            greedy_eval=greedy_eval,
         )
     )
     all_info, all_jsd = vmap_fn(ep_rngs)
@@ -241,7 +242,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
 def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
                      all_agent_1_params, agent_1_policy,
                      max_episode_steps, num_eps, action_sizes,
-                     feed_attn_dims=None):
+                     feed_attn_dims=None, greedy_eval=True):
     """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
     num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
     partner_rngs = jax.random.split(rng, num_partners)
@@ -252,6 +253,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
             partner_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, num_eps, action_sizes,
             feed_attn_dims=feed_attn_dims,
+            greedy_eval=greedy_eval,
         )
 
     return jax.vmap(eval_one_partner)(partner_rngs, all_agent_1_params)
@@ -447,7 +449,7 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
 
 def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                        savedir: str, task_name: str | None = None,
-                       wb_run=None):
+                       wb_run=None, greedy_eval=True):
     """Run cross-play evaluation from pre-built objects.
 
     Called either from standalone CLI or from training loops after multi-seed runs.
@@ -509,7 +511,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
-        feed_attn_dims=feed_attn_dims,
+        feed_attn_dims=feed_attn_dims, greedy_eval=greedy_eval,
     ))
 
     all_row_metrics = []
@@ -580,7 +582,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                       task_name, savedir, wb_run=wb_run)
 
 
-def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
+def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True):
     """Standalone XP evaluation from a saved checkpoint."""
     hydra_cfg = _load_hydra_config(checkpoint_path)
     if task_name is not None:
@@ -614,7 +616,8 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str):
 
     run_dir = os.path.dirname(checkpoint_path)
     run_xp_from_params(env, policy, all_final_params, label_cfg,
-                       savedir=run_dir, task_name=task_name)
+                       savedir=run_dir, task_name=task_name,
+                       greedy_eval=greedy_eval)
 
 
 def print_xp_table(xp_metrics, metric_name, seed_names):
@@ -763,7 +766,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
-        feed_attn_dims=feed_attn_dims,
+        feed_attn_dims=feed_attn_dims, greedy_eval=greedy_eval,
     ))
 
     all_row_metrics = []
@@ -815,11 +818,14 @@ if __name__ == "__main__":
                         help="Path to saved_train_run directory (single multi-seed checkpoint)")
     parser.add_argument("--checkpoints", nargs="+", default=None,
                         help="Paths to multiple 1-seed checkpoints for multi-checkpoint XP")
+    parser.add_argument("--stochastic", action="store_true",
+                        help="Use stochastic (sampling) evaluation instead of greedy (argmax)")
     args = parser.parse_args()
 
+    greedy = not args.stochastic
     if args.checkpoints:
         run_xp_multi_checkpoint(args.task, args.checkpoints)
     elif args.checkpoint:
-        run_xp_evaluation(args.task, args.checkpoint)
+        run_xp_evaluation(args.task, args.checkpoint, greedy_eval=greedy)
     else:
         parser.error("Either --checkpoint or --checkpoints is required")
