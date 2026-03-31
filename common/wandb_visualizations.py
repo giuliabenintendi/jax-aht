@@ -61,6 +61,8 @@ def _build_run_string(config: dict) -> str:
         parts.append("feed_attn")
     if alg_config.get("FILTER_ATTN_TOP1", False):
         parts.append("top1")
+    if env_kwargs.get("other_play_position_shuffle") or env_kwargs.get("other_play_recolouring"):
+        parts.append("other_play")
     if env_kwargs.get("shuffle") is False:
         parts.append("no_shuffle")
     fp = env_kwargs.get("fixed_partner_pos", -1)
@@ -111,6 +113,8 @@ def _build_tags(config) -> list[str]:
         tags.append(f"{NUM_COLORS}cards")
         if _GR != 3 or _GC != 5:
             tags.append(f"grid{_GR}x{_GC}")
+    if env_kwargs.get("other_play_position_shuffle") or env_kwargs.get("other_play_recolouring"):
+        tags.append("other_play")
     if env_kwargs.get("shuffle") is False:
         tags.append("no_shuffle")
     label = config.get("label", "default_label")
