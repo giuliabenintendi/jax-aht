@@ -111,7 +111,17 @@ def make_env(env_name: str, env_kwargs: dict = {}):
     
     elif env_name == 'card-game':
         from envs.card_game.card_game import CardGameEnv
+        op_pos = env_kwargs.pop('other_play_position_shuffle', False)
+        op_recolour = env_kwargs.pop('other_play_recolouring', False)
+        if op_pos:
+            env_kwargs['shuffle'] = False
         env = CardGameEnv(**env_kwargs)
+        if op_pos:
+            from envs.card_game.other_play import CardGamePositionShuffleWrapper
+            env = CardGamePositionShuffleWrapper(env)
+        if op_recolour:
+            from envs.card_game.other_play import CardGameRecolouringWrapper
+            env = CardGameRecolouringWrapper(env)
 
     elif env_name == 'card-game-flip':
         from envs.card_game.card_game_flip import CardFlipEnv
