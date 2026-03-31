@@ -210,13 +210,29 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
     for seed_idx in range(num_seeds):
         final_params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
 
-        ep_states, attn_data, ep_actions, ep_messages = run_episode_with_states(
-            jax.random.PRNGKey(42 + seed_idx), inner_env, final_params, policy,
-            final_params, policy, max_steps,
-            collect_attention=True,
-            feed_other_attn_dims=feed_attn_dims,
-            fixed_partner_attn=fixed_partner_attn_eval,
-        )
+        # Run multiple episodes for longer eval videos
+        num_eval_video_eps = 5
+        all_ep_states = []
+        all_attn_data = {"agent_0": [], "agent_1": []}
+        all_ep_actions = []
+        all_ep_messages = []
+        for ep_i in range(num_eval_video_eps):
+            ep_states_i, attn_data_i, ep_actions_i, ep_messages_i = run_episode_with_states(
+                jax.random.PRNGKey(42 + seed_idx * 100 + ep_i), inner_env, final_params, policy,
+                final_params, policy, max_steps,
+                collect_attention=True,
+                feed_other_attn_dims=feed_attn_dims,
+                fixed_partner_attn=fixed_partner_attn_eval,
+            )
+            all_ep_states.extend(ep_states_i)
+            for ak in ("agent_0", "agent_1"):
+                all_attn_data[ak].extend(attn_data_i.get(ak, []))
+            all_ep_actions.extend(ep_actions_i)
+            all_ep_messages.extend(ep_messages_i)
+        ep_states = all_ep_states
+        attn_data = all_attn_data
+        ep_actions = all_ep_actions
+        ep_messages = all_ep_messages
         # Apply top1 filter to collected attention maps (match training behavior)
         if algorithm_config.get("FILTER_ATTN_TOP1", False):
             import numpy as _np
