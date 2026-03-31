@@ -111,6 +111,7 @@ def make_env(env_name: str, env_kwargs: dict = {}):
     
     elif env_name == 'card-game':
         from envs.card_game.card_game import CardGameEnv
+        env_kwargs = dict(env_kwargs)
         op_pos = env_kwargs.pop('other_play_position_shuffle', False)
         op_recolour = env_kwargs.pop('other_play_recolouring', False)
         if op_pos:
