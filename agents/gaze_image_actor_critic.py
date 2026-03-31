@@ -10,6 +10,7 @@ pipeline. The core design is:
 The module also exposes a contrastive-feature method that reuses the same gaze
 parameters on detached visual features for return-guided triplet learning.
 """
+import functools
 import numpy as np
 import distrax
 import flax.linen as nn
@@ -125,6 +126,117 @@ class GaussianGazeHead(nn.Module):
         return attn, spread_loss, gaze_stats
 
 
+class GazeImageScannedLSTM(nn.Module):
+    """Scanned module: CNN -> Gaussian gaze -> foveation -> FC -> LSTM."""
+    img_height: int
+    img_width: int
+    num_channels: int = 3
+    conv_filters: int = 32
+    conv_num_blocks: int = 4
+    conv_kernel_size: int = 3
+    conv_stride: int = 2
+    conv_padding: str = "SAME"
+    fc_hidden_dim: int = 64
+    lstm_hidden_dim: int = 64
+    gaze_hidden_dim: int = 64
+    contrastive_dim: int = 128
+
+    def setup(self):
+        self._img_flat_dim = self.img_height * self.img_width * self.num_channels
+        self.feat_h, self.feat_w = _compute_resnet_output_dims(
+            self.img_height,
+            self.img_width,
+            self.conv_stride,
+            self.conv_kernel_size,
+            self.conv_padding,
+            self.conv_num_blocks,
+        )
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    @nn.compact
+    def __call__(self, carry, x):
+        lstm_h, lstm_c = carry
+        obs_flat, dones = x
+        batch_size = obs_flat.shape[0]
+
+        zero_h = jnp.zeros((batch_size, self.lstm_hidden_dim), dtype=obs_flat.dtype)
+        zero_c = jnp.zeros((batch_size, self.lstm_hidden_dim), dtype=obs_flat.dtype)
+        lstm_h = jnp.where(dones[:, None], zero_h, lstm_h)
+        lstm_c = jnp.where(dones[:, None], zero_c, lstm_c)
+
+        image = obs_flat[:, :self._img_flat_dim].reshape(
+            obs_flat.shape[0], self.img_height, self.img_width, self.num_channels
+        )
+        feature_maps = ResNetEncoder(
+            num_blocks=self.conv_num_blocks,
+            filters=self.conv_filters,
+            kernel_size=self.conv_kernel_size,
+            stride=self.conv_stride,
+            padding=self.conv_padding,
+            name="resnet_encoder",
+        )(image)
+        feature_embed = feature_maps.mean(axis=(1, 2))
+
+        attn_map, spread_loss, gaze_stats = GaussianGazeHead(
+            feat_h=self.feat_h,
+            feat_w=self.feat_w,
+            hidden_dim=self.gaze_hidden_dim,
+            name="gaze_head",
+        )(feature_maps)
+
+        weighted = feature_maps * attn_map[..., None]
+        weighted_flat = weighted.reshape(weighted.shape[0], -1)
+        contrastive_repr = nn.Dense(
+            self.contrastive_dim,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="contrastive_proj",
+        )(weighted_flat)
+        contrastive_repr = nn.tanh(contrastive_repr)
+
+        lstm_input = nn.relu(nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="input_fc1",
+        )(weighted_flat))
+        lstm_input = nn.relu(nn.Dense(
+            self.fc_hidden_dim,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="input_fc2",
+        )(lstm_input))
+        new_carry, lstm_out = nn.OptimizedLSTMCell(
+            features=self.lstm_hidden_dim,
+            name="shared_lstm",
+        )((lstm_h, lstm_c), lstm_input)
+
+        aux = {
+            "attn_map": attn_map,
+            "feature_embed": feature_embed,
+            "contrastive_repr": contrastive_repr,
+            "spread_loss": spread_loss,
+            "gaze_mu_x": gaze_stats["mu_x"],
+            "gaze_mu_y": gaze_stats["mu_y"],
+            "gaze_sigma_x": gaze_stats["sigma_x"],
+            "gaze_sigma_y": gaze_stats["sigma_y"],
+        }
+        return new_carry, (lstm_out, aux)
+
+    @staticmethod
+    def initialize_carry(batch_size, hidden_size):
+        return (
+            jnp.zeros((batch_size, hidden_size)),
+            jnp.zeros((batch_size, hidden_size)),
+        )
+
+
 class GazeImageActorCritic(nn.Module):
     """Shared-trunk image actor-critic with Gaussian gaze."""
     action_dim: int
@@ -150,43 +262,6 @@ class GazeImageActorCritic(nn.Module):
             self.conv_kernel_size,
             self.conv_padding,
             self.conv_num_blocks,
-        )
-
-        self.encoder = ResNetEncoder(
-            num_blocks=self.conv_num_blocks,
-            filters=self.conv_filters,
-            kernel_size=self.conv_kernel_size,
-            stride=self.conv_stride,
-            padding=self.conv_padding,
-            name="resnet_encoder",
-        )
-        self.gaze_head = GaussianGazeHead(
-            feat_h=self.feat_h,
-            feat_w=self.feat_w,
-            hidden_dim=self.gaze_hidden_dim,
-            name="gaze_head",
-        )
-        self.input_fc1 = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="input_fc1",
-        )
-        self.input_fc2 = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="input_fc2",
-        )
-        self.contrastive_proj = nn.Dense(
-            self.contrastive_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="contrastive_proj",
-        )
-        self.lstm_cell = nn.OptimizedLSTMCell(
-            features=self.lstm_hidden_dim,
-            name="shared_lstm",
         )
         self.actor_fc1 = nn.Dense(
             self.fc_hidden_dim,
@@ -225,59 +300,23 @@ class GazeImageActorCritic(nn.Module):
             name="critic_proj",
         )
 
-    def _encode_obs(self, obs_flat: jnp.ndarray):
-        image = obs_flat[:, :self._img_flat_dim].reshape(
-            obs_flat.shape[0], self.img_height, self.img_width, self.num_channels
-        )
-        feature_maps = self.encoder(image)
-        feature_embed = feature_maps.mean(axis=(1, 2))
-        return feature_maps, feature_embed
-
-    def _apply_gaze(self, feature_maps: jnp.ndarray):
-        attn_map, spread_loss, gaze_stats = self.gaze_head(feature_maps)
-        weighted = feature_maps * attn_map[..., None]
-        weighted_flat = weighted.reshape(weighted.shape[0], -1)
-        contrastive_repr = self.contrastive_proj(weighted_flat)
-        contrastive_repr = nn.tanh(contrastive_repr)
-        return weighted_flat, contrastive_repr, attn_map, spread_loss, gaze_stats
-
-    def _rollout_step(self, carry, xs):
-        lstm_h, lstm_c = carry
-        obs_flat, dones = xs
-        batch_size = obs_flat.shape[0]
-
-        zero_h = jnp.zeros((batch_size, self.lstm_hidden_dim), dtype=obs_flat.dtype)
-        zero_c = jnp.zeros((batch_size, self.lstm_hidden_dim), dtype=obs_flat.dtype)
-        lstm_h = jnp.where(dones[:, None], zero_h, lstm_h)
-        lstm_c = jnp.where(dones[:, None], zero_c, lstm_c)
-
-        feature_maps, feature_embed = self._encode_obs(obs_flat)
-        weighted_flat, contrastive_repr, attn_map, spread_loss, gaze_stats = self._apply_gaze(feature_maps)
-
-        lstm_input = nn.relu(self.input_fc1(weighted_flat))
-        lstm_input = nn.relu(self.input_fc2(lstm_input))
-        new_carry, lstm_out = self.lstm_cell((lstm_h, lstm_c), lstm_input)
-
-        aux = {
-            "attn_map": attn_map,
-            "feature_embed": feature_embed,
-            "contrastive_repr": contrastive_repr,
-            "spread_loss": spread_loss,
-            "gaze_mu_x": gaze_stats["mu_x"],
-            "gaze_mu_y": gaze_stats["mu_y"],
-            "gaze_sigma_x": gaze_stats["sigma_x"],
-            "gaze_sigma_y": gaze_stats["sigma_y"],
-        }
-        return new_carry, (lstm_out, aux)
-
     def __call__(self, hidden, x):
         obs, dones, avail_actions = x
-        carry = hidden
-        (new_h, new_c), (lstm_out, aux) = jax.lax.scan(
-            self._rollout_step,
-            carry,
-            (obs, dones),
-        )
+        (new_h, new_c), (lstm_out, aux) = GazeImageScannedLSTM(
+            img_height=self.img_height,
+            img_width=self.img_width,
+            num_channels=self.num_channels,
+            conv_filters=self.conv_filters,
+            conv_num_blocks=self.conv_num_blocks,
+            conv_kernel_size=self.conv_kernel_size,
+            conv_stride=self.conv_stride,
+            conv_padding=self.conv_padding,
+            fc_hidden_dim=self.fc_hidden_dim,
+            lstm_hidden_dim=self.lstm_hidden_dim,
+            gaze_hidden_dim=self.gaze_hidden_dim,
+            contrastive_dim=self.contrastive_dim,
+            name="gaze_lstm",
+        )(hidden, (obs, dones))
 
         actor_out = nn.relu(self.actor_fc1(lstm_out))
         actor_out = nn.relu(self.actor_fc2(actor_out))
@@ -292,9 +331,33 @@ class GazeImageActorCritic(nn.Module):
         return (new_h, new_c), pi, jnp.squeeze(value, axis=-1), aux
 
     def contrastive_features(self, obs: jnp.ndarray):
-        feature_maps, _ = self._encode_obs(obs)
+        image = obs[:, :self._img_flat_dim].reshape(
+            obs.shape[0], self.img_height, self.img_width, self.num_channels
+        )
+        feature_maps = ResNetEncoder(
+            num_blocks=self.conv_num_blocks,
+            filters=self.conv_filters,
+            kernel_size=self.conv_kernel_size,
+            stride=self.conv_stride,
+            padding=self.conv_padding,
+            name="resnet_encoder",
+        )(image)
         feature_maps = jax.lax.stop_gradient(feature_maps)
-        _, contrastive_repr, attn_map, spread_loss, gaze_stats = self._apply_gaze(feature_maps)
+        attn_map, spread_loss, gaze_stats = GaussianGazeHead(
+            feat_h=self.feat_h,
+            feat_w=self.feat_w,
+            hidden_dim=self.gaze_hidden_dim,
+            name="gaze_head",
+        )(feature_maps)
+        weighted = feature_maps * attn_map[..., None]
+        weighted_flat = weighted.reshape(weighted.shape[0], -1)
+        contrastive_repr = nn.Dense(
+            self.contrastive_dim,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="contrastive_proj",
+        )(weighted_flat)
+        contrastive_repr = nn.tanh(contrastive_repr)
         return {
             "contrastive_repr": contrastive_repr,
             "attn_map": attn_map,
