@@ -300,6 +300,7 @@ class GazeImageActorCritic(nn.Module):
             name="critic_proj",
         )
 
+    @nn.compact
     def __call__(self, hidden, x):
         obs, dones, avail_actions = x
         (new_h, new_c), (lstm_out, aux) = GazeImageScannedLSTM(
