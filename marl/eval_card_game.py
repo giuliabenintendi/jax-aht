@@ -155,7 +155,8 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             continue
 
         n_steps = min(len(maps_0), len(maps_1))
-        es0 = ep_states[0].env_state
+        from envs.card_game.rendering import _unwrap_card_game_state
+        es0 = _unwrap_card_game_state(ep_states[0])
         is_flip_game = hasattr(es0, 'revealed_0')
 
         if hasattr(es0, 'card_permutation') and not hasattr(es0, 'card_positions'):
@@ -171,7 +172,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
 
         for t in range(n_steps):
             if is_flip_game:
-                es_t = ep_states[t].env_state
+                es_t = _unwrap_card_game_state(ep_states[t])
                 img_0 = np.array(render_card_game(es_t.card_permutation, revealed=es_t.revealed_0))
                 img_1 = np.array(render_card_game(es_t.card_permutation, revealed=es_t.revealed_1))
                 base_up_0 = np.array(Image.fromarray(img_0).resize(
@@ -200,7 +201,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             if t == n_steps - 1 and last_action[0] >= 0:
                 choice_0 = last_action[0] - 5 if last_action[0] >= 5 else last_action[0]
                 choice_1 = last_action[1] - 5 if last_action[1] >= 5 else last_action[1]
-                es_ep = ep_states[0].env_state
+                es_ep = _unwrap_card_game_state(ep_states[0])
                 if hasattr(es_ep, 'card_positions'):
                     _cp = np.array(es_ep.card_positions)
                     r0, c0 = int(_cp[choice_0][0]), int(_cp[choice_0][1])
