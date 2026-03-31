@@ -3,6 +3,7 @@
 This is a pragmatic adaptation of "Gaze on the Prize" for the current
 parameter-shared PPO codepath and is scoped to image observations.
 """
+import os
 import shutil
 from typing import NamedTuple
 
@@ -16,11 +17,11 @@ from flax.training.train_state import TrainState
 from agents.initialize_agents import initialize_gaze_image_agent, _get_image_dims
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence
-from common.plot_utils import get_stats, get_metric_names
+from common.plot_utils import get_stats, get_metric_names, plot_seed_aggregate
 from common.save_load_utils import save_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
-from marl.eval_card_game import _log_card_game_attention_grid
+from marl.eval_logging import log_greedy_eval, log_eval_video
 from marl.ppo_utils import batchify, unbatchify
 
 
@@ -35,6 +36,7 @@ class GazeTransition(NamedTuple):
     avail_actions: jnp.ndarray
     feature_embed: jnp.ndarray
     gaze_reward: jnp.ndarray
+    raw_env_reward: jnp.ndarray
 
 
 class ContrastiveBufferState(NamedTuple):
@@ -287,6 +289,7 @@ def make_train(config, env):
                     avail_actions_batch,
                     feature_embed,
                     r_gaze_batch,
+                    reward_batch,
                 )
                 if feed_other_attn:
                     new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
@@ -514,9 +517,16 @@ def make_train(config, env):
                 valid_triplet_frac,
             )), grad_norm = loss_info
 
+            gaze_rew_0 = traj_batch.gaze_reward[:, :num_envs]
+            jsd_values = -gaze_rew_0
+
             metric = traj_batch.info
             metric["update_steps"] = update_steps
             metric["gaze_beta"] = gaze_beta
+            metric["jsd_mean"] = jsd_values.mean()
+            metric["gaze_reward_mean"] = gaze_rew_0.mean()
+            metric["raw_env_reward_mean"] = traj_batch.raw_env_reward[:, :num_envs].mean()
+            metric["combined_reward_mean"] = traj_batch.reward[:, :num_envs].mean()
             metric["loss_total"] = total_loss.mean()
             metric["loss_value"] = value_loss.mean()
             metric["loss_policy"] = policy_loss.mean()
@@ -526,7 +536,6 @@ def make_train(config, env):
             metric["triplet_valid_frac"] = valid_triplet_frac.mean()
             metric["grad_norm"] = grad_norm.mean()
             metric["value_mean"] = traj_batch.value.mean()
-            metric["gaze_reward_mean"] = traj_batch.gaze_reward.mean()
             metric["contrastive_buffer_size"] = buffer_state.size.astype(jnp.float32)
 
             rng = update_state[-1]
@@ -589,120 +598,149 @@ def run_gaze_ippo(config, logger):
 
     print("[gaze_ippo] Training complete.")
     out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
-    log_eval_video(algorithm_config, env, out, logger)
+
     log_metrics(config, out, logger)
+    _gaze_init = lambda cfg, e, r: initialize_gaze_image_agent(cfg, e, r)
+    log_greedy_eval(algorithm_config, env, out, logger, init_fn=_gaze_init)
+    log_eval_video(algorithm_config, env, out, logger, init_fn=_gaze_init)
     return out
 
 
-def log_eval_video(algorithm_config, env, out, logger):
-    import os
-    from moviepy import ImageSequenceClip
-    from envs.card_game.rendering import render_card_game_eval_frames
-    from evaluation.vis_episodes import run_episode_with_states
-
-    rng = jax.random.PRNGKey(0)
-    policy, _ = initialize_gaze_image_agent(algorithm_config, env, rng)
-    final_params = jax.tree.map(lambda x: x[0], out["final_params"])
-    inner_env = env._env
-
-    max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
-    feed_attn_dims = None
-    if algorithm_config.get("FEED_OTHER_ATTN", False):
-        ev_img_h, ev_img_w, _ = _get_image_dims(inner_env)
-        ev_feat_h, ev_feat_w = _compute_resnet_output_dims(
-            ev_img_h, ev_img_w,
-            stride=algorithm_config.get("CONV_STRIDE", 2),
-            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
-            padding=algorithm_config.get("CONV_PADDING", "SAME"),
-            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
-        )
-        feed_attn_dims = (ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
-    ep_states, attn_data, ep_actions, ep_messages = run_episode_with_states(
-        jax.random.PRNGKey(42),
-        inner_env,
-        final_params,
-        policy,
-        final_params,
-        policy,
-        max_steps,
-        collect_attention=True,
-        feed_other_attn_dims=feed_attn_dims,
-    )
-
-    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    video_dir = f"{savedir}/videos"
-    os.makedirs(video_dir, exist_ok=True)
-
-    env_name = algorithm_config["ENV_NAME"]
-    if env_name == "card-game":
-        frames = render_card_game_eval_frames(ep_states, scale=32)
-        video_path = f"{video_dir}/eval_final.mp4"
-        clip = ImageSequenceClip(frames, fps=10)
-        clip.write_videofile(video_path, fps=10, codec="libx264", audio=False,
-                             bitrate="8000k", preset="slow")
-        logger.log_video("Eval/episode_video", video_path, commit=False)
-        _log_card_game_attention_grid(
-            frames,
-            attn_data,
-            ep_actions,
-            "Eval",
-            video_dir,
-            logger,
-            ep_messages=ep_messages,
-            card_permutation=np.array(ep_states[0].env_state.card_permutation),
-        )
-
-
 def log_metrics(config, out, logger):
+    """Save train run output, export CSV, and log mean+/-std to wandb."""
+    import csv
+
     train_metrics = out["metrics"]
     metric_names = get_metric_names(config["ENV_NAME"])
     train_stats = get_stats(train_metrics, metric_names)
-    train_stats = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
 
+    algorithm_config = dict(config.algorithm)
+    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    rollout_length = int(algorithm_config["ROLLOUT_LENGTH"])
+    num_envs = int(algorithm_config["NUM_ENVS"])
+
+    # Save mean+/-std training curve PNGs
+    plot_seed_aggregate(
+        train_stats,
+        num_rollout_steps=rollout_length,
+        num_envs=num_envs,
+        savedir=savedir,
+        savename="train_curve",
+    )
+    import wandb as _wandb
+    for name in train_stats:
+        png_path = os.path.join(savedir, f"train_curve_{name}.png")
+        if os.path.exists(png_path):
+            logger.log_item(f"Plots/train_curve_{name}", _wandb.Image(png_path), commit=False)
+
+    num_seeds = train_metrics["returned_episode"].shape[0]
+    num_updates = train_metrics["returned_episode"].shape[1]
+
+    # Compute cross-seed mean and std from per-seed means
+    # train_stats[k] shape: (num_seeds, num_updates, 2) where [:,:,0] = per-seed mean
+    episode_stats_mean = {}
+    for k, v in train_stats.items():
+        v_arr = np.array(v)
+        seed_means = v_arr[:, :, 0]
+        episode_stats_mean[k] = np.stack([
+            seed_means.mean(axis=0),
+            seed_means.std(axis=0),
+        ], axis=-1)
+
+    # Scalar metrics: (metric_key, wandb_name) — matching JA-IPPO panel layout
     scalar_keys = [
-        ("loss_total", "Losses"),
-        ("loss_value", "Losses"),
-        ("loss_policy", "Losses"),
-        ("entropy", "Losses"),
-        ("loss_contrastive", "Losses"),
-        ("loss_spread", "Losses"),
-        ("gaze_reward_mean", "Diagnostics"),
-        ("gaze_beta", "Diagnostics"),
-        ("triplet_valid_frac", "Diagnostics"),
-        ("contrastive_buffer_size", "Diagnostics"),
-        ("grad_norm", "Diagnostics"),
-        ("value_mean", "Values"),
+        ("gaze_beta",              "JA/beta"),
+        ("jsd_mean",               "JA/jsd"),
+        ("raw_env_reward_mean",    "Reward/env_raw"),
+        ("combined_reward_mean",   "Reward/combined_raw"),
+        ("loss_total",             "Loss/total"),
+        ("loss_value",             "Loss/value"),
+        ("loss_policy",            "Loss/policy"),
+        ("entropy",                "Loss/entropy"),
+        ("loss_contrastive",       "Loss/contrastive"),
+        ("loss_spread",            "Loss/spread"),
+        ("grad_norm",              "Loss/grad_norm"),
+        ("value_mean",             "Value/mean"),
+        ("triplet_valid_frac",     "Contrastive/valid_triplet_frac"),
+        ("contrastive_buffer_size","Contrastive/buffer_size"),
     ]
 
-    scalar_data = {}
+    scalar_mean = {}
+    scalar_std = {}
     for key, _ in scalar_keys:
         if key in train_metrics:
-            scalar_data[key] = np.mean(np.array(train_metrics[key]), axis=0)
+            vals = np.array(train_metrics[key])
+            scalar_mean[key] = np.mean(vals, axis=0)
+            scalar_std[key] = np.std(vals, axis=0)
 
-    num_updates = train_metrics["returned_episode"].shape[1]
+    # --- Export CSV ---
+    csv_header = ["update", "timestep"]
+    for name in metric_names:
+        csv_header.extend([f"{name}_mean", f"{name}_std"])
+    for key, _ in scalar_keys:
+        if key in scalar_mean:
+            csv_header.extend([f"{key}_mean", f"{key}_std"])
+
+    csv_path = os.path.join(savedir, "train_stats.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(csv_header)
+        for step in range(num_updates):
+            row = [step, (step + 1) * rollout_length * num_envs]
+            for name in metric_names:
+                stat_data = np.array(train_stats[name])
+                seed_means = stat_data[:, step, 0]
+                row.extend([float(seed_means.mean()), float(seed_means.std())])
+            for key, _ in scalar_keys:
+                if key in scalar_mean:
+                    row.extend([float(scalar_mean[key][step]), float(scalar_std[key][step])])
+            writer.writerow(row)
+
+    print(f"[gaze_ippo] CSV: {csv_path} ({num_updates} updates, {num_seeds} seeds, {len(csv_header)} cols)")
+    _wandb.save(csv_path, base_path=savedir)
+
+    # --- Log to wandb ---
     print_interval = max(1, num_updates // 20)
 
     for step in range(num_updates):
-        for stat_name, stat_data in train_stats.items():
-            logger.log_item(f"Train/{stat_name}", stat_data[step, 0], train_step=step, commit=False)
-        for key, prefix in scalar_keys:
-            if key in scalar_data:
-                logger.log_item(f"{prefix}/{key}", float(scalar_data[key][step]),
+        # Episode metrics
+        for stat_name, stat_data in episode_stats_mean.items():
+            logger.log_item(f"Train/{stat_name}_mean", stat_data[step, 0], train_step=step, commit=False)
+            if num_seeds > 1:
+                logger.log_item(f"Train/{stat_name}_std", stat_data[step, 1], train_step=step, commit=False)
+
+        # Scalar metrics
+        for key, wandb_name in scalar_keys:
+            if key in scalar_mean:
+                logger.log_item(f"{wandb_name}/mean", float(scalar_mean[key][step]),
                                 train_step=step, commit=False)
+                if num_seeds > 1:
+                    logger.log_item(f"{wandb_name}/std", float(scalar_std[key][step]),
+                                    train_step=step, commit=False)
+
+        # Per-seed curves for cross-seed analysis
+        for stat_name in train_stats:
+            stat_data = np.array(train_stats[stat_name])
+            for seed_idx in range(num_seeds):
+                logger.log_item(f"Seeds/{stat_name}/seed_{seed_idx}",
+                                float(stat_data[seed_idx, step, 0]),
+                                train_step=step, commit=False)
+
         logger.log({}, step=step, commit=True)
 
         if step % print_interval == 0 or step == num_updates - 1:
-            env_steps = (step + 1) * int(config.algorithm["ROLLOUT_LENGTH"]) * int(config.algorithm["NUM_ENVS"])
+            env_steps = (step + 1) * rollout_length * num_envs
             pct = (step + 1) / num_updates * 100
-            ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in train_stats.items())
-            c_loss = float(scalar_data.get("loss_contrastive", np.zeros(num_updates))[step])
-            valid = float(scalar_data.get("triplet_valid_frac", np.zeros(num_updates))[step])
+            ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in episode_stats_mean.items())
+            jsd = float(scalar_mean.get("jsd_mean", np.zeros(num_updates))[step])
+            beta = float(scalar_mean.get("gaze_beta", np.zeros(num_updates))[step])
+            loss = float(scalar_mean.get("loss_total", np.zeros(num_updates))[step])
+            grad = float(scalar_mean.get("grad_norm", np.zeros(num_updates))[step])
             print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  "
-                  f"{ret_str}  contrastive={c_loss:.4f}  valid_triplets={valid:.2f}")
+                  f"{ret_str}  jsd={jsd:.4f}  beta={beta:.4f}  loss={loss:.4f}  grad={grad:.3f}")
 
     logger.commit()
 
-    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     out_savepath = save_train_run(out, savedir, savename="saved_train_run")
     if config["logger"]["log_train_out"]:
         logger.log_artifact(name="saved_train_run", path=out_savepath, type_name="train_run")

@@ -17,11 +17,12 @@ def _get_obs_type(config):
     return config.get("OBS_TYPE", config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
 
 
-def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
+def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn=None):
     """Run greedy and stochastic eval episodes, print per-episode and summary stats."""
     import wandb
-    obs_type = _get_obs_type(algorithm_config)
-    init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
+    if init_fn is None:
+        obs_type = _get_obs_type(algorithm_config)
+        init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
     rng = jax.random.PRNGKey(0)
     policy, _ = init_fn(algorithm_config, env, rng)
 
@@ -150,7 +151,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64):
     logger.log({}, commit=True)
 
 
-def log_eval_video(algorithm_config, env, out, logger):
+def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
     """Run eval episodes for all seeds, log videos + attention to wandb."""
     from evaluation.vis_episodes import (
         run_episode_with_states, log_attention_to_wandb, make_attention_video,
@@ -159,8 +160,9 @@ def log_eval_video(algorithm_config, env, out, logger):
 
     env_name = algorithm_config["ENV_NAME"]
 
-    obs_type = _get_obs_type(algorithm_config)
-    init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
+    if init_fn is None:
+        obs_type = _get_obs_type(algorithm_config)
+        init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
 
     # Reconstruct policy (same for both agents -- shared params)
     rng = jax.random.PRNGKey(0)
