@@ -10,6 +10,7 @@ nohup bash -c "
 # 1. ja_ippo shared params, no comm, no feed_attn
 echo \"[\$(date +%H:%M)] OP ja_ippo no-comm\"
 ./run_gpu.sh $GPU marl.run -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
+  algorithm.NUM_SEEDS=5 \
   algorithm.TOTAL_TIMESTEPS=1e6 \
   algorithm.JA_BETA_MAX=0.0 \
   algorithm.FEED_OTHER_ATTN=false \
