@@ -331,6 +331,7 @@ class GazeImageActorCritic(nn.Module):
 
         return (new_h, new_c), pi, jnp.squeeze(value, axis=-1), aux
 
+    @nn.compact
     def contrastive_features(self, obs: jnp.ndarray):
         image = obs[:, :self._img_flat_dim].reshape(
             obs.shape[0], self.img_height, self.img_width, self.num_channels
