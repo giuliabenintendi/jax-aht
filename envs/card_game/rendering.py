@@ -144,6 +144,14 @@ def _draw_choice_border(img, card_pos, color, thickness=2):
     return img
 
 
+def _unwrap_card_game_state(state):
+    """Walk .env_state chain to find the base CardGameState."""
+    s = state
+    while hasattr(s, 'env_state') and not hasattr(s, 'card_permutation'):
+        s = s.env_state
+    return s
+
+
 def render_card_game_eval_frames(ep_states, scale: int = 32):
     """Render upscaled RGB frames from a list of episode WrappedEnvStates.
 
@@ -152,6 +160,7 @@ def render_card_game_eval_frames(ep_states, scale: int = 32):
 
     Args:
         ep_states: list of WrappedEnvState (from run_episode_with_states).
+            Also works when other-play wrappers add extra nesting.
         scale: upscale factor (nearest-neighbor) for video quality.
 
     Returns:
@@ -166,7 +175,8 @@ def render_card_game_eval_frames(ep_states, scale: int = 32):
 
     frames = []
     for state in ep_states:
-        img = render_card_game(state.env_state.card_permutation)
+        inner = _unwrap_card_game_state(state)
+        img = render_card_game(inner.card_permutation)
         img_np = np.array(img)
         h, w = img_np.shape[:2]
         pil_img = Image.fromarray(img_np).resize(
@@ -174,8 +184,8 @@ def render_card_game_eval_frames(ep_states, scale: int = 32):
         )
         frame = np.array(pil_img)
 
-        choices = np.array(state.env_state.agent_choices)
-        perm = np.array(state.env_state.card_permutation)
+        choices = np.array(inner.agent_choices)
+        perm = np.array(inner.card_permutation)
         if choices[0] >= 0:
             # Find position of chosen color
             pos_0 = int(np.where(perm == choices[0])[0][0])

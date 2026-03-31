@@ -270,9 +270,10 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             # Card game: 2xT grid image + multi-episode video
             # Pass card layout for border drawing
             import numpy as _np
+            from envs.card_game.rendering import _unwrap_card_game_state
             _card_pos = None
             _card_perm = None
-            es0 = ep_states[0].env_state
+            es0 = _unwrap_card_game_state(ep_states[0])
             if hasattr(es0, 'card_positions'):
                 _card_pos = _np.array(es0.card_positions)
             if hasattr(es0, 'card_permutation'):
