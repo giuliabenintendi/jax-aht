@@ -424,20 +424,20 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
     jsd_ep_means = jsd_matrix.mean(axis=-1)
     sp_jsd = np.diag(jsd_ep_means).mean()
     xp_jsd_m, xp_jsd_s = xp_mean_and_sem(jsd_ep_means)
-    wb_run.summary["XP/sp_jsd"] = sp_jsd
-    wb_run.summary["XP/xp_jsd_mean"] = xp_jsd_m
-    wb_run.summary["XP/xp_jsd_sem"] = xp_jsd_s
+    wb_run.summary[f"{wb_prefix}/sp_jsd"] = sp_jsd
+    wb_run.summary[f"{wb_prefix}/xp_jsd_mean"] = xp_jsd_m
+    wb_run.summary[f"{wb_prefix}/xp_jsd_sem"] = xp_jsd_s
     sp_jsd_diag = np.diag(jsd_ep_means)
-    wb_run.summary["XP/sp_jsd_sem"] = np.std(sp_jsd_diag) / np.sqrt(len(sp_jsd_diag))
+    wb_run.summary[f"{wb_prefix}/sp_jsd_sem"] = np.std(sp_jsd_diag) / np.sqrt(len(sp_jsd_diag))
     if score_mean is not None:
         sp_score_diag = np.diag(score_mean)
         sp_score = sp_score_diag.mean()
         sp_score_sem = np.std(sp_score_diag) / np.sqrt(len(sp_score_diag))
         xp_score_m, xp_score_s = xp_mean_and_sem(score_mean)
-        wb_run.summary["XP/sp_score"] = sp_score
-        wb_run.summary["XP/sp_score_sem"] = sp_score_sem
-        wb_run.summary["XP/xp_score_mean"] = xp_score_m
-        wb_run.summary["XP/xp_score_sem"] = xp_score_s
+        wb_run.summary[f"{wb_prefix}/sp_score"] = sp_score
+        wb_run.summary[f"{wb_prefix}/sp_score_sem"] = sp_score_sem
+        wb_run.summary[f"{wb_prefix}/xp_score_mean"] = xp_score_m
+        wb_run.summary[f"{wb_prefix}/xp_score_sem"] = xp_score_s
 
     wandb.save(os.path.join(xp_dir, "xp_score_matrix.csv"), base_path=xp_dir)
     wandb.save(os.path.join(xp_dir, "xp_jsd_matrix.csv"), base_path=xp_dir)
@@ -449,7 +449,7 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
 
 def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                        savedir: str, task_name: str | None = None,
-                       wb_run=None, greedy_eval=True):
+                       wb_run=None, greedy_eval=True, wb_prefix="XP"):
     """Run cross-play evaluation from pre-built objects.
 
     Called either from standalone CLI or from training loops after multi-seed runs.

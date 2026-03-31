@@ -602,7 +602,7 @@ def run_ja_ippo(config, logger):
 
 
 def log_xp_eval(algorithm_config, env, out):
-    """Run cross-play evaluation when NUM_SEEDS > 1, log to active wandb run."""
+    """Run greedy and stochastic cross-play evaluation when NUM_SEEDS > 1."""
     import wandb
     from evaluation.run_xp_seeds import run_xp_from_params
 
@@ -612,11 +612,27 @@ def log_xp_eval(algorithm_config, env, out):
     policy, _ = init_fn(algorithm_config, env, rng)
 
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+
+    # Greedy XP
+    print("[xp_eval] Running greedy XP...")
     run_xp_from_params(
         env, policy, out["final_params"], algorithm_config,
         savedir=savedir,
         task_name=algorithm_config.get("ENV_NAME"),
         wb_run=wandb.run,
+        greedy_eval=True,
+        wb_prefix="XP",
+    )
+
+    # Stochastic XP
+    print("[xp_eval] Running stochastic XP...")
+    run_xp_from_params(
+        env, policy, out["final_params"], algorithm_config,
+        savedir=savedir,
+        task_name=algorithm_config.get("ENV_NAME"),
+        wb_run=wandb.run,
+        greedy_eval=False,
+        wb_prefix="XP_stoch",
     )
 
 
