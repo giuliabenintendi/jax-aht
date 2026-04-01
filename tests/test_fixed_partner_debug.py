@@ -91,7 +91,7 @@ def test_fixed_partner_debug():
 
         rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
         done = {k: jnp.zeros((1,), dtype=bool) for k in env.agents + ["__all__"]}
-        avail = env.get_avail_actions(env_state.env_state)
+        avail = env.get_avail_actions(env_state)
 
         act_0, hstate_0, attn_0 = policy.get_action_and_attention(
             params=init_params, obs=obs_0_aug.reshape(1, 1, -1),

@@ -79,7 +79,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
         prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
-    avail_actions = env.get_avail_actions(init_env_state.env_state)
+    avail_actions = env.get_avail_actions(init_env_state)
     avail_actions = jax.lax.stop_gradient(avail_actions)
     avail_actions_0 = avail_actions["agent_0"].astype(jnp.float32)
     avail_actions_1 = avail_actions["agent_1"].astype(jnp.float32)
@@ -148,7 +148,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
              hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
              prev_a0, prev_a1) = carry_step
 
-            avail_actions = env.get_avail_actions(env_state.env_state)
+            avail_actions = env.get_avail_actions(env_state)
             avail_actions = jax.lax.stop_gradient(avail_actions)
             avail_actions_0 = avail_actions["agent_0"].astype(jnp.float32)
             avail_actions_1 = avail_actions["agent_1"].astype(jnp.float32)

@@ -112,7 +112,7 @@ def test_attention_filtering():
 
         rng, rng0, step_rng = jax.random.split(rng, 3)
         done = {k: jnp.zeros((1,), dtype=bool) for k in env.agents + ["__all__"]}
-        avail = env.get_avail_actions(env_state.env_state)
+        avail = env.get_avail_actions(env_state)
 
         _, hstate, attn = policy.get_action_and_attention(
             params=params, obs=obs_aug.reshape(1, 1, -1),
