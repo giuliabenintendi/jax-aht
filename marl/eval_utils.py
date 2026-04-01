@@ -53,7 +53,7 @@ def _draw_decision_square(cell, scale):
 
 def _draw_timestep_label(cell, timestep, decision=False):
     """Draw a timestep label on a visualization cell/frame."""
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFont
     import numpy as np
 
     img = Image.fromarray(cell)
@@ -62,6 +62,20 @@ def _draw_timestep_label(cell, timestep, decision=False):
     if decision:
         label += " D"
 
-    draw.rectangle((4, 4, 64, 20), fill=(255, 255, 255))
-    draw.text((8, 6), label, fill=(0, 0, 0))
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", size=20)
+    except OSError:
+        font = ImageFont.load_default()
+
+    x0, y0 = 6, 6
+    bbox = draw.textbbox((x0, y0), label, font=font)
+    pad_x, pad_y = 8, 6
+    rect = (
+        bbox[0] - pad_x,
+        bbox[1] - pad_y,
+        bbox[2] + pad_x,
+        bbox[3] + pad_y,
+    )
+    draw.rectangle(rect, fill=(255, 255, 255))
+    draw.text((x0, y0), label, fill=(0, 0, 0), font=font, stroke_width=1)
     cell[:] = np.array(img)
