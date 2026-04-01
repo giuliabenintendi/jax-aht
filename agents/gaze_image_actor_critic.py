@@ -227,8 +227,8 @@ class GazeImageScannedLSTM(nn.Module):
         feature_embed = feature_maps.mean(axis=(1, 2))
         attn_map, spread_loss, gaze_stats = self.gaze_head(feature_maps)
         weighted = feature_maps * attn_map[..., None]
-        weighted_flat = weighted.reshape(weighted.shape[0], -1)
-        contrastive_repr = self.contrastive_proj(weighted_flat)
+        weighted_pool = weighted.sum(axis=(1, 2))
+        contrastive_repr = self.contrastive_proj(weighted_pool)
         contrastive_repr = nn.tanh(contrastive_repr)
 
         aux = {
@@ -242,7 +242,7 @@ class GazeImageScannedLSTM(nn.Module):
             "gaze_sigma_y": gaze_stats["sigma_y"],
             "gaze_rho": gaze_stats["rho"],
         }
-        return weighted_flat, aux
+        return weighted_pool, aux
 
     @functools.partial(
         nn.scan,
