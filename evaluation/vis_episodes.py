@@ -218,7 +218,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         # Take step in environment (joint action encodes card choice + message)
         both_actions = [act_0, act_1]
         env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
-        render_act = _action_to_ground_truth(env, state, env_act)
+        render_act = _action_to_ground_truth(env, env_state, env_act)
         obs, env_state, reward, done, info = env.step(step_rng, env_state, env_act)
 
         # Add state and actions to the lists for rendering
@@ -857,4 +857,3 @@ if __name__ == "__main__":
         max_episode_steps=100 if env_name == "lbf" or env_name == "lbf-reward-shaping" else 400, num_eps=1, 
         savevideo=True, 
         save_dir=f"results/{env_name}/videos/", save_name="ego-vs-ego-test")
-
