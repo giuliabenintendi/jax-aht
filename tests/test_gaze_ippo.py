@@ -89,6 +89,7 @@ def test_gaze_train_loop_card_game():
         "CONTRASTIVE_BUFFER_CAPACITY": 64,
         "CONTRASTIVE_TOP_K": 4,
         "CONTRASTIVE_NUM_ANCHORS": 4,
+        "CONTRASTIVE_MICROBATCH_SIZE": 2,
         "CONTRASTIVE_RETURN_MARGIN": 0.0,
         "CONTRASTIVE_TRIPLET_MARGIN": 0.2,
         "CONTRASTIVE_WEIGHT": 0.1,

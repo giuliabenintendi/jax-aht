@@ -142,6 +142,13 @@ def make_train(config, env):
         config.get("CONTRASTIVE_NUM_ANCHORS", 128),
         config["ROLLOUT_LENGTH"] * num_actors,
     )
+    contrastive_microbatch_size = max(
+        1,
+        min(config.get("CONTRASTIVE_MICROBATCH_SIZE", 32), num_anchors),
+    )
+    contrastive_num_chunks = int(
+        np.ceil(num_anchors / contrastive_microbatch_size)
+    )
     return_margin = config.get("CONTRASTIVE_RETURN_MARGIN", 0.0)
     triplet_margin = config.get("CONTRASTIVE_TRIPLET_MARGIN", 0.2)
     attn_weight = config.get("CONTRASTIVE_WEIGHT", 0.1)
@@ -198,6 +205,30 @@ def make_train(config, env):
         return runner_state, policy
 
     def make_step_fn(policy):
+        def _chunked_contrastive_features(params, obs_batch):
+            """Run contrastive encodes in smaller chunks to avoid GPU conv spikes."""
+            if contrastive_num_chunks == 1:
+                return policy.get_contrastive_features(params, obs_batch)
+
+            batch_size = obs_batch.shape[0]
+            total_size = contrastive_num_chunks * contrastive_microbatch_size
+            pad = total_size - batch_size
+            obs_batch = jnp.pad(obs_batch, ((0, pad), (0, 0)))
+            obs_chunks = obs_batch.reshape(
+                contrastive_num_chunks,
+                contrastive_microbatch_size,
+                obs_batch.shape[-1],
+            )
+
+            def _encode_chunk(_, obs_chunk):
+                return None, policy.get_contrastive_features(params, obs_chunk)
+
+            _, aux_chunks = jax.lax.scan(_encode_chunk, None, obs_chunks)
+            return jax.tree.map(
+                lambda x: x.reshape((total_size,) + x.shape[2:])[:batch_size],
+                aux_chunks,
+            )
+
         def _augment_obs_with_attn(obs_batch, prev_other_attn):
             """Append upsampled partner gaze as a 4th image channel."""
             rgb = obs_batch.reshape(num_actors, img_h, img_w, 3)
@@ -399,9 +430,9 @@ def make_train(config, env):
                 pos_obs = buffer_state.obs[pos_idx]
                 neg_obs = buffer_state.obs[neg_idx]
 
-                anchor_aux = policy.get_contrastive_features(params, anchor_obs)
-                pos_aux = policy.get_contrastive_features(params, pos_obs)
-                neg_aux = policy.get_contrastive_features(params, neg_obs)
+                anchor_aux = _chunked_contrastive_features(params, anchor_obs)
+                pos_aux = _chunked_contrastive_features(params, pos_obs)
+                neg_aux = _chunked_contrastive_features(params, neg_obs)
 
                 d_ap = 1.0 - _cosine_similarity(
                     anchor_aux["contrastive_repr"], pos_aux["contrastive_repr"]
