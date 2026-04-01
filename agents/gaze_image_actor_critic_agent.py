@@ -25,10 +25,12 @@ class GazeImageActorCriticPolicy(AgentPolicy):
         fc_hidden_dim: int = 64,
         lstm_hidden_dim: int = 64,
         gaze_hidden_dim: int = 64,
+        gaze_spatial_basis_depth: int = 8,
+        gaze_conv_dim: int = 16,
         contrastive_dim: int = 128,
         num_channels: int = 3,
-        target_sigma_x: float = 0.30,
-        target_sigma_y: float = 0.30,
+        target_sigma_x: float = 0.20,
+        target_sigma_y: float = 0.20,
     ):
         super().__init__(action_dim, obs_dim)
         self.img_height = img_height
@@ -46,6 +48,8 @@ class GazeImageActorCriticPolicy(AgentPolicy):
             fc_hidden_dim=fc_hidden_dim,
             lstm_hidden_dim=lstm_hidden_dim,
             gaze_hidden_dim=gaze_hidden_dim,
+            gaze_spatial_basis_depth=gaze_spatial_basis_depth,
+            gaze_conv_dim=gaze_conv_dim,
             contrastive_dim=contrastive_dim,
             num_channels=num_channels,
             target_sigma_x=target_sigma_x,

@@ -37,6 +37,10 @@ class GazeTransition(NamedTuple):
     feature_embed: jnp.ndarray
     gaze_reward: jnp.ndarray
     raw_env_reward: jnp.ndarray
+    gaze_mu_x: jnp.ndarray
+    gaze_mu_y: jnp.ndarray
+    gaze_sigma_x: jnp.ndarray
+    gaze_sigma_y: jnp.ndarray
 
 
 class ContrastiveBufferState(NamedTuple):
@@ -321,6 +325,10 @@ def make_train(config, env):
                     feature_embed,
                     r_gaze_batch,
                     reward_batch,
+                    aux["gaze_mu_x"].squeeze(0),
+                    aux["gaze_mu_y"].squeeze(0),
+                    aux["gaze_sigma_x"].squeeze(0),
+                    aux["gaze_sigma_y"].squeeze(0),
                 )
                 if feed_other_attn:
                     new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
@@ -556,6 +564,13 @@ def make_train(config, env):
             metric["gaze_beta"] = gaze_beta
             metric["jsd_mean"] = jsd_values.mean()
             metric["gaze_reward_mean"] = gaze_rew_0.mean()
+            metric["gaze_mu_x_mean"] = traj_batch.gaze_mu_x.mean()
+            metric["gaze_mu_y_mean"] = traj_batch.gaze_mu_y.mean()
+            metric["gaze_mu_abs_mean"] = (
+                jnp.abs(traj_batch.gaze_mu_x) + jnp.abs(traj_batch.gaze_mu_y)
+            ).mean() / 2.0
+            metric["gaze_sigma_x_mean"] = traj_batch.gaze_sigma_x.mean()
+            metric["gaze_sigma_y_mean"] = traj_batch.gaze_sigma_y.mean()
             metric["raw_env_reward_mean"] = traj_batch.raw_env_reward[:, :num_envs].mean()
             metric["combined_reward_mean"] = traj_batch.reward[:, :num_envs].mean()
             metric["loss_total"] = total_loss.mean()

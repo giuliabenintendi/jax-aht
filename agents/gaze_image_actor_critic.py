@@ -22,6 +22,7 @@ import numpy as np
 
 from agents.action_masking import mask_action_logits
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
+from agents.ja_utils import make_sinusoidal_spatial_basis
 from agents.resnet_encoder import ResNetEncoder
 
 
@@ -64,22 +65,43 @@ class GaussianGazeHead(nn.Module):
 
     feat_h: int
     feat_w: int
+    spatial_basis_depth: int = 8
+    conv_dim: int = 16
     hidden_dim: int = 64
     min_sigma: float = 0.15
     max_rho: float = 0.95
-    target_sigma_x: float = 0.45
-    target_sigma_y: float = 0.45
+    target_sigma_x: float = 0.20
+    target_sigma_y: float = 0.20
+
+    def setup(self):
+        self.spatial_basis = make_sinusoidal_spatial_basis(
+            self.feat_h, self.feat_w, self.spatial_basis_depth
+        )
 
     @nn.compact
     def __call__(self, feature_maps: jnp.ndarray):
-        pooled = feature_maps.mean(axis=(1, 2))
+        batch_size = feature_maps.shape[0]
+        spatial = jnp.broadcast_to(
+            self.spatial_basis[None, ...],
+            (batch_size, self.feat_h, self.feat_w, self.spatial_basis_depth),
+        )
+        gaze_inputs = jnp.concatenate([feature_maps, spatial], axis=-1)
+        gaze_inputs = nn.Conv(
+            features=self.conv_dim,
+            kernel_size=(1, 1),
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="gaze_conv1x1",
+        )(gaze_inputs)
+        gaze_inputs = nn.relu(gaze_inputs)
+        pooled = gaze_inputs.reshape(batch_size, -1)
         hidden = nn.Dense(
             self.hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
             name="gaze_fc1",
         )(pooled)
-        hidden = nn.tanh(hidden)
+        hidden = nn.relu(hidden)
         raw = nn.Dense(
             5,
             kernel_init=orthogonal(0.01),
@@ -124,9 +146,11 @@ class GazeImageScannedLSTM(nn.Module):
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     gaze_hidden_dim: int = 64
+    gaze_spatial_basis_depth: int = 8
+    gaze_conv_dim: int = 16
     contrastive_dim: int = 128
-    target_sigma_x: float = 0.30
-    target_sigma_y: float = 0.30
+    target_sigma_x: float = 0.20
+    target_sigma_y: float = 0.20
 
     def setup(self):
         self._img_flat_dim = self.img_height * self.img_width * self.num_channels
@@ -149,6 +173,8 @@ class GazeImageScannedLSTM(nn.Module):
         self.gaze_head = GaussianGazeHead(
             feat_h=self.feat_h,
             feat_w=self.feat_w,
+            spatial_basis_depth=self.gaze_spatial_basis_depth,
+            conv_dim=self.gaze_conv_dim,
             hidden_dim=self.gaze_hidden_dim,
             target_sigma_x=self.target_sigma_x,
             target_sigma_y=self.target_sigma_y,
@@ -258,9 +284,11 @@ class GazeImageActorCritic(nn.Module):
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
     gaze_hidden_dim: int = 64
+    gaze_spatial_basis_depth: int = 8
+    gaze_conv_dim: int = 16
     contrastive_dim: int = 128
-    target_sigma_x: float = 0.30
-    target_sigma_y: float = 0.30
+    target_sigma_x: float = 0.20
+    target_sigma_y: float = 0.20
 
     def setup(self):
         trunk_kwargs = dict(
@@ -275,6 +303,8 @@ class GazeImageActorCritic(nn.Module):
             fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             gaze_hidden_dim=self.gaze_hidden_dim,
+            gaze_spatial_basis_depth=self.gaze_spatial_basis_depth,
+            gaze_conv_dim=self.gaze_conv_dim,
             contrastive_dim=self.contrastive_dim,
             target_sigma_x=self.target_sigma_x,
             target_sigma_y=self.target_sigma_y,
