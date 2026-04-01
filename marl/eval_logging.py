@@ -210,9 +210,8 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
     for seed_idx in range(num_seeds):
         final_params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
 
-        # Card games: 1 episode. Other envs: 5 episodes for longer videos.
-        is_card_game = env_name in ("card-game", "card-game-dynamic", "card-game-flip")
-        num_eval_video_eps = 1 if is_card_game else 5
+        # Keep eval videos to a single episode so logging stays quick and watchable.
+        num_eval_video_eps = 1
 
         all_ep_states = []
         all_attn_data = {"agent_0": [], "agent_1": []}
