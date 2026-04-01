@@ -7,7 +7,12 @@ from PIL import Image
 from moviepy import ImageSequenceClip
 
 from evaluation.vis_episodes import run_episode_with_states, _overlay_attention
-from marl.eval_utils import _draw_choice_on_cell, _draw_message_on_cell, _draw_decision_square
+from marl.eval_utils import (
+    _draw_choice_on_cell,
+    _draw_message_on_cell,
+    _draw_decision_square,
+    _draw_timestep_label,
+)
 
 
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger,
@@ -54,10 +59,10 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
         cell_0 = _overlay_attention(frame, maps_0[t], "Oranges", alpha=0.6).copy()
         cell_1 = _overlay_attention(frame, maps_1[t], "RdPu", alpha=0.6).copy()
 
-        # Draw partner's message border in partner's color
-        if ep_messages and t < len(ep_messages):
-            _draw_message_on_cell(cell_0, ep_messages[t][1], scale, color=agent1_color)
-            _draw_message_on_cell(cell_1, ep_messages[t][0], scale, color=agent0_color)
+        # Messages sent at step t-1 become visible in observation t.
+        if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
+            _draw_message_on_cell(cell_0, ep_messages[t - 1][1], scale, color=agent1_color)
+            _draw_message_on_cell(cell_1, ep_messages[t - 1][0], scale, color=agent0_color)
 
         # Draw decision square on last timestep
         if t == n_steps - 1:
@@ -91,6 +96,9 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
                     _draw_choice_on_cell(cell_1, col1, 1, scale)
             else:
                 _draw_choice_on_cell(cell_1, choice_1, 1, scale)
+
+        _draw_timestep_label(cell_0, t, decision=(t == n_steps - 1))
+        _draw_timestep_label(cell_1, t, decision=(t == n_steps - 1))
 
         row_0.append(cell_0)
         row_1.append(cell_1)
@@ -185,12 +193,12 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             cell_0 = _overlay_attention(base_up_0, maps_0[t], "Oranges", alpha=0.6).copy()
             cell_1 = _overlay_attention(base_up_1, maps_1[t], "RdPu", alpha=0.6).copy()
 
-            # Draw partner's message border in partner's color
-            if ep_messages and t < len(ep_messages):
+            # Messages sent at step t-1 become visible in observation t.
+            if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
                 a0_color = [255, 140, 0]    # orange
                 a1_color = [255, 0, 255]    # magenta
-                _draw_message_on_cell(cell_0, ep_messages[t][1], scale, color=a1_color)
-                _draw_message_on_cell(cell_1, ep_messages[t][0], scale, color=a0_color)
+                _draw_message_on_cell(cell_0, ep_messages[t - 1][1], scale, color=a1_color)
+                _draw_message_on_cell(cell_1, ep_messages[t - 1][0], scale, color=a0_color)
 
             # Draw decision square on last timestep
             if t == n_steps - 1:
@@ -220,6 +228,9 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                 else:
                     _draw_choice_on_cell(cell_0, choice_0, 0, scale)
                     _draw_choice_on_cell(cell_1, choice_1, 1, scale)
+
+            _draw_timestep_label(cell_0, t, decision=(t == n_steps - 1))
+            _draw_timestep_label(cell_1, t, decision=(t == n_steps - 1))
 
             # Stack vertically: agent 0 on top, agent 1 on bottom
             cell_h, cell_w = cell_0.shape[:2]

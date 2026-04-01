@@ -49,3 +49,19 @@ def _draw_decision_square(cell, scale):
     """Draw a white square at top-left to indicate decision step."""
     size = scale * 4  # 4 pixels at obs level, scaled
     cell[0:size, 0:size] = [255, 255, 255]
+
+
+def _draw_timestep_label(cell, timestep, decision=False):
+    """Draw a timestep label on a visualization cell/frame."""
+    from PIL import Image, ImageDraw
+    import numpy as np
+
+    img = Image.fromarray(cell)
+    draw = ImageDraw.Draw(img)
+    label = f"t={timestep}"
+    if decision:
+        label += " D"
+
+    draw.rectangle((4, 4, 64, 20), fill=(255, 255, 255))
+    draw.text((8, 6), label, fill=(0, 0, 0))
+    cell[:] = np.array(img)

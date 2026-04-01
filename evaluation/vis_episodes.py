@@ -4,6 +4,24 @@ import os
 from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
 
 
+def _action_to_ground_truth(env, state, action):
+    """Map wrapper-space actions back to the base environment action space."""
+    current_env = env
+    current_state = state
+    true_action = action
+
+    while True:
+        if hasattr(current_env, "_invert_actions"):
+            true_action = current_env._invert_actions(true_action, current_state)
+        if hasattr(current_env, "_env") and hasattr(current_state, "env_state"):
+            current_env = current_env._env
+            current_state = current_state.env_state
+        else:
+            break
+
+    return true_action
+
+
 def save_video(env, env_name, 
                agent_0_param, agent_0_policy, 
                agent_1_param, agent_1_policy, 
@@ -200,16 +218,18 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         # Take step in environment (joint action encodes card choice + message)
         both_actions = [act_0, act_1]
         env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
+        render_act = _action_to_ground_truth(env, state, env_act)
         obs, env_state, reward, done, info = env.step(step_rng, env_state, env_act)
 
         # Add state and actions to the lists for rendering
         fp = getattr(env, 'fixed_partner_pos', -1)
-        act_1_record = int(fp) if fp >= 0 else int(act_1)
+        act_0_record = int(render_act["agent_0"])
+        act_1_record = int(fp) if fp >= 0 else int(render_act["agent_1"])
         ep_states.append(env_state)
         if has_comm:
             # Decode: 0-24 = card+msg, 25-29 = msg only (deliberation)
             n_card_msg = num_cards * num_cards
-            a0_int, a1_int = int(act_0), int(act_1)
+            a0_int, a1_int = act_0_record, int(render_act["agent_1"])
             card_0 = a0_int // num_cards if a0_int < n_card_msg else -1
             card_1 = (act_1_record // num_cards if fp < 0 else act_1_record) if a1_int < n_card_msg else -1
             msg_0 = a0_int % num_cards if a0_int < n_card_msg else a0_int - n_card_msg
@@ -217,7 +237,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             ep_actions.append((card_0, card_1))
             ep_messages.append((msg_0, msg_1))
         else:
-            ep_actions.append((int(act_0), act_1_record))
+            ep_actions.append((act_0_record, act_1_record))
 
         step += 1
 
@@ -837,5 +857,4 @@ if __name__ == "__main__":
         max_episode_steps=100 if env_name == "lbf" or env_name == "lbf-reward-shaping" else 400, num_eps=1, 
         savevideo=True, 
         save_dir=f"results/{env_name}/videos/", save_name="ego-vs-ego-test")
-
 
