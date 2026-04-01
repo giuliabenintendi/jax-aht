@@ -51,6 +51,18 @@ class ContrastiveBufferState(NamedTuple):
     size: jnp.ndarray
 
 
+def _quantize_obs(obs: jnp.ndarray) -> jnp.ndarray:
+    """Store image observations compactly as uint8 in [0, 255]."""
+    return jnp.clip(jnp.rint(obs * 255.0), 0.0, 255.0).astype(jnp.uint8)
+
+
+def _dequantize_obs(obs: jnp.ndarray) -> jnp.ndarray:
+    """Recover float32 observations in [0, 1] for policy forward passes."""
+    if obs.dtype == jnp.uint8:
+        return obs.astype(jnp.float32) / 255.0
+    return obs.astype(jnp.float32)
+
+
 def _create_gaze_minibatches(traj_batch, advantages, targets, return_targets,
                              init_hstate, num_actors, num_minibatches, perm_rng):
     batch = (init_hstate, traj_batch, advantages, targets, return_targets)
@@ -72,7 +84,7 @@ def _create_gaze_minibatches(traj_batch, advantages, targets, return_targets,
 
 def _contrastive_buffer_init(capacity, obs_dim, embed_dim):
     return ContrastiveBufferState(
-        obs=jnp.zeros((capacity, obs_dim), dtype=jnp.float32),
+        obs=jnp.zeros((capacity, obs_dim), dtype=jnp.uint8),
         embed=jnp.zeros((capacity, embed_dim), dtype=jnp.float32),
         returns=jnp.zeros((capacity,), dtype=jnp.float32),
         ptr=jnp.array(0, dtype=jnp.int32),
@@ -82,6 +94,8 @@ def _contrastive_buffer_init(capacity, obs_dim, embed_dim):
 
 def _contrastive_buffer_add(buffer_state, obs, embed, returns):
     capacity = buffer_state.obs.shape[0]
+    if buffer_state.obs.dtype == jnp.uint8 and obs.dtype != jnp.uint8:
+        obs = _quantize_obs(obs)
     num_new = obs.shape[0]
     if num_new > capacity:
         obs = obs[-capacity:]
@@ -211,6 +225,7 @@ def make_train(config, env):
     def make_step_fn(policy):
         def _chunked_contrastive_features(params, obs_batch):
             """Run contrastive encodes in smaller chunks to avoid GPU conv spikes."""
+            obs_batch = _dequantize_obs(obs_batch)
             if contrastive_num_chunks == 1:
                 return policy.get_contrastive_features(params, obs_batch)
 
@@ -319,7 +334,7 @@ def make_train(config, env):
                     value,
                     combined_reward,
                     log_prob,
-                    last_obs_batch,
+                    _quantize_obs(last_obs_batch),
                     info,
                     avail_actions_batch,
                     feature_embed,
@@ -464,9 +479,10 @@ def make_train(config, env):
                     init_hstate, minibatch, mb_advantages, mb_targets, mb_returns = batch_info
 
                     def _loss_fn(params, minibatch, mb_advantages, mb_targets, mb_returns):
+                        obs = _dequantize_obs(minibatch.obs)
                         _, value, pi, _, _ = policy.get_action_value_policy(
                             params=params,
-                            obs=minibatch.obs,
+                            obs=obs,
                             done=minibatch.done,
                             avail_actions=minibatch.avail_actions,
                             hstate=init_hstate,
