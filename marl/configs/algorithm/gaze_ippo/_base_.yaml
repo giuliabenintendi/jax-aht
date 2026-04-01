@@ -17,7 +17,6 @@ ENT_COEF: 0.01
 # Network
 FC_HIDDEN_DIM: 256
 LSTM_HIDDEN_DIM: 128
-GAZE_HIDDEN_DIM: 64
 GAZE_SPATIAL_BASIS_DEPTH: 8
 GAZE_CONV_DIM: 16
 CONTRASTIVE_DIM: 128
@@ -25,8 +24,8 @@ FEED_OTHER_ATTN: false
 GAZE_TARGET_SIGMA_X: 0.20
 GAZE_TARGET_SIGMA_Y: 0.20
 
-# Multi-agent gaze reward
-GAZE_BETA_MAX: 0.01
+# Multi-agent gaze penalty disabled by default; keep JSD only as a diagnostic.
+GAZE_BETA_MAX: 0.0
 GAZE_WARMUP_ENV_STEPS: 200000
 
 # ResNet encoder

@@ -67,7 +67,6 @@ class GaussianGazeHead(nn.Module):
     feat_w: int
     spatial_basis_depth: int = 8
     conv_dim: int = 16
-    hidden_dim: int = 64
     min_sigma: float = 0.15
     max_rho: float = 0.95
     target_sigma_x: float = 0.20
@@ -94,26 +93,35 @@ class GaussianGazeHead(nn.Module):
             name="gaze_conv1x1",
         )(gaze_inputs)
         gaze_inputs = nn.relu(gaze_inputs)
-        pooled = gaze_inputs.reshape(batch_size, -1)
-        hidden = nn.Dense(
-            self.hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="gaze_fc1",
-        )(pooled)
-        hidden = nn.relu(hidden)
-        raw = nn.Dense(
-            5,
+        spatial_logits = nn.Conv(
+            features=1,
+            kernel_size=(1, 1),
             kernel_init=orthogonal(0.01),
             bias_init=constant(0.0),
-            name="gaze_params",
-        )(hidden)
+            name="gaze_spatial_logits",
+        )(gaze_inputs).squeeze(-1)
+        spatial_probs = jax.nn.softmax(
+            spatial_logits.reshape(batch_size, -1), axis=-1
+        ).reshape(batch_size, self.feat_h, self.feat_w)
 
-        mu_x = jnp.tanh(raw[:, 0])
-        mu_y = jnp.tanh(raw[:, 1])
-        sigma_x = nn.softplus(raw[:, 2]) + self.min_sigma
-        sigma_y = nn.softplus(raw[:, 3]) + self.min_sigma
-        rho = self.max_rho * jnp.tanh(raw[:, 4])
+        ys = jnp.linspace(-1.0, 1.0, self.feat_h)
+        xs = jnp.linspace(-1.0, 1.0, self.feat_w)
+        grid_y, grid_x = jnp.meshgrid(ys, xs, indexing="ij")
+        grid_x = grid_x[None, ...]
+        grid_y = grid_y[None, ...]
+
+        mu_x = jnp.sum(spatial_probs * grid_x, axis=(1, 2))
+        mu_y = jnp.sum(spatial_probs * grid_y, axis=(1, 2))
+
+        dx = grid_x - mu_x[:, None, None]
+        dy = grid_y - mu_y[:, None, None]
+        var_x = jnp.sum(spatial_probs * dx ** 2, axis=(1, 2))
+        var_y = jnp.sum(spatial_probs * dy ** 2, axis=(1, 2))
+        cov_xy = jnp.sum(spatial_probs * dx * dy, axis=(1, 2))
+
+        sigma_x = jnp.maximum(jnp.sqrt(jnp.maximum(var_x, 1e-6)), self.min_sigma)
+        sigma_y = jnp.maximum(jnp.sqrt(jnp.maximum(var_y, 1e-6)), self.min_sigma)
+        rho = jnp.clip(cov_xy / jnp.maximum(sigma_x * sigma_y, 1e-6), -self.max_rho, self.max_rho)
 
         attn_map = gaussian_attention_from_params(
             self.feat_h, self.feat_w, mu_x, mu_y, sigma_x, sigma_y, rho
@@ -145,7 +153,6 @@ class GazeImageScannedLSTM(nn.Module):
     conv_padding: str = "SAME"
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
-    gaze_hidden_dim: int = 64
     gaze_spatial_basis_depth: int = 8
     gaze_conv_dim: int = 16
     contrastive_dim: int = 128
@@ -175,7 +182,6 @@ class GazeImageScannedLSTM(nn.Module):
             feat_w=self.feat_w,
             spatial_basis_depth=self.gaze_spatial_basis_depth,
             conv_dim=self.gaze_conv_dim,
-            hidden_dim=self.gaze_hidden_dim,
             target_sigma_x=self.target_sigma_x,
             target_sigma_y=self.target_sigma_y,
             name="gaze_head",
@@ -283,7 +289,6 @@ class GazeImageActorCritic(nn.Module):
     conv_padding: str = "SAME"
     fc_hidden_dim: int = 64
     lstm_hidden_dim: int = 64
-    gaze_hidden_dim: int = 64
     gaze_spatial_basis_depth: int = 8
     gaze_conv_dim: int = 16
     contrastive_dim: int = 128
@@ -302,7 +307,6 @@ class GazeImageActorCritic(nn.Module):
             conv_padding=self.conv_padding,
             fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
-            gaze_hidden_dim=self.gaze_hidden_dim,
             gaze_spatial_basis_depth=self.gaze_spatial_basis_depth,
             gaze_conv_dim=self.gaze_conv_dim,
             contrastive_dim=self.contrastive_dim,
