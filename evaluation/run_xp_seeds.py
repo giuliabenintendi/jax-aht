@@ -392,7 +392,7 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
 
 
 def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
-                      task_name, run_dir, wb_run=None):
+                      task_name, run_dir, wb_run=None, wb_prefix="XP"):
     """Log XP results to wandb. Creates a new run if `wb_run` is None."""
     import wandb
 
@@ -582,7 +582,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     print(f"[xp_seeds] results saved to {xp_dir} and {central_xp_dir}")
 
     _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
-                      task_name, savedir, wb_run=wb_run)
+                      task_name, savedir, wb_run=wb_run, wb_prefix=wb_prefix)
 
 
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True):
