@@ -1,6 +1,6 @@
-"""Run greedy and stochastic eval episodes and plot return curves.
+"""Run greedy eval episodes and plot return curves.
 
-Plots per-episode returns as a line chart (like training curves) with
+Plots per-episode returns as a line chart with
 running mean and overall mean ± std band.
 
 Usage:
@@ -30,7 +30,7 @@ def _get_obs_type(alg_config):
     return alg_config.get("OBS_TYPE", alg_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
 
 
-def run_eval_with_rewards(inner_env, policy, params, num_episodes, max_steps, greedy, seed_offset=0):
+def run_eval_with_rewards(inner_env, policy, params, num_episodes, max_steps, seed_offset=0):
     """Run N eval episodes, return per-episode total rewards."""
     returns = []
     for ep in range(num_episodes):
@@ -61,12 +61,12 @@ def run_eval_with_rewards(inner_env, policy, params, num_episodes, max_steps, gr
             act_0, hstate_0 = policy.get_action(
                 params=params, obs=obs_0, done=done_0,
                 avail_actions=avail_0, hstate=hstate_0,
-                rng=act_rng0, greedy=greedy,
+                rng=act_rng0, greedy=True,
             )
             act_1, hstate_1 = policy.get_action(
                 params=params, obs=obs_1, done=done_1,
                 avail_actions=avail_1, hstate=hstate_1,
-                rng=act_rng1, greedy=greedy,
+                rng=act_rng1, greedy=True,
             )
 
             env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1.squeeze()}
@@ -78,8 +78,7 @@ def run_eval_with_rewards(inner_env, policy, params, num_episodes, max_steps, gr
         returns.append(total_reward)
 
         if (ep + 1) % 64 == 0:
-            print(f"  {'greedy' if greedy else 'stochastic'} ep {ep+1}/{num_episodes}: "
-                  f"mean={np.mean(returns):.1f}")
+            print(f"  greedy ep {ep+1}/{num_episodes}: mean={np.mean(returns):.1f}")
 
     return np.array(returns)
 
@@ -141,10 +140,9 @@ def main():
 
     print(f"Layout: {layout}, Beta: {beta}, ENT_COEF: {ent}, Dual: {use_dual}, "
           f"JSD GAE: {jsd_gae}, Seeds: {num_seeds}")
-    print(f"Running {args.num_episodes} episodes per seed, greedy + stochastic")
+    print(f"Running {args.num_episodes} greedy episodes per seed")
 
     all_greedy = []
-    all_stochastic = []
 
     for seed_idx in range(num_seeds):
         params = jax.tree.map(lambda x: x[seed_idx], final_params)
@@ -152,51 +150,35 @@ def main():
 
         greedy_returns = run_eval_with_rewards(
             inner_env, policy, params, args.num_episodes, max_steps,
-            greedy=True, seed_offset=seed_idx)
-        stochastic_returns = run_eval_with_rewards(
-            inner_env, policy, params, args.num_episodes, max_steps,
-            greedy=False, seed_offset=seed_idx)
+            seed_offset=seed_idx)
 
         all_greedy.append(greedy_returns)
-        all_stochastic.append(stochastic_returns)
 
         print(f"  Greedy:     mean={greedy_returns.mean():.1f} ± {greedy_returns.std():.1f}")
-        print(f"  Stochastic: mean={stochastic_returns.mean():.1f} ± {stochastic_returns.std():.1f}")
 
     # Aggregate across seeds
     all_greedy = np.concatenate(all_greedy)
-    all_stochastic = np.concatenate(all_stochastic)
 
     print(f"\nOverall ({num_seeds} seeds x {args.num_episodes} episodes):")
     print(f"  Greedy:     mean={all_greedy.mean():.1f} ± {all_greedy.std():.1f}")
-    print(f"  Stochastic: mean={all_stochastic.mean():.1f} ± {all_stochastic.std():.1f}")
 
-    # Plot: line chart with per-episode returns + running mean + mean±std band
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-    episodes = np.arange(1, len(all_stochastic) + 1)
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    episodes = np.arange(1, len(all_greedy) + 1)
 
-    for ax, data, title, color in [
-        (ax1, all_stochastic, "Stochastic", "C1"),
-        (ax2, all_greedy, "Greedy", "C0"),
-    ]:
-        mean = data.mean()
-        std = data.std()
-        rm = running_mean(data, window=20)
+    mean = all_greedy.mean()
+    std = all_greedy.std()
+    rm = running_mean(all_greedy, window=20)
 
-        # Per-episode returns as faint dots
-        ax.scatter(episodes, data, s=3, alpha=0.2, color=color, zorder=1)
-        # Running mean line
-        ax.plot(episodes, rm, color=color, linewidth=2.0, zorder=2, label="Running mean")
-        # Overall mean ± std band
-        ax.axhline(mean, color=color, linestyle="--", linewidth=2.0, zorder=3)
-        ax.fill_between(episodes, mean - std, mean + std, color=color, alpha=0.1, zorder=0)
-        ax.set_xlabel("Episode")
-        ax.set_title(title)
-        ax.legend([f"Running mean (w=20)",
-                   f"Mean={mean:.1f} ± {std:.1f}"],
-                  fontsize=14, loc="lower right")
-
-    ax1.set_ylabel("Episode Return")
+    ax.scatter(episodes, all_greedy, s=3, alpha=0.2, color="C0", zorder=1)
+    ax.plot(episodes, rm, color="C0", linewidth=2.0, zorder=2, label="Running mean")
+    ax.axhline(mean, color="C0", linestyle="--", linewidth=2.0, zorder=3)
+    ax.fill_between(episodes, mean - std, mean + std, color="C0", alpha=0.1, zorder=0)
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Episode Return")
+    ax.set_title("Greedy")
+    ax.legend([f"Running mean (w=20)",
+               f"Mean={mean:.1f} ± {std:.1f}"],
+              fontsize=14, loc="lower right")
 
     jsd_label = "jsdgae" if jsd_gae else "nojsdgae"
     fig.suptitle(f"{layout} | β={beta} | ent={ent} | dual_{jsd_label} | "
@@ -217,11 +199,9 @@ def main():
             project=args.project, entity=args.entity,
             id=args.run_id, resume="must",
         )
-        wb_run.log({"Eval/greedy_vs_stochastic": wandb.Image(path)}, commit=False)
+        wb_run.log({"Eval/greedy_returns": wandb.Image(path)}, commit=False)
         wb_run.summary["Eval/greedy_return_mean"] = float(all_greedy.mean())
         wb_run.summary["Eval/greedy_return_std"] = float(all_greedy.std())
-        wb_run.summary["Eval/stochastic_return_mean"] = float(all_stochastic.mean())
-        wb_run.summary["Eval/stochastic_return_std"] = float(all_stochastic.std())
         wb_run.log({}, commit=True)
         wb_run.finish()
         print(f"Uploaded to wandb run {args.run_id}")

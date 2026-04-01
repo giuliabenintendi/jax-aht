@@ -463,6 +463,9 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         task_name: task name for labels (e.g. "overcooked-v1-image/cramped_room")
         wb_run: existing wandb run to log to. If None, creates a new one.
     """
+    # Stochastic XP has been retired; keep the parameter for compatibility.
+    greedy_eval = True
+
     num_seeds = jax.tree.leaves(stacked_params)[0].shape[0]
     if num_seeds < 2:
         print(f"[xp_seeds] SKIP: only {num_seeds} seed(s) — need at least 2 for cross-play")
@@ -584,6 +587,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
 
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True):
     """Standalone XP evaluation from a saved checkpoint."""
+    greedy_eval = True
     hydra_cfg = _load_hydra_config(checkpoint_path)
     if task_name is not None:
         task_cfg = load_task_config(task_name)
@@ -818,14 +822,11 @@ if __name__ == "__main__":
                         help="Path to saved_train_run directory (single multi-seed checkpoint)")
     parser.add_argument("--checkpoints", nargs="+", default=None,
                         help="Paths to multiple 1-seed checkpoints for multi-checkpoint XP")
-    parser.add_argument("--stochastic", action="store_true",
-                        help="Use stochastic (sampling) evaluation instead of greedy (argmax)")
     args = parser.parse_args()
 
-    greedy = not args.stochastic
     if args.checkpoints:
         run_xp_multi_checkpoint(args.task, args.checkpoints)
     elif args.checkpoint:
-        run_xp_evaluation(args.task, args.checkpoint, greedy_eval=greedy)
+        run_xp_evaluation(args.task, args.checkpoint, greedy_eval=True)
     else:
         parser.error("Either --checkpoint or --checkpoints is required")

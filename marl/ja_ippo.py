@@ -602,7 +602,7 @@ def run_ja_ippo(config, logger):
 
 
 def log_xp_eval(algorithm_config, env, out):
-    """Run greedy and stochastic cross-play evaluation when NUM_SEEDS > 1."""
+    """Run greedy cross-play evaluation when NUM_SEEDS > 1."""
     import wandb
     from evaluation.run_xp_seeds import run_xp_from_params
 
@@ -622,17 +622,6 @@ def log_xp_eval(algorithm_config, env, out):
         wb_run=wandb.run,
         greedy_eval=True,
         wb_prefix="XP",
-    )
-
-    # Stochastic XP
-    print("[xp_eval] Running stochastic XP...")
-    run_xp_from_params(
-        env, policy, out["final_params"], algorithm_config,
-        savedir=savedir,
-        task_name=algorithm_config.get("ENV_NAME"),
-        wb_run=wandb.run,
-        greedy_eval=False,
-        wb_prefix="XP_stoch",
     )
 
 

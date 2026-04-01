@@ -503,7 +503,7 @@ def run_ja_dual_ippo(config, logger):
 
 
 def log_greedy_eval(algorithm_config, env, out, logger, policy, num_episodes=64):
-    """Run greedy and stochastic eval episodes, print per-episode and summary stats."""
+    """Run greedy eval episodes, print per-episode and summary stats."""
     from agents.ja_utils import jsd_divergence, augment_obs_for_eval
     inner_env = env._env
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
@@ -520,90 +520,91 @@ def log_greedy_eval(algorithm_config, env, out, logger, policy, num_episodes=64)
             num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
         )
 
-    for mode_name, greedy in [("greedy", True), ("stochastic", False)]:
-        all_returns = []
-        all_jsds = []
-        for seed_idx in range(num_seeds):
-            params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
-            seed_returns = []
-            seed_jsds = []
-            for ep in range(num_episodes):
-                rng = jax.random.PRNGKey(2000 + seed_idx * 10000 + ep)
-                rng, reset_rng = jax.random.split(rng)
+    mode_name = "greedy"
+    greedy = True
+    all_returns = []
+    all_jsds = []
+    for seed_idx in range(num_seeds):
+        params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
+        seed_returns = []
+        seed_jsds = []
+        for ep in range(num_episodes):
+            rng = jax.random.PRNGKey(2000 + seed_idx * 10000 + ep)
+            rng, reset_rng = jax.random.split(rng)
 
-                obs, env_state = inner_env.reset(reset_rng)
-                done = {k: jnp.zeros((1,), dtype=bool) for k in inner_env.agents + ["__all__"]}
-                hstate_0 = policy.init_hstate(1)
-                hstate_1 = policy.init_hstate(1)
+            obs, env_state = inner_env.reset(reset_rng)
+            done = {k: jnp.zeros((1,), dtype=bool) for k in inner_env.agents + ["__all__"]}
+            hstate_0 = policy.init_hstate(1)
+            hstate_1 = policy.init_hstate(1)
+
+            if feed_attn:
+                prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+                prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+
+            total_reward = 0.0
+            ep_jsds = []
+            step = 0
+            while not done["__all__"] and step < max_steps:
+                avail_actions = inner_env.get_avail_actions(env_state)
+                avail_actions = jax.lax.stop_gradient(avail_actions)
+
+                obs_0 = obs["agent_0"]
+                obs_1 = obs["agent_1"]
+                if feed_attn:
+                    obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
+                    obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+
+                rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
+                act_0, hstate_0, attn_0 = policy.get_action_and_attention(
+                    params=params,
+                    obs=obs_0.reshape(1, 1, -1),
+                    done=done["agent_0"].reshape(1, 1),
+                    avail_actions=avail_actions["agent_0"].astype(jnp.float32),
+                    hstate=hstate_0, rng=rng0, greedy=greedy,
+                )
+                act_1, hstate_1, attn_1 = policy.get_action_and_attention(
+                    params=params,
+                    obs=obs_1.reshape(1, 1, -1),
+                    done=done["agent_1"].reshape(1, 1),
+                    avail_actions=avail_actions["agent_1"].astype(jnp.float32),
+                    hstate=hstate_1, rng=rng1, greedy=greedy,
+                )
 
                 if feed_attn:
-                    prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
-                    prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+                    prev_attn_0 = attn_0.squeeze()
+                    prev_attn_1 = attn_1.squeeze()
 
-                total_reward = 0.0
-                ep_jsds = []
-                step = 0
-                while not done["__all__"] and step < max_steps:
-                    avail_actions = inner_env.get_avail_actions(env_state)
-                    avail_actions = jax.lax.stop_gradient(avail_actions)
+                jsd_val = float(jsd_divergence(
+                    attn_0.squeeze(0), attn_1.squeeze(0)).mean())
+                ep_jsds.append(jsd_val)
 
-                    obs_0 = obs["agent_0"]
-                    obs_1 = obs["agent_1"]
-                    if feed_attn:
-                        obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
-                        obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+                env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1.squeeze()}
+                obs, env_state, reward, done, info = inner_env.step(step_rng, env_state, env_act)
+                total_reward += float(reward["agent_0"])
+                step += 1
 
-                    rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
-                    act_0, hstate_0, attn_0 = policy.get_action_and_attention(
-                        params=params,
-                        obs=obs_0.reshape(1, 1, -1),
-                        done=done["agent_0"].reshape(1, 1),
-                        avail_actions=avail_actions["agent_0"].astype(jnp.float32),
-                        hstate=hstate_0, rng=rng0, greedy=greedy,
-                    )
-                    act_1, hstate_1, attn_1 = policy.get_action_and_attention(
-                        params=params,
-                        obs=obs_1.reshape(1, 1, -1),
-                        done=done["agent_1"].reshape(1, 1),
-                        avail_actions=avail_actions["agent_1"].astype(jnp.float32),
-                        hstate=hstate_1, rng=rng1, greedy=greedy,
-                    )
+            ep_jsd_mean = float(np.mean(ep_jsds)) if ep_jsds else 0.0
+            seed_returns.append(total_reward)
+            seed_jsds.append(ep_jsd_mean)
+            print(f"[eval] {mode_name} seed={seed_idx} ep={ep}: "
+                  f"return={total_reward:.1f}  jsd={ep_jsd_mean:.4f}  steps={step}")
 
-                    if feed_attn:
-                        prev_attn_0 = attn_0.squeeze()
-                        prev_attn_1 = attn_1.squeeze()
+        all_returns.extend(seed_returns)
+        all_jsds.extend(seed_jsds)
+        print(f"[eval] seed {seed_idx} {mode_name} summary: "
+              f"return={np.mean(seed_returns):.1f} ± {np.std(seed_returns):.1f}  "
+              f"jsd={np.mean(seed_jsds):.4f} ± {np.std(seed_jsds):.4f}")
 
-                    jsd_val = float(jsd_divergence(
-                        attn_0.squeeze(0), attn_1.squeeze(0)).mean())
-                    ep_jsds.append(jsd_val)
-
-                    env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1.squeeze()}
-                    obs, env_state, reward, done, info = inner_env.step(step_rng, env_state, env_act)
-                    total_reward += float(reward["agent_0"])
-                    step += 1
-
-                ep_jsd_mean = float(np.mean(ep_jsds)) if ep_jsds else 0.0
-                seed_returns.append(total_reward)
-                seed_jsds.append(ep_jsd_mean)
-                print(f"[eval] {mode_name} seed={seed_idx} ep={ep}: "
-                      f"return={total_reward:.1f}  jsd={ep_jsd_mean:.4f}  steps={step}")
-
-            all_returns.extend(seed_returns)
-            all_jsds.extend(seed_jsds)
-            print(f"[eval] seed {seed_idx} {mode_name} summary: "
-                  f"return={np.mean(seed_returns):.1f} ± {np.std(seed_returns):.1f}  "
-                  f"jsd={np.mean(seed_jsds):.4f} ± {np.std(seed_jsds):.4f}")
-
-        ret_mean, ret_std = np.mean(all_returns), np.std(all_returns)
-        jsd_mean, jsd_std = np.mean(all_jsds), np.std(all_jsds)
-        print(f"[eval] {mode_name} overall ({len(all_returns)} eps): "
-              f"return={ret_mean:.1f} ± {ret_std:.1f}  "
-              f"jsd={jsd_mean:.4f} ± {jsd_std:.4f}")
-        import wandb
-        wandb.run.summary[f"Eval/{mode_name}_return_mean"] = float(ret_mean)
-        wandb.run.summary[f"Eval/{mode_name}_return_std"] = float(ret_std)
-        wandb.run.summary[f"Eval/{mode_name}_jsd_mean"] = float(jsd_mean)
-        wandb.run.summary[f"Eval/{mode_name}_jsd_std"] = float(jsd_std)
+    ret_mean, ret_std = np.mean(all_returns), np.std(all_returns)
+    jsd_mean, jsd_std = np.mean(all_jsds), np.std(all_jsds)
+    print(f"[eval] {mode_name} overall ({len(all_returns)} eps): "
+          f"return={ret_mean:.1f} ± {ret_std:.1f}  "
+          f"jsd={jsd_mean:.4f} ± {jsd_std:.4f}")
+    import wandb
+    wandb.run.summary[f"Eval/{mode_name}_return_mean"] = float(ret_mean)
+    wandb.run.summary[f"Eval/{mode_name}_return_std"] = float(ret_std)
+    wandb.run.summary[f"Eval/{mode_name}_jsd_mean"] = float(jsd_mean)
+    wandb.run.summary[f"Eval/{mode_name}_jsd_std"] = float(jsd_std)
 
 
 def _render_lbf_eval_frames(inner_env, ep_states):
