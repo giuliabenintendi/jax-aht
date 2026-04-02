@@ -1,5 +1,5 @@
 ENV_NAME: lbf-image
-ROLLOUT_LENGTH: 128
+ROLLOUT_LENGTH: 400
 ENV_KWARGS:
   obs_type: image
   grid_size: 7
