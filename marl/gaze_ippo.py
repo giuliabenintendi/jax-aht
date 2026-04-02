@@ -337,7 +337,7 @@ def make_train(config, env):
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
-                        train_state.params, minibatch, mb_advantages, mb_targets, mb_returns
+                        train_state.params, minibatch, mb_advantages, mb_targets, _mb_returns
                     )
                     grad_norm = jnp.sqrt(
                         sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads))
