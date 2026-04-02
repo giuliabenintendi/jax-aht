@@ -219,7 +219,7 @@ def initialize_image_agent(config, env, rng):
     return policy, init_params
 
 def initialize_gaze_image_agent(config, env, rng):
-    """Initialize a gaze-based image agent with Gaussian foveal attention."""
+    """Initialize a gaze-based image agent with attention-readout gaze."""
     img_h, img_w, num_scalars = _get_image_dims(env)
     if num_scalars != 0:
         raise NotImplementedError("Gaze image agent currently expects image-only observations.")
@@ -238,11 +238,8 @@ def initialize_gaze_image_agent(config, env, rng):
         fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
         gaze_spatial_basis_depth=config.get("GAZE_SPATIAL_BASIS_DEPTH", 8),
-        gaze_conv_dim=config.get("GAZE_CONV_DIM", 16),
-        contrastive_dim=config.get("CONTRASTIVE_DIM", 128),
+        gaze_key_dim=config.get("GAZE_KEY_DIM", 16),
         num_channels=num_channels,
-        target_sigma_x=config.get("GAZE_TARGET_SIGMA_X", 0.20),
-        target_sigma_y=config.get("GAZE_TARGET_SIGMA_Y", 0.20),
     )
 
     rng, init_rng = jax.random.split(rng)

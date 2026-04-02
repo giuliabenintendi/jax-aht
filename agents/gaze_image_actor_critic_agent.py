@@ -25,11 +25,8 @@ class GazeImageActorCriticPolicy(AgentPolicy):
         fc_hidden_dim: int = 64,
         lstm_hidden_dim: int = 64,
         gaze_spatial_basis_depth: int = 8,
-        gaze_conv_dim: int = 16,
-        contrastive_dim: int = 128,
+        gaze_key_dim: int = 16,
         num_channels: int = 3,
-        target_sigma_x: float = 0.20,
-        target_sigma_y: float = 0.20,
     ):
         super().__init__(action_dim, obs_dim)
         self.img_height = img_height
@@ -47,11 +44,8 @@ class GazeImageActorCriticPolicy(AgentPolicy):
             fc_hidden_dim=fc_hidden_dim,
             lstm_hidden_dim=lstm_hidden_dim,
             gaze_spatial_basis_depth=gaze_spatial_basis_depth,
-            gaze_conv_dim=gaze_conv_dim,
-            contrastive_dim=contrastive_dim,
+            gaze_key_dim=gaze_key_dim,
             num_channels=num_channels,
-            target_sigma_x=target_sigma_x,
-            target_sigma_y=target_sigma_y,
         )
 
     def _pack_hstate(self, actor_lstm_state, critic_lstm_state):
@@ -109,12 +103,6 @@ class GazeImageActorCriticPolicy(AgentPolicy):
         action = pi.sample(seed=rng)
         new_hstate = self._pack_hstate(*new_hidden)
         return action, value, pi, new_hstate, aux
-
-    @partial(jax.jit, static_argnums=(0,))
-    def get_contrastive_features(self, params, obs):
-        return self.network.apply(
-            params, obs, method=self.network.contrastive_features
-        )
 
     def init_hstate(self, batch_size, aux_info=None):
         d = self.lstm_hidden_dim

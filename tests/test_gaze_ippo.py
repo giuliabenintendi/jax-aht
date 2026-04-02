@@ -25,8 +25,7 @@ def test_gaze_policy_forward_pass():
         conv_stride=2,
         fc_hidden_dim=8,
         lstm_hidden_dim=8,
-        gaze_hidden_dim=8,
-        contrastive_dim=16,
+        gaze_key_dim=8,
     )
 
     rng = jax.random.PRNGKey(0)
@@ -48,10 +47,7 @@ def test_gaze_policy_forward_pass():
     assert aux["attn_map"].shape[0] == 1
     assert aux["attn_map"].shape[1] == 1
     assert jnp.allclose(aux["attn_map"].sum(axis=(-2, -1)), 1.0, atol=1e-5)
-
-    contrastive = policy.get_contrastive_features(params, jnp.zeros((2, obs_dim)))
-    assert contrastive["contrastive_repr"].shape == (2, 16)
-    assert contrastive["attn_map"].shape[0] == 2
+    assert aux["glimpse"].shape[-1] == 4
 
 
 def test_gaze_train_loop_card_game():
@@ -79,22 +75,12 @@ def test_gaze_train_loop_card_game():
         "MAX_GRAD_NORM": 1.0,
         "FC_HIDDEN_DIM": 8,
         "LSTM_HIDDEN_DIM": 8,
-        "GAZE_HIDDEN_DIM": 8,
-        "CONTRASTIVE_DIM": 16,
+        "GAZE_KEY_DIM": 8,
         "CONV_FILTERS": 4,
         "CONV_NUM_BLOCKS": 2,
         "CONV_KERNEL_SIZE": 3,
         "CONV_STRIDE": 2,
         "CONV_PADDING": "SAME",
-        "CONTRASTIVE_BUFFER_CAPACITY": 64,
-        "CONTRASTIVE_TOP_K": 4,
-        "CONTRASTIVE_NUM_ANCHORS": 4,
-        "CONTRASTIVE_MICROBATCH_SIZE": 2,
-        "CONTRASTIVE_RETURN_MARGIN": 0.0,
-        "CONTRASTIVE_TRIPLET_MARGIN": 0.2,
-        "CONTRASTIVE_WEIGHT": 0.1,
-        "SPREAD_WEIGHT": 0.01,
-        "CONTRASTIVE_RETURN_GAMMA": 1.0,
         "TRAIN_SEED": 0,
     }
 
@@ -111,7 +97,4 @@ def test_gaze_train_loop_card_game():
         all_metrics.append(metric)
 
     assert len(all_metrics) == num_updates
-    assert "loss_contrastive" in all_metrics[-1]
-    assert "triplet_valid_frac" in all_metrics[-1]
     assert jnp.isfinite(all_metrics[-1]["loss_total"])
-    assert float(all_metrics[-1]["contrastive_buffer_size"]) > 0.0

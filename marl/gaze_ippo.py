@@ -1,4 +1,4 @@
-"""Gaze-IPPO: image IPPO augmented with return-guided contrastive attention.
+"""Gaze-IPPO: image IPPO with attention-based gaze.
 
 This is a pragmatic adaptation of "Gaze on the Prize" for the current
 parameter-shared PPO codepath and is scoped to image observations.
@@ -34,34 +34,12 @@ class GazeTransition(NamedTuple):
     obs: jnp.ndarray
     info: jnp.ndarray
     avail_actions: jnp.ndarray
-    feature_embed: jnp.ndarray
     gaze_reward: jnp.ndarray
     raw_env_reward: jnp.ndarray
     gaze_mu_x: jnp.ndarray
     gaze_mu_y: jnp.ndarray
     gaze_sigma_x: jnp.ndarray
     gaze_sigma_y: jnp.ndarray
-
-
-class ContrastiveBufferState(NamedTuple):
-    obs: jnp.ndarray
-    embed: jnp.ndarray
-    returns: jnp.ndarray
-    ptr: jnp.ndarray
-    size: jnp.ndarray
-
-
-def _quantize_obs(obs: jnp.ndarray) -> jnp.ndarray:
-    """Store image observations compactly as uint8 in [0, 255]."""
-    return jnp.clip(jnp.rint(obs * 255.0), 0.0, 255.0).astype(jnp.uint8)
-
-
-def _dequantize_obs(obs: jnp.ndarray) -> jnp.ndarray:
-    """Recover float32 observations in [0, 1] for policy forward passes."""
-    if obs.dtype == jnp.uint8:
-        return obs.astype(jnp.float32) / 255.0
-    return obs.astype(jnp.float32)
-
 
 def _create_gaze_minibatches(traj_batch, advantages, targets, return_targets,
                              init_hstate, num_actors, num_minibatches, perm_rng):
@@ -81,43 +59,6 @@ def _create_gaze_minibatches(traj_batch, advantages, targets, return_targets,
     )
     return minibatches
 
-
-def _contrastive_buffer_init(capacity, obs_dim, embed_dim):
-    return ContrastiveBufferState(
-        obs=jnp.zeros((capacity, obs_dim), dtype=jnp.uint8),
-        embed=jnp.zeros((capacity, embed_dim), dtype=jnp.float32),
-        returns=jnp.zeros((capacity,), dtype=jnp.float32),
-        ptr=jnp.array(0, dtype=jnp.int32),
-        size=jnp.array(0, dtype=jnp.int32),
-    )
-
-
-def _contrastive_buffer_add(buffer_state, obs, embed, returns):
-    capacity = buffer_state.obs.shape[0]
-    if buffer_state.obs.dtype == jnp.uint8 and obs.dtype != jnp.uint8:
-        obs = _quantize_obs(obs)
-    num_new = obs.shape[0]
-    if num_new > capacity:
-        obs = obs[-capacity:]
-        embed = embed[-capacity:]
-        returns = returns[-capacity:]
-        num_new = capacity
-
-    idx = (buffer_state.ptr + jnp.arange(num_new)) % capacity
-    new_obs = buffer_state.obs.at[idx].set(obs)
-    new_embed = buffer_state.embed.at[idx].set(embed)
-    new_returns = buffer_state.returns.at[idx].set(returns)
-    new_ptr = (buffer_state.ptr + num_new) % capacity
-    new_size = jnp.minimum(buffer_state.size + num_new, capacity)
-    return ContrastiveBufferState(
-        obs=new_obs,
-        embed=new_embed,
-        returns=new_returns,
-        ptr=new_ptr,
-        size=new_size,
-    )
-
-
 def _compute_future_returns(rewards, dones, gamma=1.0):
     def _scan_fn(carry, xs):
         reward_t, done_t = xs
@@ -131,14 +72,6 @@ def _compute_future_returns(rewards, dones, gamma=1.0):
         reverse=True,
     )
     return returns
-
-
-def _cosine_similarity(a, b):
-    a = a / jnp.maximum(jnp.linalg.norm(a, axis=-1, keepdims=True), 1e-8)
-    b = b / jnp.maximum(jnp.linalg.norm(b, axis=-1, keepdims=True), 1e-8)
-    return jnp.sum(a * b, axis=-1)
-
-
 def make_train(config, env):
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
     config["NUM_UPDATES"] = int(
@@ -155,22 +88,6 @@ def make_train(config, env):
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     gaze_warmup_updates = gaze_warmup_env_steps / env_steps_per_update
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
-    top_k = min(config.get("CONTRASTIVE_TOP_K", 16), config.get("CONTRASTIVE_BUFFER_CAPACITY", 8192))
-    num_anchors = min(
-        config.get("CONTRASTIVE_NUM_ANCHORS", 128),
-        config["ROLLOUT_LENGTH"] * num_actors,
-    )
-    contrastive_microbatch_size = max(
-        1,
-        min(config.get("CONTRASTIVE_MICROBATCH_SIZE", 32), num_anchors),
-    )
-    contrastive_num_chunks = int(
-        np.ceil(num_anchors / contrastive_microbatch_size)
-    )
-    return_margin = config.get("CONTRASTIVE_RETURN_MARGIN", 0.0)
-    triplet_margin = config.get("CONTRASTIVE_TRIPLET_MARGIN", 0.2)
-    attn_weight = config.get("CONTRASTIVE_WEIGHT", 0.1)
-    spread_weight = config.get("SPREAD_WEIGHT", 0.01)
     img_h, img_w, _ = _get_image_dims(env)
     feat_h, feat_w = _compute_resnet_output_dims(
         img_h, img_w,
@@ -209,45 +126,14 @@ def make_train(config, env):
         init_hstate = policy.init_hstate(num_actors)
         init_done = {k: jnp.zeros((config["NUM_ENVS"]), dtype=bool) for k in env.agents + ["__all__"]}
 
-        embed_dim = config.get("CONV_FILTERS", 32)
-        buffer_state = _contrastive_buffer_init(
-            config.get("CONTRASTIVE_BUFFER_CAPACITY", 8192),
-            policy.obs_dim,
-            embed_dim,
-        )
         if feed_other_attn:
             init_other_attn = jnp.ones((num_actors, feat_h, feat_w)) / (feat_h * feat_w)
-            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng, buffer_state, init_other_attn)
+            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng, init_other_attn)
         else:
-            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng, buffer_state)
+            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
         return runner_state, policy
 
     def make_step_fn(policy):
-        def _chunked_contrastive_features(params, obs_batch):
-            """Run contrastive encodes in smaller chunks to avoid GPU conv spikes."""
-            obs_batch = _dequantize_obs(obs_batch)
-            if contrastive_num_chunks == 1:
-                return policy.get_contrastive_features(params, obs_batch)
-
-            batch_size = obs_batch.shape[0]
-            total_size = contrastive_num_chunks * contrastive_microbatch_size
-            pad = total_size - batch_size
-            obs_batch = jnp.pad(obs_batch, ((0, pad), (0, 0)))
-            obs_chunks = obs_batch.reshape(
-                contrastive_num_chunks,
-                contrastive_microbatch_size,
-                obs_batch.shape[-1],
-            )
-
-            def _encode_chunk(_, obs_chunk):
-                return None, policy.get_contrastive_features(params, obs_chunk)
-
-            _, aux_chunks = jax.lax.scan(_encode_chunk, None, obs_chunks)
-            return jax.tree.map(
-                lambda x: x.reshape((total_size,) + x.shape[2:])[:batch_size],
-                aux_chunks,
-            )
-
         def _augment_obs_with_attn(obs_batch, prev_other_attn):
             """Append upsampled partner gaze as a 4th image channel."""
             rgb = obs_batch.reshape(num_actors, img_h, img_w, 3)
@@ -277,9 +163,9 @@ def make_train(config, env):
 
             def _env_step(runner_state, unused):
                 if feed_other_attn:
-                    train_state, env_state, last_obs, last_done, hstate, rng, buffer_state, prev_other_attn = runner_state
+                    train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn = runner_state
                 else:
-                    train_state, env_state, last_obs, last_done, hstate, rng, buffer_state = runner_state
+                    train_state, env_state, last_obs, last_done, hstate, rng = runner_state
 
                 rng, act_rng = jax.random.split(rng)
                 last_obs_batch = batchify(last_obs, env.agents, num_actors)
@@ -305,7 +191,6 @@ def make_train(config, env):
                 action = action.squeeze()
                 log_prob = log_prob.squeeze()
                 value = value.squeeze()
-                feature_embed = aux["feature_embed"].squeeze(0)
                 attn_map = aux["attn_map"]
 
                 env_act = unbatchify(action, env.agents, num_envs, env.num_agents)
@@ -334,10 +219,9 @@ def make_train(config, env):
                     value,
                     combined_reward,
                     log_prob,
-                    _quantize_obs(last_obs_batch),
+                    last_obs_batch,
                     info,
                     avail_actions_batch,
-                    feature_embed,
                     r_gaze_batch,
                     reward_batch,
                     aux["gaze_mu_x"].squeeze(0),
@@ -350,10 +234,10 @@ def make_train(config, env):
                     new_other_attn = _swap_and_reset_attn(attn_map, new_done_batch)
                     runner_state = (
                         train_state, new_env_state, new_obs, new_done, new_hstate,
-                        rng, buffer_state, new_other_attn,
+                        rng, new_other_attn,
                     )
                 else:
-                    runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng, buffer_state)
+                    runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
                 return runner_state, transition
 
             runner_state, traj_batch = jax.lax.scan(
@@ -361,21 +245,9 @@ def make_train(config, env):
             )
 
             if feed_other_attn:
-                train_state, env_state, last_obs, last_done, hstate, rng, buffer_state, prev_other_attn = runner_state
+                train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn = runner_state
             else:
-                train_state, env_state, last_obs, last_done, hstate, rng, buffer_state = runner_state
-
-            contrastive_returns = _compute_future_returns(
-                traj_batch.reward,
-                traj_batch.done,
-                gamma=config.get("CONTRASTIVE_RETURN_GAMMA", 1.0),
-            )
-            buffer_state = _contrastive_buffer_add(
-                buffer_state,
-                traj_batch.obs.reshape(-1, traj_batch.obs.shape[-1]),
-                traj_batch.feature_embed.reshape(-1, traj_batch.feature_embed.shape[-1]),
-                contrastive_returns.reshape(-1),
-            )
+                train_state, env_state, last_obs, last_done, hstate, rng = runner_state
 
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
@@ -419,70 +291,14 @@ def make_train(config, env):
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
-            def _compute_contrastive_loss(params, minibatch, minibatch_returns, loss_rng):
-                flat_obs = minibatch.obs.reshape(-1, minibatch.obs.shape[-1])
-                flat_embed = minibatch.feature_embed.reshape(-1, minibatch.feature_embed.shape[-1])
-                flat_returns = minibatch_returns.reshape(-1)
-
-                perm = jax.random.permutation(loss_rng, flat_obs.shape[0])
-                anchor_idx = perm[:num_anchors]
-                anchor_obs = flat_obs[anchor_idx]
-                anchor_embed = flat_embed[anchor_idx]
-                anchor_returns = flat_returns[anchor_idx]
-
-                valid_buffer = jnp.arange(buffer_state.obs.shape[0]) < buffer_state.size
-                norm_anchor = anchor_embed / jnp.maximum(jnp.linalg.norm(anchor_embed, axis=-1, keepdims=True), 1e-8)
-                norm_buffer = buffer_state.embed / jnp.maximum(jnp.linalg.norm(buffer_state.embed, axis=-1, keepdims=True), 1e-8)
-                sims = norm_anchor @ norm_buffer.T
-                sims = jnp.where(valid_buffer[None, :], sims, -jnp.inf)
-                _, nn_idx = jax.lax.top_k(sims, top_k)
-                nn_sims = jnp.take_along_axis(sims, nn_idx, axis=1)
-                nn_returns = buffer_state.returns[nn_idx]
-
-                pos_mask = nn_returns > (anchor_returns[:, None] + return_margin)
-                neg_mask = nn_returns < (anchor_returns[:, None] - return_margin)
-                valid_triplet = pos_mask.any(axis=1) & neg_mask.any(axis=1)
-
-                pos_scores = jnp.where(pos_mask, nn_sims, -jnp.inf)
-                neg_scores = jnp.where(neg_mask, nn_sims, -jnp.inf)
-                pos_choice = jnp.argmax(pos_scores, axis=1)
-                neg_choice = jnp.argmax(neg_scores, axis=1)
-                pos_idx = nn_idx[jnp.arange(nn_idx.shape[0]), pos_choice]
-                neg_idx = nn_idx[jnp.arange(nn_idx.shape[0]), neg_choice]
-
-                pos_obs = buffer_state.obs[pos_idx]
-                neg_obs = buffer_state.obs[neg_idx]
-
-                anchor_aux = _chunked_contrastive_features(params, anchor_obs)
-                pos_aux = _chunked_contrastive_features(params, pos_obs)
-                neg_aux = _chunked_contrastive_features(params, neg_obs)
-
-                d_ap = 1.0 - _cosine_similarity(
-                    anchor_aux["contrastive_repr"], pos_aux["contrastive_repr"]
-                )
-                d_an = 1.0 - _cosine_similarity(
-                    anchor_aux["contrastive_repr"], neg_aux["contrastive_repr"]
-                )
-                triplet_losses = jnp.maximum(0.0, d_ap - d_an + triplet_margin)
-                valid_float = valid_triplet.astype(jnp.float32)
-                contrastive_loss = jnp.sum(triplet_losses * valid_float) / jnp.maximum(valid_float.sum(), 1.0)
-
-                spread_loss = (
-                    anchor_aux["spread_loss"] + pos_aux["spread_loss"] + neg_aux["spread_loss"]
-                ) / 3.0
-                spread_loss = jnp.sum(spread_loss * valid_float) / jnp.maximum(valid_float.sum(), 1.0)
-
-                return contrastive_loss, spread_loss, valid_float.mean()
-
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
-                    init_hstate, minibatch, mb_advantages, mb_targets, mb_returns = batch_info
+                    init_hstate, minibatch, mb_advantages, mb_targets, _mb_returns = batch_info
 
-                    def _loss_fn(params, minibatch, mb_advantages, mb_targets, mb_returns):
-                        obs = _dequantize_obs(minibatch.obs)
+                    def _loss_fn(params, minibatch, mb_advantages, mb_targets, _mb_returns):
                         _, value, pi, _, _ = policy.get_action_value_policy(
                             params=params,
-                            obs=obs,
+                            obs=minibatch.obs,
                             done=minibatch.done,
                             avail_actions=minibatch.avail_actions,
                             hstate=init_hstate,
@@ -507,24 +323,15 @@ def make_train(config, env):
                         ) * mb_advantages
                         loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
                         entropy = pi.entropy().mean()
-
-                        contrastive_loss, spread_loss, valid_triplet_frac = _compute_contrastive_loss(
-                            params, minibatch, mb_returns, jax.random.PRNGKey(0)
-                        )
                         total_loss = (
                             loss_actor
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
-                            + attn_weight * contrastive_loss
-                            + spread_weight * spread_loss
                         )
                         aux = (
                             value_loss,
                             loss_actor,
                             entropy,
-                            contrastive_loss,
-                            spread_loss,
-                            valid_triplet_frac,
                         )
                         return total_loss, aux
 
@@ -557,7 +364,12 @@ def make_train(config, env):
                 return update_state, minibatch_info
 
             init_hstate = policy.init_hstate(num_actors)
-            update_state = (train_state, init_hstate, traj_batch, advantages, targets, contrastive_returns, rng)
+            rollout_returns = _compute_future_returns(
+                traj_batch.reward,
+                traj_batch.done,
+                gamma=1.0,
+            )
+            update_state = (train_state, init_hstate, traj_batch, advantages, targets, rollout_returns, rng)
             update_state, loss_info = jax.lax.scan(
                 _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
             )
@@ -567,9 +379,6 @@ def make_train(config, env):
                 value_loss,
                 policy_loss,
                 entropy,
-                contrastive_loss,
-                spread_loss,
-                valid_triplet_frac,
             )), grad_norm = loss_info
 
             gaze_rew_0 = traj_batch.gaze_reward[:, :num_envs]
@@ -593,18 +402,14 @@ def make_train(config, env):
             metric["loss_value"] = value_loss.mean()
             metric["loss_policy"] = policy_loss.mean()
             metric["entropy"] = entropy.mean()
-            metric["loss_contrastive"] = contrastive_loss.mean()
-            metric["loss_spread"] = spread_loss.mean()
-            metric["triplet_valid_frac"] = valid_triplet_frac.mean()
             metric["grad_norm"] = grad_norm.mean()
             metric["value_mean"] = traj_batch.value.mean()
-            metric["contrastive_buffer_size"] = buffer_state.size.astype(jnp.float32)
 
             rng = update_state[-1]
             if feed_other_attn:
-                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, buffer_state, prev_other_attn)
+                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
             else:
-                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, buffer_state)
+                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
             return runner_state, update_steps + 1, metric
 
         return step_fn
@@ -719,12 +524,8 @@ def log_metrics(config, out, logger):
         ("loss_value",             "Loss/value"),
         ("loss_policy",            "Loss/policy"),
         ("entropy",                "Loss/entropy"),
-        ("loss_contrastive",       "Loss/contrastive"),
-        ("loss_spread",            "Loss/spread"),
         ("grad_norm",              "Loss/grad_norm"),
         ("value_mean",             "Value/mean"),
-        ("triplet_valid_frac",     "Contrastive/valid_triplet_frac"),
-        ("contrastive_buffer_size","Contrastive/buffer_size"),
     ]
 
     scalar_mean = {}
