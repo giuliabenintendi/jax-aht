@@ -1,13 +1,20 @@
-"""Attention-gaze actor-critic for image observations.
+"""Mott-style attention actor-critic for image observations.
 
-Per-agent architecture:
-  obs (flat) -> unpack image (H_px, W_px, num_channels)
-  Image -> ResNet encoder -> features F  (H_out, W_out, filters)
-  F + spatial basis -> gaze attention readout -> gaze map A, glimpse G
-  G -> FC -> FC -> LSTM -> projection
+This module ports the core attention-controller interface from:
+  Mott et al., "Towards Interpretable Reinforcement Learning Using
+  Attention Augmented Agents" (NeurIPS 2019)
+and the accompanying replication in:
+  external/mott_attention_replication/attention.py
 
-The actor and critic use separate recurrent trunks, matching the existing JA
-image policy structure.
+Paper-faithful choices implemented here:
+  - one shared recurrent controller for policy + value
+  - queries generated from the previous recurrent output only
+  - multiple top-down queries over spatial keys/values
+  - controller input = answers + queries + previous reward + previous action
+
+Adaptation for this codebase:
+  - uses the existing ResNet visual encoder instead of the paper's Atari CNN
+    + ConvLSTM visual stack
 """
 import functools
 
@@ -54,15 +61,54 @@ def attention_map_moments(attn_map: jnp.ndarray):
     }
 
 
-class GazeAttentionReadout(nn.Module):
-    """Predict a gaze map via JA-style spatial attention and return a glimpse."""
+class MottQueryNetwork(nn.Module):
+    """Top-down query MLP from previous recurrent output.
+
+    Mirrors the replication's QueryNetwork structure:
+      hidden -> 128 -> 288 -> num_queries * query_dim
+    """
+
+    num_queries: int
+    query_dim: int
+    hidden_dim_1: int = 128
+    hidden_dim_2: int = 288
+
+    @nn.compact
+    def __call__(self, prev_output: jnp.ndarray) -> jnp.ndarray:
+        x = nn.Dense(
+            self.hidden_dim_1,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="query_fc1",
+        )(prev_output)
+        x = nn.relu(x)
+        x = nn.Dense(
+            self.hidden_dim_2,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="query_fc2",
+        )(x)
+        x = nn.relu(x)
+        x = nn.Dense(
+            self.num_queries * self.query_dim,
+            kernel_init=orthogonal(1.0),
+            bias_init=constant(0.0),
+            name="query_fc3",
+        )(x)
+        return x.reshape(prev_output.shape[0], self.num_queries, self.query_dim)
+
+
+class MottAttentionReadout(nn.Module):
+    """Mott-style multi-query readout over spatial keys and values."""
 
     feat_h: int
     feat_w: int
-    conv_filters: int = 32
-    spatial_basis_depth: int = 8
-    key_dim: int = 16
-    state_dim: int = 0
+    key_dim: int = 8
+    value_dim: int = 120
+    num_queries: int = 4
+    spatial_basis_depth: int = 64
+    query_hidden_dim_1: int = 128
+    query_hidden_dim_2: int = 288
 
     def setup(self):
         self.spatial_basis = make_sinusoidal_spatial_basis(
@@ -70,52 +116,87 @@ class GazeAttentionReadout(nn.Module):
         )
 
     @nn.compact
-    def __call__(self, feature_maps: jnp.ndarray, state_vec: jnp.ndarray | None = None):
+    def __call__(
+        self,
+        feature_maps: jnp.ndarray,
+        prev_output: jnp.ndarray,
+        prev_reward: jnp.ndarray,
+        prev_action: jnp.ndarray,
+    ):
         batch_size = feature_maps.shape[0]
         spatial = jnp.broadcast_to(
             self.spatial_basis[None, ...],
             (batch_size, self.feat_h, self.feat_w, self.spatial_basis_depth),
         )
-        features_with_pos = jnp.concatenate([feature_maps, spatial], axis=-1)
 
-        keys = nn.Conv(
+        key_maps = nn.Conv(
             features=self.key_dim,
             kernel_size=(1, 1),
             kernel_init=orthogonal(1.0),
             bias_init=constant(0.0),
-            name="gaze_key_conv",
-        )(features_with_pos)
-        keys = keys.reshape(batch_size, self.feat_h * self.feat_w, self.key_dim)
-
-        values = nn.Conv(
-            features=self.conv_filters,
+            name="key_conv",
+        )(feature_maps)
+        value_maps = nn.Conv(
+            features=self.value_dim,
             kernel_size=(1, 1),
             kernel_init=orthogonal(1.0),
             bias_init=constant(0.0),
-            name="gaze_value_conv",
-        )(features_with_pos)
-        values = values.reshape(batch_size, self.feat_h * self.feat_w, self.conv_filters)
+            name="value_conv",
+        )(feature_maps)
 
-        global_context = feature_maps.mean(axis=(1, 2))
-        if state_vec is None:
-            state_vec = jnp.zeros((batch_size, self.state_dim), dtype=feature_maps.dtype)
-        query_input = jnp.concatenate([global_context, state_vec], axis=-1)
+        keys = jnp.concatenate([key_maps, spatial], axis=-1)
+        values = jnp.concatenate([value_maps, spatial], axis=-1)
 
-        query = nn.Dense(
-            self.key_dim,
-            kernel_init=orthogonal(1.0),
-            bias_init=constant(0.0),
-            name="gaze_query_ffn",
-        )(query_input)
-        gaze_logits = jnp.einsum("bnc,bc->bn", keys, query) / np.sqrt(self.key_dim)
-        gaze_weights = jax.nn.softmax(gaze_logits, axis=-1)
-        gaze_map = gaze_weights.reshape(batch_size, self.feat_h, self.feat_w)
-        glimpse = jnp.einsum("bn,bnc->bc", gaze_weights, values)
-        return glimpse, gaze_map, attention_map_moments(gaze_map)
+        query_dim = self.key_dim + self.spatial_basis_depth
+        queries = MottQueryNetwork(
+            num_queries=self.num_queries,
+            query_dim=query_dim,
+            hidden_dim_1=self.query_hidden_dim_1,
+            hidden_dim_2=self.query_hidden_dim_2,
+            name="query_network",
+        )(prev_output)
+
+        keys = keys.reshape(batch_size, self.feat_h * self.feat_w, query_dim)
+        values = values.reshape(
+            batch_size, self.feat_h * self.feat_w, self.value_dim + self.spatial_basis_depth
+        )
+
+        attn_logits = jnp.einsum("bnc,bqc->bnq", keys, queries) / np.sqrt(query_dim)
+        attn_weights = jax.nn.softmax(attn_logits, axis=1)
+        answers = jnp.einsum("bnq,bnd->bqd", attn_weights, values)
+
+        attn_maps = jnp.transpose(attn_weights, (0, 2, 1)).reshape(
+            batch_size, self.num_queries, self.feat_h, self.feat_w
+        )
+        mean_attn_map = attn_maps.mean(axis=1)
+        gaze_stats = attention_map_moments(mean_attn_map)
+
+        control_input = jnp.concatenate(
+            [
+                answers.reshape(batch_size, -1),
+                queries.reshape(batch_size, -1),
+                prev_reward[:, None].astype(feature_maps.dtype),
+                prev_action[:, None].astype(feature_maps.dtype),
+            ],
+            axis=-1,
+        )
+
+        aux = {
+            "attn_map": mean_attn_map,
+            "attn_maps": attn_maps,
+            "answers": answers,
+            "queries": queries,
+            "gaze_mu_x": gaze_stats["mu_x"],
+            "gaze_mu_y": gaze_stats["mu_y"],
+            "gaze_sigma_x": gaze_stats["sigma_x"],
+            "gaze_sigma_y": gaze_stats["sigma_y"],
+            "gaze_rho": gaze_stats["rho"],
+        }
+        return control_input, aux
 
 
 class GazeImageScannedLSTM(nn.Module):
-    """Scanned recurrent image trunk with attention-based gaze."""
+    """Shared Mott-style visual/controller trunk scanned over time."""
 
     img_height: int
     img_width: int
@@ -125,10 +206,15 @@ class GazeImageScannedLSTM(nn.Module):
     conv_kernel_size: int = 3
     conv_stride: int = 2
     conv_padding: str = "SAME"
-    fc_hidden_dim: int = 64
-    lstm_hidden_dim: int = 64
-    gaze_spatial_basis_depth: int = 8
-    gaze_key_dim: int = 16
+    fc_hidden_dim: int = 512
+    lstm_hidden_dim: int = 256
+    gaze_spatial_basis_depth: int = 64
+    gaze_key_dim: int = 8
+    gaze_value_dim: int = 120
+    gaze_num_queries: int = 4
+    query_hidden_dim_1: int = 128
+    query_hidden_dim_2: int = 288
+
     def setup(self):
         self._img_flat_dim = self.img_height * self.img_width * self.num_channels
         self.feat_h, self.feat_w = _compute_resnet_output_dims(
@@ -147,26 +233,28 @@ class GazeImageScannedLSTM(nn.Module):
             padding=self.conv_padding,
             name="resnet_encoder",
         )
-        self.gaze_head = GazeAttentionReadout(
+        self.attention_readout = MottAttentionReadout(
             feat_h=self.feat_h,
             feat_w=self.feat_w,
-            conv_filters=self.conv_filters,
-            spatial_basis_depth=self.gaze_spatial_basis_depth,
             key_dim=self.gaze_key_dim,
-            state_dim=2 * self.lstm_hidden_dim,
-            name="gaze_head",
+            value_dim=self.gaze_value_dim,
+            num_queries=self.gaze_num_queries,
+            spatial_basis_depth=self.gaze_spatial_basis_depth,
+            query_hidden_dim_1=self.query_hidden_dim_1,
+            query_hidden_dim_2=self.query_hidden_dim_2,
+            name="attention_readout",
         )
-        self.input_fc1 = nn.Dense(
+        self.answer_fc1 = nn.Dense(
             self.fc_hidden_dim,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
-            name="input_fc1",
+            name="answer_fc1",
         )
-        self.input_fc2 = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
+        self.answer_fc2 = nn.Dense(
+            self.lstm_hidden_dim,
+            kernel_init=orthogonal(1.0),
             bias_init=constant(0.0),
-            name="input_fc2",
+            name="answer_fc2",
         )
         self.shared_lstm = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
@@ -180,30 +268,6 @@ class GazeImageScannedLSTM(nn.Module):
             jnp.zeros((batch_size, hidden_size)),
         )
 
-    def _encode_gaze_features(self, obs_flat, lstm_h=None, lstm_c=None, stop_gradient=False):
-        image = obs_flat[:, :self._img_flat_dim].reshape(
-            obs_flat.shape[0], self.img_height, self.img_width, self.num_channels
-        )
-        feature_maps = self.resnet_encoder(image)
-        if stop_gradient:
-            feature_maps = jax.lax.stop_gradient(feature_maps)
-
-        state_vec = None
-        if lstm_h is not None and lstm_c is not None:
-            state_vec = jnp.concatenate([lstm_h, lstm_c], axis=-1)
-
-        glimpse, attn_map, gaze_stats = self.gaze_head(feature_maps, state_vec)
-        aux = {
-            "attn_map": attn_map,
-            "glimpse": glimpse,
-            "gaze_mu_x": gaze_stats["mu_x"],
-            "gaze_mu_y": gaze_stats["mu_y"],
-            "gaze_sigma_x": gaze_stats["sigma_x"],
-            "gaze_sigma_y": gaze_stats["sigma_y"],
-            "gaze_rho": gaze_stats["rho"],
-        }
-        return glimpse, aux
-
     @functools.partial(
         nn.scan,
         variable_broadcast="params",
@@ -213,27 +277,38 @@ class GazeImageScannedLSTM(nn.Module):
     )
     def __call__(self, carry, x):
         lstm_h, lstm_c = carry
-        obs_flat, dones = x
+        obs_flat, dones, prev_reward, prev_action = x
         batch_size = obs_flat.shape[0]
 
         zero_h, zero_c = self.initialize_carry(batch_size, self.lstm_hidden_dim)
         lstm_h = jnp.where(dones[:, None], zero_h, lstm_h)
         lstm_c = jnp.where(dones[:, None], zero_c, lstm_c)
+        prev_reward = jnp.where(dones, 0.0, prev_reward)
+        prev_action = jnp.where(dones, 0.0, prev_action)
 
-        glimpse, aux = self._encode_gaze_features(
-            obs_flat, lstm_h=lstm_h, lstm_c=lstm_c, stop_gradient=False
+        image = obs_flat[:, :self._img_flat_dim].reshape(
+            batch_size, self.img_height, self.img_width, self.num_channels
+        )
+        feature_maps = self.resnet_encoder(image)
+
+        control_input, aux = self.attention_readout(
+            feature_maps,
+            prev_output=lstm_h,
+            prev_reward=prev_reward,
+            prev_action=prev_action,
         )
 
-        lstm_input = self.input_fc1(glimpse)
-        lstm_input = nn.relu(lstm_input)
-        lstm_input = self.input_fc2(lstm_input)
-        lstm_input = nn.relu(lstm_input)
+        controller_input = self.answer_fc1(control_input)
+        controller_input = nn.relu(controller_input)
+        controller_input = self.answer_fc2(controller_input)
 
-        new_carry, lstm_out = self.shared_lstm((lstm_h, lstm_c), lstm_input)
+        new_carry, lstm_out = self.shared_lstm((lstm_h, lstm_c), controller_input)
+        aux["controller_input"] = controller_input
         return new_carry, (lstm_out, aux)
 
+
 class GazeImageActorCritic(nn.Module):
-    """Actor-critic with attention-based gaze and separate actor/critic trunks."""
+    """Shared-core Mott-style actor-critic with interpretable attention maps."""
 
     action_dim: int
     img_height: int
@@ -244,12 +319,17 @@ class GazeImageActorCritic(nn.Module):
     conv_kernel_size: int = 3
     conv_stride: int = 2
     conv_padding: str = "SAME"
-    fc_hidden_dim: int = 64
-    lstm_hidden_dim: int = 64
-    gaze_spatial_basis_depth: int = 8
-    gaze_key_dim: int = 16
+    fc_hidden_dim: int = 512
+    lstm_hidden_dim: int = 256
+    gaze_spatial_basis_depth: int = 64
+    gaze_key_dim: int = 8
+    gaze_value_dim: int = 120
+    gaze_num_queries: int = 4
+    query_hidden_dim_1: int = 128
+    query_hidden_dim_2: int = 288
+
     def setup(self):
-        trunk_kwargs = dict(
+        self.shared_trunk = GazeImageScannedLSTM(
             img_height=self.img_height,
             img_width=self.img_width,
             num_channels=self.num_channels,
@@ -262,65 +342,40 @@ class GazeImageActorCritic(nn.Module):
             lstm_hidden_dim=self.lstm_hidden_dim,
             gaze_spatial_basis_depth=self.gaze_spatial_basis_depth,
             gaze_key_dim=self.gaze_key_dim,
+            gaze_value_dim=self.gaze_value_dim,
+            gaze_num_queries=self.gaze_num_queries,
+            query_hidden_dim_1=self.query_hidden_dim_1,
+            query_hidden_dim_2=self.query_hidden_dim_2,
+            name="shared_trunk",
         )
-        self.actor_lstm = GazeImageScannedLSTM(**trunk_kwargs, name="actor_lstm")
-        self.critic_lstm = GazeImageScannedLSTM(**trunk_kwargs, name="critic_lstm")
-        self.actor_fc1 = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="actor_fc1",
-        )
-        self.actor_fc2 = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="actor_fc2",
-        )
-        self.actor_proj = nn.Dense(
+        self.policy_head = nn.Dense(
             self.action_dim,
             kernel_init=orthogonal(0.01),
             bias_init=constant(0.0),
-            name="actor_proj",
+            name="policy_head",
         )
-        self.critic_fc1 = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="critic_fc1",
-        )
-        self.critic_fc2 = nn.Dense(
-            self.fc_hidden_dim,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-            name="critic_fc2",
-        )
-        self.critic_proj = nn.Dense(
+        self.value_head = nn.Dense(
             1,
             kernel_init=orthogonal(1.0),
             bias_init=constant(0.0),
-            name="critic_proj",
+            name="value_head",
         )
 
     def __call__(self, hidden, x):
-        obs, dones, avail_actions = x
-        actor_lstm_state, critic_lstm_state = hidden
+        if len(x) == 3:
+            obs, dones, avail_actions = x
+            prev_reward = jnp.zeros(obs.shape[:2], dtype=obs.dtype)
+            prev_action = jnp.zeros(obs.shape[:2], dtype=obs.dtype)
+        else:
+            obs, dones, avail_actions, prev_reward, prev_action = x
 
-        actor_lstm_state, (actor_embed, actor_aux) = self.actor_lstm(
-            actor_lstm_state, (obs, dones)
+        hidden, (shared_embed, aux) = self.shared_trunk(
+            hidden, (obs, dones, prev_reward, prev_action)
         )
-        actor_out = nn.relu(self.actor_fc1(actor_embed))
-        actor_out = nn.relu(self.actor_fc2(actor_out))
-        action_logits = self.actor_proj(actor_out)
+
+        action_logits = self.policy_head(shared_embed)
         action_logits = mask_action_logits(action_logits, avail_actions)
         pi = distrax.Categorical(logits=action_logits)
 
-        critic_lstm_state, (critic_embed, _) = self.critic_lstm(
-            critic_lstm_state, (obs, dones)
-        )
-        critic_out = nn.relu(self.critic_fc1(critic_embed))
-        critic_out = nn.relu(self.critic_fc2(critic_out))
-        value = self.critic_proj(critic_out)
-
-        new_hidden = (actor_lstm_state, critic_lstm_state)
-        return new_hidden, pi, jnp.squeeze(value, axis=-1), actor_aux
+        value = self.value_head(shared_embed)
+        return hidden, pi, jnp.squeeze(value, axis=-1), aux

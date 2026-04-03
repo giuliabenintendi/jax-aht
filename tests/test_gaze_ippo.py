@@ -47,7 +47,8 @@ def test_gaze_policy_forward_pass():
     assert aux["attn_map"].shape[0] == 1
     assert aux["attn_map"].shape[1] == 1
     assert jnp.allclose(aux["attn_map"].sum(axis=(-2, -1)), 1.0, atol=1e-5)
-    assert aux["glimpse"].shape[-1] == 4
+    assert aux["attn_maps"].shape[2] == 4
+    assert aux["queries"].shape[-2] == 4
 
 
 def test_gaze_train_loop_card_game():
@@ -75,7 +76,7 @@ def test_gaze_train_loop_card_game():
         "MAX_GRAD_NORM": 1.0,
         "FC_HIDDEN_DIM": 8,
         "LSTM_HIDDEN_DIM": 8,
-        "GAZE_KEY_DIM": 8,
+        "MOTT_KEY_DIM": 8,
         "CONV_FILTERS": 4,
         "CONV_NUM_BLOCKS": 2,
         "CONV_KERNEL_SIZE": 3,

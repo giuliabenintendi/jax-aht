@@ -64,6 +64,12 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
             done = {k: jnp.zeros((1,), dtype=bool) for k in inner_env.agents + ["__all__"]}
             hstate_0 = policy.init_hstate(1)
             hstate_1 = policy.init_hstate(1)
+            use_prev_io = getattr(policy, "uses_prev_reward_action", False)
+            if use_prev_io:
+                prev_reward_0 = jnp.zeros((1, 1), dtype=jnp.float32)
+                prev_reward_1 = jnp.zeros((1, 1), dtype=jnp.float32)
+                prev_action_0 = jnp.zeros((1, 1), dtype=jnp.float32)
+                prev_action_1 = jnp.zeros((1, 1), dtype=jnp.float32)
 
             if feed_attn:
                 prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
@@ -89,6 +95,8 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                     done=done["agent_0"].reshape(1, 1),
                     avail_actions=avail_actions["agent_0"].astype(jnp.float32),
                     hstate=hstate_0, rng=rng0, greedy=greedy,
+                    prev_reward=prev_reward_0 if use_prev_io else None,
+                    prev_action=prev_action_0 if use_prev_io else None,
                 )
                 act_1, hstate_1, attn_1 = policy.get_action_and_attention(
                     params=params,
@@ -96,6 +104,8 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                     done=done["agent_1"].reshape(1, 1),
                     avail_actions=avail_actions["agent_1"].astype(jnp.float32),
                     hstate=hstate_1, rng=rng1, greedy=greedy,
+                    prev_reward=prev_reward_1 if use_prev_io else None,
+                    prev_action=prev_action_1 if use_prev_io else None,
                 )
 
                 if eval_filter_top1:
@@ -112,6 +122,11 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
 
                 env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1.squeeze()}
                 obs, env_state, reward, done, info = inner_env.step(step_rng, env_state, env_act)
+                if use_prev_io:
+                    prev_reward_0 = reward["agent_0"].reshape(1, 1).astype(jnp.float32)
+                    prev_reward_1 = reward["agent_1"].reshape(1, 1).astype(jnp.float32)
+                    prev_action_0 = act_0.reshape(1, 1).astype(jnp.float32)
+                    prev_action_1 = act_1.reshape(1, 1).astype(jnp.float32)
                 total_reward += float(reward["agent_0"])
                 step += 1
 

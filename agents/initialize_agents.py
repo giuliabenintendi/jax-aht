@@ -219,7 +219,7 @@ def initialize_image_agent(config, env, rng):
     return policy, init_params
 
 def initialize_gaze_image_agent(config, env, rng):
-    """Initialize a gaze-based image agent with attention-readout gaze."""
+    """Initialize a Mott-style gaze-based image agent."""
     img_h, img_w, num_scalars = _get_image_dims(env)
     if num_scalars != 0:
         raise NotImplementedError("Gaze image agent currently expects image-only observations.")
@@ -237,8 +237,12 @@ def initialize_gaze_image_agent(config, env, rng):
         conv_padding=config.get("CONV_PADDING", "SAME"),
         fc_hidden_dim=config.get("FC_HIDDEN_DIM", 64),
         lstm_hidden_dim=config.get("LSTM_HIDDEN_DIM", 64),
-        gaze_spatial_basis_depth=config.get("GAZE_SPATIAL_BASIS_DEPTH", 8),
-        gaze_key_dim=config.get("GAZE_KEY_DIM", 16),
+        gaze_spatial_basis_depth=config.get("GAZE_SPATIAL_BASIS_DEPTH", 64),
+        gaze_key_dim=config.get("MOTT_KEY_DIM", config.get("GAZE_KEY_DIM", 8)),
+        gaze_value_dim=config.get("MOTT_VALUE_DIM", 120),
+        gaze_num_queries=config.get("MOTT_NUM_QUERIES", 4),
+        query_hidden_dim_1=config.get("MOTT_QUERY_HIDDEN_DIM_1", 128),
+        query_hidden_dim_2=config.get("MOTT_QUERY_HIDDEN_DIM_2", 288),
         num_channels=num_channels,
     )
 

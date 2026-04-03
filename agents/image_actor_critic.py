@@ -1,11 +1,12 @@
 """Image Actor-Critic network (no attention baseline).
 
-Same ResNet encoder as ja_image_actor_critic.py but without spatial
-attention — features are flattened directly into the LSTM.
+Same ResNet encoder as `ja_image_actor_critic.py` but without spatial
+attention. The image trunk is shared between actor and critic:
 
-Per-agent architecture:
   obs (flat) -> unpack image (H_px, W_px, 3)
-  Image -> ResNet encoder -> flatten -> FC -> FC -> LSTM -> projection
+  Image -> ResNet encoder -> flatten -> FC -> FC -> shared LSTM
+  shared embedding -> actor head
+  shared embedding -> critic head
 """
 import functools
 
@@ -21,7 +22,7 @@ from agents.resnet_encoder import ResNetEncoder
 
 
 class ImageScannedLSTM(nn.Module):
-    """Scanned module: ResNet encoder + flatten + LSTM (no attention)."""
+    """Scanned shared image trunk: ResNet encoder + flatten + LSTM."""
     img_height: int
     img_width: int
     conv_filters: int = 32
@@ -104,7 +105,8 @@ class ImageScannedLSTM(nn.Module):
 class ImageActorCritic(nn.Module):
     """Image Actor-Critic without attention.
 
-    Dual-path (actor LSTM + critic LSTM, no shared weights).
+    Uses a shared image encoder and recurrent state, with separate policy and
+    value heads on top of the shared embedding.
     """
     action_dim: int
     img_height: int
@@ -121,8 +123,6 @@ class ImageActorCritic(nn.Module):
     def __call__(self, hidden, x):
         obs, dones, avail_actions = x
 
-        actor_lstm_state, critic_lstm_state = hidden
-
         rnn_kwargs = dict(
             img_height=self.img_height,
             img_width=self.img_width,
@@ -135,15 +135,14 @@ class ImageActorCritic(nn.Module):
             lstm_hidden_dim=self.lstm_hidden_dim,
         )
 
-        # Actor path
-        actor_lstm_state, (actor_embed,) = ImageScannedLSTM(
-            **rnn_kwargs, name="actor_lstm",
-        )(actor_lstm_state, (obs, dones))
+        hidden, (shared_embed,) = ImageScannedLSTM(
+            **rnn_kwargs, name="shared_lstm",
+        )(hidden, (obs, dones))
 
         actor_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0), name="actor_fc1",
-        )(actor_embed)
+        )(shared_embed)
         actor_out = nn.relu(actor_out)
         actor_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
@@ -158,15 +157,10 @@ class ImageActorCritic(nn.Module):
         action_logits = mask_action_logits(action_logits, avail_actions)
         pi = distrax.Categorical(logits=action_logits)
 
-        # Critic path
-        critic_lstm_state, (critic_embed,) = ImageScannedLSTM(
-            **rnn_kwargs, name="critic_lstm",
-        )(critic_lstm_state, (obs, dones))
-
         critic_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0), name="critic_fc1",
-        )(critic_embed)
+        )(shared_embed)
         critic_out = nn.relu(critic_out)
         critic_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
@@ -178,5 +172,4 @@ class ImageActorCritic(nn.Module):
             name="critic_proj",
         )(critic_out)
 
-        new_hidden = (actor_lstm_state, critic_lstm_state)
-        return new_hidden, pi, jnp.squeeze(value, axis=-1)
+        return hidden, pi, jnp.squeeze(value, axis=-1)

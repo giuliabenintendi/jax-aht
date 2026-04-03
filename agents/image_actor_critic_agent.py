@@ -16,8 +16,8 @@ class ImageActorCriticPolicy(AgentPolicy):
     """Policy wrapper for ImageActorCritic.
 
     Hidden state layout:
-      hstate shape: (1, batch, lstm_hidden_dim * 4)
-      Packs (actor_h, actor_c, critic_h, critic_c) into a single array.
+      hstate shape: (1, batch, lstm_hidden_dim * 2)
+      Packs the shared LSTM carry `(h, c)` into a single array.
     """
 
     def __init__(
@@ -51,22 +51,19 @@ class ImageActorCriticPolicy(AgentPolicy):
         )
         self.lstm_hidden_dim = lstm_hidden_dim
 
-    def _pack_hstate(self, actor_lstm_state, critic_lstm_state):
-        """Pack ((actor_h, actor_c), (critic_h, critic_c)) -> (1, batch, 4*dim)."""
-        actor_h, actor_c = actor_lstm_state
-        critic_h, critic_c = critic_lstm_state
-        packed = jnp.concatenate([actor_h, actor_c, critic_h, critic_c], axis=-1)
+    def _pack_hstate(self, lstm_state):
+        """Pack shared `(h, c)` LSTM state -> (1, batch, 2*dim)."""
+        h, c = lstm_state
+        packed = jnp.concatenate([h, c], axis=-1)
         return packed[None, ...]
 
     def _unpack_hstate(self, hstate):
-        """Unpack (1, batch, 4*dim) -> ((actor_h, actor_c), (critic_h, critic_c))."""
+        """Unpack (1, batch, 2*dim) -> shared `(h, c)` LSTM state."""
         flat = hstate.squeeze(0)
         d = self.lstm_hidden_dim
-        actor_h = flat[..., 0:d]
-        actor_c = flat[..., d:2*d]
-        critic_h = flat[..., 2*d:3*d]
-        critic_c = flat[..., 3*d:4*d]
-        return (actor_h, actor_c), (critic_h, critic_c)
+        h = flat[..., 0:d]
+        c = flat[..., d:2*d]
+        return (h, c)
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
@@ -80,7 +77,7 @@ class ImageActorCriticPolicy(AgentPolicy):
             lambda: pi.mode(),
             lambda: pi.sample(seed=rng),
         )
-        new_hstate = self._pack_hstate(*new_hidden)
+        new_hstate = self._pack_hstate(new_hidden)
         return action, new_hstate
 
     @partial(jax.jit, static_argnums=(0,))
@@ -91,13 +88,13 @@ class ImageActorCriticPolicy(AgentPolicy):
             params, hidden, (obs, done, avail_actions)
         )
         action = pi.sample(seed=rng)
-        new_hstate = self._pack_hstate(*new_hidden)
+        new_hstate = self._pack_hstate(new_hidden)
         return action, val, pi, new_hstate
 
     def init_hstate(self, batch_size, aux_info=None):
-        """Initialize packed hidden state: (1, batch, 4*lstm_hidden_dim)."""
+        """Initialize packed hidden state: (1, batch, 2*lstm_hidden_dim)."""
         d = self.lstm_hidden_dim
-        return jnp.zeros((1, batch_size, 4 * d))
+        return jnp.zeros((1, batch_size, 2 * d))
 
     def init_params(self, rng):
         batch_size = 1

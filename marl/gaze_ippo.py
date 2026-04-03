@@ -34,6 +34,8 @@ class GazeTransition(NamedTuple):
     obs: jnp.ndarray
     info: jnp.ndarray
     avail_actions: jnp.ndarray
+    prev_reward: jnp.ndarray
+    prev_action: jnp.ndarray
     gaze_reward: jnp.ndarray
     raw_env_reward: jnp.ndarray
     gaze_mu_x: jnp.ndarray
@@ -126,11 +128,20 @@ def make_train(config, env):
         init_hstate = policy.init_hstate(num_actors)
         init_done = {k: jnp.zeros((config["NUM_ENVS"]), dtype=bool) for k in env.agents + ["__all__"]}
 
+        init_prev_reward = jnp.zeros((num_actors,), dtype=jnp.float32)
+        init_prev_action = jnp.zeros((num_actors,), dtype=jnp.float32)
+
         if feed_other_attn:
             init_other_attn = jnp.ones((num_actors, feat_h, feat_w)) / (feat_h * feat_w)
-            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng, init_other_attn)
+            runner_state = (
+                train_state, env_state, obsv, init_done, init_hstate, _rng,
+                init_prev_reward, init_prev_action, init_other_attn,
+            )
         else:
-            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
+            runner_state = (
+                train_state, env_state, obsv, init_done, init_hstate, _rng,
+                init_prev_reward, init_prev_action,
+            )
         return runner_state, policy
 
     def make_step_fn(policy):
@@ -163,13 +174,19 @@ def make_train(config, env):
 
             def _env_step(runner_state, unused):
                 if feed_other_attn:
-                    train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn = runner_state
+                    (
+                        train_state, env_state, last_obs, last_done, hstate, rng,
+                        prev_reward, prev_action, prev_other_attn,
+                    ) = runner_state
                 else:
-                    train_state, env_state, last_obs, last_done, hstate, rng = runner_state
+                    train_state, env_state, last_obs, last_done, hstate, rng, prev_reward, prev_action = runner_state
 
                 rng, act_rng = jax.random.split(rng)
                 last_obs_batch = batchify(last_obs, env.agents, num_actors)
                 last_done_batch = batchify(last_done, env.agents, num_actors)
+                last_done_mask = last_done_batch.squeeze()
+                step_prev_reward = jnp.where(last_done_mask, 0.0, prev_reward)
+                step_prev_action = jnp.where(last_done_mask, 0.0, prev_action)
                 if feed_other_attn:
                     last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
 
@@ -181,10 +198,12 @@ def make_train(config, env):
                 action, value, pi, new_hstate, aux = policy.get_action_value_policy(
                     params=train_state.params,
                     obs=last_obs_batch.reshape(1, num_actors, -1),
-                    done=last_done_batch.reshape(1, num_actors),
+                    done=last_done_mask.reshape(1, num_actors),
                     avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
                     hstate=hstate,
                     rng=act_rng,
+                    prev_reward=step_prev_reward.reshape(1, num_actors),
+                    prev_action=step_prev_action.reshape(1, num_actors),
                 )
 
                 log_prob = pi.log_prob(action)
@@ -222,6 +241,8 @@ def make_train(config, env):
                     last_obs_batch,
                     info,
                     avail_actions_batch,
+                    step_prev_reward,
+                    step_prev_action,
                     r_gaze_batch,
                     reward_batch,
                     aux["gaze_mu_x"].squeeze(0),
@@ -234,10 +255,13 @@ def make_train(config, env):
                     new_other_attn = _swap_and_reset_attn(attn_map, new_done_batch)
                     runner_state = (
                         train_state, new_env_state, new_obs, new_done, new_hstate,
-                        rng, new_other_attn,
+                        rng, reward_batch, action.astype(jnp.float32), new_other_attn,
                     )
                 else:
-                    runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
+                    runner_state = (
+                        train_state, new_env_state, new_obs, new_done, new_hstate,
+                        rng, reward_batch, action.astype(jnp.float32),
+                    )
                 return runner_state, transition
 
             runner_state, traj_batch = jax.lax.scan(
@@ -245,12 +269,18 @@ def make_train(config, env):
             )
 
             if feed_other_attn:
-                train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn = runner_state
+                (
+                    train_state, env_state, last_obs, last_done, hstate, rng,
+                    prev_reward, prev_action, prev_other_attn,
+                ) = runner_state
             else:
-                train_state, env_state, last_obs, last_done, hstate, rng = runner_state
+                train_state, env_state, last_obs, last_done, hstate, rng, prev_reward, prev_action = runner_state
 
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
+            last_done_mask = last_done_batch.squeeze()
+            step_prev_reward = jnp.where(last_done_mask, 0.0, prev_reward)
+            step_prev_action = jnp.where(last_done_mask, 0.0, prev_action)
             if feed_other_attn:
                 last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
             last_avail = jax.vmap(env.get_avail_actions)(env_state)
@@ -261,10 +291,12 @@ def make_train(config, env):
             _, last_val, _, _, _ = policy.get_action_value_policy(
                 params=train_state.params,
                 obs=last_obs_batch.reshape(1, num_actors, -1),
-                done=last_done_batch.reshape(1, num_actors),
+                done=last_done_mask.reshape(1, num_actors),
                 avail_actions=last_avail_batch.reshape(1, num_actors, -1),
                 hstate=hstate,
                 rng=jax.random.PRNGKey(0),
+                prev_reward=step_prev_reward.reshape(1, num_actors),
+                prev_action=step_prev_action.reshape(1, num_actors),
             )
             last_val = last_val.squeeze()
 
@@ -303,6 +335,8 @@ def make_train(config, env):
                             avail_actions=minibatch.avail_actions,
                             hstate=init_hstate,
                             rng=jax.random.PRNGKey(0),
+                            prev_reward=minibatch.prev_reward,
+                            prev_action=minibatch.prev_action,
                         )
                         log_prob = pi.log_prob(minibatch.action)
 
@@ -407,9 +441,15 @@ def make_train(config, env):
 
             rng = update_state[-1]
             if feed_other_attn:
-                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
+                runner_state = (
+                    train_state, env_state, last_obs, last_done, hstate, rng,
+                    prev_reward, prev_action, prev_other_attn,
+                )
             else:
-                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
+                runner_state = (
+                    train_state, env_state, last_obs, last_done, hstate, rng,
+                    prev_reward, prev_action,
+                )
             return runner_state, update_steps + 1, metric
 
         return step_fn

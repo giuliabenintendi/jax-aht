@@ -115,6 +115,15 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
     # Initialize hidden states
     hstate_0 = agent_0_policy.init_hstate(1)
     hstate_1 = agent_1_policy.init_hstate(1)
+    use_prev_io = (
+        getattr(agent_0_policy, "uses_prev_reward_action", False)
+        and getattr(agent_1_policy, "uses_prev_reward_action", False)
+    )
+    if use_prev_io:
+        prev_reward_0 = jnp.zeros((1, 1), dtype=jnp.float32)
+        prev_reward_1 = jnp.zeros((1, 1), dtype=jnp.float32)
+        prev_action_0 = jnp.zeros((1, 1), dtype=jnp.float32)
+        prev_action_1 = jnp.zeros((1, 1), dtype=jnp.float32)
 
     # Initialize previous attention maps for feed_other_attn
     if feed_other_attn_dims is not None:
@@ -168,6 +177,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 rng=act_rng,
                 greedy=greedy,
                 agent_id=0,
+                prev_reward=prev_reward_0 if use_prev_io else None,
+                prev_action=prev_action_0 if use_prev_io else None,
             )
             attn_maps["agent_0"].append(attn_0)
         else:
@@ -179,6 +190,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_0,
                 rng=act_rng,
                 greedy=greedy,
+                prev_reward=prev_reward_0 if use_prev_io else None,
+                prev_action=prev_action_0 if use_prev_io else None,
             )
         act_0 = act_0.squeeze()
 
@@ -193,6 +206,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 rng=part_rng,
                 greedy=greedy,
                 agent_id=1,
+                prev_reward=prev_reward_1 if use_prev_io else None,
+                prev_action=prev_action_1 if use_prev_io else None,
             )
             # Override agent 1's attention if fixed partner
             if fixed_partner_attn is not None:
@@ -207,6 +222,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_1,
                 rng=part_rng,
                 greedy=greedy,
+                prev_reward=prev_reward_1 if use_prev_io else None,
+                prev_action=prev_action_1 if use_prev_io else None,
             )
         act_1 = act_1.squeeze()
 
@@ -220,6 +237,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
         render_act = _action_to_ground_truth(env, env_state, env_act)
         obs, env_state, reward, done, info = env.step(step_rng, env_state, env_act)
+        if use_prev_io:
+            prev_reward_0 = reward["agent_0"].reshape(1, 1).astype(jnp.float32)
+            prev_reward_1 = reward["agent_1"].reshape(1, 1).astype(jnp.float32)
+            prev_action_0 = act_0.reshape(1, 1).astype(jnp.float32)
+            prev_action_1 = act_1.reshape(1, 1).astype(jnp.float32)
 
         # Add state and actions to the lists for rendering
         fp = getattr(env, 'fixed_partner_pos', -1)
