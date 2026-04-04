@@ -131,6 +131,14 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
         prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
+    _xattn = getattr(agent_0_policy, 'cross_agent_attn', False)
+    if _xattn:
+        _ed = getattr(agent_0_policy, 'xattn_embed_dim', 64)
+        _pe_actor_0 = jnp.zeros((1, 1, _ed))
+        _pe_actor_1 = jnp.zeros((1, 1, _ed))
+        _pe_critic_0 = jnp.zeros((1, 1, _ed))
+        _pe_critic_1 = jnp.zeros((1, 1, _ed))
+
     # Collect states and actions for rendering
     ep_states = [env_state]
     ep_actions = []
@@ -166,20 +174,36 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         has_comm = getattr(env, 'communication', False)
         num_cards = getattr(env, 'num_cards', 5)
 
+        _xattn = getattr(agent_0_policy, 'cross_agent_attn', False)
+
         # Get ego action (optionally with attention)
         if collect_attention and hasattr(agent_0_policy, 'get_action_and_attention'):
-            act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
-                params=agent_0_param,
-                obs=obs_0_reshaped,
-                done=done_0_reshaped,
-                avail_actions=avail_actions_0,
-                hstate=hstate_0,
-                rng=act_rng,
-                greedy=greedy,
-                agent_id=0,
-                prev_reward=prev_reward_0 if use_prev_io else None,
-                prev_action=prev_action_0 if use_prev_io else None,
-            )
+            if _xattn:
+                act_0, hstate_0, attn_0, own_a0, own_c0 = agent_0_policy.get_action_and_attention(
+                    params=agent_0_param,
+                    obs=obs_0_reshaped,
+                    done=done_0_reshaped,
+                    avail_actions=avail_actions_0,
+                    hstate=hstate_0,
+                    rng=act_rng,
+                    greedy=greedy,
+                    agent_id=0,
+                    partner_embed_actor=_pe_actor_0,
+                    partner_embed_critic=_pe_critic_0,
+                )
+            else:
+                act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
+                    params=agent_0_param,
+                    obs=obs_0_reshaped,
+                    done=done_0_reshaped,
+                    avail_actions=avail_actions_0,
+                    hstate=hstate_0,
+                    rng=act_rng,
+                    greedy=greedy,
+                    agent_id=0,
+                    prev_reward=prev_reward_0 if use_prev_io else None,
+                    prev_action=prev_action_0 if use_prev_io else None,
+                )
             attn_maps["agent_0"].append(attn_0)
         else:
             act_0, hstate_0 = agent_0_policy.get_action(
@@ -197,18 +221,32 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
         # Get partner action (optionally with attention)
         if collect_attention and hasattr(agent_1_policy, 'get_action_and_attention'):
-            act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
-                params=agent_1_param,
-                obs=obs_1_reshaped,
-                done=done_1_reshaped,
-                avail_actions=avail_actions_1,
-                hstate=hstate_1,
-                rng=part_rng,
-                greedy=greedy,
-                agent_id=1,
-                prev_reward=prev_reward_1 if use_prev_io else None,
-                prev_action=prev_action_1 if use_prev_io else None,
-            )
+            if _xattn:
+                act_1, hstate_1, attn_1, own_a1, own_c1 = agent_1_policy.get_action_and_attention(
+                    params=agent_1_param,
+                    obs=obs_1_reshaped,
+                    done=done_1_reshaped,
+                    avail_actions=avail_actions_1,
+                    hstate=hstate_1,
+                    rng=part_rng,
+                    greedy=greedy,
+                    agent_id=1,
+                    partner_embed_actor=_pe_actor_1,
+                    partner_embed_critic=_pe_critic_1,
+                )
+            else:
+                act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
+                    params=agent_1_param,
+                    obs=obs_1_reshaped,
+                    done=done_1_reshaped,
+                    avail_actions=avail_actions_1,
+                    hstate=hstate_1,
+                    rng=part_rng,
+                    greedy=greedy,
+                    agent_id=1,
+                    prev_reward=prev_reward_1 if use_prev_io else None,
+                    prev_action=prev_action_1 if use_prev_io else None,
+                )
             # Override agent 1's attention if fixed partner
             if fixed_partner_attn is not None:
                 attn_1 = fixed_partner_attn[None, None]  # match shape
@@ -226,6 +264,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 prev_action=prev_action_1 if use_prev_io else None,
             )
         act_1 = act_1.squeeze()
+
+        # Update cross-agent partner embeddings
+        if _xattn and collect_attention:
+            _pe_actor_0, _pe_actor_1 = own_a1, own_a0
+            _pe_critic_0, _pe_critic_1 = own_c1, own_c0
 
         # Update previous attention maps for feed_other_attn
         if feed_other_attn_dims is not None and collect_attention:
