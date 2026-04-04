@@ -361,6 +361,11 @@ def make_train_loop(config, env):
                     rng_step, env_state, env_act
                 )
 
+                # Extract per-agent comm reward before interleaving reshape
+                comm_reward_raw = info.pop("comm_reward", jnp.zeros((num_envs, 2)))
+                comm_reward_batch = jnp.concatenate(
+                    [comm_reward_raw[:, 0], comm_reward_raw[:, 1]])  # [agent0 | agent1]
+
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
 
                 if fixed_partner_pos >= 0:
@@ -402,9 +407,9 @@ def make_train_loop(config, env):
                 else:
                     runner_state = (train_state_0, train_state_1, new_env_state, new_obs, new_done,
                                     new_hstate_0, new_hstate_1, rng)
-                return runner_state, (transition, intrinsic)
+                return runner_state, (transition, intrinsic, comm_reward_batch)
 
-            runner_state, (traj_batch, intrinsic_batch) = jax.lax.scan(
+            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -468,7 +473,7 @@ def make_train_loop(config, env):
             raw_env_reward = traj_batch.reward
 
             # Combined reward normalization (matches DeepMind reference)
-            combined_raw = raw_env_reward + intrinsic_batch
+            combined_raw = raw_env_reward + intrinsic_batch + comm_reward_batch
             rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
             combined = reward_norm_apply(rew_norm_state, combined_raw)
             traj_batch = traj_batch._replace(reward=combined)
