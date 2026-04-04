@@ -78,11 +78,12 @@ class CardGameEnv(BaseEnv):
     """
 
     def __init__(self, max_steps: int = 10, shuffle: bool = True, fixed_partner_pos: int = -1,
-                 communication: bool = False, **kwargs):
+                 communication: bool = False, comm_reward_coef: float = 0.0, **kwargs):
         self.max_steps = max_steps
         self.shuffle = shuffle
         self.fixed_partner_pos = fixed_partner_pos
         self.communication = communication
+        self.comm_reward_coef = comm_reward_coef
         self.num_cards = NUM_CARDS
         self.num_agents = 2
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
@@ -218,7 +219,22 @@ class CardGameEnv(BaseEnv):
         match = jnp.equal(a0, a1)
         reward_val = jnp.where(is_decision & match, 1.0, 0.0)
 
-        reward = {agent: reward_val for agent in self.agents}
+        # Communication reward: bonus for picking what partner communicated
+        if self.communication and self.comm_reward_coef > 0:
+            partner_msg_0 = env_state.messages[1]  # agent_1's last message
+            partner_msg_1 = env_state.messages[0]  # agent_0's last message
+            comm_r0 = jnp.where(
+                is_decision & (partner_msg_0 >= 0) & jnp.equal(a0, partner_msg_0),
+                self.comm_reward_coef, 0.0)
+            comm_r1 = jnp.where(
+                is_decision & (partner_msg_1 >= 0) & jnp.equal(a1, partner_msg_1),
+                self.comm_reward_coef, 0.0)
+            reward = {
+                self.agents[0]: reward_val + comm_r0,
+                self.agents[1]: reward_val + comm_r1,
+            }
+        else:
+            reward = {agent: reward_val for agent in self.agents}
         done = is_decision
         dones = {agent: done for agent in self.agents}
         dones["__all__"] = done
