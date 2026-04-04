@@ -1,20 +1,25 @@
-"""Mott-style attention actor-critic for image observations.
+"""Paper-faithful Mott attention actor-critic for image observations.
 
-This module ports the core attention-controller interface from:
+This module follows the architecture described in:
   Mott et al., "Towards Interpretable Reinforcement Learning Using
   Attention Augmented Agents" (NeurIPS 2019)
-and the accompanying replication in:
+
+and closely mirrors the local replication in:
   external/mott_attention_replication/attention.py
 
-Paper-faithful choices implemented here:
-  - one shared recurrent controller for policy + value
-  - queries generated from the previous recurrent output only
-  - multiple top-down queries over spatial keys/values
-  - controller input = answers + queries + previous reward + previous action
+Paper-faithful components:
+  - 2-layer vision CNN: Conv(8x8, stride 4, 32), Conv(4x4, stride 2, 64)
+  - visual ConvLSTM core with 128 channels
+  - direct split of visual output into K(8) and V(120)
+  - cosine spatial basis with 64 channels appended to both K and V
+  - top-down query network from previous policy-core output only
+  - answer processor: 1026 -> 512 -> 256
+  - policy core: LSTM(256)
+  - post-core hidden layer: 256 -> 128 -> policy/value heads
 
 Adaptation for this codebase:
-  - uses the existing ResNet visual encoder instead of the paper's Atari CNN
-    + ConvLSTM visual stack
+  - keeps PPO/action-masking integration
+  - keeps scalar value output instead of the replication's per-action value head
 """
 import functools
 
@@ -26,20 +31,175 @@ import jax.numpy as jnp
 import numpy as np
 
 from agents.action_masking import mask_action_logits
-from agents.ja_image_actor_critic import _compute_resnet_output_dims
-from agents.ja_utils import make_sinusoidal_spatial_basis
-from agents.resnet_encoder import ResNetEncoder
+
+
+VISION_CONV1_KERNEL = 8
+VISION_CONV1_STRIDE = 4
+VISION_CONV1_PADDING = 1
+VISION_CONV1_CHANNELS = 32
+VISION_CONV2_KERNEL = 4
+VISION_CONV2_STRIDE = 2
+VISION_CONV2_PADDING = 2
+VISION_CONV2_CHANNELS = 64
+VISION_LSTM_KERNEL = 3
+VISION_LSTM_CHANNELS = 128
+POST_CORE_HIDDEN_DIM = 128
+
+
+def _conv_out_dim(size: int, kernel: int, stride: int, padding: int) -> int:
+    return (size + 2 * padding - kernel) // stride + 1
+
+
+def _compute_mott_output_dims(h: int, w: int) -> tuple[int, int]:
+    h = _conv_out_dim(h, VISION_CONV1_KERNEL, VISION_CONV1_STRIDE, VISION_CONV1_PADDING)
+    w = _conv_out_dim(w, VISION_CONV1_KERNEL, VISION_CONV1_STRIDE, VISION_CONV1_PADDING)
+    h = _conv_out_dim(h, VISION_CONV2_KERNEL, VISION_CONV2_STRIDE, VISION_CONV2_PADDING)
+    w = _conv_out_dim(w, VISION_CONV2_KERNEL, VISION_CONV2_STRIDE, VISION_CONV2_PADDING)
+    return h, w
+
+
+def make_mott_spatial_basis(height: int, width: int, channels: int = 64) -> jnp.ndarray:
+    """Cosine spatial basis matching the replication's construction."""
+    u = v = int(np.sqrt(channels))
+    if u * v != channels:
+        raise ValueError(f"channels={channels} must be a perfect square")
+
+    p_h = jnp.arange(1, height + 1, dtype=jnp.float32)[:, None] * (jnp.pi / height)
+    p_h = p_h * jnp.ones((1, width), dtype=jnp.float32)
+    p_w = jnp.ones((height, 1), dtype=jnp.float32) * (
+        jnp.arange(1, width + 1, dtype=jnp.float32)[None, :] * (jnp.pi / width)
+    )
+
+    u_basis = jnp.arange(1, u + 1, dtype=jnp.float32)[None, :]
+    v_basis = jnp.arange(1, v + 1, dtype=jnp.float32)[None, :]
+    a = p_h[..., None] * u_basis
+    b = p_w[..., None] * v_basis
+    return jnp.einsum("hwu,hwv->hwuv", jnp.cos(a), jnp.cos(b)).reshape(height, width, channels)
+
+
+class MottConvLSTMCell(nn.Module):
+    """ConvLSTM with peephole connections, matching the replication."""
+
+    hidden_channels: int = VISION_LSTM_CHANNELS
+    kernel_size: int = VISION_LSTM_KERNEL
+
+    @nn.compact
+    def __call__(self, carry, x):
+        h, c = carry
+        _, height, width, _ = x.shape
+        padding = "SAME"
+
+        wci = self.param("Wci", constant(0.0), (1, height, width, self.hidden_channels))
+        wcf = self.param("Wcf", constant(0.0), (1, height, width, self.hidden_channels))
+        wco = self.param("Wco", constant(0.0), (1, height, width, self.hidden_channels))
+
+        conv_args = dict(
+            features=self.hidden_channels,
+            kernel_size=(self.kernel_size, self.kernel_size),
+            strides=(1, 1),
+            padding=padding,
+        )
+
+        i = jax.nn.sigmoid(
+            nn.Conv(
+                **conv_args,
+                kernel_init=orthogonal(1.0),
+                bias_init=constant(0.0),
+                name="Wxi",
+            )(x)
+            + nn.Conv(
+                **conv_args,
+                kernel_init=orthogonal(1.0),
+                use_bias=False,
+                name="Whi",
+            )(h)
+            + c * wci
+        )
+        f = jax.nn.sigmoid(
+            nn.Conv(
+                **conv_args,
+                kernel_init=orthogonal(1.0),
+                bias_init=constant(0.0),
+                name="Wxf",
+            )(x)
+            + nn.Conv(
+                **conv_args,
+                kernel_init=orthogonal(1.0),
+                use_bias=False,
+                name="Whf",
+            )(h)
+            + c * wcf
+        )
+        g = jnp.tanh(
+            nn.Conv(
+                **conv_args,
+                kernel_init=orthogonal(1.0),
+                bias_init=constant(0.0),
+                name="Wxc",
+            )(x)
+            + nn.Conv(
+                **conv_args,
+                kernel_init=orthogonal(1.0),
+                use_bias=False,
+                name="Whc",
+            )(h)
+        )
+        new_c = f * c + i * g
+        o = jax.nn.sigmoid(
+            nn.Conv(
+                **conv_args,
+                kernel_init=orthogonal(1.0),
+                bias_init=constant(0.0),
+                name="Wxo",
+            )(x)
+            + nn.Conv(
+                **conv_args,
+                kernel_init=orthogonal(1.0),
+                use_bias=False,
+                name="Who",
+            )(h)
+            + new_c * wco
+        )
+        new_h = o * jnp.tanh(new_c)
+        return (new_h, new_c), new_h
+
+
+class MottVisionNetwork(nn.Module):
+    """Exact paper vision stack: 2 convs + ConvLSTM."""
+
+    def setup(self):
+        self.conv_lstm = MottConvLSTMCell(name="vision_lstm")
+
+    def __call__(self, carry, image):
+        x = nn.Conv(
+            features=VISION_CONV1_CHANNELS,
+            kernel_size=(VISION_CONV1_KERNEL, VISION_CONV1_KERNEL),
+            strides=(VISION_CONV1_STRIDE, VISION_CONV1_STRIDE),
+            padding=[(VISION_CONV1_PADDING, VISION_CONV1_PADDING), (VISION_CONV1_PADDING, VISION_CONV1_PADDING)],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="vision_conv1",
+        )(image)
+        x = nn.relu(x)
+        x = nn.Conv(
+            features=VISION_CONV2_CHANNELS,
+            kernel_size=(VISION_CONV2_KERNEL, VISION_CONV2_KERNEL),
+            strides=(VISION_CONV2_STRIDE, VISION_CONV2_STRIDE),
+            padding=[(VISION_CONV2_PADDING, VISION_CONV2_PADDING), (VISION_CONV2_PADDING, VISION_CONV2_PADDING)],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="vision_conv2",
+        )(x)
+        x = nn.relu(x)
+        new_carry, output = self.conv_lstm(carry, x)
+        return new_carry, output
 
 
 class MottQueryNetwork(nn.Module):
-    """Top-down query MLP from previous recurrent output.
+    """Query MLP: 256 -> 128 -> 288 -> 288 reshaped to (4, 72)."""
 
-    Mirrors the replication's QueryNetwork structure:
-      hidden -> 128 -> 288 -> num_queries * query_dim
-    """
-
-    num_queries: int
-    query_dim: int
+    num_queries: int = 4
+    query_dim: int = 72
     hidden_dim_1: int = 128
     hidden_dim_2: int = 288
 
@@ -69,7 +229,7 @@ class MottQueryNetwork(nn.Module):
 
 
 class MottAttentionReadout(nn.Module):
-    """Mott-style multi-query readout over spatial keys and values."""
+    """Paper-style attention over split keys/values with cosine spatial basis."""
 
     feat_h: int
     feat_w: int
@@ -81,41 +241,23 @@ class MottAttentionReadout(nn.Module):
     query_hidden_dim_2: int = 288
 
     def setup(self):
-        self.spatial_basis = make_sinusoidal_spatial_basis(
+        self.spatial_basis = make_mott_spatial_basis(
             self.feat_h, self.feat_w, self.spatial_basis_depth
         )
 
     @nn.compact
-    def __call__(
-        self,
-        feature_maps: jnp.ndarray,
-        prev_output: jnp.ndarray,
-        prev_reward: jnp.ndarray,
-        prev_action: jnp.ndarray,
-    ):
-        batch_size = feature_maps.shape[0]
+    def __call__(self, vision_output, prev_output, prev_reward, prev_action):
+        batch_size = vision_output.shape[0]
         spatial = jnp.broadcast_to(
             self.spatial_basis[None, ...],
             (batch_size, self.feat_h, self.feat_w, self.spatial_basis_depth),
         )
 
-        key_maps = nn.Conv(
-            features=self.key_dim,
-            kernel_size=(1, 1),
-            kernel_init=orthogonal(1.0),
-            bias_init=constant(0.0),
-            name="key_conv",
-        )(feature_maps)
-        value_maps = nn.Conv(
-            features=self.value_dim,
-            kernel_size=(1, 1),
-            kernel_init=orthogonal(1.0),
-            bias_init=constant(0.0),
-            name="value_conv",
-        )(feature_maps)
-
-        keys = jnp.concatenate([key_maps, spatial], axis=-1)
-        values = jnp.concatenate([value_maps, spatial], axis=-1)
+        keys_raw, values_raw = jnp.split(
+            vision_output, [self.key_dim], axis=-1
+        )
+        keys = jnp.concatenate([keys_raw, spatial], axis=-1)
+        values = jnp.concatenate([values_raw, spatial], axis=-1)
 
         query_dim = self.key_dim + self.spatial_basis_depth
         queries = MottQueryNetwork(
@@ -126,33 +268,25 @@ class MottAttentionReadout(nn.Module):
             name="query_network",
         )(prev_output)
 
-        keys = keys.reshape(batch_size, self.feat_h * self.feat_w, query_dim)
-        values = values.reshape(
-            batch_size, self.feat_h * self.feat_w, self.value_dim + self.spatial_basis_depth
-        )
+        attn_logits = jnp.einsum("bhwc,bqc->bhwq", keys, queries)
+        attn_maps = jax.nn.softmax(attn_logits.reshape(batch_size, -1, self.num_queries), axis=1)
+        attn_maps = attn_maps.reshape(batch_size, self.feat_h, self.feat_w, self.num_queries)
+        answers = jnp.einsum("bhwq,bhwd->bqd", attn_maps, values)
 
-        attn_logits = jnp.einsum("bnc,bqc->bnq", keys, queries) / np.sqrt(query_dim)
-        attn_weights = jax.nn.softmax(attn_logits, axis=1)
-        answers = jnp.einsum("bnq,bnd->bqd", attn_weights, values)
-
-        attn_maps = jnp.transpose(attn_weights, (0, 2, 1)).reshape(
-            batch_size, self.num_queries, self.feat_h, self.feat_w
-        )
-        mean_attn_map = attn_maps.mean(axis=1)
-
+        attn_maps_heads = jnp.transpose(attn_maps, (0, 3, 1, 2))
+        mean_attn_map = attn_maps_heads.mean(axis=1)
         control_input = jnp.concatenate(
             [
                 answers.reshape(batch_size, -1),
                 queries.reshape(batch_size, -1),
-                prev_reward[:, None].astype(feature_maps.dtype),
-                prev_action[:, None].astype(feature_maps.dtype),
+                prev_reward[:, None].astype(vision_output.dtype),
+                prev_action[:, None].astype(vision_output.dtype),
             ],
             axis=-1,
         )
-
         aux = {
             "attn_map": mean_attn_map,
-            "attn_maps": attn_maps,
+            "attn_maps": attn_maps_heads,
             "answers": answers,
             "queries": queries,
         }
@@ -160,16 +294,11 @@ class MottAttentionReadout(nn.Module):
 
 
 class GazeImageScannedLSTM(nn.Module):
-    """Shared Mott-style visual/controller trunk scanned over time."""
+    """Paper-faithful Mott trunk scanned over time."""
 
     img_height: int
     img_width: int
     num_channels: int = 3
-    conv_filters: int = 32
-    conv_num_blocks: int = 4
-    conv_kernel_size: int = 3
-    conv_stride: int = 2
-    conv_padding: str = "SAME"
     fc_hidden_dim: int = 512
     lstm_hidden_dim: int = 256
     gaze_spatial_basis_depth: int = 64
@@ -181,22 +310,8 @@ class GazeImageScannedLSTM(nn.Module):
 
     def setup(self):
         self._img_flat_dim = self.img_height * self.img_width * self.num_channels
-        self.feat_h, self.feat_w = _compute_resnet_output_dims(
-            self.img_height,
-            self.img_width,
-            self.conv_stride,
-            self.conv_kernel_size,
-            self.conv_padding,
-            self.conv_num_blocks,
-        )
-        self.resnet_encoder = ResNetEncoder(
-            num_blocks=self.conv_num_blocks,
-            filters=self.conv_filters,
-            kernel_size=self.conv_kernel_size,
-            stride=self.conv_stride,
-            padding=self.conv_padding,
-            name="resnet_encoder",
-        )
+        self.feat_h, self.feat_w = _compute_mott_output_dims(self.img_height, self.img_width)
+        self.vision = MottVisionNetwork(name="vision")
         self.attention_readout = MottAttentionReadout(
             feat_h=self.feat_h,
             feat_w=self.feat_w,
@@ -220,16 +335,18 @@ class GazeImageScannedLSTM(nn.Module):
             bias_init=constant(0.0),
             name="answer_fc2",
         )
-        self.shared_lstm = nn.OptimizedLSTMCell(
+        self.policy_core = nn.OptimizedLSTMCell(
             features=self.lstm_hidden_dim,
-            name="shared_lstm",
+            name="policy_core",
         )
 
-    @staticmethod
-    def initialize_carry(batch_size, hidden_size):
+    def initialize_carry(self, batch_size):
+        vision_shape = (batch_size, self.feat_h, self.feat_w, VISION_LSTM_CHANNELS)
         return (
-            jnp.zeros((batch_size, hidden_size)),
-            jnp.zeros((batch_size, hidden_size)),
+            jnp.zeros(vision_shape),
+            jnp.zeros(vision_shape),
+            jnp.zeros((batch_size, self.lstm_hidden_dim)),
+            jnp.zeros((batch_size, self.lstm_hidden_dim)),
         )
 
     @functools.partial(
@@ -240,49 +357,47 @@ class GazeImageScannedLSTM(nn.Module):
         split_rngs={"params": False},
     )
     def __call__(self, carry, x):
-        lstm_h, lstm_c = carry
+        vis_h, vis_c, pol_h, pol_c = carry
         obs_flat, dones, prev_reward, prev_action = x
         batch_size = obs_flat.shape[0]
 
-        zero_h, zero_c = self.initialize_carry(batch_size, self.lstm_hidden_dim)
-        lstm_h = jnp.where(dones[:, None], zero_h, lstm_h)
-        lstm_c = jnp.where(dones[:, None], zero_c, lstm_c)
+        zero_vis_h, zero_vis_c, zero_pol_h, zero_pol_c = self.initialize_carry(batch_size)
+        done_mask_img = dones[:, None, None, None]
+        vis_h = jnp.where(done_mask_img, zero_vis_h, vis_h)
+        vis_c = jnp.where(done_mask_img, zero_vis_c, vis_c)
+        pol_h = jnp.where(dones[:, None], zero_pol_h, pol_h)
+        pol_c = jnp.where(dones[:, None], zero_pol_c, pol_c)
         prev_reward = jnp.where(dones, 0.0, prev_reward)
         prev_action = jnp.where(dones, 0.0, prev_action)
 
         image = obs_flat[:, :self._img_flat_dim].reshape(
             batch_size, self.img_height, self.img_width, self.num_channels
         )
-        feature_maps = self.resnet_encoder(image)
+        (new_vis_h, new_vis_c), vision_output = self.vision((vis_h, vis_c), image)
 
         control_input, aux = self.attention_readout(
-            feature_maps,
-            prev_output=lstm_h,
+            vision_output=vision_output,
+            prev_output=pol_h,
             prev_reward=prev_reward,
             prev_action=prev_action,
         )
 
-        controller_input = self.answer_fc1(control_input)
-        controller_input = nn.relu(controller_input)
-        controller_input = self.answer_fc2(controller_input)
+        answer = self.answer_fc1(control_input)
+        answer = nn.relu(answer)
+        answer = self.answer_fc2(answer)
 
-        new_carry, lstm_out = self.shared_lstm((lstm_h, lstm_c), controller_input)
-        aux["controller_input"] = controller_input
-        return new_carry, (lstm_out, aux)
+        (new_pol_h, new_pol_c), policy_out = self.policy_core((pol_h, pol_c), answer)
+        aux["answer"] = answer
+        return (new_vis_h, new_vis_c, new_pol_h, new_pol_c), (policy_out, aux)
 
 
 class GazeImageActorCritic(nn.Module):
-    """Shared-core Mott-style actor-critic with interpretable attention maps."""
+    """Paper-faithful Mott actor-critic with shared visual and policy cores."""
 
     action_dim: int
     img_height: int
     img_width: int
     num_channels: int = 3
-    conv_filters: int = 32
-    conv_num_blocks: int = 4
-    conv_kernel_size: int = 3
-    conv_stride: int = 2
-    conv_padding: str = "SAME"
     fc_hidden_dim: int = 512
     lstm_hidden_dim: int = 256
     gaze_spatial_basis_depth: int = 64
@@ -297,11 +412,6 @@ class GazeImageActorCritic(nn.Module):
             img_height=self.img_height,
             img_width=self.img_width,
             num_channels=self.num_channels,
-            conv_filters=self.conv_filters,
-            conv_num_blocks=self.conv_num_blocks,
-            conv_kernel_size=self.conv_kernel_size,
-            conv_stride=self.conv_stride,
-            conv_padding=self.conv_padding,
             fc_hidden_dim=self.fc_hidden_dim,
             lstm_hidden_dim=self.lstm_hidden_dim,
             gaze_spatial_basis_depth=self.gaze_spatial_basis_depth,
@@ -311,6 +421,12 @@ class GazeImageActorCritic(nn.Module):
             query_hidden_dim_1=self.query_hidden_dim_1,
             query_hidden_dim_2=self.query_hidden_dim_2,
             name="shared_trunk",
+        )
+        self.output_fc = nn.Dense(
+            POST_CORE_HIDDEN_DIM,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+            name="output_fc",
         )
         self.policy_head = nn.Dense(
             self.action_dim,
@@ -333,13 +449,15 @@ class GazeImageActorCritic(nn.Module):
         else:
             obs, dones, avail_actions, prev_reward, prev_action = x
 
-        hidden, (shared_embed, aux) = self.shared_trunk(
+        hidden, (policy_core_out, aux) = self.shared_trunk(
             hidden, (obs, dones, prev_reward, prev_action)
         )
+        output = self.output_fc(policy_core_out)
+        output = nn.relu(output)
 
-        action_logits = self.policy_head(shared_embed)
+        action_logits = self.policy_head(output)
         action_logits = mask_action_logits(action_logits, avail_actions)
         pi = distrax.Categorical(logits=action_logits)
 
-        value = self.value_head(shared_embed)
+        value = self.value_head(output)
         return hidden, pi, jnp.squeeze(value, axis=-1), aux

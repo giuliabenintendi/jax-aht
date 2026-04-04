@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
+from agents.gaze_image_actor_critic import _compute_mott_output_dims
 from agents.initialize_agents import (
     initialize_gaze_image_agent,
     initialize_ja_dual_image_agent,
@@ -541,15 +542,18 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     feed_attn_dims = None
     if feed_attn:
         from agents.initialize_agents import _get_image_dims
-        from agents.ja_image_actor_critic import _compute_resnet_output_dims
         _img_h, _img_w, _ = _get_image_dims(env)
-        _feat_h, _feat_w = _compute_resnet_output_dims(
-            _img_h, _img_w,
-            stride=algo_cfg.get("CONV_STRIDE", 2),
-            kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
-            padding=algo_cfg.get("CONV_PADDING", "SAME"),
-            num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
-        )
+        if algo_cfg.get("ALG") == "gaze_ippo":
+            _feat_h, _feat_w = _compute_mott_output_dims(_img_h, _img_w)
+        else:
+            from agents.ja_image_actor_critic import _compute_resnet_output_dims
+            _feat_h, _feat_w = _compute_resnet_output_dims(
+                _img_h, _img_w,
+                stride=algo_cfg.get("CONV_STRIDE", 2),
+                kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
+                padding=algo_cfg.get("CONV_PADDING", "SAME"),
+                num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
+            )
         feed_attn_dims = (_img_h, _img_w, _feat_h, _feat_w)
         print(f"[xp_seeds] feed_other_attn enabled: img=({_img_h},{_img_w}), feat=({_feat_h},{_feat_w})")
 

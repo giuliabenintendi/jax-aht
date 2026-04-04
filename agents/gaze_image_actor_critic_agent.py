@@ -5,7 +5,11 @@ import jax
 import jax.numpy as jnp
 
 from agents.agent_interface import AgentPolicy
-from agents.gaze_image_actor_critic import GazeImageActorCritic
+from agents.gaze_image_actor_critic import (
+    GazeImageActorCritic,
+    VISION_LSTM_CHANNELS,
+    _compute_mott_output_dims,
+)
 
 
 class GazeImageActorCriticPolicy(AgentPolicy):
@@ -38,15 +42,12 @@ class GazeImageActorCriticPolicy(AgentPolicy):
         self.img_height = img_height
         self.img_width = img_width
         self.lstm_hidden_dim = lstm_hidden_dim
+        self.feat_h, self.feat_w = _compute_mott_output_dims(img_height, img_width)
+        self.vision_state_dim = self.feat_h * self.feat_w * VISION_LSTM_CHANNELS
         self.network = GazeImageActorCritic(
             action_dim=action_dim,
             img_height=img_height,
             img_width=img_width,
-            conv_filters=conv_filters,
-            conv_num_blocks=conv_num_blocks,
-            conv_kernel_size=conv_kernel_size,
-            conv_stride=conv_stride,
-            conv_padding=conv_padding,
             fc_hidden_dim=fc_hidden_dim,
             lstm_hidden_dim=lstm_hidden_dim,
             gaze_spatial_basis_depth=gaze_spatial_basis_depth,
@@ -59,16 +60,27 @@ class GazeImageActorCriticPolicy(AgentPolicy):
         )
 
     def _pack_hstate(self, lstm_state):
-        h, c = lstm_state
-        packed = jnp.concatenate([h, c], axis=-1)
+        vis_h, vis_c, pol_h, pol_c = lstm_state
+        packed = jnp.concatenate(
+            [
+                vis_h.reshape(vis_h.shape[0], -1),
+                vis_c.reshape(vis_c.shape[0], -1),
+                pol_h,
+                pol_c,
+            ],
+            axis=-1,
+        )
         return packed[None, ...]
 
     def _unpack_hstate(self, hstate):
         flat = hstate.squeeze(0)
+        v = self.vision_state_dim
         d = self.lstm_hidden_dim
-        h = flat[..., 0:d]
-        c = flat[..., d:2 * d]
-        return (h, c)
+        vis_h = flat[..., 0:v].reshape(-1, self.feat_h, self.feat_w, VISION_LSTM_CHANNELS)
+        vis_c = flat[..., v:2 * v].reshape(-1, self.feat_h, self.feat_w, VISION_LSTM_CHANNELS)
+        pol_h = flat[..., 2 * v:2 * v + d]
+        pol_c = flat[..., 2 * v + d:2 * v + 2 * d]
+        return (vis_h, vis_c, pol_h, pol_c)
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action(self, params, obs, done, avail_actions, hstate, rng,
@@ -127,8 +139,9 @@ class GazeImageActorCriticPolicy(AgentPolicy):
         return action, value, pi, new_hstate, aux
 
     def init_hstate(self, batch_size, aux_info=None):
+        v = self.vision_state_dim
         d = self.lstm_hidden_dim
-        return jnp.zeros((1, batch_size, 2 * d))
+        return jnp.zeros((1, batch_size, 2 * v + 2 * d))
 
     def init_params(self, rng):
         batch_size = 1

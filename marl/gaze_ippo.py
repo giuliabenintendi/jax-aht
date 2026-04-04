@@ -14,8 +14,8 @@ import jax.numpy as jnp
 import optax
 from flax.training.train_state import TrainState
 
+from agents.gaze_image_actor_critic import _compute_mott_output_dims
 from agents.initialize_agents import initialize_gaze_image_agent, _get_image_dims
-from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence
 from common.plot_utils import get_stats, get_metric_names, plot_seed_aggregate
 from common.save_load_utils import save_train_run
@@ -87,13 +87,7 @@ def make_train(config, env):
     gaze_warmup_updates = gaze_warmup_env_steps / env_steps_per_update
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
     img_h, img_w, _ = _get_image_dims(env)
-    feat_h, feat_w = _compute_resnet_output_dims(
-        img_h, img_w,
-        stride=config.get("CONV_STRIDE", 2),
-        kernel_size=config.get("CONV_KERNEL_SIZE", 3),
-        padding=config.get("CONV_PADDING", "SAME"),
-        num_blocks=config.get("CONV_NUM_BLOCKS", 4),
-    )
+    feat_h, feat_w = _compute_mott_output_dims(img_h, img_w)
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
