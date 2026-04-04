@@ -3,6 +3,11 @@
 Inherits all hstate packing/unpacking and action methods from JAActorCriticPolicy.
 Only overrides __init__ to construct JAImageActorCritic instead of JAActorCritic.
 """
+from functools import partial
+
+import jax
+import jax.numpy as jnp
+
 from agents.ja_actor_critic_agent import JAActorCriticPolicy
 from agents.ja_image_actor_critic import JAImageActorCritic
 
@@ -29,6 +34,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         message_dim: int = 0,
         scalar_dim: int = 0,
         scalar_embed_dim: int = 5,
+        cross_agent_attn: bool = False,
     ):
         # Skip JAActorCriticPolicy.__init__ — we set self.network directly
         # but still call AgentPolicy.__init__ for action_dim/obs_dim
@@ -38,6 +44,8 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         self.img_height = img_height
         self.img_width = img_width
         self.message_dim = message_dim
+        self.cross_agent_attn = cross_agent_attn
+        self.xattn_embed_dim = num_heads * head_features
         self.network = JAImageActorCritic(
             action_dim=action_dim,
             img_height=img_height,
@@ -56,5 +64,73 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             message_dim=message_dim,
             scalar_dim=scalar_dim,
             scalar_embed_dim=scalar_embed_dim,
+            cross_agent_attn=cross_agent_attn,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
+
+    @partial(jax.jit, static_argnums=(0,))
+    def get_action_value_policy(self, params, obs, done, avail_actions, hstate, rng,
+                                aux_obs=None, env_state=None,
+                                partner_embed_actor=None, partner_embed_critic=None):
+        hidden = self._unpack_hstate(hstate)
+        if self.cross_agent_attn:
+            if partner_embed_actor is None:
+                partner_embed_actor = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+            if partner_embed_critic is None:
+                partner_embed_critic = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+            x = (obs, done, avail_actions, partner_embed_actor, partner_embed_critic)
+            new_hidden, pi, val, attn_map, actor_own_embed, critic_own_embed = \
+                self.network.apply(params, hidden, x)
+            action = pi.sample(seed=rng)
+            new_hstate = self._pack_hstate(*new_hidden)
+            return action, val, pi, new_hstate, attn_map, actor_own_embed, critic_own_embed
+        else:
+            x = (obs, done, avail_actions)
+            new_hidden, pi, val, attn_map = self.network.apply(params, hidden, x)
+            action = pi.sample(seed=rng)
+            new_hstate = self._pack_hstate(*new_hidden)
+            return action, val, pi, new_hstate, attn_map
+
+    @partial(jax.jit, static_argnums=(0,))
+    def get_action_and_attention(self, params, obs, done, avail_actions, hstate, rng,
+                                 greedy=False, agent_id=None,
+                                 partner_embed_actor=None, partner_embed_critic=None,
+                                 prev_reward=None, prev_action=None):
+        hidden = self._unpack_hstate(hstate)
+        if self.cross_agent_attn:
+            if partner_embed_actor is None:
+                partner_embed_actor = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+            if partner_embed_critic is None:
+                partner_embed_critic = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+            x = (obs, done, avail_actions, partner_embed_actor, partner_embed_critic)
+            new_hidden, pi, _, attn_map, actor_own_embed, critic_own_embed = \
+                self.network.apply(params, hidden, x)
+            action = jax.lax.cond(
+                greedy,
+                lambda: pi.mode(),
+                lambda: pi.sample(seed=rng),
+            )
+            new_hstate = self._pack_hstate(*new_hidden)
+            return action, new_hstate, attn_map, actor_own_embed, critic_own_embed
+        else:
+            # Fall back to base class behavior (3 return values)
+            return super().get_action_and_attention(
+                params, obs, done, avail_actions, hstate, rng,
+                greedy=greedy, agent_id=agent_id,
+                prev_reward=prev_reward, prev_action=prev_action,
+            )
+
+    def init_params(self, rng):
+        batch_size = 1
+        init_hstate = self.init_hstate(batch_size)
+        hidden = self._unpack_hstate(init_hstate)
+        seq_len = 1
+        dummy_obs = jnp.zeros((seq_len, batch_size, self.obs_dim))
+        dummy_done = jnp.zeros((seq_len, batch_size))
+        dummy_avail = jnp.ones((seq_len, batch_size, self.action_dim))
+        if self.cross_agent_attn:
+            dummy_pe = jnp.zeros((seq_len, batch_size, self.xattn_embed_dim))
+            dummy_x = (dummy_obs, dummy_done, dummy_avail, dummy_pe, dummy_pe)
+        else:
+            dummy_x = (dummy_obs, dummy_done, dummy_avail)
+        return self.network.init(rng, hidden, dummy_x)

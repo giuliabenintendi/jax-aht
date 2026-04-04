@@ -41,6 +41,8 @@ class JATransition(NamedTuple):
     info: jnp.ndarray
     avail_actions: jnp.ndarray
     ja_reward: jnp.ndarray       # (NUM_ACTORS,) -- raw JA intrinsic reward (unscaled)
+    partner_embed_actor: jnp.ndarray   # (NUM_ACTORS, embed_dim) or scalar 0 when disabled
+    partner_embed_critic: jnp.ndarray  # (NUM_ACTORS, embed_dim) or scalar 0 when disabled
 
 
 class RewardNormState(NamedTuple):
@@ -109,6 +111,10 @@ def make_train_loop(config, env):
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
+    cross_agent_attn = config.get("CROSS_AGENT_ATTN", False)
+    if cross_agent_attn and feed_other_attn:
+        raise ValueError("CROSS_AGENT_ATTN and FEED_OTHER_ATTN are mutually exclusive")
+    xattn_embed_dim = config.get("JA_NUM_HEADS", 4) * config.get("JA_HEAD_FEATURES", 16)
     filter_attn_top1 = config.get("FILTER_ATTN_TOP1", False)
     fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
 
@@ -178,6 +184,11 @@ def make_train_loop(config, env):
         if feed_other_attn:
             init_other_attn = jnp.ones((num_actors, feat_h, feat_w)) / (feat_h * feat_w)
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng, init_other_attn)
+        elif cross_agent_attn:
+            init_pe_actor = jnp.zeros((num_actors, xattn_embed_dim))
+            init_pe_critic = jnp.zeros((num_actors, xattn_embed_dim))
+            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng,
+                            init_pe_actor, init_pe_critic)
         else:
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
 
@@ -197,14 +208,26 @@ def make_train_loop(config, env):
                     init_hstate, traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(params, traj_batch, gae, targets):
-                        _, value, pi, _, _ = policy.get_action_value_policy(
-                            params=params,
-                            obs=traj_batch.obs,
-                            done=traj_batch.done,
-                            avail_actions=traj_batch.avail_actions,
-                            hstate=init_hstate,
-                            rng=jax.random.PRNGKey(0),
-                        )
+                        if cross_agent_attn:
+                            _, value, pi, _, _, _, _ = policy.get_action_value_policy(
+                                params=params,
+                                obs=traj_batch.obs,
+                                done=traj_batch.done,
+                                avail_actions=traj_batch.avail_actions,
+                                hstate=init_hstate,
+                                rng=jax.random.PRNGKey(0),
+                                partner_embed_actor=traj_batch.partner_embed_actor,
+                                partner_embed_critic=traj_batch.partner_embed_critic,
+                            )
+                        else:
+                            _, value, pi, _, _ = policy.get_action_value_policy(
+                                params=params,
+                                obs=traj_batch.obs,
+                                done=traj_batch.done,
+                                avail_actions=traj_batch.avail_actions,
+                                hstate=init_hstate,
+                                rng=jax.random.PRNGKey(0),
+                            )
                         log_prob = pi.log_prob(traj_batch.action)
                         entropy = pi.entropy().mean()
 
@@ -297,6 +320,9 @@ def make_train_loop(config, env):
             def _env_step(runner_state, unused):
                 if feed_other_attn:
                     (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state
+                elif cross_agent_attn:
+                    (train_state, env_state, last_obs, last_done, hstate, rng,
+                     prev_pe_actor, prev_pe_critic) = runner_state
                 else:
                     (train_state, env_state, last_obs, last_done, hstate, rng) = runner_state
 
@@ -313,14 +339,27 @@ def make_train_loop(config, env):
                 avail_actions_batch = jax.lax.stop_gradient(
                     batchify(avail_actions, env.agents, num_actors).astype(jnp.float32))
 
-                action, value, pi, new_hstate, attn_map = policy.get_action_value_policy(
-                    params=train_state.params,
-                    obs=last_obs_batch.reshape(1, num_actors, -1),
-                    done=last_done_batch.reshape(1, num_actors),
-                    avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
-                    hstate=hstate,
-                    rng=act_rng,
-                )
+                if cross_agent_attn:
+                    action, value, pi, new_hstate, attn_map, actor_own_embed, critic_own_embed = \
+                        policy.get_action_value_policy(
+                            params=train_state.params,
+                            obs=last_obs_batch.reshape(1, num_actors, -1),
+                            done=last_done_batch.reshape(1, num_actors),
+                            avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
+                            hstate=hstate,
+                            rng=act_rng,
+                            partner_embed_actor=prev_pe_actor.reshape(1, num_actors, -1),
+                            partner_embed_critic=prev_pe_critic.reshape(1, num_actors, -1),
+                        )
+                else:
+                    action, value, pi, new_hstate, attn_map = policy.get_action_value_policy(
+                        params=train_state.params,
+                        obs=last_obs_batch.reshape(1, num_actors, -1),
+                        done=last_done_batch.reshape(1, num_actors),
+                        avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
+                        hstate=hstate,
+                        rng=act_rng,
+                    )
 
                 log_prob = pi.log_prob(action)
                 action = action.squeeze()
@@ -360,6 +399,13 @@ def make_train_loop(config, env):
 
                 intrinsic = ja_beta * r_ja_batch
 
+                if cross_agent_attn:
+                    pe_actor_stored = prev_pe_actor
+                    pe_critic_stored = prev_pe_critic
+                else:
+                    pe_actor_stored = jnp.float32(0.0)
+                    pe_critic_stored = jnp.float32(0.0)
+
                 transition = JATransition(
                     done=batchify(new_done, env.agents, num_actors).squeeze(),
                     action=action,
@@ -370,12 +416,26 @@ def make_train_loop(config, env):
                     info=info,
                     avail_actions=avail_actions_batch,
                     ja_reward=r_ja_batch,
+                    partner_embed_actor=pe_actor_stored,
+                    partner_embed_critic=pe_critic_stored,
                 )
 
                 if feed_other_attn:
                     new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
                     new_other_attn = _swap_and_reset_attn(attn_map, new_done_batch)
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng, new_other_attn)
+                elif cross_agent_attn:
+                    # Swap halves: each agent gets the other's embedding
+                    a_own = actor_own_embed.squeeze(0)
+                    c_own = critic_own_embed.squeeze(0)
+                    new_pe_actor = jnp.concatenate([a_own[num_envs:], a_own[:num_envs]], axis=0)
+                    new_pe_critic = jnp.concatenate([c_own[num_envs:], c_own[:num_envs]], axis=0)
+                    # Reset to zeros on episode boundaries
+                    new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
+                    new_pe_actor = jnp.where(new_done_batch[:, None], 0.0, new_pe_actor)
+                    new_pe_critic = jnp.where(new_done_batch[:, None], 0.0, new_pe_critic)
+                    runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng,
+                                    new_pe_actor, new_pe_critic)
                 else:
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
                 return runner_state, (transition, intrinsic)
@@ -386,6 +446,9 @@ def make_train_loop(config, env):
 
             if feed_other_attn:
                 (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state
+            elif cross_agent_attn:
+                (train_state, env_state, last_obs, last_done, hstate, rng,
+                 prev_pe_actor, prev_pe_critic) = runner_state
             else:
                 (train_state, env_state, last_obs, last_done, hstate, rng) = runner_state
 
@@ -396,14 +459,27 @@ def make_train_loop(config, env):
             last_avail = jax.vmap(env.get_avail_actions)(env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
-            _, last_val, _, _, _ = policy.get_action_value_policy(
-                params=train_state.params,
-                obs=last_obs_batch.reshape(1, num_actors, -1),
-                done=last_done_batch.reshape(1, num_actors),
-                avail_actions=last_avail_batch.reshape(1, num_actors, -1),
-                hstate=hstate,
-                rng=jax.random.PRNGKey(0),
-            )
+
+            if cross_agent_attn:
+                _, last_val, _, _, _, _, _ = policy.get_action_value_policy(
+                    params=train_state.params,
+                    obs=last_obs_batch.reshape(1, num_actors, -1),
+                    done=last_done_batch.reshape(1, num_actors),
+                    avail_actions=last_avail_batch.reshape(1, num_actors, -1),
+                    hstate=hstate,
+                    rng=jax.random.PRNGKey(0),
+                    partner_embed_actor=prev_pe_actor.reshape(1, num_actors, -1),
+                    partner_embed_critic=prev_pe_critic.reshape(1, num_actors, -1),
+                )
+            else:
+                _, last_val, _, _, _ = policy.get_action_value_policy(
+                    params=train_state.params,
+                    obs=last_obs_batch.reshape(1, num_actors, -1),
+                    done=last_done_batch.reshape(1, num_actors),
+                    avail_actions=last_avail_batch.reshape(1, num_actors, -1),
+                    hstate=hstate,
+                    rng=jax.random.PRNGKey(0),
+                )
             last_val = last_val.squeeze()
 
             def _calculate_gae(traj_batch, last_val):
@@ -469,6 +545,9 @@ def make_train_loop(config, env):
 
             if feed_other_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
+            elif cross_agent_attn:
+                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng,
+                                prev_pe_actor, prev_pe_critic)
             else:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
             return runner_state, update_steps + 1, rew_norm_state, metric

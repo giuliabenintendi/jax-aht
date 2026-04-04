@@ -156,6 +156,7 @@ def initialize_ja_image_agent(config, env, rng):
         message_dim=message_dim,
         scalar_dim=num_scalars,
         scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
+        cross_agent_attn=config.get("CROSS_AGENT_ATTN", False),
     )
 
     rng, init_rng = jax.random.split(rng)
