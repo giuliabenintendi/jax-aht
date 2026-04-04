@@ -118,15 +118,19 @@ def make_train_loop(config, env):
     filter_attn_top1 = config.get("FILTER_ATTN_TOP1", False)
     fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
 
-    # Precompute image and feature-map dimensions for attention channel
-    img_h, img_w, _ = _get_image_dims(env)
-    feat_h, feat_w = _compute_resnet_output_dims(
-        img_h, img_w,
-        stride=config.get("CONV_STRIDE", 2),
-        kernel_size=config.get("CONV_KERNEL_SIZE", 3),
-        padding=config.get("CONV_PADDING", "SAME"),
-        num_blocks=config.get("CONV_NUM_BLOCKS", 4),
-    )
+    # Precompute image and feature-map dimensions (only needed for image obs)
+    obs_type = _get_obs_type(config)
+    if obs_type in ("image", "fov"):
+        img_h, img_w, _ = _get_image_dims(env)
+        feat_h, feat_w = _compute_resnet_output_dims(
+            img_h, img_w,
+            stride=config.get("CONV_STRIDE", 2),
+            kernel_size=config.get("CONV_KERNEL_SIZE", 3),
+            padding=config.get("CONV_PADDING", "SAME"),
+            num_blocks=config.get("CONV_NUM_BLOCKS", 4),
+        )
+    else:
+        img_h = img_w = feat_h = feat_w = 0
 
     # Precompute fixed attention map for hardcoded partner
     if fixed_partner_pos >= 0:
@@ -146,7 +150,6 @@ def make_train_loop(config, env):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
         return config["LR"] * frac
 
-    obs_type = _get_obs_type(config)
     agent_init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
 
     def init_policy(rng):
