@@ -38,10 +38,6 @@ class GazeTransition(NamedTuple):
     prev_action: jnp.ndarray
     gaze_reward: jnp.ndarray
     raw_env_reward: jnp.ndarray
-    gaze_mu_x: jnp.ndarray
-    gaze_mu_y: jnp.ndarray
-    gaze_sigma_x: jnp.ndarray
-    gaze_sigma_y: jnp.ndarray
 
 def _create_gaze_minibatches(traj_batch, advantages, targets, return_targets,
                              init_hstate, num_actors, num_minibatches, perm_rng):
@@ -245,10 +241,6 @@ def make_train(config, env):
                     step_prev_action,
                     r_gaze_batch,
                     reward_batch,
-                    aux["gaze_mu_x"].squeeze(0),
-                    aux["gaze_mu_y"].squeeze(0),
-                    aux["gaze_sigma_x"].squeeze(0),
-                    aux["gaze_sigma_y"].squeeze(0),
                 )
                 if feed_other_attn:
                     new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
@@ -423,13 +415,6 @@ def make_train(config, env):
             metric["gaze_beta"] = gaze_beta
             metric["jsd_mean"] = jsd_values.mean()
             metric["gaze_reward_mean"] = gaze_rew_0.mean()
-            metric["gaze_mu_x_mean"] = traj_batch.gaze_mu_x.mean()
-            metric["gaze_mu_y_mean"] = traj_batch.gaze_mu_y.mean()
-            metric["gaze_mu_abs_mean"] = (
-                jnp.abs(traj_batch.gaze_mu_x) + jnp.abs(traj_batch.gaze_mu_y)
-            ).mean() / 2.0
-            metric["gaze_sigma_x_mean"] = traj_batch.gaze_sigma_x.mean()
-            metric["gaze_sigma_y_mean"] = traj_batch.gaze_sigma_y.mean()
             metric["raw_env_reward_mean"] = traj_batch.raw_env_reward[:, :num_envs].mean()
             metric["combined_reward_mean"] = traj_batch.reward[:, :num_envs].mean()
             metric["loss_total"] = total_loss.mean()
@@ -510,7 +495,32 @@ def run_gaze_ippo(config, logger):
     _gaze_init = lambda cfg, e, r: initialize_gaze_image_agent(cfg, e, r)
     log_greedy_eval(algorithm_config, env, out, logger, init_fn=_gaze_init)
     log_eval_video(algorithm_config, env, out, logger, init_fn=_gaze_init)
+    if num_seeds > 1:
+        log_xp_eval(algorithm_config, env, out)
     return out
+
+
+def log_xp_eval(algorithm_config, env, out):
+    """Run greedy cross-play evaluation when NUM_SEEDS > 1."""
+    import wandb
+    from evaluation.run_xp_seeds import run_xp_from_params
+
+    rng = jax.random.PRNGKey(0)
+    policy, _ = initialize_gaze_image_agent(algorithm_config, env, rng)
+    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+
+    print("[xp_eval] Running greedy XP...")
+    run_xp_from_params(
+        env,
+        policy,
+        out["final_params"],
+        algorithm_config,
+        savedir=savedir,
+        task_name=algorithm_config.get("ENV_NAME"),
+        wb_run=wandb.run,
+        greedy_eval=True,
+        wb_prefix="XP",
+    )
 
 
 def log_metrics(config, out, logger):

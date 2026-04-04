@@ -31,36 +31,6 @@ from agents.ja_utils import make_sinusoidal_spatial_basis
 from agents.resnet_encoder import ResNetEncoder
 
 
-def attention_map_moments(attn_map: jnp.ndarray):
-    """Summarize a normalized spatial attention map with first/second moments."""
-    feat_h, feat_w = attn_map.shape[-2:]
-    ys = jnp.linspace(-1.0, 1.0, feat_h)
-    xs = jnp.linspace(-1.0, 1.0, feat_w)
-    grid_y, grid_x = jnp.meshgrid(ys, xs, indexing="ij")
-    grid_x = grid_x[None, ...]
-    grid_y = grid_y[None, ...]
-
-    mu_x = jnp.sum(attn_map * grid_x, axis=(1, 2))
-    mu_y = jnp.sum(attn_map * grid_y, axis=(1, 2))
-
-    dx = grid_x - mu_x[:, None, None]
-    dy = grid_y - mu_y[:, None, None]
-    var_x = jnp.sum(attn_map * dx ** 2, axis=(1, 2))
-    var_y = jnp.sum(attn_map * dy ** 2, axis=(1, 2))
-    cov_xy = jnp.sum(attn_map * dx * dy, axis=(1, 2))
-
-    sigma_x = jnp.sqrt(jnp.maximum(var_x, 1e-6))
-    sigma_y = jnp.sqrt(jnp.maximum(var_y, 1e-6))
-    rho = jnp.clip(cov_xy / jnp.maximum(sigma_x * sigma_y, 1e-6), -0.95, 0.95)
-    return {
-        "mu_x": mu_x,
-        "mu_y": mu_y,
-        "sigma_x": sigma_x,
-        "sigma_y": sigma_y,
-        "rho": rho,
-    }
-
-
 class MottQueryNetwork(nn.Module):
     """Top-down query MLP from previous recurrent output.
 
@@ -169,7 +139,6 @@ class MottAttentionReadout(nn.Module):
             batch_size, self.num_queries, self.feat_h, self.feat_w
         )
         mean_attn_map = attn_maps.mean(axis=1)
-        gaze_stats = attention_map_moments(mean_attn_map)
 
         control_input = jnp.concatenate(
             [
@@ -186,11 +155,6 @@ class MottAttentionReadout(nn.Module):
             "attn_maps": attn_maps,
             "answers": answers,
             "queries": queries,
-            "gaze_mu_x": gaze_stats["mu_x"],
-            "gaze_mu_y": gaze_stats["mu_y"],
-            "gaze_sigma_x": gaze_stats["sigma_x"],
-            "gaze_sigma_y": gaze_stats["sigma_y"],
-            "gaze_rho": gaze_stats["rho"],
         }
         return control_input, aux
 

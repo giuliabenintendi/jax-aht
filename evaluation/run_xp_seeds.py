@@ -24,7 +24,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-from agents.initialize_agents import initialize_ja_image_agent, initialize_ja_dual_image_agent
+from agents.initialize_agents import (
+    initialize_gaze_image_agent,
+    initialize_ja_dual_image_agent,
+    initialize_ja_image_agent,
+)
 from agents.ja_utils import jsd_divergence
 from common.plot_utils import get_metric_names
 from common.save_load_utils import load_train_run
@@ -72,6 +76,15 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
     init_hstate_0 = agent_0_policy.init_hstate(1, aux_info={"agent_id": 0})
     init_hstate_1 = agent_1_policy.init_hstate(1, aux_info={"agent_id": 1})
+    use_prev_io = (
+        getattr(agent_0_policy, "uses_prev_reward_action", False)
+        and getattr(agent_1_policy, "uses_prev_reward_action", False)
+    )
+    if use_prev_io:
+        prev_reward_0 = jnp.zeros((1, 1), dtype=jnp.float32)
+        prev_reward_1 = jnp.zeros((1, 1), dtype=jnp.float32)
+        prev_action_0 = jnp.zeros((1, 1), dtype=jnp.float32)
+        prev_action_1 = jnp.zeros((1, 1), dtype=jnp.float32)
 
     # Initialize uniform attention maps for feed_other_attn
     if feed_attn_dims is not None:
@@ -101,6 +114,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         hstate=init_hstate_0,
         rng=act0_rng,
         greedy=greedy_eval,
+        prev_reward=prev_reward_0 if use_prev_io else None,
+        prev_action=prev_action_0 if use_prev_io else None,
     )
     act_0 = act_0.squeeze()
 
@@ -112,6 +127,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         hstate=init_hstate_1,
         rng=act1_rng,
         greedy=greedy_eval,
+        prev_reward=prev_reward_1 if use_prev_io else None,
+        prev_action=prev_action_1 if use_prev_io else None,
     )
     act_1 = act_1.squeeze()
 
@@ -131,6 +148,11 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     env_act_onehot = {k: jax.nn.one_hot(both_actions[i], action_sizes[k])
                       for i, k in enumerate(env.agents)}
     obs, env_state, reward, done, dummy_info = env.step(step_rng, init_env_state, env_act)
+    if use_prev_io:
+        prev_reward_0 = reward["agent_0"].reshape(1, 1).astype(jnp.float32)
+        prev_reward_1 = reward["agent_1"].reshape(1, 1).astype(jnp.float32)
+        prev_action_0 = act_0.reshape(1, 1).astype(jnp.float32)
+        prev_action_1 = act_1.reshape(1, 1).astype(jnp.float32)
 
     # Include prev attention in carry for feed_other_attn
     if feed_attn_dims is not None:
@@ -140,12 +162,17 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     ep_ts = 1
     init_carry = (ep_ts, env_state, obs, rng, done, reward, env_act_onehot,
                   hstate_0, hstate_1, dummy_info, jsd_sum, jsd_count,
+                  prev_reward_0 if use_prev_io else None,
+                  prev_reward_1 if use_prev_io else None,
+                  prev_action_0 if use_prev_io else None,
+                  prev_action_1 if use_prev_io else None,
                   attn_0.squeeze(), attn_1.squeeze())
 
     def scan_step(carry, _):
         def take_step(carry_step):
             (ep_ts, env_state, obs, rng, done, reward, act_onehot,
              hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
+             prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
              prev_a0, prev_a1) = carry_step
 
             avail_actions = env.get_avail_actions(env_state)
@@ -169,6 +196,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_0,
                 rng=act0_rng,
                 greedy=greedy_eval,
+                prev_reward=prev_reward_0 if use_prev_io else None,
+                prev_action=prev_action_0 if use_prev_io else None,
             )
             act_0 = act_0.squeeze()
 
@@ -180,6 +209,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_1,
                 rng=act1_rng,
                 greedy=greedy_eval,
+                prev_reward=prev_reward_1 if use_prev_io else None,
+                prev_action=prev_action_1 if use_prev_io else None,
             )
             act_1 = act_1.squeeze()
 
@@ -197,13 +228,23 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             env_act_onehot = {k: jax.nn.one_hot(both_actions[i], action_sizes[k])
                               for i, k in enumerate(env.agents)}
             obs_next, env_state_next, reward, done_next, info_next = env.step(step_rng, env_state, env_act)
+            if use_prev_io:
+                next_prev_reward_0 = reward["agent_0"].reshape(1, 1).astype(jnp.float32)
+                next_prev_reward_1 = reward["agent_1"].reshape(1, 1).astype(jnp.float32)
+                next_prev_action_0 = act_0.reshape(1, 1).astype(jnp.float32)
+                next_prev_action_1 = act_1.reshape(1, 1).astype(jnp.float32)
+            else:
+                next_prev_reward_0 = next_prev_reward_1 = None
+                next_prev_action_0 = next_prev_action_1 = None
 
             return (ep_ts + 1, env_state_next, obs_next, rng, done_next, reward, env_act_onehot,
                     hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next,
+                    next_prev_reward_0, next_prev_reward_1, next_prev_action_0, next_prev_action_1,
                     attn_0.squeeze(), attn_1.squeeze())
 
         (ep_ts, env_state, obs, rng, done, reward, act_onehot,
          hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
+         prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
          prev_a0, prev_a1) = carry
         new_carry = jax.lax.cond(
             done["__all__"],
@@ -350,7 +391,7 @@ def _build_run_label(algo_cfg: dict, task_name: str) -> str:
     # Extract layout name from task (e.g. "overcooked-v1/cramped_room" -> "cramped_room")
     layout = task_name.split("/")[-1] if "/" in task_name else task_name
     parts = [layout]
-    beta = algo_cfg.get("JA_BETA_MAX")
+    beta = algo_cfg.get("JA_BETA_MAX", algo_cfg.get("GAZE_BETA_MAX"))
     if beta is not None:
         parts.append(f"BETA={beta}")
     total = algo_cfg.get("TOTAL_TIMESTEPS")
@@ -367,7 +408,7 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
     alg prefix (already in the wandb name as XP_) and without date.
     """
     parts = [layout]
-    beta = algo_cfg.get("JA_BETA_MAX", 0)
+    beta = algo_cfg.get("JA_BETA_MAX", algo_cfg.get("GAZE_BETA_MAX", 0))
     parts.append(f"b{beta}")
     if algo_cfg.get("USE_DUAL_CRITIC", False):
         jsd_gae = "jsdgae" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "nojsdgae"
@@ -406,7 +447,7 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
             tags=[
                 str(algo_cfg.get("ALG", "")),
                 f"{task_name}" if "/" in task_name else layout,
-                f"beta={algo_cfg.get('JA_BETA_MAX', 0)}",
+                f"beta={algo_cfg.get('JA_BETA_MAX', algo_cfg.get('GAZE_BETA_MAX', 0))}",
                 f"ent={algo_cfg.get('ENT_COEF', 0.01)}",
                 "xp_eval",
             ] + (["dual_critic", "jsdgae_on" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "jsdgae_off"]
@@ -546,7 +587,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds)
 
     # Save heatmaps and CSVs
-    beta = algo_cfg.get("JA_BETA_MAX", "unknown")
+    beta = algo_cfg.get("JA_BETA_MAX", algo_cfg.get("GAZE_BETA_MAX", "unknown"))
     beta_prefix = f"BETA{beta}"
 
     xp_dir = os.path.join(savedir, "xp_results")
