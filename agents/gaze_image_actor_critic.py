@@ -167,9 +167,7 @@ class MottConvLSTMCell(nn.Module):
 class MottVisionNetwork(nn.Module):
     """Exact paper vision stack: 2 convs + ConvLSTM."""
 
-    def setup(self):
-        self.conv_lstm = MottConvLSTMCell(name="vision_lstm")
-
+    @nn.compact
     def __call__(self, carry, image):
         x = nn.Conv(
             features=VISION_CONV1_CHANNELS,
@@ -191,7 +189,7 @@ class MottVisionNetwork(nn.Module):
             name="vision_conv2",
         )(x)
         x = nn.relu(x)
-        new_carry, output = self.conv_lstm(carry, x)
+        new_carry, output = MottConvLSTMCell(name="vision_lstm")(carry, x)
         return new_carry, output
 
 
