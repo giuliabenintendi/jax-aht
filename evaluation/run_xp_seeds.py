@@ -24,9 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-from agents.gaze_image_actor_critic import _compute_mott_output_dims
 from agents.initialize_agents import (
-    initialize_gaze_image_agent,
     initialize_ja_dual_image_agent,
     initialize_ja_image_agent,
 )
@@ -392,7 +390,7 @@ def _build_run_label(algo_cfg: dict, task_name: str) -> str:
     # Extract layout name from task (e.g. "overcooked-v1/cramped_room" -> "cramped_room")
     layout = task_name.split("/")[-1] if "/" in task_name else task_name
     parts = [layout]
-    beta = algo_cfg.get("JA_BETA_MAX", algo_cfg.get("GAZE_BETA_MAX"))
+    beta = algo_cfg.get("JA_BETA_MAX")
     if beta is not None:
         parts.append(f"BETA={beta}")
     total = algo_cfg.get("TOTAL_TIMESTEPS")
@@ -409,7 +407,7 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
     alg prefix (already in the wandb name as XP_) and without date.
     """
     parts = [layout]
-    beta = algo_cfg.get("JA_BETA_MAX", algo_cfg.get("GAZE_BETA_MAX", 0))
+    beta = algo_cfg.get("JA_BETA_MAX", 0)
     parts.append(f"b{beta}")
     if algo_cfg.get("USE_DUAL_CRITIC", False):
         jsd_gae = "jsdgae" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "nojsdgae"
@@ -448,7 +446,7 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
             tags=[
                 str(algo_cfg.get("ALG", "")),
                 f"{task_name}" if "/" in task_name else layout,
-                f"beta={algo_cfg.get('JA_BETA_MAX', algo_cfg.get('GAZE_BETA_MAX', 0))}",
+                f"beta={algo_cfg.get('JA_BETA_MAX', 0)}",
                 f"ent={algo_cfg.get('ENT_COEF', 0.01)}",
                 "xp_eval",
             ] + (["dual_critic", "jsdgae_on" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "jsdgae_off"]
@@ -542,18 +540,15 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     feed_attn_dims = None
     if feed_attn:
         from agents.initialize_agents import _get_image_dims
+        from agents.ja_image_actor_critic import _compute_resnet_output_dims
         _img_h, _img_w, _ = _get_image_dims(env)
-        if algo_cfg.get("ALG") == "gaze_ippo":
-            _feat_h, _feat_w = _compute_mott_output_dims(_img_h, _img_w)
-        else:
-            from agents.ja_image_actor_critic import _compute_resnet_output_dims
-            _feat_h, _feat_w = _compute_resnet_output_dims(
-                _img_h, _img_w,
-                stride=algo_cfg.get("CONV_STRIDE", 2),
-                kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
-                padding=algo_cfg.get("CONV_PADDING", "SAME"),
-                num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
-            )
+        _feat_h, _feat_w = _compute_resnet_output_dims(
+            _img_h, _img_w,
+            stride=algo_cfg.get("CONV_STRIDE", 2),
+            kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
+            padding=algo_cfg.get("CONV_PADDING", "SAME"),
+            num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
+        )
         feed_attn_dims = (_img_h, _img_w, _feat_h, _feat_w)
         print(f"[xp_seeds] feed_other_attn enabled: img=({_img_h},{_img_w}), feat=({_feat_h},{_feat_w})")
 
@@ -591,7 +586,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds)
 
     # Save heatmaps and CSVs
-    beta = algo_cfg.get("JA_BETA_MAX", algo_cfg.get("GAZE_BETA_MAX", "unknown"))
+    beta = algo_cfg.get("JA_BETA_MAX", "unknown")
     beta_prefix = f"BETA{beta}"
 
     xp_dir = os.path.join(savedir, "xp_results")
