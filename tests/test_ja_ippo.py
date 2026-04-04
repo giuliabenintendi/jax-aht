@@ -7,7 +7,7 @@ from envs.base_env import get_inner_env
 from envs.log_wrapper import LogWrapper
 from agents.ja_actor_critic_agent import JAActorCriticPolicy
 from common.run_episodes import run_single_episode
-from marl.ja_ippo import make_train
+from marl.ja_ippo import make_train_loop, reward_norm_init
 
 
 def _make_tiny_ja_policy(env):
@@ -138,16 +138,17 @@ def test_ja_train_loop():
         "TRAIN_SEED": 0,
     }
 
-    init_fn, make_step_fn = make_train(config, env)
+    init_fn, make_step_fn_factory, _, _ = make_train_loop(config, env)
     rng = jax.random.PRNGKey(0)
-    runner_state, policy, lstm_dim = init_fn(rng)
-    step_fn = make_step_fn(policy, lstm_dim)
+    runner_state, policy = init_fn(rng)
+    step_fn, _, _ = make_step_fn_factory(policy)
 
     num_updates = int(config["TOTAL_TIMESTEPS"] // config["ROLLOUT_LENGTH"] // config["NUM_ENVS"])
     update_steps = jnp.int32(0)
+    rew_norm_state = reward_norm_init()
     all_metrics = []
     for _ in range(num_updates):
-        runner_state, update_steps, metric = step_fn(runner_state, update_steps)
+        runner_state, update_steps, rew_norm_state, metric = step_fn(runner_state, update_steps, rew_norm_state)
         all_metrics.append(metric)
 
     assert len(all_metrics) == num_updates
