@@ -283,10 +283,7 @@ class MottAttentionReadout(nn.Module):
             axis=-1,
         )
         aux = {
-            "attn_map": mean_attn_map,
-            "attn_maps": attn_maps_heads,
-            "answers": answers,
-            "queries": queries,
+            "attn_map": jax.lax.stop_gradient(mean_attn_map),
         }
         return control_input, aux
 
@@ -385,7 +382,6 @@ class GazeImageScannedLSTM(nn.Module):
         answer = self.answer_fc2(answer)
 
         (new_pol_h, new_pol_c), policy_out = self.policy_core((pol_h, pol_c), answer)
-        aux["answer"] = answer
         return (new_vis_h, new_vis_c, new_pol_h, new_pol_c), (policy_out, aux)
 
 

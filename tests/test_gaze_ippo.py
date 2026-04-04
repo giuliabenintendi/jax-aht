@@ -47,8 +47,6 @@ def test_gaze_policy_forward_pass():
     assert aux["attn_map"].shape[0] == 1
     assert aux["attn_map"].shape[1] == 1
     assert jnp.allclose(aux["attn_map"].sum(axis=(-2, -1)), 1.0, atol=1e-5)
-    assert aux["attn_maps"].shape[2] == 4
-    assert aux["queries"].shape[-2] == 4
 
 
 def test_gaze_train_loop_card_game():
