@@ -406,8 +406,8 @@ def make_train_loop(config, env):
                     pe_actor_stored = prev_pe_actor
                     pe_critic_stored = prev_pe_critic
                 else:
-                    pe_actor_stored = jnp.float32(0.0)
-                    pe_critic_stored = jnp.float32(0.0)
+                    pe_actor_stored = jnp.zeros((num_actors,))
+                    pe_critic_stored = jnp.zeros((num_actors,))
 
                 transition = JATransition(
                     done=batchify(new_done, env.agents, num_actors).squeeze(),
