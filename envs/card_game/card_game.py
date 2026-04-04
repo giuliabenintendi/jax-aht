@@ -139,15 +139,16 @@ class CardGameEnv(BaseEnv):
                 msg_pos = jnp.argmin(jnp.abs(env_state.card_permutation - partner_msg))
                 # Draw dot only if partner has sent a valid message (>= 0)
                 has_msg = partner_msg >= 0
-                # Draw dot at center of messaged card tile
+                # Draw 4×4 dot at center of messaged card tile
                 card_row = 1
-                dot_y = card_row * self.tile_size + self.tile_size // 2
-                dot_x = msg_pos * self.tile_size + self.tile_size // 2
-                color_2x2 = jnp.broadcast_to(partner_colors[i], (2, 2, 3))
+                dot_size = 4
+                dot_y = card_row * self.tile_size + (self.tile_size - dot_size) // 2
+                dot_x = msg_pos * self.tile_size + (self.tile_size - dot_size) // 2
+                color_dot = jnp.broadcast_to(partner_colors[i], (dot_size, dot_size, 3))
                 agent_img = jax.lax.cond(
                     has_msg,
                     lambda img: jax.lax.dynamic_update_slice(
-                        img, color_2x2, (dot_y, dot_x, 0)),
+                        img, color_dot, (dot_y, dot_x, 0)),
                     lambda img: img,
                     agent_img,
                 )
