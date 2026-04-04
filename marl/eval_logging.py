@@ -31,6 +31,8 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
     num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
 
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
+    cross_agent_attn = algorithm_config.get("CROSS_AGENT_ATTN", False)
+    xattn_embed_dim = algorithm_config.get("JA_NUM_HEADS", 4) * algorithm_config.get("JA_HEAD_FEATURES", 16)
     eval_filter_top1 = algorithm_config.get("FILTER_ATTN_TOP1", False)
     if feed_attn:
         _img_h, _img_w, _ = _get_image_dims(env)
@@ -75,6 +77,12 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
                 prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
+            if cross_agent_attn:
+                pe_actor_0 = jnp.zeros((1, 1, xattn_embed_dim))
+                pe_actor_1 = jnp.zeros((1, 1, xattn_embed_dim))
+                pe_critic_0 = jnp.zeros((1, 1, xattn_embed_dim))
+                pe_critic_1 = jnp.zeros((1, 1, xattn_embed_dim))
+
             total_reward = 0.0
             ep_jsds = []
             step = 0
@@ -89,24 +97,47 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                     obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
 
                 rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
-                act_0, hstate_0, attn_0 = policy.get_action_and_attention(
-                    params=params,
-                    obs=obs_0.reshape(1, 1, -1),
-                    done=done["agent_0"].reshape(1, 1),
-                    avail_actions=avail_actions["agent_0"].astype(jnp.float32),
-                    hstate=hstate_0, rng=rng0, greedy=greedy,
-                    prev_reward=prev_reward_0 if use_prev_io else None,
-                    prev_action=prev_action_0 if use_prev_io else None,
-                )
-                act_1, hstate_1, attn_1 = policy.get_action_and_attention(
-                    params=params,
-                    obs=obs_1.reshape(1, 1, -1),
-                    done=done["agent_1"].reshape(1, 1),
-                    avail_actions=avail_actions["agent_1"].astype(jnp.float32),
-                    hstate=hstate_1, rng=rng1, greedy=greedy,
-                    prev_reward=prev_reward_1 if use_prev_io else None,
-                    prev_action=prev_action_1 if use_prev_io else None,
-                )
+                if cross_agent_attn:
+                    act_0, hstate_0, attn_0, own_a0, own_c0 = policy.get_action_and_attention(
+                        params=params,
+                        obs=obs_0.reshape(1, 1, -1),
+                        done=done["agent_0"].reshape(1, 1),
+                        avail_actions=avail_actions["agent_0"].astype(jnp.float32),
+                        hstate=hstate_0, rng=rng0, greedy=greedy,
+                        partner_embed_actor=pe_actor_0,
+                        partner_embed_critic=pe_critic_0,
+                    )
+                    act_1, hstate_1, attn_1, own_a1, own_c1 = policy.get_action_and_attention(
+                        params=params,
+                        obs=obs_1.reshape(1, 1, -1),
+                        done=done["agent_1"].reshape(1, 1),
+                        avail_actions=avail_actions["agent_1"].astype(jnp.float32),
+                        hstate=hstate_1, rng=rng1, greedy=greedy,
+                        partner_embed_actor=pe_actor_1,
+                        partner_embed_critic=pe_critic_1,
+                    )
+                    # Swap: each agent gets the other's embedding for next step
+                    pe_actor_0, pe_actor_1 = own_a1, own_a0
+                    pe_critic_0, pe_critic_1 = own_c1, own_c0
+                else:
+                    act_0, hstate_0, attn_0 = policy.get_action_and_attention(
+                        params=params,
+                        obs=obs_0.reshape(1, 1, -1),
+                        done=done["agent_0"].reshape(1, 1),
+                        avail_actions=avail_actions["agent_0"].astype(jnp.float32),
+                        hstate=hstate_0, rng=rng0, greedy=greedy,
+                        prev_reward=prev_reward_0 if use_prev_io else None,
+                        prev_action=prev_action_0 if use_prev_io else None,
+                    )
+                    act_1, hstate_1, attn_1 = policy.get_action_and_attention(
+                        params=params,
+                        obs=obs_1.reshape(1, 1, -1),
+                        done=done["agent_1"].reshape(1, 1),
+                        avail_actions=avail_actions["agent_1"].astype(jnp.float32),
+                        hstate=hstate_1, rng=rng1, greedy=greedy,
+                        prev_reward=prev_reward_1 if use_prev_io else None,
+                        prev_action=prev_action_1 if use_prev_io else None,
+                    )
 
                 if eval_filter_top1:
                     attn_0 = _apply_top1(attn_0.squeeze())[None, None]
