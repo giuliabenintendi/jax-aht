@@ -95,7 +95,8 @@ class JAActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action_and_attention(self, params, obs, done, avail_actions, hstate, rng,
-                                 greedy=False, agent_id=None):
+                                 greedy=False, agent_id=None,
+                                 prev_reward=None, prev_action=None):
         """Like get_action, but also returns the attention map.
 
         Returns:

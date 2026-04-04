@@ -97,7 +97,8 @@ class JADualImageActorCriticPolicy(AgentPolicy):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action_and_attention(self, params, obs, done, avail_actions, hstate, rng,
-                                 greedy=False, agent_id=None):
+                                 greedy=False, agent_id=None,
+                                 prev_reward=None, prev_action=None):
         hidden = self._unpack_hstate(hstate)
         new_hidden, pi, _, _, attn_map = self.network.apply(
             params, hidden, (obs, done, avail_actions)
