@@ -248,13 +248,24 @@ class CardGameEnv(BaseEnv):
         if self.communication and self.comm_reward_coef > 0:
             partner_msg_0 = env_state.messages[1]  # agent_1's last message
             partner_msg_1 = env_state.messages[0]  # agent_0's last message
-            comm_r0 = jnp.where(
+            my_msg_0 = env_state.messages[0]        # agent_0's own last message
+            my_msg_1 = env_state.messages[1]        # agent_1's own last message
+            alpha = self.comm_reward_coef
+            # Listener: pick what partner communicated
+            listen_r0 = jnp.where(
                 is_decision & (partner_msg_0 >= 0) & jnp.equal(a0, partner_msg_0),
-                self.comm_reward_coef, 0.0)
-            comm_r1 = jnp.where(
+                alpha, 0.0)
+            listen_r1 = jnp.where(
                 is_decision & (partner_msg_1 >= 0) & jnp.equal(a1, partner_msg_1),
-                self.comm_reward_coef, 0.0)
-            comm_reward_arr = jnp.array([comm_r0, comm_r1])
+                alpha, 0.0)
+            # Self-consistency: pick what I communicated
+            self_r0 = jnp.where(
+                is_decision & (my_msg_0 >= 0) & jnp.equal(a0, my_msg_0),
+                alpha, 0.0)
+            self_r1 = jnp.where(
+                is_decision & (my_msg_1 >= 0) & jnp.equal(a1, my_msg_1),
+                alpha, 0.0)
+            comm_reward_arr = jnp.array([listen_r0 + self_r0, listen_r1 + self_r1])
         else:
             comm_reward_arr = jnp.zeros(self.num_agents)
 
