@@ -15,17 +15,6 @@ DATE=$(date +%d%m%Y)
 echo "=== Cross-attention ablation on GPU ${GPU} ==="
 echo "Started: $(date)"
 
-# 1) Cross-attention ON, beta=0.001
-echo "[1/3] CROSS_AGENT_ATTN=true, beta=0.001"
-./run_gpu.sh "$GPU" marl.run \
-  task=$TASK \
-  algorithm=$ALG \
-  algorithm.TOTAL_TIMESTEPS=$STEPS \
-  algorithm.NUM_SEEDS=$SEEDS \
-  algorithm.CROSS_AGENT_ATTN=true \
-  algorithm.JA_BETA_MAX=0.001 \
-  label="xattn_on_b0.001_s${SEEDS}_${DATE}"
-
 # 2) Cross-attention OFF, beta=0.001
 echo "[2/3] CROSS_AGENT_ATTN=false, beta=0.001"
 ./run_gpu.sh "$GPU" marl.run \
