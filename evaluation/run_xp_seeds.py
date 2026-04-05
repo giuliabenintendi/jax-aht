@@ -67,6 +67,28 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     """
     from agents.ja_utils import augment_obs_for_eval
 
+    _xattn = getattr(agent_0_policy, 'cross_agent_attn', False)
+    _xdim = getattr(agent_0_policy, 'xattn_embed_dim', 64) if _xattn else 0
+
+    def _call_attn(policy, params, obs, done, avail, hstate, rng,
+                   pe_a=None, pe_c=None, prev_rew=None, prev_act=None):
+        """Wrapper returning (act, hstate, attn, own_a, own_c) uniformly."""
+        if _xattn:
+            act, hs, attn, oa, oc = policy.get_action_and_attention(
+                params=params, obs=obs, done=done, avail_actions=avail,
+                hstate=hstate, rng=rng, greedy=greedy_eval,
+                partner_embed_actor=pe_a, partner_embed_critic=pe_c,
+            )
+            return act, hs, attn, oa, oc
+        else:
+            act, hs, attn = policy.get_action_and_attention(
+                params=params, obs=obs, done=done, avail_actions=avail,
+                hstate=hstate, rng=rng, greedy=greedy_eval,
+                prev_reward=prev_rew, prev_action=prev_act,
+            )
+            z = jnp.zeros((1, 1, 1))  # dummy
+            return act, hs, attn, z, z
+
     rng, reset_rng = jax.random.split(rng)
     init_obs, init_env_state = env.reset(reset_rng)
     init_done = {k: jnp.zeros((1), dtype=bool) for k in env.agents + ["__all__"]}
@@ -91,6 +113,15 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
         prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
+    # Initialize partner embeddings for cross-agent attention
+    if _xattn:
+        pe_a0 = jnp.zeros((1, 1, _xdim))
+        pe_c0 = jnp.zeros((1, 1, _xdim))
+        pe_a1 = jnp.zeros((1, 1, _xdim))
+        pe_c1 = jnp.zeros((1, 1, _xdim))
+    else:
+        pe_a0 = pe_c0 = pe_a1 = pe_c1 = jnp.zeros((1, 1, 1))
+
     avail_actions = env.get_avail_actions(init_env_state)
     avail_actions = jax.lax.stop_gradient(avail_actions)
     avail_actions_0 = avail_actions["agent_0"].astype(jnp.float32)
@@ -105,31 +136,28 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
         obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
 
-    act_0, hstate_0, attn_0 = agent_0_policy.get_action_and_attention(
-        params=agent_0_param,
-        obs=obs_0.reshape(1, 1, -1),
-        done=init_done["agent_0"].reshape(1, 1),
-        avail_actions=avail_actions_0,
-        hstate=init_hstate_0,
-        rng=act0_rng,
-        greedy=greedy_eval,
-        prev_reward=prev_reward_0 if use_prev_io else None,
-        prev_action=prev_action_0 if use_prev_io else None,
+    act_0, hstate_0, attn_0, oa0, oc0 = _call_attn(
+        agent_0_policy, agent_0_param,
+        obs_0.reshape(1, 1, -1), init_done["agent_0"].reshape(1, 1),
+        avail_actions_0, init_hstate_0, act0_rng,
+        pe_a=pe_a0, pe_c=pe_c0,
+        prev_rew=prev_reward_0 if use_prev_io else None,
+        prev_act=prev_action_0 if use_prev_io else None,
     )
     act_0 = act_0.squeeze()
 
-    act_1, hstate_1, attn_1 = agent_1_policy.get_action_and_attention(
-        params=agent_1_param,
-        obs=obs_1.reshape(1, 1, -1),
-        done=init_done["agent_1"].reshape(1, 1),
-        avail_actions=avail_actions_1,
-        hstate=init_hstate_1,
-        rng=act1_rng,
-        greedy=greedy_eval,
-        prev_reward=prev_reward_1 if use_prev_io else None,
-        prev_action=prev_action_1 if use_prev_io else None,
+    act_1, hstate_1, attn_1, oa1, oc1 = _call_attn(
+        agent_1_policy, agent_1_param,
+        obs_1.reshape(1, 1, -1), init_done["agent_1"].reshape(1, 1),
+        avail_actions_1, init_hstate_1, act1_rng,
+        pe_a=pe_a1, pe_c=pe_c1,
+        prev_rew=prev_reward_1 if use_prev_io else None,
+        prev_act=prev_action_1 if use_prev_io else None,
     )
     act_1 = act_1.squeeze()
+    # Swap partner embeddings
+    pe_a0, pe_a1 = oa1, oa0
+    pe_c0, pe_c1 = oc1, oc0
 
     # Flatten attention maps to distributions for JSD
     attn_0_flat = attn_0.reshape(-1)
@@ -165,14 +193,16 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                   prev_reward_1 if use_prev_io else None,
                   prev_action_0 if use_prev_io else None,
                   prev_action_1 if use_prev_io else None,
-                  attn_0.squeeze(), attn_1.squeeze())
+                  attn_0.squeeze(), attn_1.squeeze(),
+                  pe_a0, pe_c0, pe_a1, pe_c1)
 
     def scan_step(carry, _):
         def take_step(carry_step):
             (ep_ts, env_state, obs, rng, done, reward, act_onehot,
              hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
              prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
-             prev_a0, prev_a1) = carry_step
+             prev_a0, prev_a1,
+             pe_a0, pe_c0, pe_a1, pe_c1) = carry_step
 
             avail_actions = env.get_avail_actions(env_state)
             avail_actions = jax.lax.stop_gradient(avail_actions)
@@ -187,29 +217,23 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 obs_0 = augment_obs_for_eval(obs_0, prev_a1, _img_h, _img_w)
                 obs_1 = augment_obs_for_eval(obs_1, prev_a0, _img_h, _img_w)
 
-            act_0, hstate_0_next, attn_0 = agent_0_policy.get_action_and_attention(
-                params=agent_0_param,
-                obs=obs_0.reshape(1, 1, -1),
-                done=done["agent_0"].reshape(1, 1),
-                avail_actions=avail_actions_0,
-                hstate=hstate_0,
-                rng=act0_rng,
-                greedy=greedy_eval,
-                prev_reward=prev_reward_0 if use_prev_io else None,
-                prev_action=prev_action_0 if use_prev_io else None,
+            act_0, hstate_0_next, attn_0, oa0, oc0 = _call_attn(
+                agent_0_policy, agent_0_param,
+                obs_0.reshape(1, 1, -1), done["agent_0"].reshape(1, 1),
+                avail_actions_0, hstate_0, act0_rng,
+                pe_a=pe_a0, pe_c=pe_c0,
+                prev_rew=prev_reward_0 if use_prev_io else None,
+                prev_act=prev_action_0 if use_prev_io else None,
             )
             act_0 = act_0.squeeze()
 
-            act_1, hstate_1_next, attn_1 = agent_1_policy.get_action_and_attention(
-                params=agent_1_param,
-                obs=obs_1.reshape(1, 1, -1),
-                done=done["agent_1"].reshape(1, 1),
-                avail_actions=avail_actions_1,
-                hstate=hstate_1,
-                rng=act1_rng,
-                greedy=greedy_eval,
-                prev_reward=prev_reward_1 if use_prev_io else None,
-                prev_action=prev_action_1 if use_prev_io else None,
+            act_1, hstate_1_next, attn_1, oa1, oc1 = _call_attn(
+                agent_1_policy, agent_1_param,
+                obs_1.reshape(1, 1, -1), done["agent_1"].reshape(1, 1),
+                avail_actions_1, hstate_1, act1_rng,
+                pe_a=pe_a1, pe_c=pe_c1,
+                prev_rew=prev_reward_1 if use_prev_io else None,
+                prev_act=prev_action_1 if use_prev_io else None,
             )
             act_1 = act_1.squeeze()
 
@@ -239,12 +263,14 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             return (ep_ts + 1, env_state_next, obs_next, rng, done_next, reward, env_act_onehot,
                     hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next,
                     next_prev_reward_0, next_prev_reward_1, next_prev_action_0, next_prev_action_1,
-                    attn_0.squeeze(), attn_1.squeeze())
+                    attn_0.squeeze(), attn_1.squeeze(),
+                    oa1, oc1, oa0, oc0)
 
         (ep_ts, env_state, obs, rng, done, reward, act_onehot,
          hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
          prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
-         prev_a0, prev_a1) = carry
+         prev_a0, prev_a1,
+         pe_a0, pe_c0, pe_a1, pe_c1) = carry
         new_carry = jax.lax.cond(
             done["__all__"],
             lambda curr_carry: curr_carry,
