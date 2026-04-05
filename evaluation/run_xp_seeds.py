@@ -280,8 +280,10 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         return new_carry, None
 
     final_carry, _ = jax.lax.scan(scan_step, init_carry, None, length=max_episode_steps)
-    info = final_carry[-5]  # last_info
-    mean_jsd = final_carry[-4] / final_carry[-3]  # jsd_sum / jsd_count
+    # Carry layout: (ep_ts, env_state, obs, rng, done, reward, act_onehot,
+    #   hstate_0, hstate_1, last_info, jsd_sum, jsd_count, ...)
+    info = final_carry[9]       # last_info
+    mean_jsd = final_carry[10] / final_carry[11]  # jsd_sum / jsd_count
     return info, mean_jsd
 
 
