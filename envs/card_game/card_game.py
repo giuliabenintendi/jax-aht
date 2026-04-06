@@ -247,26 +247,19 @@ class CardGameEnv(BaseEnv):
 
         # Per-agent communication reward (added to training reward, not to logged return)
         if self.communication and self.comm_reward_coef > 0:
-            partner_msg_0 = env_state.messages[1]  # agent_1's last message
-            partner_msg_1 = env_state.messages[0]  # agent_0's last message
-            my_msg_0 = env_state.messages[0]        # agent_0's own last message
-            my_msg_1 = env_state.messages[1]        # agent_1's own last message
+            my_msg_0 = env_state.messages[0]
+            my_msg_1 = env_state.messages[1]
             alpha = self.comm_reward_coef
-            # Listener: pick what partner communicated
-            listen_r0 = jnp.where(
-                is_decision & (partner_msg_0 >= 0) & jnp.equal(a0, partner_msg_0),
-                alpha, 0.0)
-            listen_r1 = jnp.where(
-                is_decision & (partner_msg_1 >= 0) & jnp.equal(a1, partner_msg_1),
-                alpha, 0.0)
-            # Self-consistency: pick what I communicated
-            self_r0 = jnp.where(
-                is_decision & (my_msg_0 >= 0) & jnp.equal(a0, my_msg_0),
-                alpha, 0.0)
-            self_r1 = jnp.where(
-                is_decision & (my_msg_1 >= 0) & jnp.equal(a1, my_msg_1),
-                alpha, 0.0)
-            comm_reward_arr = jnp.array([listen_r0 + self_r0, listen_r1 + self_r1])
+            valid = (my_msg_0 >= 0) & (my_msg_1 >= 0)
+            msgs_match = valid & jnp.equal(my_msg_0, my_msg_1)
+            # Message agreement: did both agents converge on the same message?
+            agree_r = jnp.where(is_decision & msgs_match, alpha, 0.0)
+            # Follow-through: pick the agreed card (only when messages match)
+            follow_r0 = jnp.where(
+                is_decision & msgs_match & jnp.equal(a0, my_msg_0), alpha, 0.0)
+            follow_r1 = jnp.where(
+                is_decision & msgs_match & jnp.equal(a1, my_msg_1), alpha, 0.0)
+            comm_reward_arr = jnp.array([agree_r + follow_r0, agree_r + follow_r1])
         else:
             comm_reward_arr = jnp.zeros(self.num_agents)
 
