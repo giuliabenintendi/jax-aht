@@ -7,4 +7,5 @@ ENV_KWARGS:
   fixed_partner_pos: -1
   other_play_position_shuffle: false
   other_play_recolouring: false
+  comm_reward_coef: 0.0
 TASK_NAME: card-game
