@@ -199,8 +199,9 @@ def make_train_loop(config, env):
         else:
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
         if query_partner_lstm:
-            init_plh = jnp.zeros((num_actors, lstm_hidden_dim))
-            runner_state = runner_state + (init_plh, init_plh)
+            init_plh_a = jnp.zeros((num_actors, lstm_hidden_dim))
+            init_plh_c = jnp.zeros((num_actors, lstm_hidden_dim))
+            runner_state = runner_state + (init_plh_a, init_plh_c)
 
         return runner_state
 
