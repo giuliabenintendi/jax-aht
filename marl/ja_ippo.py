@@ -858,33 +858,30 @@ def log_metrics(config, out, logger):
     print_interval = max(1, num_updates // 20)
 
     for step in range(num_updates):
+        step_data = {"train_step": step}
+
         # Episode metrics
         for stat_name, stat_data in episode_stats_mean.items():
-            logger.log_item(f"Train/{stat_name}_mean", stat_data[step, 0], train_step=step, commit=False)
+            step_data[f"Train/{stat_name}_mean"] = float(stat_data[step, 0])
             if num_seeds > 1:
-                logger.log_item(f"Train/{stat_name}_std", stat_data[step, 1], train_step=step, commit=False)
+                step_data[f"Train/{stat_name}_std"] = float(stat_data[step, 1])
         if "base_return" in episode_stats_mean and config.task["ENV_NAME"] == "overcooked-v1":
-            soups = episode_stats_mean["base_return"][step, 0] / 20.0
-            logger.log_item("Train/soups_delivered", soups, train_step=step, commit=False)
+            step_data["Train/soups_delivered"] = float(episode_stats_mean["base_return"][step, 0] / 20.0)
 
         # Scalar metrics
         for key, wandb_name in scalar_keys:
             if key in scalar_mean:
-                logger.log_item(f"{wandb_name}/mean", float(scalar_mean[key][step]),
-                                train_step=step, commit=False)
+                step_data[f"{wandb_name}/mean"] = float(scalar_mean[key][step])
                 if num_seeds > 1:
-                    logger.log_item(f"{wandb_name}/std", float(scalar_std[key][step]),
-                                    train_step=step, commit=False)
+                    step_data[f"{wandb_name}/std"] = float(scalar_std[key][step])
 
         # Per-seed curves for cross-seed analysis
         for stat_name in train_stats:
             stat_data = np.array(train_stats[stat_name])
             for seed_idx in range(num_seeds):
-                logger.log_item(f"Seeds/{stat_name}/seed_{seed_idx}",
-                                float(stat_data[seed_idx, step, 0]),
-                                train_step=step, commit=False)
+                step_data[f"Seeds/{stat_name}/seed_{seed_idx}"] = float(stat_data[seed_idx, step, 0])
 
-        logger.log({}, step=step, commit=True)
+        logger.log(step_data, commit=True)
 
         if step % print_interval == 0 or step == num_updates - 1:
             env_steps = (step + 1) * rollout_length * num_envs
