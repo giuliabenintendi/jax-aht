@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Cross-attention ablation on LBF-10food (force_coop=true)
+# Cross-attention (gated fusion) ablation on LBF-10food (force_coop=true)
 # Sequential on one GPU.
 #
-# Conditions:
-#   1) xattn OFF, beta=0.001  (baseline: no cross-attention)
+# Already have:
+#   063tp01k: xattn OFF, beta=0.001 (baseline)
+#   euhag8e6: xattn ON,  beta=0.0
+#
+# This script runs:
+#   1) xattn ON,  beta=0.001
 #   2) xattn ON,  beta=0.002
 #   3) xattn ON,  beta=0.005
 #
@@ -23,17 +27,17 @@ DATE=$(date +%d%m%Y)
 echo "=== Cross-attention ablation on GPU ${GPU} ==="
 echo "Started: $(date)"
 
-# 1) Cross-attention OFF, beta=0.001 (baseline)
-echo "[1/3] CROSS_AGENT_ATTN=false, beta=0.001"
+# 1) Cross-attention ON, beta=0.001
+echo "[1/3] CROSS_AGENT_ATTN=true, beta=0.001"
 ./run_gpu.sh "$GPU" marl.run \
   task=$TASK \
   algorithm=$ALG \
   algorithm.TOTAL_TIMESTEPS=$STEPS \
   algorithm.NUM_SEEDS=$SEEDS \
-  algorithm.CROSS_AGENT_ATTN=false \
+  algorithm.CROSS_AGENT_ATTN=true \
   algorithm.JA_BETA_MAX=0.001 \
   algorithm.JA_WARMUP_ENV_STEPS=$WARMUP \
-  label="xattn_off_b0.001_s${SEEDS}_${DATE}"
+  label="xattn_on_b0.001_s${SEEDS}_${DATE}"
 
 # 2) Cross-attention ON, beta=0.002
 echo "[2/3] CROSS_AGENT_ATTN=true, beta=0.002"
