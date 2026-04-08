@@ -252,9 +252,12 @@ class CardGameEnv(BaseEnv):
             alpha = self.comm_reward_coef
             valid = (my_msg_0 >= 0) & (my_msg_1 >= 0)
             msgs_match = valid & jnp.equal(my_msg_0, my_msg_1)
-            # Message agreement: did both agents converge on the same message?
-            agree_r = jnp.where(is_decision & msgs_match, alpha, 0.0)
-            # Follow-through: pick the agreed card (only when messages match)
+            # Skip first two steps: step 1 has no prior messages, step 2's
+            # messages were sent before either agent saw the other's message.
+            can_agree = msgs_match & (new_step > 2)
+            # Message agreement: reward on every step (deliberation + decision)
+            agree_r = jnp.where(can_agree, alpha / 4.0, 0.0)
+            # Follow-through: pick the agreed card (decision step only)
             follow_r0 = jnp.where(
                 is_decision & msgs_match & jnp.equal(a0, my_msg_0), alpha, 0.0)
             follow_r1 = jnp.where(
