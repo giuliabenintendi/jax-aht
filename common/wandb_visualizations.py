@@ -41,7 +41,7 @@ def _build_run_string(config: dict) -> str:
     if "JA_BETA_MAX" in alg_config:
         parts.append(f"b{alg_config['JA_BETA_MAX']}")
     if alg_config.get("CROSS_AGENT_ATTN", False):
-        parts.append("xattn")
+        parts.append("flamingo_xattn")
     if alg_config.get("QUERY_PARTNER_LSTM", False):
         parts.append("qplstm")
     if alg_config.get("USE_DUAL_CRITIC", False):
