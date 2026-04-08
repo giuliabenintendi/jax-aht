@@ -41,8 +41,8 @@ class JATransition(NamedTuple):
     info: jnp.ndarray
     avail_actions: jnp.ndarray
     ja_reward: jnp.ndarray       # (NUM_ACTORS,) -- raw JA intrinsic reward (unscaled)
-    partner_embed_actor: jnp.ndarray   # (NUM_ACTORS, embed_dim) or scalar 0 when disabled
-    partner_embed_critic: jnp.ndarray  # (NUM_ACTORS, embed_dim) or scalar 0 when disabled
+    partner_embed_actor: jnp.ndarray   # (NUM_ACTORS, positions, feat_dim) or scalar 0 when disabled
+    partner_embed_critic: jnp.ndarray  # (NUM_ACTORS, positions, feat_dim) or scalar 0 when disabled
     plh_actor: jnp.ndarray             # (NUM_ACTORS, lstm_dim) or scalar 0 when disabled
     plh_critic: jnp.ndarray            # (NUM_ACTORS, lstm_dim) or scalar 0 when disabled
 
@@ -116,7 +116,6 @@ def make_train_loop(config, env):
     cross_agent_attn = config.get("CROSS_AGENT_ATTN", False)
     if cross_agent_attn and feed_other_attn:
         raise ValueError("CROSS_AGENT_ATTN and FEED_OTHER_ATTN are mutually exclusive")
-    xattn_embed_dim = config.get("JA_NUM_HEADS", 4) * config.get("JA_HEAD_FEATURES", 16)
     filter_attn_top1 = config.get("FILTER_ATTN_TOP1", False)
     query_partner_lstm = config.get("QUERY_PARTNER_LSTM", False)
     lstm_hidden_dim = config.get("LSTM_HIDDEN_DIM", 128)
@@ -135,6 +134,9 @@ def make_train_loop(config, env):
         )
     else:
         img_h = img_w = feat_h = feat_w = 0
+
+    xattn_num_positions = feat_h * feat_w
+    xattn_feat_dim = config.get("CONV_FILTERS", 32) + config.get("JA_SPATIAL_BASIS_DEPTH", 8)
 
     # Precompute fixed attention map for hardcoded partner
     if fixed_partner_pos >= 0:
@@ -192,8 +194,8 @@ def make_train_loop(config, env):
             init_other_attn = jnp.ones((num_actors, feat_h, feat_w)) / (feat_h * feat_w)
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng, init_other_attn)
         elif cross_agent_attn:
-            init_pe_actor = jnp.zeros((num_actors, xattn_embed_dim))
-            init_pe_critic = jnp.zeros((num_actors, xattn_embed_dim))
+            init_pe_actor = jnp.zeros((num_actors, xattn_num_positions, xattn_feat_dim))
+            init_pe_critic = jnp.zeros((num_actors, xattn_num_positions, xattn_feat_dim))
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng,
                             init_pe_actor, init_pe_critic)
         else:
@@ -373,8 +375,8 @@ def make_train_loop(config, env):
                             avail_actions=avail_actions_batch.reshape(1, num_actors, -1),
                             hstate=hstate,
                             rng=act_rng,
-                            partner_embed_actor=prev_pe_actor.reshape(1, num_actors, -1),
-                            partner_embed_critic=prev_pe_critic.reshape(1, num_actors, -1),
+                            partner_embed_actor=prev_pe_actor[None],
+                            partner_embed_critic=prev_pe_critic[None],
                             **plh_kwarg,
                         )
                 else:
@@ -464,8 +466,9 @@ def make_train_loop(config, env):
                     new_pe_critic = jnp.concatenate([c_own[num_envs:], c_own[:num_envs]], axis=0)
                     # Reset to zeros on episode boundaries
                     new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
-                    new_pe_actor = jnp.where(new_done_batch[:, None], 0.0, new_pe_actor)
-                    new_pe_critic = jnp.where(new_done_batch[:, None], 0.0, new_pe_critic)
+                    pe_done_mask = new_done_batch.reshape(-1, *([1] * (new_pe_actor.ndim - 1)))
+                    new_pe_actor = jnp.where(pe_done_mask, 0.0, new_pe_actor)
+                    new_pe_critic = jnp.where(pe_done_mask, 0.0, new_pe_critic)
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng,
                                     new_pe_actor, new_pe_critic)
                 else:
@@ -518,8 +521,8 @@ def make_train_loop(config, env):
                     avail_actions=last_avail_batch.reshape(1, num_actors, -1),
                     hstate=hstate,
                     rng=jax.random.PRNGKey(0),
-                    partner_embed_actor=prev_pe_actor.reshape(1, num_actors, -1),
-                    partner_embed_critic=prev_pe_critic.reshape(1, num_actors, -1),
+                    partner_embed_actor=prev_pe_actor[None],
+                    partner_embed_critic=prev_pe_critic[None],
                     **last_plh_kwarg,
                 )
             else:

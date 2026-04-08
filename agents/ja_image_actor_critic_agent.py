@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from agents.ja_actor_critic_agent import JAActorCriticPolicy
-from agents.ja_image_actor_critic import JAImageActorCritic
+from agents.ja_image_actor_critic import JAImageActorCritic, _compute_resnet_output_dims
 
 
 class JAImageActorCriticPolicy(JAActorCriticPolicy):
@@ -47,7 +47,11 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         self.message_dim = message_dim
         self.cross_agent_attn = cross_agent_attn
         self.query_partner_lstm = query_partner_lstm
-        self.xattn_embed_dim = num_heads * head_features
+        # Cross-attention now exchanges spatial features (H*W, feat_dim)
+        feat_h, feat_w = _compute_resnet_output_dims(
+            img_height, img_width, conv_stride, conv_kernel_size, conv_padding, conv_num_blocks)
+        self.xattn_num_positions = feat_h * feat_w
+        self.xattn_feat_dim = conv_filters + spatial_basis_depth
         self.network = JAImageActorCritic(
             action_dim=action_dim,
             img_height=img_height,
@@ -87,9 +91,9 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         x_parts = [obs, done, avail_actions]
         if self.cross_agent_attn:
             if partner_embed_actor is None:
-                partner_embed_actor = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+                partner_embed_actor = jnp.zeros((*obs.shape[:2], self.xattn_num_positions, self.xattn_feat_dim))
             if partner_embed_critic is None:
-                partner_embed_critic = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+                partner_embed_critic = jnp.zeros((*obs.shape[:2], self.xattn_num_positions, self.xattn_feat_dim))
             x_parts.extend([partner_embed_actor, partner_embed_critic])
         if self.query_partner_lstm:
             x_parts.extend([plh_actor, plh_critic])
@@ -126,9 +130,9 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             x_parts = [obs, done, avail_actions]
             if self.cross_agent_attn:
                 if partner_embed_actor is None:
-                    partner_embed_actor = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+                    partner_embed_actor = jnp.zeros((*obs.shape[:2], self.xattn_num_positions, self.xattn_feat_dim))
                 if partner_embed_critic is None:
-                    partner_embed_critic = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+                    partner_embed_critic = jnp.zeros((*obs.shape[:2], self.xattn_num_positions, self.xattn_feat_dim))
                 x_parts.extend([partner_embed_actor, partner_embed_critic])
             if self.query_partner_lstm:
                 x_parts.extend([plh_actor, plh_critic])
@@ -171,7 +175,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         dummy_avail = jnp.ones((seq_len, batch_size, self.action_dim))
         x_parts = [dummy_obs, dummy_done, dummy_avail]
         if self.cross_agent_attn:
-            dummy_pe = jnp.zeros((seq_len, batch_size, self.xattn_embed_dim))
+            dummy_pe = jnp.zeros((seq_len, batch_size, self.xattn_num_positions, self.xattn_feat_dim))
             x_parts.extend([dummy_pe, dummy_pe])
         if self.query_partner_lstm:
             dummy_plh = jnp.zeros((seq_len, batch_size, self.lstm_hidden_dim))

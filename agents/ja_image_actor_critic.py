@@ -27,29 +27,73 @@ from agents.resnet_encoder import ResNetEncoder
 
 
 class CrossAgentAttention(nn.Module):
-    """Cross-attention between an agent's embedding and its partner's.
+    """Flamingo-style gated cross-attention over partner's spatial features.
 
-    With only 2 agents (self + partner), the softmax over a single key
-    collapses to a sigmoid gate on the partner's value projection.
+    Q from own embedding, K/V from partner's spatial feature map (H*W positions).
+    Multi-head scaled dot-product attention, zero-init gated residual, followed
+    by a gated FFN. Adapted from OpenFlamingo's GatedCrossAttentionBlock.
+
+    The partner_features tensor carries sinusoidal spatial basis, so the
+    weighted-sum output encodes positional information explicitly.
     """
     embed_dim: int
+    num_heads: int = 4
+    head_dim: int = 16
+    ff_mult: int = 4
 
     @nn.compact
-    def __call__(self, own_embed, partner_embed):
-        q = nn.Dense(self.embed_dim, kernel_init=orthogonal(1.0),
-                     bias_init=constant(0.0), name="xattn_q")(own_embed)
-        k = nn.Dense(self.embed_dim, kernel_init=orthogonal(1.0),
-                     bias_init=constant(0.0), name="xattn_k")(partner_embed)
-        v = nn.Dense(self.embed_dim, kernel_init=orthogonal(1.0),
-                     bias_init=constant(0.0), name="xattn_v")(partner_embed)
+    def __call__(self, own_embed, partner_features):
+        """
+        Args:
+            own_embed: (batch, embed_dim) — agent's post-attention embedding
+            partner_features: (batch, H*W, feat_dim) — partner's spatial features
+        """
+        if partner_features.ndim != 3:
+            raise ValueError(
+                "partner_features must have shape (batch, positions, feat_dim); "
+                f"got ndim={partner_features.ndim} and shape={partner_features.shape}"
+            )
 
-        score = jnp.sum(q * k, axis=-1, keepdims=True) / np.sqrt(self.embed_dim)
-        gate = jax.nn.sigmoid(score)
-        cross_out = gate * v
+        m, d = self.num_heads, self.head_dim
+        inner_dim = m * d
+        scale = d ** -0.5
 
-        out = nn.Dense(self.embed_dim, kernel_init=orthogonal(1.0),
-                       bias_init=constant(0.0), name="xattn_out")(cross_out)
-        return own_embed + out
+        # LayerNorm on query input (Flamingo pattern)
+        x_norm = nn.LayerNorm(name="xattn_ln")(own_embed)
+
+        # Q from own embedding, K/V from partner's spatial features
+        q = nn.Dense(inner_dim, use_bias=False, name="xattn_q")(x_norm)
+        kv = nn.Dense(inner_dim * 2, use_bias=False, name="xattn_kv")(partner_features)
+        k, v = jnp.split(kv, 2, axis=-1)
+
+        # Reshape for multi-head: q (batch, m, d), k/v (batch, HW, m, d)
+        q = q.reshape(-1, m, d)
+        k = k.reshape(-1, k.shape[1], m, d)
+        v = v.reshape(-1, v.shape[1], m, d)
+
+        # Scaled dot-product attention over spatial positions
+        attn_logits = jnp.einsum("bmd,bnmd->bmn", q, k) * scale
+        attn_weights = jax.nn.softmax(attn_logits, axis=-1)  # (batch, m, HW)
+
+        attn_out = jnp.einsum("bmn,bnmd->bmd", attn_weights, v)
+        attn_out = attn_out.reshape(-1, inner_dim)
+        attn_out = nn.Dense(self.embed_dim, use_bias=False, name="xattn_out")(attn_out)
+
+        # Flamingo-style learned residual gate: starts as near-identity.
+        attn_gate = self.param("attn_gate", nn.initializers.zeros, (1,))
+
+        # Gated residual
+        x = own_embed + jnp.tanh(attn_gate) * attn_out
+
+        # Gated FFN (Flamingo pattern)
+        ff_dim = self.embed_dim * self.ff_mult
+        ff_out = nn.LayerNorm(name="ff_ln")(x)
+        ff_out = nn.Dense(ff_dim, use_bias=False, name="ff_up")(ff_out)
+        ff_out = nn.gelu(ff_out)
+        ff_out = nn.Dense(self.embed_dim, use_bias=False, name="ff_down")(ff_out)
+        ff_gate = self.param("ff_gate", nn.initializers.zeros, (1,))
+
+        return x + jnp.tanh(ff_gate) * ff_out
 
 
 def _compute_resnet_output_dims(h, w, stride, kernel_size, padding, num_blocks):
@@ -182,6 +226,17 @@ class JAImageScannedLSTM(nn.Module):
 
         attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
 
+        # Save own spatial features before cross-attention (for partner to use next step)
+        own_spatial = features_with_pos.reshape(batch_size, fh * fw, -1)
+
+        if self.cross_agent_attn:
+            attended_flat = CrossAgentAttention(
+                embed_dim=m * cm,
+                num_heads=m,
+                head_dim=cm,
+                name="cross_agent_attn",
+            )(attended_flat, jax.lax.stop_gradient(partner_embed))
+
         suffix_parts = []
         suffix_start = self._img_flat_dim
 
@@ -202,15 +257,6 @@ class JAImageScannedLSTM(nn.Module):
 
         if suffix_parts:
             attended_flat = jnp.concatenate([attended_flat] + suffix_parts, axis=-1)
-
-        # Save own embedding before cross-attention (for partner to use next step)
-        own_embed = attended_flat
-
-        if self.cross_agent_attn:
-            attended_flat = CrossAgentAttention(
-                embed_dim=m * cm,
-                name="cross_agent_attn",
-            )(attended_flat, jax.lax.stop_gradient(partner_embed))
 
         # FC layers before LSTM
         lstm_input = nn.Dense(
@@ -233,7 +279,7 @@ class JAImageScannedLSTM(nn.Module):
         new_h, new_c = new_carry
 
         if self.cross_agent_attn:
-            return (new_h, new_c), (lstm_out, attn_map, jax.lax.stop_gradient(own_embed))
+            return (new_h, new_c), (lstm_out, attn_map, jax.lax.stop_gradient(own_spatial))
         return (new_h, new_c), (lstm_out, attn_map)
 
     @staticmethod

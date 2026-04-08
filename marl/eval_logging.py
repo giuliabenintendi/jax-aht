@@ -32,7 +32,9 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
 
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
     cross_agent_attn = algorithm_config.get("CROSS_AGENT_ATTN", False)
-    xattn_embed_dim = algorithm_config.get("JA_NUM_HEADS", 4) * algorithm_config.get("JA_HEAD_FEATURES", 16)
+    if cross_agent_attn:
+        _xattn_npos = getattr(policy, 'xattn_num_positions', 0)
+        _xattn_fdim = getattr(policy, 'xattn_feat_dim', 0)
     query_partner_lstm = algorithm_config.get("QUERY_PARTNER_LSTM", False)
     _lstm_dim = algorithm_config.get("LSTM_HIDDEN_DIM", 128)
     eval_filter_top1 = algorithm_config.get("FILTER_ATTN_TOP1", False)
@@ -80,10 +82,10 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
             if cross_agent_attn:
-                pe_actor_0 = jnp.zeros((1, 1, xattn_embed_dim))
-                pe_actor_1 = jnp.zeros((1, 1, xattn_embed_dim))
-                pe_critic_0 = jnp.zeros((1, 1, xattn_embed_dim))
-                pe_critic_1 = jnp.zeros((1, 1, xattn_embed_dim))
+                pe_actor_0 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
+                pe_actor_1 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
+                pe_critic_0 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
+                pe_critic_1 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
             if query_partner_lstm:
                 plh_a0 = jnp.zeros((1, 1, _lstm_dim))
                 plh_a1 = jnp.zeros((1, 1, _lstm_dim))

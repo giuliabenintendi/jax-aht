@@ -68,7 +68,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     from agents.ja_utils import augment_obs_for_eval
 
     _xattn = getattr(agent_0_policy, 'cross_agent_attn', False)
-    _xdim = getattr(agent_0_policy, 'xattn_embed_dim', 64) if _xattn else 0
+    _xnpos = getattr(agent_0_policy, 'xattn_num_positions', 0) if _xattn else 0
+    _xfdim = getattr(agent_0_policy, 'xattn_feat_dim', 0) if _xattn else 0
 
     def _call_attn(policy, params, obs, done, avail, hstate, rng,
                    pe_a=None, pe_c=None, prev_rew=None, prev_act=None):
@@ -115,10 +116,10 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
     # Initialize partner embeddings for cross-agent attention
     if _xattn:
-        pe_a0 = jnp.zeros((1, 1, _xdim))
-        pe_c0 = jnp.zeros((1, 1, _xdim))
-        pe_a1 = jnp.zeros((1, 1, _xdim))
-        pe_c1 = jnp.zeros((1, 1, _xdim))
+        pe_a0 = jnp.zeros((1, 1, _xnpos, _xfdim))
+        pe_c0 = jnp.zeros((1, 1, _xnpos, _xfdim))
+        pe_a1 = jnp.zeros((1, 1, _xnpos, _xfdim))
+        pe_c1 = jnp.zeros((1, 1, _xnpos, _xfdim))
     else:
         pe_a0 = pe_c0 = pe_a1 = pe_c1 = jnp.zeros((1, 1, 1))
 

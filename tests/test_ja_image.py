@@ -3,6 +3,7 @@ import math
 import numpy as np
 import jax
 import jax.numpy as jnp
+import pytest
 from PIL import Image
 
 from envs import make_env
@@ -130,6 +131,86 @@ def test_ja_image_forward_pass():
     expected_ah = math.ceil(img_h / 4)
     expected_aw = math.ceil(img_w / 4)
     assert attn_map.shape == (seq_len, batch_size, expected_ah, expected_aw)
+
+
+def test_ja_image_cross_agent_raw_tokens_with_scalar_suffix():
+    """Cross-agent attention accepts raw partner tokens and coexists with scalar suffixes."""
+    from agents.ja_image_actor_critic import _compute_resnet_output_dims
+    from agents.ja_image_actor_critic_agent import JAImageActorCriticPolicy
+
+    env = make_env("overcooked-v1", {"layout": "cramped_room", "obs_type": "image"})
+    img_h = env.grid_height * env.tile_size
+    img_w = env.grid_width * env.tile_size
+    obs_dim = env.observation_space(env.agents[0]).shape[0] + 2
+
+    conv_filters = 4
+    spatial_basis_depth = 4
+    conv_num_blocks = 2
+    conv_kernel_size = 3
+    conv_stride = 2
+    conv_padding = "SAME"
+    feat_h, feat_w = _compute_resnet_output_dims(
+        img_h, img_w, conv_stride, conv_kernel_size, conv_padding, conv_num_blocks
+    )
+
+    policy = JAImageActorCriticPolicy(
+        action_dim=env.action_space(env.agents[0]).n,
+        obs_dim=obs_dim,
+        img_height=img_h,
+        img_width=img_w,
+        conv_filters=conv_filters,
+        conv_num_blocks=conv_num_blocks,
+        conv_kernel_size=conv_kernel_size,
+        conv_stride=conv_stride,
+        conv_padding=conv_padding,
+        num_heads=2,
+        head_features=4,
+        fc_hidden_dim=4,
+        lstm_hidden_dim=4,
+        spatial_basis_depth=spatial_basis_depth,
+        scalar_dim=2,
+        cross_agent_attn=True,
+    )
+
+    rng = jax.random.PRNGKey(11)
+    rng, init_rng, act_rng = jax.random.split(rng, 3)
+    params = policy.init_params(init_rng)
+    hstate = policy.init_hstate(1)
+
+    dummy_obs = jnp.zeros((1, 1, obs_dim))
+    dummy_done = jnp.zeros((1, 1))
+    dummy_avail = jnp.ones((1, 1, env.action_space(env.agents[0]).n))
+    dummy_partner = jnp.zeros((1, 1, feat_h * feat_w, conv_filters + spatial_basis_depth))
+
+    action, val, pi, new_hstate, attn_map, actor_tokens, critic_tokens = policy.get_action_value_policy(
+        params,
+        dummy_obs,
+        dummy_done,
+        dummy_avail,
+        hstate,
+        act_rng,
+        partner_embed_actor=dummy_partner,
+        partner_embed_critic=dummy_partner,
+    )
+
+    assert action.shape == (1, 1)
+    assert val.shape == (1, 1)
+    assert new_hstate.shape == hstate.shape
+    assert attn_map.shape == (1, 1, feat_h, feat_w)
+    assert actor_tokens.shape == (1, 1, feat_h * feat_w, conv_filters + spatial_basis_depth)
+    assert critic_tokens.shape == (1, 1, feat_h * feat_w, conv_filters + spatial_basis_depth)
+
+
+def test_cross_agent_attention_rejects_flattened_partner_tokens():
+    """The raw-token contract should fail fast on flattened partner features."""
+    from agents.ja_image_actor_critic import CrossAgentAttention
+
+    module = CrossAgentAttention(embed_dim=8, num_heads=2, head_dim=4)
+    own_embed = jnp.zeros((1, 8))
+    bad_partner = jnp.zeros((1, 16))
+
+    with pytest.raises(ValueError, match="partner_features must have shape"):
+        module.init(jax.random.PRNGKey(0), own_embed, bad_partner)
 
 
 def test_ja_image_train_loop():

@@ -133,11 +133,12 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
     _xattn = getattr(agent_0_policy, 'cross_agent_attn', False)
     if _xattn:
-        _ed = getattr(agent_0_policy, 'xattn_embed_dim', 64)
-        _pe_actor_0 = jnp.zeros((1, 1, _ed))
-        _pe_actor_1 = jnp.zeros((1, 1, _ed))
-        _pe_critic_0 = jnp.zeros((1, 1, _ed))
-        _pe_critic_1 = jnp.zeros((1, 1, _ed))
+        _npos = getattr(agent_0_policy, 'xattn_num_positions', 0)
+        _fdim = getattr(agent_0_policy, 'xattn_feat_dim', 0)
+        _pe_actor_0 = jnp.zeros((1, 1, _npos, _fdim))
+        _pe_actor_1 = jnp.zeros((1, 1, _npos, _fdim))
+        _pe_critic_0 = jnp.zeros((1, 1, _npos, _fdim))
+        _pe_critic_1 = jnp.zeros((1, 1, _npos, _fdim))
 
     # Collect states and actions for rendering
     ep_states = [env_state]
