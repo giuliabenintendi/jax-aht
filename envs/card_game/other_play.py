@@ -264,19 +264,20 @@ class CardGameRecolouringWrapper:
             raw = action[a]
 
             if self._env.communication:
-                n_card_msg = num_cards * num_cards   # 25
-                is_pick = raw < n_card_msg
+                msg_offset = num_cards
+                idle_action = 2 * num_cards
+                is_pick = raw < num_cards
+                is_msg = (raw >= msg_offset) & (raw < idle_action)
 
-                # Decision action: pick_color (a // 5) + message (a % 5)
-                color = raw // num_cards
-                msg = raw % num_cards
-                pick_action = inv[color] * num_cards + inv[msg]
+                pick_action = inv[raw % num_cards]
+                msg_idx = jnp.clip(raw - msg_offset, 0, num_cards - 1)
+                msg_action = inv[msg_idx] + msg_offset
 
-                # Deliberation action: message only (25-29 → index 0-4)
-                msg_idx = jnp.clip(raw - n_card_msg, 0, num_cards - 1)
-                msg_only_action = inv[msg_idx] + n_card_msg
-
-                true_action[a] = jnp.where(is_pick, pick_action, msg_only_action)
+                true_action[a] = jnp.where(
+                    is_pick,
+                    pick_action,
+                    jnp.where(is_msg, msg_action, raw),
+                )
             else:
                 # 0-4: pick color, 5: do nothing
                 is_pick = raw < num_cards

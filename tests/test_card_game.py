@@ -122,6 +122,75 @@ def test_auto_reset():
     assert int(state.env_state.step_count) == 0
 
 
+def test_comm_action_space_and_masks():
+    """Communication uses flat macro-actions with phase-specific masks."""
+    env = make_env("card-game", {"max_steps": 3, "communication": True, "shuffle": False})
+    assert env.action_space("agent_0").n == 2 * NUM_CARDS + 1
+
+    key = jax.random.PRNGKey(5)
+    obs, state = env.reset(key)
+
+    avail = env.get_avail_actions(state)["agent_0"]
+    expected_deliberation = jnp.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1], dtype=avail.dtype)
+    assert jnp.array_equal(avail, expected_deliberation)
+
+    key, subkey = jax.random.split(key)
+    actions = {"agent_0": jnp.int32(NUM_CARDS), "agent_1": jnp.int32(NUM_CARDS + 1)}
+    obs, state, _, dones, _ = env.step(subkey, state, actions)
+    assert not dones["__all__"]
+
+    avail = env.get_avail_actions(state)["agent_0"]
+    assert jnp.array_equal(avail, expected_deliberation)
+
+    key, subkey = jax.random.split(key)
+    actions = {"agent_0": jnp.int32(2 * NUM_CARDS), "agent_1": jnp.int32(2 * NUM_CARDS)}
+    obs, state, _, dones, _ = env.step(subkey, state, actions)
+    assert not dones["__all__"]
+
+    avail = env.get_avail_actions(state)["agent_0"]
+    expected_decision = jnp.array([1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0], dtype=avail.dtype)
+    assert jnp.array_equal(avail, expected_decision)
+
+
+def test_comm_message_and_idle_update_state():
+    """Message actions set the current message; idle clears it."""
+    env = make_env("card-game", {"max_steps": 3, "communication": True, "shuffle": False})
+    key = jax.random.PRNGKey(11)
+    obs, state = env.reset(key)
+
+    key, subkey = jax.random.split(key)
+    actions = {"agent_0": jnp.int32(NUM_CARDS + 2), "agent_1": jnp.int32(NUM_CARDS + 4)}
+    obs, state, _, dones, _ = env.step(subkey, state, actions)
+    assert not dones["__all__"]
+    assert int(state.env_state.messages[0]) == 2
+    assert int(state.env_state.messages[1]) == 4
+
+    key, subkey = jax.random.split(key)
+    idle = jnp.int32(2 * NUM_CARDS)
+    obs, state, _, dones, _ = env.step(subkey, state, {"agent_0": idle, "agent_1": idle})
+    assert not dones["__all__"]
+    assert int(state.env_state.messages[0]) == -1
+    assert int(state.env_state.messages[1]) == -1
+
+
+def test_comm_decision_pick_reward():
+    """Final-step picks are plain card actions under communication."""
+    env = make_env("card-game", {"max_steps": 2, "communication": True, "shuffle": False})
+    key = jax.random.PRNGKey(13)
+    obs, state = env.reset(key)
+
+    key, subkey = jax.random.split(key)
+    idle = jnp.int32(2 * NUM_CARDS)
+    obs, state, _, dones, _ = env.step(subkey, state, {"agent_0": idle, "agent_1": idle})
+    assert not dones["__all__"]
+
+    key, subkey = jax.random.split(key)
+    actions = {"agent_0": jnp.int32(3), "agent_1": jnp.int32(3)}
+    obs, state, reward, dones, _ = env.step(subkey, state, actions)
+    assert dones["__all__"]
+    assert float(reward["agent_0"]) == 1.0
+
+
 def test_ego_highlight():
     """Each agent's observation should differ (different ego borders)."""
     env = make_env("card-game", {})

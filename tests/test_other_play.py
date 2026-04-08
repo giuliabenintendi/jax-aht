@@ -262,9 +262,9 @@ def test_recolouring_message_remapping():
     inv1 = state.per_agent_inv_recolouring["agent_1"]
 
     # Agent 0 sends message 2 (recoloured), Agent 1 sends message 4 (recoloured)
-    # Deliberation with communication: action = 25 + msg_idx
-    a0 = jnp.int32(25 + 2)
-    a1 = jnp.int32(25 + 4)
+    # Deliberation with communication: action = NUM_CARDS + msg_idx
+    a0 = jnp.int32(NUM_CARDS + 2)
+    a1 = jnp.int32(NUM_CARDS + 4)
 
     key, subkey = jax.random.split(key)
     obs, state, _, _, _ = wrapped.step(

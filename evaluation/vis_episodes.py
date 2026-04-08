@@ -275,7 +275,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             prev_attn_0 = attn_0.squeeze()  # (feat_h, feat_w)
             prev_attn_1 = attn_1.squeeze()  # (feat_h, feat_w)
 
-        # Take step in environment (joint action encodes card choice + message)
+        # Take step in environment using the card-game macro-action encoding.
         both_actions = [act_0, act_1]
         env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
         render_act = _action_to_ground_truth(env, env_state, env_act)
@@ -292,13 +292,12 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         act_1_record = int(fp) if fp >= 0 else int(render_act["agent_1"])
         ep_states.append(env_state)
         if has_comm:
-            # Decode: 0-24 = card+msg, 25-29 = msg only (deliberation)
-            n_card_msg = num_cards * num_cards
             a0_int, a1_int = act_0_record, int(render_act["agent_1"])
-            card_0 = a0_int // num_cards if a0_int < n_card_msg else -1
-            card_1 = (act_1_record // num_cards if fp < 0 else act_1_record) if a1_int < n_card_msg else -1
-            msg_0 = a0_int % num_cards if a0_int < n_card_msg else a0_int - n_card_msg
-            msg_1 = a1_int % num_cards if a1_int < n_card_msg else a1_int - n_card_msg
+            msg_offset = num_cards
+            card_0 = a0_int if a0_int < num_cards else -1
+            card_1 = act_1_record if a1_int < num_cards else -1
+            msg_0 = a0_int - msg_offset if (a0_int >= msg_offset and a0_int < 2 * num_cards) else -1
+            msg_1 = a1_int - msg_offset if (a1_int >= msg_offset and a1_int < 2 * num_cards) else -1
             ep_actions.append((card_0, card_1))
             ep_messages.append((msg_0, msg_1))
         else:

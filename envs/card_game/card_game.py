@@ -14,8 +14,9 @@ Actions (no communication):
   5: do nothing (only legal during deliberation)
 
 Actions (with communication):
-  0-24: pick color (a//5) + send message (a%5) — decision only
-  25-29: send message (a-25) — deliberation only
+  0-4: pick color i — decision only
+  5-9: send message (a-5) — deliberation only
+  10: idle (noop + no message) — deliberation only
 """
 from functools import partial
 from typing import Dict, Tuple, Optional
@@ -107,10 +108,11 @@ class CardGameEnv(BaseEnv):
 
     def action_space(self, agent: str):
         if self.communication:
-            # 0-24: pick card (a//5) + send message (a%5) — decision only
-            # 25-29: send message (a-25) — deliberation only
+            # 0-4: pick card — decision only
+            # 5-9: send message — deliberation only
+            # 10: idle — deliberation only
             return jaxmarl_spaces.Discrete(
-                num_categories=self.num_cards * self.num_cards + self.num_cards)
+                num_categories=2 * self.num_cards + 1)
         # 0-4: pick color, 5: do nothing
         return jaxmarl_spaces.Discrete(num_categories=self.num_cards + 1)
 
@@ -193,18 +195,21 @@ class CardGameEnv(BaseEnv):
         raw_a0 = actions["agent_0"]
         raw_a1 = actions["agent_1"]
 
-        # Decode action into card choice and message
+        # Decode action into card choice and message.
+        # Idle means "no message this step", represented as -1.
         if self.communication:
-            n_card_msg = self.num_cards * self.num_cards  # 25
-            is_card_action = raw_a0 < n_card_msg
-            # Card+message (0-24): card = a//5, msg = a%5
-            # Message-only (25-29): no card, msg = a-25
-            a0 = jnp.where(is_card_action, raw_a0 // self.num_cards, jnp.int32(-1))
-            msg0 = jnp.where(is_card_action, raw_a0 % self.num_cards, raw_a0 - n_card_msg)
+            msg_offset = self.num_cards
+            idle_action = 2 * self.num_cards
 
-            is_card_action_1 = raw_a1 < n_card_msg
-            a1 = jnp.where(is_card_action_1, raw_a1 // self.num_cards, jnp.int32(-1))
-            msg1 = jnp.where(is_card_action_1, raw_a1 % self.num_cards, raw_a1 - n_card_msg)
+            is_pick_0 = raw_a0 < self.num_cards
+            is_msg_0 = (raw_a0 >= msg_offset) & (raw_a0 < idle_action)
+            a0 = jnp.where(is_pick_0, raw_a0, jnp.int32(-1))
+            msg0 = jnp.where(is_msg_0, raw_a0 - msg_offset, jnp.int32(-1))
+
+            is_pick_1 = raw_a1 < self.num_cards
+            is_msg_1 = (raw_a1 >= msg_offset) & (raw_a1 < idle_action)
+            a1 = jnp.where(is_pick_1, raw_a1, jnp.int32(-1))
+            msg1 = jnp.where(is_msg_1, raw_a1 - msg_offset, jnp.int32(-1))
 
             new_messages = jnp.array([msg0, msg1], dtype=jnp.int32)
         else:
@@ -293,12 +298,10 @@ class CardGameEnv(BaseEnv):
         is_decision = next_step >= self.max_steps
 
         if self.communication:
-            n_pick_msg = self.num_cards * self.num_cards  # 25
-            n_msg_only = self.num_cards  # 5
-            # Decision: pick+msg (0-24), Deliberation: msg only (25-29)
-            pick_msg_avail = jnp.where(is_decision, jnp.ones(n_pick_msg), jnp.zeros(n_pick_msg))
-            msg_only_avail = jnp.where(is_decision, jnp.zeros(n_msg_only), jnp.ones(n_msg_only))
-            mask = jnp.concatenate([pick_msg_avail, msg_only_avail])
+            pick_avail = jnp.where(is_decision, jnp.ones(self.num_cards), jnp.zeros(self.num_cards))
+            msg_avail = jnp.where(is_decision, jnp.zeros(self.num_cards), jnp.ones(self.num_cards))
+            idle_avail = jnp.where(is_decision, jnp.zeros(1), jnp.ones(1))
+            mask = jnp.concatenate([pick_avail, msg_avail, idle_avail])
         else:
             # Decision: pick positions 0-4, no do-nothing
             pick_avail = jnp.where(is_decision, jnp.ones(self.num_cards), jnp.zeros(self.num_cards))
