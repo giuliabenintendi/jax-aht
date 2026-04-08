@@ -35,6 +35,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         scalar_dim: int = 0,
         scalar_embed_dim: int = 5,
         cross_agent_attn: bool = False,
+        query_partner_lstm: bool = False,
     ):
         # Skip JAActorCriticPolicy.__init__ — we set self.network directly
         # but still call AgentPolicy.__init__ for action_dim/obs_dim
@@ -45,6 +46,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         self.img_width = img_width
         self.message_dim = message_dim
         self.cross_agent_attn = cross_agent_attn
+        self.query_partner_lstm = query_partner_lstm
         self.xattn_embed_dim = num_heads * head_features
         self.network = JAImageActorCritic(
             action_dim=action_dim,
@@ -65,27 +67,38 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             scalar_dim=scalar_dim,
             scalar_embed_dim=scalar_embed_dim,
             cross_agent_attn=cross_agent_attn,
+            query_partner_lstm=query_partner_lstm,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
 
     @partial(jax.jit, static_argnums=(0,))
     def get_action_value_policy(self, params, obs, done, avail_actions, hstate, rng,
                                 aux_obs=None, env_state=None,
-                                partner_embed_actor=None, partner_embed_critic=None):
+                                partner_embed_actor=None, partner_embed_critic=None,
+                                partner_lstm_h=None):
         hidden = self._unpack_hstate(hstate)
+        if self.query_partner_lstm and partner_lstm_h is None:
+            partner_lstm_h = jnp.zeros((*obs.shape[:2], self.lstm_hidden_dim))
+
+        # Build input tuple
+        x_parts = [obs, done, avail_actions]
         if self.cross_agent_attn:
             if partner_embed_actor is None:
                 partner_embed_actor = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
             if partner_embed_critic is None:
                 partner_embed_critic = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
-            x = (obs, done, avail_actions, partner_embed_actor, partner_embed_critic)
+            x_parts.extend([partner_embed_actor, partner_embed_critic])
+        if self.query_partner_lstm:
+            x_parts.append(partner_lstm_h)
+        x = tuple(x_parts)
+
+        if self.cross_agent_attn:
             new_hidden, pi, val, attn_map, actor_own_embed, critic_own_embed = \
                 self.network.apply(params, hidden, x)
             action = pi.sample(seed=rng)
             new_hstate = self._pack_hstate(*new_hidden)
             return action, val, pi, new_hstate, attn_map, actor_own_embed, critic_own_embed
         else:
-            x = (obs, done, avail_actions)
             new_hidden, pi, val, attn_map = self.network.apply(params, hidden, x)
             action = pi.sample(seed=rng)
             new_hstate = self._pack_hstate(*new_hidden)
@@ -95,23 +108,45 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
     def get_action_and_attention(self, params, obs, done, avail_actions, hstate, rng,
                                  greedy=False, agent_id=None,
                                  partner_embed_actor=None, partner_embed_critic=None,
+                                 partner_lstm_h=None,
                                  prev_reward=None, prev_action=None):
         hidden = self._unpack_hstate(hstate)
-        if self.cross_agent_attn:
-            if partner_embed_actor is None:
-                partner_embed_actor = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
-            if partner_embed_critic is None:
-                partner_embed_critic = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
-            x = (obs, done, avail_actions, partner_embed_actor, partner_embed_critic)
-            new_hidden, pi, _, attn_map, actor_own_embed, critic_own_embed = \
-                self.network.apply(params, hidden, x)
-            action = jax.lax.cond(
-                greedy,
-                lambda: pi.mode(),
-                lambda: pi.sample(seed=rng),
-            )
-            new_hstate = self._pack_hstate(*new_hidden)
-            return action, new_hstate, attn_map, actor_own_embed, critic_own_embed
+        if self.query_partner_lstm and partner_lstm_h is None:
+            partner_lstm_h = jnp.zeros((*obs.shape[:2], self.lstm_hidden_dim))
+
+        # Build input tuple
+        needs_custom_path = self.cross_agent_attn or self.query_partner_lstm
+        if needs_custom_path:
+            x_parts = [obs, done, avail_actions]
+            if self.cross_agent_attn:
+                if partner_embed_actor is None:
+                    partner_embed_actor = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+                if partner_embed_critic is None:
+                    partner_embed_critic = jnp.zeros((*obs.shape[:2], self.xattn_embed_dim))
+                x_parts.extend([partner_embed_actor, partner_embed_critic])
+            if self.query_partner_lstm:
+                x_parts.append(partner_lstm_h)
+            x = tuple(x_parts)
+
+            if self.cross_agent_attn:
+                new_hidden, pi, _, attn_map, actor_own_embed, critic_own_embed = \
+                    self.network.apply(params, hidden, x)
+                action = jax.lax.cond(
+                    greedy,
+                    lambda: pi.mode(),
+                    lambda: pi.sample(seed=rng),
+                )
+                new_hstate = self._pack_hstate(*new_hidden)
+                return action, new_hstate, attn_map, actor_own_embed, critic_own_embed
+            else:
+                new_hidden, pi, _, attn_map = self.network.apply(params, hidden, x)
+                action = jax.lax.cond(
+                    greedy,
+                    lambda: pi.mode(),
+                    lambda: pi.sample(seed=rng),
+                )
+                new_hstate = self._pack_hstate(*new_hidden)
+                return action, new_hstate, attn_map
         else:
             # Fall back to base class behavior (3 return values)
             return super().get_action_and_attention(
@@ -128,9 +163,12 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         dummy_obs = jnp.zeros((seq_len, batch_size, self.obs_dim))
         dummy_done = jnp.zeros((seq_len, batch_size))
         dummy_avail = jnp.ones((seq_len, batch_size, self.action_dim))
+        x_parts = [dummy_obs, dummy_done, dummy_avail]
         if self.cross_agent_attn:
             dummy_pe = jnp.zeros((seq_len, batch_size, self.xattn_embed_dim))
-            dummy_x = (dummy_obs, dummy_done, dummy_avail, dummy_pe, dummy_pe)
-        else:
-            dummy_x = (dummy_obs, dummy_done, dummy_avail)
+            x_parts.extend([dummy_pe, dummy_pe])
+        if self.query_partner_lstm:
+            dummy_plh = jnp.zeros((seq_len, batch_size, self.lstm_hidden_dim))
+            x_parts.append(dummy_plh)
+        dummy_x = tuple(x_parts)
         return self.network.init(rng, hidden, dummy_x)

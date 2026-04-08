@@ -107,6 +107,8 @@ def _build_tags(config) -> list[str]:
         tags.append("no_feed_attn")
     if alg_config.get("CROSS_AGENT_ATTN", False):
         tags.append("cross_attn")
+    if alg_config.get("QUERY_PARTNER_LSTM", False):
+        tags.append("query_plstm")
     if alg_config.get("FILTER_ATTN_TOP1", False):
         tags.append("top1")
     env_kwargs = alg_config.get("ENV_KWARGS", {})
