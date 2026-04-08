@@ -85,8 +85,10 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 pe_critic_0 = jnp.zeros((1, 1, xattn_embed_dim))
                 pe_critic_1 = jnp.zeros((1, 1, xattn_embed_dim))
             if query_partner_lstm:
-                plh_0 = jnp.zeros((1, 1, _lstm_dim))
-                plh_1 = jnp.zeros((1, 1, _lstm_dim))
+                plh_a0 = jnp.zeros((1, 1, _lstm_dim))
+                plh_a1 = jnp.zeros((1, 1, _lstm_dim))
+                plh_c0 = jnp.zeros((1, 1, _lstm_dim))
+                plh_c1 = jnp.zeros((1, 1, _lstm_dim))
 
             total_reward = 0.0
             ep_jsds = []
@@ -102,8 +104,8 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                     obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
 
                 rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
-                plh_kw0 = dict(partner_lstm_h=plh_0) if query_partner_lstm else {}
-                plh_kw1 = dict(partner_lstm_h=plh_1) if query_partner_lstm else {}
+                plh_kw0 = dict(plh_actor=plh_a0, plh_critic=plh_c0) if query_partner_lstm else {}
+                plh_kw1 = dict(plh_actor=plh_a1, plh_critic=plh_c1) if query_partner_lstm else {}
                 if cross_agent_attn:
                     act_0, hstate_0, attn_0, own_a0, own_c0 = policy.get_action_and_attention(
                         params=params,
@@ -150,9 +152,11 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                         **plh_kw1,
                     )
                 if query_partner_lstm:
-                    # Swap: each agent gets the other's actor h
-                    plh_0 = hstate_1[:, :, :_lstm_dim]
-                    plh_1 = hstate_0[:, :, :_lstm_dim]
+                    # Swap: each agent gets the other's actor/critic h
+                    plh_a0 = hstate_1[:, :, :_lstm_dim]
+                    plh_a1 = hstate_0[:, :, :_lstm_dim]
+                    plh_c0 = hstate_1[:, :, 2*_lstm_dim:3*_lstm_dim]
+                    plh_c1 = hstate_0[:, :, 2*_lstm_dim:3*_lstm_dim]
 
                 if eval_filter_top1:
                     attn_0 = _apply_top1(attn_0.squeeze())[None, None]

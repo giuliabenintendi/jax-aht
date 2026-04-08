@@ -270,11 +270,11 @@ class JAImageActorCritic(nn.Module):
     def __call__(self, hidden, x):
         # Unpack network input based on enabled flags
         if self.cross_agent_attn and self.query_partner_lstm:
-            obs, dones, avail_actions, partner_embed_actor, partner_embed_critic, partner_lstm_h = x
+            obs, dones, avail_actions, partner_embed_actor, partner_embed_critic, plh_actor, plh_critic = x
         elif self.cross_agent_attn:
             obs, dones, avail_actions, partner_embed_actor, partner_embed_critic = x
         elif self.query_partner_lstm:
-            obs, dones, avail_actions, partner_lstm_h = x
+            obs, dones, avail_actions, plh_actor, plh_critic = x
         else:
             obs, dones, avail_actions = x
 
@@ -302,7 +302,7 @@ class JAImageActorCritic(nn.Module):
         )
 
         # Build scan input tuples
-        def _scan_input(partner_embed=None):
+        def _scan_input(partner_embed=None, partner_lstm_h=None):
             parts = [obs, dones]
             if self.cross_agent_attn:
                 parts.append(partner_embed)
@@ -310,15 +310,16 @@ class JAImageActorCritic(nn.Module):
                 parts.append(partner_lstm_h)
             return tuple(parts)
 
-        # Actor path
+        # Actor path — partner's actor h feeds the actor query
+        _plh_a = plh_actor if self.query_partner_lstm else None
         if self.cross_agent_attn:
             actor_lstm_state, (actor_embed, attn_map, actor_own_embed) = JAImageScannedLSTM(
                 **rnn_kwargs, name="actor_lstm",
-            )(actor_lstm_state, _scan_input(partner_embed_actor))
+            )(actor_lstm_state, _scan_input(partner_embed_actor, _plh_a))
         else:
             actor_lstm_state, (actor_embed, attn_map) = JAImageScannedLSTM(
                 **rnn_kwargs, name="actor_lstm",
-            )(actor_lstm_state, _scan_input())
+            )(actor_lstm_state, _scan_input(partner_lstm_h=_plh_a))
 
         actor_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
@@ -338,15 +339,16 @@ class JAImageActorCritic(nn.Module):
         action_logits = mask_action_logits(action_logits, avail_actions)
         pi = distrax.Categorical(logits=action_logits)
 
-        # Critic path
+        # Critic path — partner's critic h feeds the critic query
+        _plh_c = plh_critic if self.query_partner_lstm else None
         if self.cross_agent_attn:
             critic_lstm_state, (critic_embed, _, critic_own_embed) = JAImageScannedLSTM(
                 **rnn_kwargs, name="critic_lstm",
-            )(critic_lstm_state, _scan_input(partner_embed_critic))
+            )(critic_lstm_state, _scan_input(partner_embed_critic, _plh_c))
         else:
             critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
                 **rnn_kwargs, name="critic_lstm",
-            )(critic_lstm_state, _scan_input())
+            )(critic_lstm_state, _scan_input(partner_lstm_h=_plh_c))
 
         critic_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),

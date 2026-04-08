@@ -43,7 +43,8 @@ class JATransition(NamedTuple):
     ja_reward: jnp.ndarray       # (NUM_ACTORS,) -- raw JA intrinsic reward (unscaled)
     partner_embed_actor: jnp.ndarray   # (NUM_ACTORS, embed_dim) or scalar 0 when disabled
     partner_embed_critic: jnp.ndarray  # (NUM_ACTORS, embed_dim) or scalar 0 when disabled
-    partner_lstm_h: jnp.ndarray        # (NUM_ACTORS, lstm_dim) or scalar 0 when disabled
+    plh_actor: jnp.ndarray             # (NUM_ACTORS, lstm_dim) or scalar 0 when disabled
+    plh_critic: jnp.ndarray            # (NUM_ACTORS, lstm_dim) or scalar 0 when disabled
 
 
 class RewardNormState(NamedTuple):
@@ -199,7 +200,7 @@ def make_train_loop(config, env):
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
         if query_partner_lstm:
             init_plh = jnp.zeros((num_actors, lstm_hidden_dim))
-            runner_state = runner_state + (init_plh,)
+            runner_state = runner_state + (init_plh, init_plh)
 
         return runner_state
 
@@ -217,7 +218,7 @@ def make_train_loop(config, env):
                     init_hstate, traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(params, traj_batch, gae, targets):
-                        loss_plh = dict(partner_lstm_h=traj_batch.partner_lstm_h) if query_partner_lstm else {}
+                        loss_plh = dict(plh_actor=traj_batch.plh_actor, plh_critic=traj_batch.plh_critic) if query_partner_lstm else {}
                         if cross_agent_attn:
                             _, value, pi, _, _, _, _ = policy.get_action_value_policy(
                                 params=params,
@@ -330,13 +331,13 @@ def make_train_loop(config, env):
             )
 
             def _env_step(runner_state, unused):
-                # query_partner_lstm appends prev_plh as the last element
+                # query_partner_lstm appends (prev_plh_actor, prev_plh_critic) at the end
                 if query_partner_lstm:
-                    *rest, prev_plh = runner_state
+                    *rest, prev_plh_actor, prev_plh_critic = runner_state
                     runner_state_core = tuple(rest)
                 else:
                     runner_state_core = runner_state
-                    prev_plh = None
+                    prev_plh_actor = prev_plh_critic = None
                 if feed_other_attn:
                     (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state_core
                 elif cross_agent_attn:
@@ -358,7 +359,10 @@ def make_train_loop(config, env):
                 avail_actions_batch = jax.lax.stop_gradient(
                     batchify(avail_actions, env.agents, num_actors).astype(jnp.float32))
 
-                plh_kwarg = dict(partner_lstm_h=prev_plh.reshape(1, num_actors, -1)) if query_partner_lstm else {}
+                plh_kwarg = dict(
+                    plh_actor=prev_plh_actor.reshape(1, num_actors, -1),
+                    plh_critic=prev_plh_critic.reshape(1, num_actors, -1),
+                ) if query_partner_lstm else {}
                 if cross_agent_attn:
                     action, value, pi, new_hstate, attn_map, actor_own_embed, critic_own_embed = \
                         policy.get_action_value_policy(
@@ -428,7 +432,8 @@ def make_train_loop(config, env):
                     pe_actor_stored = jnp.zeros((num_actors,))
                     pe_critic_stored = jnp.zeros((num_actors,))
 
-                plh_stored = prev_plh if query_partner_lstm else jnp.zeros((num_actors,))
+                plh_a_stored = prev_plh_actor if query_partner_lstm else jnp.zeros((num_actors,))
+                plh_c_stored = prev_plh_critic if query_partner_lstm else jnp.zeros((num_actors,))
 
                 transition = JATransition(
                     done=batchify(new_done, env.agents, num_actors).squeeze(),
@@ -442,7 +447,8 @@ def make_train_loop(config, env):
                     ja_reward=r_ja_batch,
                     partner_embed_actor=pe_actor_stored,
                     partner_embed_critic=pe_critic_stored,
-                    partner_lstm_h=plh_stored,
+                    plh_actor=plh_a_stored,
+                    plh_critic=plh_c_stored,
                 )
 
                 if feed_other_attn:
@@ -464,12 +470,16 @@ def make_train_loop(config, env):
                 else:
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
                 if query_partner_lstm:
-                    # Extract actor h from packed hstate, swap halves, reset on done
-                    actor_h = new_hstate[:, :, :lstm_hidden_dim].squeeze(0)
-                    new_plh = jnp.concatenate([actor_h[num_envs:], actor_h[:num_envs]], axis=0)
+                    # Extract actor h and critic h from packed hstate, swap halves
+                    d = lstm_hidden_dim
+                    actor_h = new_hstate[:, :, :d].squeeze(0)
+                    critic_h = new_hstate[:, :, 2*d:3*d].squeeze(0)
+                    new_plh_a = jnp.concatenate([actor_h[num_envs:], actor_h[:num_envs]], axis=0)
+                    new_plh_c = jnp.concatenate([critic_h[num_envs:], critic_h[:num_envs]], axis=0)
                     new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
-                    new_plh = jnp.where(new_done_batch[:, None], 0.0, new_plh)
-                    runner_state = runner_state + (new_plh,)
+                    new_plh_a = jnp.where(new_done_batch[:, None], 0.0, new_plh_a)
+                    new_plh_c = jnp.where(new_done_batch[:, None], 0.0, new_plh_c)
+                    runner_state = runner_state + (new_plh_a, new_plh_c)
                 return runner_state, (transition, intrinsic)
 
             runner_state, (traj_batch, intrinsic_batch) = jax.lax.scan(
@@ -477,7 +487,7 @@ def make_train_loop(config, env):
             )
 
             if query_partner_lstm:
-                *rest, prev_plh = runner_state
+                *rest, prev_plh_actor, prev_plh_critic = runner_state
                 runner_state = tuple(rest)
             if feed_other_attn:
                 (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state
@@ -495,7 +505,10 @@ def make_train_loop(config, env):
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
 
-            last_plh_kwarg = dict(partner_lstm_h=prev_plh.reshape(1, num_actors, -1)) if query_partner_lstm else {}
+            last_plh_kwarg = dict(
+                plh_actor=prev_plh_actor.reshape(1, num_actors, -1),
+                plh_critic=prev_plh_critic.reshape(1, num_actors, -1),
+            ) if query_partner_lstm else {}
             if cross_agent_attn:
                 _, last_val, _, _, _, _, _ = policy.get_action_value_policy(
                     params=train_state.params,
@@ -589,7 +602,7 @@ def make_train_loop(config, env):
             else:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
             if query_partner_lstm:
-                runner_state = runner_state + (prev_plh,)
+                runner_state = runner_state + (prev_plh_actor, prev_plh_critic)
             return runner_state, update_steps + 1, rew_norm_state, metric
 
         @functools.partial(jax.jit, donate_argnums=(0, 2))
