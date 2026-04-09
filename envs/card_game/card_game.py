@@ -300,7 +300,7 @@ class CardGameEnv(BaseEnv):
         if self.communication:
             pick_avail = jnp.where(is_decision, jnp.ones(self.num_cards), jnp.zeros(self.num_cards))
             msg_avail = jnp.where(is_decision, jnp.zeros(self.num_cards), jnp.ones(self.num_cards))
-            idle_avail = jnp.where(is_decision, jnp.zeros(1), jnp.ones(1))
+            idle_avail = jnp.zeros(1)  # idle never legal: agents must message during deliberation
             mask = jnp.concatenate([pick_avail, msg_avail, idle_avail])
         else:
             # Decision: pick positions 0-4, no do-nothing
