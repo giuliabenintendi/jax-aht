@@ -109,9 +109,11 @@ def make_train_loop(config, env):
     num_actors = config["NUM_ACTORS"]
     ja_beta_max = config.get("JA_BETA_MAX", 0.01)
     ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
+    comm_warmup_env_steps = config.get("COMM_WARMUP_ENV_STEPS", 0)
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
+    comm_warmup_updates = comm_warmup_env_steps / env_steps_per_update
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
     cross_agent_attn = config.get("CROSS_AGENT_ATTN", False)
     if cross_agent_attn and feed_other_attn:
@@ -332,6 +334,11 @@ def make_train_loop(config, env):
                 ja_beta_max,
                 ja_beta_max * update_steps / jnp.maximum(ja_warmup_updates, 1.0),
             )
+            comm_scale = jnp.where(
+                comm_warmup_env_steps > 0,
+                jnp.minimum(1.0, update_steps / jnp.maximum(comm_warmup_updates, 1.0)),
+                1.0,
+            )
 
             def _env_step(runner_state, unused):
                 # query_partner_lstm appends (prev_plh_actor, prev_plh_critic) at the end
@@ -404,6 +411,10 @@ def make_train_loop(config, env):
                 new_obs, new_env_state, reward, new_done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
                     rng_step, env_state, env_act
                 )
+
+                # Extract per-agent communication reward before interleaving reshape.
+                comm_reward_raw = info.pop("comm_reward", jnp.zeros((num_envs, env.num_agents)))
+                comm_reward_batch = comm_reward_raw.transpose(1, 0).reshape(-1)
 
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
 
@@ -484,9 +495,9 @@ def make_train_loop(config, env):
                     new_plh_a = jnp.where(new_done_batch[:, None], 0.0, new_plh_a)
                     new_plh_c = jnp.where(new_done_batch[:, None], 0.0, new_plh_c)
                     runner_state = runner_state + (new_plh_a, new_plh_c)
-                return runner_state, (transition, intrinsic)
+                return runner_state, (transition, intrinsic, comm_reward_batch)
 
-            runner_state, (traj_batch, intrinsic_batch) = jax.lax.scan(
+            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -563,8 +574,9 @@ def make_train_loop(config, env):
 
             # Save raw env reward before combining
             raw_env_reward = traj_batch.reward
+            scaled_comm_reward = comm_scale * comm_reward_batch
 
-            combined_raw = raw_env_reward + intrinsic_batch
+            combined_raw = raw_env_reward + intrinsic_batch + scaled_comm_reward
             if normalize_rewards:
                 rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
                 combined = reward_norm_apply(rew_norm_state, combined_raw)
@@ -586,6 +598,7 @@ def make_train_loop(config, env):
             metric = traj_batch.info
             metric["update_steps"] = update_steps
             metric["ja_beta"] = ja_beta
+            metric["comm_scale"] = comm_scale
             metric["jsd_mean"] = jsd_values.mean()
             metric["ja_reward_mean"] = ja_rew_0.mean()
             metric["loss_total"] = total_loss[0].mean()
@@ -595,6 +608,7 @@ def make_train_loop(config, env):
             metric["grad_norm"] = grad_norm.mean()
             metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
             metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
+            metric["comm_reward_mean"] = scaled_comm_reward[:, :num_envs].mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
 
@@ -806,9 +820,11 @@ def log_metrics(config, out, logger):
     # Dropped ja_reward_mean (= -jsd) and intrinsic_mean (= -beta*jsd) as redundant
     scalar_keys = [
         ("ja_beta",              "JA/beta"),
+        ("comm_scale",           "Comm/scale"),
         ("jsd_mean",             "JA/jsd"),
         ("raw_env_reward_mean",  "Reward/env_raw"),
         ("combined_reward_mean", "Reward/combined_raw"),
+        ("comm_reward_mean",     "Reward/comm"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
