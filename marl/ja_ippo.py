@@ -110,6 +110,7 @@ def make_train_loop(config, env):
     ja_beta_max = config.get("JA_BETA_MAX", 0.01)
     ja_warmup_env_steps = config.get("JA_WARMUP_ENV_STEPS", 200_000)
     comm_warmup_env_steps = config.get("COMM_WARMUP_ENV_STEPS", 0)
+    comm_reward_start_scale = config.get("COMM_REWARD_START_SCALE", 0.5)
     normalize_rewards = config.get("NORMALIZE_REWARDS", True)
     env_steps_per_update = config["ROLLOUT_LENGTH"] * config["NUM_ENVS"]
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
@@ -336,7 +337,9 @@ def make_train_loop(config, env):
             )
             comm_scale = jnp.where(
                 comm_warmup_env_steps > 0,
-                jnp.minimum(1.0, update_steps / jnp.maximum(comm_warmup_updates, 1.0)),
+                comm_reward_start_scale
+                + (1.0 - comm_reward_start_scale)
+                * jnp.minimum(1.0, update_steps / jnp.maximum(comm_warmup_updates, 1.0)),
                 1.0,
             )
 
