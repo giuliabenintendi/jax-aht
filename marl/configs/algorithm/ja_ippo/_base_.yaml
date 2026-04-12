@@ -43,3 +43,4 @@ FEED_OTHER_ATTN: false          # feed other agent's previous attention map as 4
 CROSS_AGENT_ATTN: false         # inter-agent cross-attention on learned embeddings
 FILTER_ATTN_TOP1: false         # keep only global argmax of attention map
 QUERY_PARTNER_LSTM: false       # feed partner's actor LSTM h into spatial attention query
+ATTN_MSG_REWARD_COEF: 0.0      # attention-message consistency reward coefficient

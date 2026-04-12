@@ -275,6 +275,7 @@ class CardGameEnv(BaseEnv):
             "base_reward": base_reward_arr,
             "base_return": base_return,
             "comm_reward": comm_reward_arr,
+            "step_count": jnp.broadcast_to(new_step, (self.num_agents,)),
         }
 
         # Auto-reset on episode end

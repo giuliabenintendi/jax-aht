@@ -61,6 +61,12 @@ def _build_run_string(config: dict) -> str:
             parts.append(f"{GRID_ROWS}x{GRID_COLS}")
     if alg_config.get("COMMUNICATION", False):
         parts.append("comm")
+        comm_coef = env_kwargs.get("comm_reward_coef", 0.0)
+        if comm_coef > 0:
+            parts.append(f"reward{comm_coef}")
+    attn_msg = alg_config.get("ATTN_MSG_REWARD_COEF", 0.0)
+    if attn_msg > 0:
+        parts.append(f"attn_msg{attn_msg}")
     if alg_config.get("FEED_OTHER_ATTN", False):
         parts.append("feed_attn")
     if alg_config.get("FILTER_ATTN_TOP1", False):
@@ -113,6 +119,8 @@ def _build_tags(config) -> list[str]:
         tags.append("cross_attn")
     if alg_config.get("QUERY_PARTNER_LSTM", False):
         tags.append("query_plstm")
+    if alg_config.get("ATTN_MSG_REWARD_COEF", 0.0) > 0:
+        tags.append("attn_msg")
     if alg_config.get("FILTER_ATTN_TOP1", False):
         tags.append("top1")
     env_kwargs = alg_config.get("ENV_KWARGS", {})

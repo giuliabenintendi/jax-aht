@@ -123,6 +123,7 @@ def make_train_loop(config, env):
     query_partner_lstm = config.get("QUERY_PARTNER_LSTM", False)
     lstm_hidden_dim = config.get("LSTM_HIDDEN_DIM", 128)
     fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
+    attn_msg_coef = config.get("ATTN_MSG_REWARD_COEF", 0.0)
 
     # Precompute image and feature-map dimensions (only needed for image obs)
     obs_type = _get_obs_type(config)
@@ -140,6 +141,47 @@ def make_train_loop(config, env):
 
     xattn_num_positions = feat_h * feat_w
     xattn_feat_dim = config.get("CONV_FILTERS", 32) + config.get("JA_SPATIAL_BASIS_DEPTH", 8)
+
+    # Precompute card tile masks and pixel indices for attn-msg reward
+    if attn_msg_coef > 0 and feat_h > 0:
+        from envs.card_game.rendering import (
+            TILE_PIXELS as _TP_AM, NUM_CARDS as _NC_AM, CARD_COLORS as _CC_AM,
+        )
+        _scale_h = img_h / feat_h
+        _scale_w = img_w / feat_w
+        # Soft overlap masks: for each feature cell, the fraction of its area that
+        # overlaps with the card's colored rectangle. sum(attn * mask) then gives the
+        # true attention mass on that card. Matches vis_episodes.py:558-574.
+        import numpy as _np
+        _card_masks_np = _np.zeros((_NC_AM, feat_h, feat_w), dtype=_np.float32)
+        for ci in range(_NC_AM):
+            card_py_lo, card_py_hi = _TP_AM + 1, _TP_AM + 6  # pixel rows [8, 13)
+            card_px_lo = ci * _TP_AM + 1
+            card_px_hi = ci * _TP_AM + 6                       # pixel cols [ci*7+1, ci*7+6)
+            for fr in range(feat_h):
+                for fc in range(feat_w):
+                    feat_py_lo = fr * _scale_h
+                    feat_py_hi = (fr + 1) * _scale_h
+                    feat_px_lo = fc * _scale_w
+                    feat_px_hi = (fc + 1) * _scale_w
+                    cell_area = _scale_h * _scale_w
+                    ov_y = max(0.0, min(card_py_hi, feat_py_hi) - max(card_py_lo, feat_py_lo))
+                    ov_x = max(0.0, min(card_px_hi, feat_px_hi) - max(card_px_lo, feat_px_lo))
+                    _card_masks_np[ci, fr, fc] = ov_y * ov_x / cell_area
+        _card_masks = jnp.array(_card_masks_np)
+        _card_colors_f32 = _CC_AM.astype(jnp.float32) / 255.0  # (5, 3)
+        # Safe pixel indices: row 12, cols ci*7+1 through ci*7+5 (outside message dot region)
+        _safe_pixel_rows = _np.full((_NC_AM, 5), 12, dtype=_np.int32)
+        _safe_pixel_cols = _np.array([[ci * _TP_AM + 1 + k for k in range(5)]
+                                      for ci in range(_NC_AM)], dtype=_np.int32)
+        # Flat obs index for each (row, col): (row * img_w + col) * 3
+        _safe_flat_indices = jnp.array(
+            (_safe_pixel_rows * img_w + _safe_pixel_cols) * 3, dtype=jnp.int32)  # (5, 5)
+        print(f"[ja_ippo] Attn-msg card masks (sum per card): "
+              f"{[f'{float(m.sum()):.3f}' for m in _card_masks]}")
+        del _np, _card_masks_np, _safe_pixel_rows, _safe_pixel_cols
+    else:
+        _card_masks = _card_colors_f32 = _safe_flat_indices = None
 
     # Precompute fixed attention map for hardcoded partner
     if fixed_partner_pos >= 0:
@@ -362,6 +404,7 @@ def make_train_loop(config, env):
                 rng, act_rng = jax.random.split(rng)
 
                 last_obs_batch = batchify(last_obs, env.agents, num_actors)
+                raw_obs_batch = last_obs_batch  # keep pre-augmentation obs for attn-msg reward
                 last_done_batch = batchify(last_done, env.agents, num_actors)
 
                 # Augment obs with other agent's previous attention as 4th channel
@@ -419,6 +462,10 @@ def make_train_loop(config, env):
                 comm_reward_raw = info.pop("comm_reward", jnp.zeros((num_envs, env.num_agents)))
                 comm_reward_batch = comm_reward_raw.transpose(1, 0).reshape(-1)
 
+                # Extract step count for attn-msg reward gating
+                step_count_raw = info.pop("step_count", jnp.zeros((num_envs, env.num_agents)))
+                step_count_batch = step_count_raw.transpose(1, 0).reshape(-1)
+
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
 
                 # Override agent 1's attention if hardcoded partner
@@ -441,6 +488,43 @@ def make_train_loop(config, env):
                 r_ja_batch = jnp.concatenate([r_ja, r_ja])
 
                 intrinsic = ja_beta * r_ja_batch
+
+                # Attention-message consistency reward: reward for messaging the
+                # card the agent is attending to (within-agent, OP-invariant)
+                if attn_msg_coef > 0:
+                    num_cards = 5
+                    msg_offset = num_cards
+                    idle_action = 2 * num_cards
+                    is_msg_action = (action >= msg_offset) & (action < idle_action)
+                    msg_color_idx = jnp.clip(action - msg_offset, 0, num_cards - 1)
+
+                    # Read card colors from raw (pre-augmentation) obs at safe pixels.
+                    # _safe_flat_indices: (5, 5) — 5 cards x 5 sample pixels, each
+                    # is the flat obs index of the R channel. Average across 5 pixels
+                    # per card for robustness. → (num_actors, 5, 3)
+                    card_rgb_sum = jnp.zeros((num_actors, num_cards, 3))
+                    for k in range(5):
+                        r_vals = raw_obs_batch[:, _safe_flat_indices[:, k]]
+                        g_vals = raw_obs_batch[:, _safe_flat_indices[:, k] + 1]
+                        b_vals = raw_obs_batch[:, _safe_flat_indices[:, k] + 2]
+                        card_rgb_sum = card_rgb_sum + jnp.stack([r_vals, g_vals, b_vals], axis=-1)
+                    card_rgb = card_rgb_sum / 5.0
+
+                    # Find which card position has the messaged color
+                    msg_color_rgb = _card_colors_f32[msg_color_idx]  # (num_actors, 3)
+                    color_dist = jnp.sum(jnp.abs(card_rgb - msg_color_rgb[:, None, :]), axis=-1)
+                    msg_card_pos = jnp.argmin(color_dist, axis=-1)  # (num_actors,)
+
+                    # Attention mass on the messaged card (soft overlap mask)
+                    actor_card_mask = _card_masks[msg_card_pos]  # (num_actors, feat_h, feat_w)
+                    attn = attn_map.squeeze(0)  # (num_actors, feat_h, feat_w)
+                    attn_mass = jnp.sum(attn * actor_card_mask, axis=(-2, -1))
+
+                    attn_msg_valid = is_msg_action & (step_count_batch > 2)
+                    attn_msg_reward = jnp.where(attn_msg_valid, attn_mass, 0.0)
+                    attn_msg_reward = jax.lax.stop_gradient(attn_msg_reward)
+                else:
+                    attn_msg_reward = jnp.zeros(num_actors)
 
                 if cross_agent_attn:
                     pe_actor_stored = prev_pe_actor
@@ -498,9 +582,9 @@ def make_train_loop(config, env):
                     new_plh_a = jnp.where(new_done_batch[:, None], 0.0, new_plh_a)
                     new_plh_c = jnp.where(new_done_batch[:, None], 0.0, new_plh_c)
                     runner_state = runner_state + (new_plh_a, new_plh_c)
-                return runner_state, (transition, intrinsic, comm_reward_batch)
+                return runner_state, (transition, intrinsic, comm_reward_batch, attn_msg_reward)
 
-            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch) = jax.lax.scan(
+            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch, attn_msg_reward_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -578,8 +662,9 @@ def make_train_loop(config, env):
             # Save raw env reward before combining
             raw_env_reward = traj_batch.reward
             scaled_comm_reward = comm_scale * comm_reward_batch
+            scaled_attn_msg_reward = attn_msg_coef * attn_msg_reward_batch
 
-            combined_raw = raw_env_reward + intrinsic_batch + scaled_comm_reward
+            combined_raw = raw_env_reward + intrinsic_batch + scaled_comm_reward + scaled_attn_msg_reward
             if normalize_rewards:
                 rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
                 combined = reward_norm_apply(rew_norm_state, combined_raw)
@@ -612,6 +697,7 @@ def make_train_loop(config, env):
             metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
             metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
             metric["comm_reward_mean"] = scaled_comm_reward[:, :num_envs].mean()
+            metric["attn_msg_reward_mean"] = scaled_attn_msg_reward.mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
 
@@ -828,6 +914,7 @@ def log_metrics(config, out, logger):
         ("raw_env_reward_mean",  "Reward/env_raw"),
         ("combined_reward_mean", "Reward/combined_raw"),
         ("comm_reward_mean",     "Reward/comm"),
+        ("attn_msg_reward_mean", "Reward/attn_msg"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
