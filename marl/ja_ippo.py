@@ -192,7 +192,7 @@ def make_train_loop(config, env):
         # Flat obs index for each (row, col): (row * img_w + col) * 3
         _safe_flat_indices = jnp.array(
             (_safe_pixel_rows * img_w + _safe_pixel_cols) * 3, dtype=jnp.int32)  # (5, 5)
-        del _np, _card_masks_np, _safe_pixel_rows, _safe_pixel_cols
+        del _np, _safe_pixel_rows, _safe_pixel_cols
     else:
         _card_masks = _card_colors_f32 = _safe_flat_indices = None
 
