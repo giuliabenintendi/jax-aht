@@ -79,12 +79,14 @@ class CardGameEnv(BaseEnv):
     """
 
     def __init__(self, max_steps: int = 10, shuffle: bool = True, fixed_partner_pos: int = -1,
-                 communication: bool = False, comm_reward_coef: float = 0.0, **kwargs):
+                 communication: bool = False, comm_reward_coef: float = 0.0,
+                 comm_follow_bonus: float = 0.0, **kwargs):
         self.max_steps = max_steps
         self.shuffle = shuffle
         self.fixed_partner_pos = fixed_partner_pos
         self.communication = communication
         self.comm_reward_coef = comm_reward_coef
+        self.comm_follow_bonus = comm_follow_bonus
         self.num_cards = NUM_CARDS
         self.num_agents = 2
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
@@ -263,10 +265,11 @@ class CardGameEnv(BaseEnv):
             # Message agreement: reward on every step (deliberation + decision)
             agree_r = jnp.where(can_agree, alpha / 4.0, 0.0)
             # Follow-through: pick the agreed card (decision step only)
+            follow_val = alpha + self.comm_follow_bonus
             follow_r0 = jnp.where(
-                is_decision & msgs_match & jnp.equal(a0, my_msg_0), alpha, 0.0)
+                is_decision & msgs_match & jnp.equal(a0, my_msg_0), follow_val, 0.0)
             follow_r1 = jnp.where(
-                is_decision & msgs_match & jnp.equal(a1, my_msg_1), alpha, 0.0)
+                is_decision & msgs_match & jnp.equal(a1, my_msg_1), follow_val, 0.0)
             comm_reward_arr = jnp.array([agree_r + follow_r0, agree_r + follow_r1])
         else:
             comm_reward_arr = jnp.zeros(self.num_agents)

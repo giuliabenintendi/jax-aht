@@ -64,6 +64,9 @@ def _build_run_string(config: dict) -> str:
         comm_coef = env_kwargs.get("comm_reward_coef", 0.0)
         if comm_coef > 0:
             parts.append(f"reward{comm_coef}")
+    follow_bonus = env_kwargs.get("comm_follow_bonus", 0.0)
+    if follow_bonus > 0:
+        parts.append(f"follow{follow_bonus}")
     attn_msg = alg_config.get("ATTN_MSG_REWARD_COEF", 0.0)
     if attn_msg > 0:
         parts.append(f"attn_msg{attn_msg}")
@@ -121,6 +124,8 @@ def _build_tags(config) -> list[str]:
         tags.append("query_plstm")
     if alg_config.get("ATTN_MSG_REWARD_COEF", 0.0) > 0:
         tags.append("attn_msg")
+    if env_kwargs.get("comm_follow_bonus", 0.0) > 0:
+        tags.append("follow_bonus")
     if alg_config.get("FILTER_ATTN_TOP1", False):
         tags.append("top1")
     env_kwargs = alg_config.get("ENV_KWARGS", {})
