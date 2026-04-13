@@ -267,8 +267,9 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
 
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
+    ja_card_attn = algorithm_config.get("JA_CARD_ATTN", False)
     feed_attn_dims = None
-    if feed_attn:
+    if feed_attn or ja_card_attn:
         ev_img_h, ev_img_w, _ = _get_image_dims(env)
         ev_feat_h, ev_feat_w = _compute_resnet_output_dims(
             ev_img_h, ev_img_w,
@@ -277,7 +278,11 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             padding=algorithm_config.get("CONV_PADDING", "SAME"),
             num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
         )
+    if feed_attn:
         feed_attn_dims = (ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
+    if ja_card_attn:
+        from marl.ja_ippo import _build_card_masks
+        _card_masks_eval = _build_card_masks(ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
 
     # Build fixed partner attention for eval visualization
     fixed_partner_pos_eval = algorithm_config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
