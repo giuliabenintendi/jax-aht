@@ -185,6 +185,7 @@ def make_train_loop(config, env):
         _card_masks = _build_card_masks(img_h, img_w, feat_h, feat_w)
         _card_colors_f32 = _CC_AM.astype(jnp.float32) / 255.0  # (5, 3)
         # Safe pixel indices: row 12, cols ci*7+1 through ci*7+5 (outside message dot region)
+        import numpy as _np
         _safe_pixel_rows = _np.full((_NC_AM, 5), 12, dtype=_np.int32)
         _safe_pixel_cols = _np.array([[ci * _TP_AM + 1 + k for k in range(5)]
                                       for ci in range(_NC_AM)], dtype=_np.int32)
