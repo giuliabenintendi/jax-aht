@@ -592,6 +592,9 @@ def make_train_loop(config, env):
                     r_follow = jnp.concatenate([r_follow_env, r_follow_env])
 
                     ja_card_reward = jax.lax.stop_gradient(r_conc + r_align + r_follow)
+                    ja_card_conc_out = jax.lax.stop_gradient(r_conc)
+                    ja_card_align_out = jax.lax.stop_gradient(r_align)
+                    ja_card_follow_out = jax.lax.stop_gradient(r_follow)
 
                     # Translate partner attention to receiver's frame for next step obs
                     translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
@@ -604,6 +607,9 @@ def make_train_loop(config, env):
                         new_done_batch_ja[:, None], 0.0, new_partner_card_attn)
                 else:
                     ja_card_reward = jnp.zeros(num_actors)
+                    ja_card_conc_out = jnp.zeros(num_actors)
+                    ja_card_align_out = jnp.zeros(num_actors)
+                    ja_card_follow_out = jnp.zeros(num_actors)
 
                 if cross_agent_attn:
                     pe_actor_stored = prev_pe_actor
@@ -664,9 +670,11 @@ def make_train_loop(config, env):
                     new_plh_a = jnp.where(new_done_batch[:, None], 0.0, new_plh_a)
                     new_plh_c = jnp.where(new_done_batch[:, None], 0.0, new_plh_c)
                     runner_state = runner_state + (new_plh_a, new_plh_c)
-                return runner_state, (transition, intrinsic, comm_reward_batch, attn_msg_reward, ja_card_reward)
+                return runner_state, (transition, intrinsic, comm_reward_batch, attn_msg_reward,
+                                     ja_card_reward, ja_card_conc_out, ja_card_align_out, ja_card_follow_out)
 
-            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch, attn_msg_reward_batch, ja_card_reward_batch) = jax.lax.scan(
+            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch, attn_msg_reward_batch,
+                           ja_card_reward_batch, ja_card_conc_batch, ja_card_align_batch, ja_card_follow_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -787,6 +795,9 @@ def make_train_loop(config, env):
             metric["comm_reward_mean"] = scaled_comm_reward[:, :num_envs].mean()
             metric["attn_msg_reward_mean"] = scaled_attn_msg_reward.mean()
             metric["ja_card_reward_mean"] = ja_card_reward_batch.mean()
+            metric["ja_card_conc_mean"] = ja_card_conc_batch.mean()
+            metric["ja_card_align_mean"] = ja_card_align_batch.mean()
+            metric["ja_card_follow_mean"] = ja_card_follow_batch.mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
 
@@ -1008,6 +1019,9 @@ def log_metrics(config, out, logger):
         ("comm_reward_mean",     "Reward/comm"),
         ("attn_msg_reward_mean", "Reward/attn_msg"),
         ("ja_card_reward_mean",  "Reward/ja_card"),
+        ("ja_card_conc_mean",   "Reward/ja_card_conc"),
+        ("ja_card_align_mean",  "Reward/ja_card_align"),
+        ("ja_card_follow_mean", "Reward/ja_card_follow"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
