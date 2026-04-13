@@ -595,10 +595,14 @@ def make_train_loop(config, env):
                     ja_card_conc_out = jax.lax.stop_gradient(r_conc)
                     ja_card_align_out = jax.lax.stop_gradient(r_align)
                     ja_card_follow_out = jax.lax.stop_gradient(r_follow)
+                    dbg_card_attn_0 = jax.lax.stop_gradient(card_pos_attn_0)
+                    dbg_card_attn_1 = jax.lax.stop_gradient(card_pos_attn_1)
 
                     # Translate partner attention to receiver's frame for next step obs
                     translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
                     translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
+                    dbg_partner_card_attn_0 = jax.lax.stop_gradient(translated_for_0)
+                    dbg_partner_card_attn_1 = jax.lax.stop_gradient(translated_for_1)
                     new_partner_card_attn = jnp.concatenate(
                         [translated_for_0, translated_for_1], axis=0)  # (num_actors, 5)
                     # Reset on episode boundaries
@@ -610,6 +614,10 @@ def make_train_loop(config, env):
                     ja_card_conc_out = jnp.zeros(num_actors)
                     ja_card_align_out = jnp.zeros(num_actors)
                     ja_card_follow_out = jnp.zeros(num_actors)
+                    dbg_card_attn_0 = jnp.zeros((num_envs, 5))
+                    dbg_card_attn_1 = jnp.zeros((num_envs, 5))
+                    dbg_partner_card_attn_0 = jnp.zeros((num_envs, 5))
+                    dbg_partner_card_attn_1 = jnp.zeros((num_envs, 5))
 
                 if cross_agent_attn:
                     pe_actor_stored = prev_pe_actor
@@ -671,10 +679,14 @@ def make_train_loop(config, env):
                     new_plh_c = jnp.where(new_done_batch[:, None], 0.0, new_plh_c)
                     runner_state = runner_state + (new_plh_a, new_plh_c)
                 return runner_state, (transition, intrinsic, comm_reward_batch, attn_msg_reward,
-                                     ja_card_reward, ja_card_conc_out, ja_card_align_out, ja_card_follow_out)
+                                     ja_card_reward, ja_card_conc_out, ja_card_align_out, ja_card_follow_out,
+                                     dbg_card_attn_0, dbg_card_attn_1,
+                                     dbg_partner_card_attn_0, dbg_partner_card_attn_1)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch, attn_msg_reward_batch,
-                           ja_card_reward_batch, ja_card_conc_batch, ja_card_align_batch, ja_card_follow_batch) = jax.lax.scan(
+                           ja_card_reward_batch, ja_card_conc_batch, ja_card_align_batch, ja_card_follow_batch,
+                           dbg_card_attn_0_batch, dbg_card_attn_1_batch,
+                           dbg_partner_card_attn_0_batch, dbg_partner_card_attn_1_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -800,6 +812,11 @@ def make_train_loop(config, env):
             metric["ja_card_follow_mean"] = ja_card_follow_batch[:, :num_envs].mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
+            for card_idx in range(5):
+                metric[f"debug_card_attn_agent0_card{card_idx}"] = dbg_card_attn_0_batch[:, :, card_idx].mean()
+                metric[f"debug_card_attn_agent1_card{card_idx}"] = dbg_card_attn_1_batch[:, :, card_idx].mean()
+                metric[f"debug_partner_card_attn_for_agent0_card{card_idx}"] = dbg_partner_card_attn_0_batch[:, :, card_idx].mean()
+                metric[f"debug_partner_card_attn_for_agent1_card{card_idx}"] = dbg_partner_card_attn_1_batch[:, :, card_idx].mean()
 
             if feed_other_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
@@ -1029,6 +1046,18 @@ def log_metrics(config, out, logger):
         ("grad_norm",            "Loss/grad_norm"),
         ("value_mean",           "Value/mean"),
     ]
+    scalar_keys.extend(
+        [(f"debug_card_attn_agent0_card{i}", f"Debug/card_attn_agent0_card{i}") for i in range(5)]
+    )
+    scalar_keys.extend(
+        [(f"debug_card_attn_agent1_card{i}", f"Debug/card_attn_agent1_card{i}") for i in range(5)]
+    )
+    scalar_keys.extend(
+        [(f"debug_partner_card_attn_for_agent0_card{i}", f"Debug/partner_card_attn_for_agent0_card{i}") for i in range(5)]
+    )
+    scalar_keys.extend(
+        [(f"debug_partner_card_attn_for_agent1_card{i}", f"Debug/partner_card_attn_for_agent1_card{i}") for i in range(5)]
+    )
 
     scalar_mean = {}
     scalar_std = {}
