@@ -385,6 +385,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             _log_card_game_eval_video(
                 inner_env, policy, final_params, max_steps, tag, video_dir, logger,
                 feed_attn_dims=feed_attn_dims,
+                ja_card_masks=_card_masks_eval if ja_card_attn else None,
                 fixed_partner_attn=fixed_partner_attn_eval,
                 filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
                 num_episodes=30, fps=3,

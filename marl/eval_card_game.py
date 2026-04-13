@@ -128,6 +128,7 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
 def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
                                feed_attn_dims=None,
+                               ja_card_masks=None,
                                fixed_partner_attn=None, filter_top1=False,
                                num_episodes=30, fps=3):
     """Run multiple card game episodes and save a video with attention spots and choices."""
@@ -145,6 +146,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             params, policy, max_steps,
             collect_attention=True,
             feed_other_attn_dims=feed_attn_dims,
+            ja_card_masks=ja_card_masks,
             fixed_partner_attn=fixed_partner_attn,
         )
 
