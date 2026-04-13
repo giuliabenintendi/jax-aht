@@ -124,6 +124,12 @@ def make_train_loop(config, env):
     lstm_hidden_dim = config.get("LSTM_HIDDEN_DIM", 128)
     fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
     attn_msg_coef = config.get("ATTN_MSG_REWARD_COEF", 0.0)
+    ja_card_attn = config.get("JA_CARD_ATTN", False)
+    ja_card_conc_coef = config.get("JA_CARD_CONC_COEF", 0.1)
+    ja_card_align_coef = config.get("JA_CARD_ALIGN_COEF", 0.1)
+    ja_card_follow_coef = config.get("JA_CARD_FOLLOW_COEF", 0.5)
+    if ja_card_attn and (feed_other_attn or cross_agent_attn):
+        raise ValueError("JA_CARD_ATTN is mutually exclusive with FEED_OTHER_ATTN and CROSS_AGENT_ATTN")
 
     # Precompute image and feature-map dimensions (only needed for image obs)
     obs_type = _get_obs_type(config)
@@ -142,8 +148,9 @@ def make_train_loop(config, env):
     xattn_num_positions = feat_h * feat_w
     xattn_feat_dim = config.get("CONV_FILTERS", 32) + config.get("JA_SPATIAL_BASIS_DEPTH", 8)
 
-    # Precompute card tile masks and pixel indices for attn-msg reward
-    if attn_msg_coef > 0 and feat_h > 0:
+    # Precompute card tile masks (shared by attn-msg reward and JA card attention)
+    _need_card_masks = (attn_msg_coef > 0 or ja_card_attn) and feat_h > 0
+    if _need_card_masks:
         from envs.card_game.rendering import (
             TILE_PIXELS as _TP_AM, NUM_CARDS as _NC_AM, CARD_COLORS as _CC_AM,
         )
@@ -241,6 +248,10 @@ def make_train_loop(config, env):
             init_pe_critic = jnp.zeros((num_actors, xattn_num_positions, xattn_feat_dim))
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng,
                             init_pe_actor, init_pe_critic)
+        elif ja_card_attn:
+            init_partner_card_attn = jnp.zeros((num_actors, 5))
+            runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng,
+                            init_partner_card_attn)
         else:
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
         if query_partner_lstm:
@@ -396,6 +407,9 @@ def make_train_loop(config, env):
                 elif cross_agent_attn:
                     (train_state, env_state, last_obs, last_done, hstate, rng,
                      prev_pe_actor, prev_pe_critic) = runner_state_core
+                elif ja_card_attn:
+                    (train_state, env_state, last_obs, last_done, hstate, rng,
+                     prev_partner_card_attn) = runner_state_core
                 else:
                     (train_state, env_state, last_obs, last_done, hstate, rng) = runner_state_core
 
@@ -408,6 +422,11 @@ def make_train_loop(config, env):
                 # Augment obs with other agent's previous attention as 4th channel
                 if feed_other_attn:
                     last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
+
+                # Append partner's translated card attention as scalar suffix
+                if ja_card_attn:
+                    last_obs_batch = jnp.concatenate(
+                        [last_obs_batch, prev_partner_card_attn], axis=-1)
 
                 avail_actions = jax.vmap(env.get_avail_actions)(env_state)
                 avail_actions_batch = jax.lax.stop_gradient(
@@ -524,6 +543,60 @@ def make_train_loop(config, env):
                 else:
                     attn_msg_reward = jnp.zeros(num_actors)
 
+                # OP-corrected card-level joint attention rewards
+                if ja_card_attn:
+                    attn = attn_map.squeeze(0)  # (num_actors, feat_h, feat_w)
+                    card_pos_attn = jnp.einsum("ahw,chw->ac", attn, _card_masks)  # (num_actors, 5)
+                    card_pos_attn_0 = card_pos_attn[:num_envs]   # (num_envs, 5)
+                    card_pos_attn_1 = card_pos_attn[num_envs:]   # (num_envs, 5)
+
+                    # Concentration reward: m * (log5 - H(q)) / log5
+                    _eps = 1e-8
+                    _log5 = jnp.log(5.0)
+                    m = card_pos_attn.sum(axis=-1)  # (num_actors,)
+                    q = card_pos_attn / (m[:, None] + _eps)
+                    H = -jnp.sum(q * jnp.log(q + _eps), axis=-1)
+                    r_conc = ja_card_conc_coef * m * (_log5 - H) / _log5  # (num_actors,)
+
+                    # Map to physical card space via OP permutations
+                    perm_0 = env_state.env_state.env_state.per_agent_perm["agent_0"]  # (num_envs, 5)
+                    perm_1 = env_state.env_state.env_state.per_agent_perm["agent_1"]  # (num_envs, 5)
+                    batch_idx = jnp.arange(num_envs)[:, None]
+                    phys_0 = jnp.zeros((num_envs, 5)).at[batch_idx, perm_0].set(card_pos_attn_0)
+                    phys_1 = jnp.zeros((num_envs, 5)).at[batch_idx, perm_1].set(card_pos_attn_1)
+
+                    # Alignment reward: dot product in physical card space
+                    alignment = jnp.sum(phys_0 * phys_1, axis=-1)  # (num_envs,)
+                    r_align_env = ja_card_align_coef * alignment
+                    r_align_valid = step_count_batch[:num_envs] > 1
+                    r_align_env = jnp.where(r_align_valid, r_align_env, 0.0)
+                    r_align = jnp.concatenate([r_align_env, r_align_env])  # (num_actors,)
+
+                    # Follow-through bonus: match * mean attention on picked card
+                    pick_0 = jnp.clip(action[:num_envs], 0, 4)
+                    pick_1 = jnp.clip(action[num_envs:], 0, 4)
+                    mass_on_pick_0 = jnp.take_along_axis(
+                        card_pos_attn_0, pick_0[:, None], axis=1).squeeze(-1)
+                    mass_on_pick_1 = jnp.take_along_axis(
+                        card_pos_attn_1, pick_1[:, None], axis=1).squeeze(-1)
+                    match = reward_batch[:num_envs] > 0  # env reward > 0 means match
+                    r_follow_env = ja_card_follow_coef * match * 0.5 * (mass_on_pick_0 + mass_on_pick_1)
+                    r_follow = jnp.concatenate([r_follow_env, r_follow_env])
+
+                    ja_card_reward = jax.lax.stop_gradient(r_conc + r_align + r_follow)
+
+                    # Translate partner attention to receiver's frame for next step obs
+                    translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
+                    translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
+                    new_partner_card_attn = jnp.concatenate(
+                        [translated_for_0, translated_for_1], axis=0)  # (num_actors, 5)
+                    # Reset on episode boundaries
+                    new_done_batch_ja = batchify(new_done, env.agents, num_actors).squeeze()
+                    new_partner_card_attn = jnp.where(
+                        new_done_batch_ja[:, None], 0.0, new_partner_card_attn)
+                else:
+                    ja_card_reward = jnp.zeros(num_actors)
+
                 if cross_agent_attn:
                     pe_actor_stored = prev_pe_actor
                     pe_critic_stored = prev_pe_critic
@@ -567,6 +640,9 @@ def make_train_loop(config, env):
                     new_pe_critic = jnp.where(pe_done_mask, 0.0, new_pe_critic)
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng,
                                     new_pe_actor, new_pe_critic)
+                elif ja_card_attn:
+                    runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng,
+                                    new_partner_card_attn)
                 else:
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
                 if query_partner_lstm:
@@ -580,9 +656,9 @@ def make_train_loop(config, env):
                     new_plh_a = jnp.where(new_done_batch[:, None], 0.0, new_plh_a)
                     new_plh_c = jnp.where(new_done_batch[:, None], 0.0, new_plh_c)
                     runner_state = runner_state + (new_plh_a, new_plh_c)
-                return runner_state, (transition, intrinsic, comm_reward_batch, attn_msg_reward)
+                return runner_state, (transition, intrinsic, comm_reward_batch, attn_msg_reward, ja_card_reward)
 
-            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch, attn_msg_reward_batch) = jax.lax.scan(
+            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch, attn_msg_reward_batch, ja_card_reward_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -594,6 +670,9 @@ def make_train_loop(config, env):
             elif cross_agent_attn:
                 (train_state, env_state, last_obs, last_done, hstate, rng,
                  prev_pe_actor, prev_pe_critic) = runner_state
+            elif ja_card_attn:
+                (train_state, env_state, last_obs, last_done, hstate, rng,
+                 prev_partner_card_attn) = runner_state
             else:
                 (train_state, env_state, last_obs, last_done, hstate, rng) = runner_state
 
@@ -601,6 +680,9 @@ def make_train_loop(config, env):
             last_done_batch = batchify(last_done, env.agents, num_actors)
             if feed_other_attn:
                 last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
+            if ja_card_attn:
+                last_obs_batch = jnp.concatenate(
+                    [last_obs_batch, prev_partner_card_attn], axis=-1)
             last_avail = jax.vmap(env.get_avail_actions)(env_state)
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32))
@@ -662,7 +744,7 @@ def make_train_loop(config, env):
             scaled_comm_reward = comm_scale * comm_reward_batch
             scaled_attn_msg_reward = attn_msg_coef * attn_msg_reward_batch
 
-            combined_raw = raw_env_reward + intrinsic_batch + scaled_comm_reward + scaled_attn_msg_reward
+            combined_raw = raw_env_reward + intrinsic_batch + scaled_comm_reward + scaled_attn_msg_reward + ja_card_reward_batch
             if normalize_rewards:
                 rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
                 combined = reward_norm_apply(rew_norm_state, combined_raw)
@@ -696,6 +778,7 @@ def make_train_loop(config, env):
             metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
             metric["comm_reward_mean"] = scaled_comm_reward[:, :num_envs].mean()
             metric["attn_msg_reward_mean"] = scaled_attn_msg_reward.mean()
+            metric["ja_card_reward_mean"] = ja_card_reward_batch.mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
 
@@ -704,6 +787,9 @@ def make_train_loop(config, env):
             elif cross_agent_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng,
                                 prev_pe_actor, prev_pe_critic)
+            elif ja_card_attn:
+                runner_state = (train_state, env_state, last_obs, last_done, hstate, rng,
+                                prev_partner_card_attn)
             else:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
             if query_partner_lstm:
@@ -913,6 +999,7 @@ def log_metrics(config, out, logger):
         ("combined_reward_mean", "Reward/combined_raw"),
         ("comm_reward_mean",     "Reward/comm"),
         ("attn_msg_reward_mean", "Reward/attn_msg"),
+        ("ja_card_reward_mean",  "Reward/ja_card"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),

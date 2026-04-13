@@ -135,6 +135,9 @@ def initialize_ja_image_agent(config, env, rng):
     num_channels = 4 if config.get("FEED_OTHER_ATTN", False) else 3
     # Communication message is rendered visually (partner border), not as one-hot suffix
     message_dim = 0
+    # JA_CARD_ATTN appends a 5-dim translated partner attention vector
+    if config.get("JA_CARD_ATTN", False):
+        num_scalars += 5
     obs_dim = img_h * img_w * num_channels + num_scalars
 
     policy = JAImageActorCriticPolicy(
