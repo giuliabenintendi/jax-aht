@@ -289,8 +289,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         if _ja_card and collect_attention:
             ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
             ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
-            p0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
-            p1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
+            p0 = env_state.env_state.per_agent_perm["agent_0"]
+            p1 = env_state.env_state.per_agent_perm["agent_1"]
             ph0 = jnp.zeros(5).at[p0].set(ca0)
             ph1 = jnp.zeros(5).at[p1].set(ca1)
             prev_pca_0 = ph1[p0]
