@@ -91,6 +91,7 @@ def _build_run_string(config: dict) -> str:
 def _build_tags(config) -> list[str]:
     """Build tags list from config for wandb filtering."""
     alg_config = config["algorithm"]
+    env_kwargs = alg_config.get("ENV_KWARGS", {})
     layout = _get_layout_short(config)
     date = datetime.now().strftime("%d%m%Y")
     tags = [
@@ -128,7 +129,6 @@ def _build_tags(config) -> list[str]:
         tags.append("follow_bonus")
     if alg_config.get("FILTER_ATTN_TOP1", False):
         tags.append("top1")
-    env_kwargs = alg_config.get("ENV_KWARGS", {})
     if env_kwargs.get("max_cards") is not None:
         from envs.card_game.rendering_dynamic import NUM_COLORS, GRID_ROWS as _GR, GRID_COLS as _GC
         tags.append(f"{NUM_COLORS}cards")

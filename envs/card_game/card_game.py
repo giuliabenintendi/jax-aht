@@ -253,7 +253,7 @@ class CardGameEnv(BaseEnv):
         )
 
         # Per-agent communication reward (added to training reward, not to logged return)
-        if self.communication and self.comm_reward_coef > 0:
+        if self.communication and (self.comm_reward_coef > 0 or self.comm_follow_bonus > 0):
             my_msg_0 = env_state.messages[0]
             my_msg_1 = env_state.messages[1]
             alpha = self.comm_reward_coef
