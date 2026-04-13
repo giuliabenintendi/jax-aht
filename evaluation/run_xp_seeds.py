@@ -58,7 +58,8 @@ def load_algo_config() -> dict:
 def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 agent_1_param, agent_1_policy,
                                 max_episode_steps, action_sizes,
-                                feed_attn_dims=None, greedy_eval=True):
+                                feed_attn_dims=None, ja_card_masks=None,
+                                greedy_eval=True):
     """Run one eval episode, returning LogWrapper info + mean JSD between attention maps.
 
     Args:
@@ -108,6 +109,11 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_action_0 = jnp.zeros((1, 1), dtype=jnp.float32)
         prev_action_1 = jnp.zeros((1, 1), dtype=jnp.float32)
 
+    _ja_card = ja_card_masks is not None
+    if _ja_card:
+        prev_pca_0 = jnp.zeros(5)  # partner card attention for agent 0
+        prev_pca_1 = jnp.zeros(5)
+
     # Initialize uniform attention maps for feed_other_attn
     if feed_attn_dims is not None:
         _img_h, _img_w, _feat_h, _feat_w = feed_attn_dims
@@ -136,6 +142,9 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     if feed_attn_dims is not None:
         obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
         obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+    if _ja_card:
+        obs_0 = jnp.concatenate([obs_0, prev_pca_0])
+        obs_1 = jnp.concatenate([obs_1, prev_pca_1])
 
     act_0, hstate_0, attn_0, oa0, oc0 = _call_attn(
         agent_0_policy, agent_0_param,
@@ -187,6 +196,18 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_attn_0 = attn_0.squeeze()
         prev_attn_1 = attn_1.squeeze()
 
+    if _ja_card:
+        a0_sq = attn_0.squeeze()
+        a1_sq = attn_1.squeeze()
+        ca_0 = jnp.einsum("hw,chw->c", a0_sq, ja_card_masks)
+        ca_1 = jnp.einsum("hw,chw->c", a1_sq, ja_card_masks)
+        perm_0 = init_env_state.env_state.env_state.per_agent_perm["agent_0"]
+        perm_1 = init_env_state.env_state.env_state.per_agent_perm["agent_1"]
+        ph_0 = jnp.zeros(5).at[perm_0].set(ca_0)
+        ph_1 = jnp.zeros(5).at[perm_1].set(ca_1)
+        prev_pca_0 = ph_1[perm_0]
+        prev_pca_1 = ph_0[perm_1]
+
     ep_ts = 1
     init_carry = (ep_ts, env_state, obs, rng, done, reward, env_act_onehot,
                   hstate_0, hstate_1, dummy_info, jsd_sum, jsd_count,
@@ -195,7 +216,9 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                   prev_action_0 if use_prev_io else None,
                   prev_action_1 if use_prev_io else None,
                   attn_0.squeeze(), attn_1.squeeze(),
-                  pe_a0, pe_c0, pe_a1, pe_c1)
+                  pe_a0, pe_c0, pe_a1, pe_c1,
+                  prev_pca_0 if _ja_card else jnp.zeros(5),
+                  prev_pca_1 if _ja_card else jnp.zeros(5))
 
     def scan_step(carry, _):
         def take_step(carry_step):
@@ -203,7 +226,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
              hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
              prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
              prev_a0, prev_a1,
-             pe_a0, pe_c0, pe_a1, pe_c1) = carry_step
+             pe_a0, pe_c0, pe_a1, pe_c1,
+             prev_pca_0, prev_pca_1) = carry_step
 
             avail_actions = env.get_avail_actions(env_state)
             avail_actions = jax.lax.stop_gradient(avail_actions)
@@ -217,6 +241,9 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             if feed_attn_dims is not None:
                 obs_0 = augment_obs_for_eval(obs_0, prev_a1, _img_h, _img_w)
                 obs_1 = augment_obs_for_eval(obs_1, prev_a0, _img_h, _img_w)
+            if _ja_card:
+                obs_0 = jnp.concatenate([obs_0, prev_pca_0])
+                obs_1 = jnp.concatenate([obs_1, prev_pca_1])
 
             act_0, hstate_0_next, attn_0, oa0, oc0 = _call_attn(
                 agent_0_policy, agent_0_param,
@@ -261,17 +288,33 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 next_prev_reward_0 = next_prev_reward_1 = None
                 next_prev_action_0 = next_prev_action_1 = None
 
+            # Update JA card partner attention
+            if _ja_card:
+                ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
+                ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
+                p0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
+                p1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
+                ph0 = jnp.zeros(5).at[p0].set(ca0)
+                ph1 = jnp.zeros(5).at[p1].set(ca1)
+                next_pca_0 = ph1[p0]
+                next_pca_1 = ph0[p1]
+            else:
+                next_pca_0 = jnp.zeros(5)
+                next_pca_1 = jnp.zeros(5)
+
             return (ep_ts + 1, env_state_next, obs_next, rng, done_next, reward, env_act_onehot,
                     hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next,
                     next_prev_reward_0, next_prev_reward_1, next_prev_action_0, next_prev_action_1,
                     attn_0.squeeze(), attn_1.squeeze(),
-                    oa1, oc1, oa0, oc0)
+                    oa1, oc1, oa0, oc0,
+                    next_pca_0, next_pca_1)
 
         (ep_ts, env_state, obs, rng, done, reward, act_onehot,
          hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
          prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
          prev_a0, prev_a1,
-         pe_a0, pe_c0, pe_a1, pe_c1) = carry
+         pe_a0, pe_c0, pe_a1, pe_c1,
+         prev_pca_0, prev_pca_1) = carry
         new_carry = jax.lax.cond(
             done["__all__"],
             lambda curr_carry: curr_carry,
@@ -291,7 +334,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
                           agent_1_param, agent_1_policy,
                           max_episode_steps, num_eps, action_sizes,
-                          feed_attn_dims=None, greedy_eval=True):
+                          feed_attn_dims=None, ja_card_masks=None,
+                          greedy_eval=True):
     """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
@@ -300,7 +344,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
         lambda ep_rng: run_single_episode_with_jsd(
             ep_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, action_sizes,
-            feed_attn_dims=feed_attn_dims,
+            feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
             greedy_eval=greedy_eval,
         )
     )
@@ -311,7 +355,8 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
 def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
                      all_agent_1_params, agent_1_policy,
                      max_episode_steps, num_eps, action_sizes,
-                     feed_attn_dims=None, greedy_eval=True):
+                     feed_attn_dims=None, ja_card_masks=None,
+                     greedy_eval=True):
     """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
     num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
     partner_rngs = jax.random.split(rng, num_partners)
@@ -321,7 +366,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
         return run_episodes_with_jsd(
             partner_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, num_eps, action_sizes,
-            feed_attn_dims=feed_attn_dims,
+            feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
             greedy_eval=greedy_eval,
         )
 
@@ -581,9 +626,24 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         feed_attn_dims = (_img_h, _img_w, _feat_h, _feat_w)
         print(f"[xp_seeds] feed_other_attn enabled: img=({_img_h},{_img_w}), feat=({_feat_h},{_feat_w})")
 
+    ja_card_masks = None
+    if algo_cfg.get("JA_CARD_ATTN", False):
+        from agents.initialize_agents import _get_image_dims
+        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        from marl.ja_ippo import _build_card_masks
+        _img_h, _img_w, _ = _get_image_dims(env)
+        _feat_h, _feat_w = _compute_resnet_output_dims(
+            _img_h, _img_w,
+            stride=algo_cfg.get("CONV_STRIDE", 2),
+            kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
+            padding=algo_cfg.get("CONV_PADDING", "SAME"),
+            num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
+        )
+        ja_card_masks = _build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
+
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
-        feed_attn_dims=feed_attn_dims, greedy_eval=greedy_eval,
+        feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks, greedy_eval=greedy_eval,
     ))
 
     all_row_metrics = []
@@ -837,9 +897,24 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
         feed_attn_dims = (_img_h, _img_w, _feat_h, _feat_w)
         print(f"[xp_seeds] feed_other_attn enabled")
 
+    ja_card_masks = None
+    if algo_cfg.get("JA_CARD_ATTN", False):
+        from agents.initialize_agents import _get_image_dims
+        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        from marl.ja_ippo import _build_card_masks
+        _img_h, _img_w, _ = _get_image_dims(env)
+        _feat_h, _feat_w = _compute_resnet_output_dims(
+            _img_h, _img_w,
+            stride=algo_cfg.get("CONV_STRIDE", 2),
+            kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
+            padding=algo_cfg.get("CONV_PADDING", "SAME"),
+            num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
+        )
+        ja_card_masks = _build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
+
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
-        feed_attn_dims=feed_attn_dims, greedy_eval=greedy_eval,
+        feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks, greedy_eval=greedy_eval,
     ))
 
     all_row_metrics = []

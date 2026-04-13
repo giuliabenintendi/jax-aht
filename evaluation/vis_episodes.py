@@ -90,7 +90,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            agent_1_param, agent_1_policy,
                            max_episode_steps, collect_attention=False,
                            greedy=True, feed_other_attn_dims=None,
-                           fixed_partner_attn=None):
+                           fixed_partner_attn=None,
+                           ja_card_masks=None):
     '''
     Run a single episode and collect states for rendering.
 
@@ -131,6 +132,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
         prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
+    _ja_card = ja_card_masks is not None
+    if _ja_card:
+        prev_pca_0 = jnp.zeros(5)
+        prev_pca_1 = jnp.zeros(5)
+
     _xattn = getattr(agent_0_policy, 'cross_agent_attn', False)
     if _xattn:
         _npos = getattr(agent_0_policy, 'xattn_num_positions', 0)
@@ -163,6 +169,9 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         if feed_other_attn_dims is not None:
             obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
             obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+        if _ja_card:
+            obs_0 = jnp.concatenate([obs_0, prev_pca_0])
+            obs_1 = jnp.concatenate([obs_1, prev_pca_1])
 
         # Reshape inputs for policies
         obs_0_reshaped = obs_0.reshape(1, 1, -1)
@@ -275,6 +284,20 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         if feed_other_attn_dims is not None and collect_attention:
             prev_attn_0 = attn_0.squeeze()  # (feat_h, feat_w)
             prev_attn_1 = attn_1.squeeze()  # (feat_h, feat_w)
+
+        # Update partner card attention for JA_CARD_ATTN
+        if _ja_card and collect_attention:
+            ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
+            ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
+            p0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
+            p1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
+            ph0 = jnp.zeros(5).at[p0].set(ca0)
+            ph1 = jnp.zeros(5).at[p1].set(ca1)
+            prev_pca_0 = ph1[p0]
+            prev_pca_1 = ph0[p1]
+            if done["__all__"]:
+                prev_pca_0 = jnp.zeros(5)
+                prev_pca_1 = jnp.zeros(5)
 
         # Take step in environment using the card-game macro-action encoding.
         both_actions = [act_0, act_1]

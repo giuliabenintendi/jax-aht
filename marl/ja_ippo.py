@@ -28,6 +28,30 @@ from common.save_load_utils import save_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
+
+
+def _build_card_masks(img_h, img_w, feat_h, feat_w):
+    """Build soft overlap masks (5, feat_h, feat_w) for card tile regions.
+
+    Each entry is the fraction of the feature cell's area overlapping with
+    the card's colored rectangle. Used by attn-msg reward and JA card attention.
+    """
+    from envs.card_game.rendering import TILE_PIXELS, NUM_CARDS
+    import numpy as _np
+    scale_h = img_h / feat_h
+    scale_w = img_w / feat_w
+    masks = _np.zeros((NUM_CARDS, feat_h, feat_w), dtype=_np.float32)
+    for ci in range(NUM_CARDS):
+        card_py_lo, card_py_hi = TILE_PIXELS + 1, TILE_PIXELS + 6
+        card_px_lo = ci * TILE_PIXELS + 1
+        card_px_hi = ci * TILE_PIXELS + 6
+        for fr in range(feat_h):
+            for fc in range(feat_w):
+                cell_area = scale_h * scale_w
+                ov_y = max(0.0, min(card_py_hi, (fr + 1) * scale_h) - max(card_py_lo, fr * scale_h))
+                ov_x = max(0.0, min(card_px_hi, (fc + 1) * scale_w) - max(card_px_lo, fc * scale_w))
+                masks[ci, fr, fc] = ov_y * ov_x / cell_area
+    return jnp.array(masks)
 from marl.eval_logging import log_greedy_eval, log_eval_video
 
 
@@ -130,6 +154,10 @@ def make_train_loop(config, env):
     ja_card_follow_coef = config.get("JA_CARD_FOLLOW_COEF", 0.5)
     if ja_card_attn and (feed_other_attn or cross_agent_attn):
         raise ValueError("JA_CARD_ATTN is mutually exclusive with FEED_OTHER_ATTN and CROSS_AGENT_ATTN")
+    if ja_card_attn:
+        env_kwargs = config.get("ENV_KWARGS", {})
+        if not (env_kwargs.get("other_play_position_shuffle") and env_kwargs.get("other_play_recolouring")):
+            raise ValueError("JA_CARD_ATTN requires both other_play_position_shuffle and other_play_recolouring")
 
     # Precompute image and feature-map dimensions (only needed for image obs)
     obs_type = _get_obs_type(config)
@@ -154,28 +182,7 @@ def make_train_loop(config, env):
         from envs.card_game.rendering import (
             TILE_PIXELS as _TP_AM, NUM_CARDS as _NC_AM, CARD_COLORS as _CC_AM,
         )
-        _scale_h = img_h / feat_h
-        _scale_w = img_w / feat_w
-        # Soft overlap masks: for each feature cell, the fraction of its area that
-        # overlaps with the card's colored rectangle. sum(attn * mask) then gives the
-        # true attention mass on that card. Matches vis_episodes.py:558-574.
-        import numpy as _np
-        _card_masks_np = _np.zeros((_NC_AM, feat_h, feat_w), dtype=_np.float32)
-        for ci in range(_NC_AM):
-            card_py_lo, card_py_hi = _TP_AM + 1, _TP_AM + 6  # pixel rows [8, 13)
-            card_px_lo = ci * _TP_AM + 1
-            card_px_hi = ci * _TP_AM + 6                       # pixel cols [ci*7+1, ci*7+6)
-            for fr in range(feat_h):
-                for fc in range(feat_w):
-                    feat_py_lo = fr * _scale_h
-                    feat_py_hi = (fr + 1) * _scale_h
-                    feat_px_lo = fc * _scale_w
-                    feat_px_hi = (fc + 1) * _scale_w
-                    cell_area = _scale_h * _scale_w
-                    ov_y = max(0.0, min(card_py_hi, feat_py_hi) - max(card_py_lo, feat_py_lo))
-                    ov_x = max(0.0, min(card_px_hi, feat_px_hi) - max(card_px_lo, feat_px_lo))
-                    _card_masks_np[ci, fr, fc] = ov_y * ov_x / cell_area
-        _card_masks = jnp.array(_card_masks_np)
+        _card_masks = _build_card_masks(img_h, img_w, feat_h, feat_w)
         _card_colors_f32 = _CC_AM.astype(jnp.float32) / 255.0  # (5, 3)
         # Safe pixel indices: row 12, cols ci*7+1 through ci*7+5 (outside message dot region)
         _safe_pixel_rows = _np.full((_NC_AM, 5), 12, dtype=_np.int32)

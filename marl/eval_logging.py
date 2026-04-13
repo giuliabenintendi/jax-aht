@@ -31,6 +31,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
     num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
 
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
+    ja_card_attn = algorithm_config.get("JA_CARD_ATTN", False)
     cross_agent_attn = algorithm_config.get("CROSS_AGENT_ATTN", False)
     if cross_agent_attn:
         _xattn_npos = getattr(policy, 'xattn_num_positions', 0)
@@ -38,7 +39,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
     query_partner_lstm = algorithm_config.get("QUERY_PARTNER_LSTM", False)
     _lstm_dim = algorithm_config.get("LSTM_HIDDEN_DIM", 128)
     eval_filter_top1 = algorithm_config.get("FILTER_ATTN_TOP1", False)
-    if feed_attn:
+    if feed_attn or ja_card_attn:
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(
             _img_h, _img_w,
@@ -47,6 +48,9 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
             padding=algorithm_config.get("CONV_PADDING", "SAME"),
             num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
         )
+    if ja_card_attn:
+        from marl.ja_ippo import _build_card_masks
+        _card_masks_eval = _build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
     def _apply_top1(attn):
         """Filter attention to global argmax (single spike)."""
@@ -81,6 +85,10 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
                 prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
+            if ja_card_attn:
+                prev_partner_card_attn_0 = jnp.zeros(5)
+                prev_partner_card_attn_1 = jnp.zeros(5)
+
             if cross_agent_attn:
                 pe_actor_0 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
                 pe_actor_1 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
@@ -104,6 +112,9 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 if feed_attn:
                     obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
                     obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+                if ja_card_attn:
+                    obs_0 = jnp.concatenate([obs_0, prev_partner_card_attn_0])
+                    obs_1 = jnp.concatenate([obs_1, prev_partner_card_attn_1])
 
                 rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
                 plh_kw0 = dict(plh_actor=plh_a0, plh_critic=plh_c0) if query_partner_lstm else {}
@@ -167,6 +178,22 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 if feed_attn:
                     prev_attn_0 = attn_0.squeeze()
                     prev_attn_1 = attn_1.squeeze()
+
+                if ja_card_attn:
+                    # Compute card-level attention and translate through OP perms
+                    a0_sq = attn_0.squeeze()  # (feat_h, feat_w)
+                    a1_sq = attn_1.squeeze()
+                    card_attn_0 = jnp.einsum("hw,chw->c", a0_sq, _card_masks_eval)  # (5,)
+                    card_attn_1 = jnp.einsum("hw,chw->c", a1_sq, _card_masks_eval)
+                    perm_0 = env_state.env_state.env_state.per_agent_perm["agent_0"]  # (5,)
+                    perm_1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
+                    phys_0 = jnp.zeros(5).at[perm_0].set(card_attn_0)
+                    phys_1 = jnp.zeros(5).at[perm_1].set(card_attn_1)
+                    prev_partner_card_attn_0 = phys_1[perm_0]  # translate 1→0's frame
+                    prev_partner_card_attn_1 = phys_0[perm_1]  # translate 0→1's frame
+                    if done["__all__"]:
+                        prev_partner_card_attn_0 = jnp.zeros(5)
+                        prev_partner_card_attn_1 = jnp.zeros(5)
 
                 jsd_val = float(jsd_divergence(
                     attn_0.squeeze(0), attn_1.squeeze(0)).mean())
@@ -291,6 +318,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 collect_attention=True,
                 feed_other_attn_dims=feed_attn_dims,
                 fixed_partner_attn=fixed_partner_attn_eval,
+                ja_card_masks=_card_masks_eval if ja_card_attn else None,
             )
             all_ep_states.extend(ep_states_i)
             for ak in ("agent_0", "agent_1"):
@@ -426,6 +454,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 final_params, policy, max_steps,
                 collect_attention=True,
                 feed_other_attn_dims=feed_attn_dims,
+                ja_card_masks=_card_masks_eval if ja_card_attn else None,
             )
             _accumulate_episode(attn_data_extra, ep_states_extra)
 
