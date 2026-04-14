@@ -376,16 +376,20 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
 def xp_mean_and_sem(xp_matrix):
     """Compute XP mean and SEM over all off-diagonal entries.
 
+    Uses std of all off-diagonal values but divides by sqrt(n) (number of
+    independent seeds) rather than sqrt(n*(n-1)) since entries sharing a
+    seed are correlated.
+
     Args:
         xp_matrix: (n, n) array where entry (i,j) is the mean metric
                    when seed i is agent 0 and seed j is agent 1.
     Returns:
-        (mean, sem) over n*(n-1) off-diagonal entries.
+        (mean, sem) over off-diagonal entries with n-based SEM.
     """
     n = xp_matrix.shape[0]
     mask = ~np.eye(n, dtype=bool)
     off_diag = xp_matrix[mask]
-    return np.mean(off_diag), np.std(off_diag) / np.sqrt(len(off_diag))
+    return np.mean(off_diag), np.std(off_diag) / np.sqrt(n)
 
 
 def save_xp_heatmap(matrix_mean: np.ndarray, matrix_std: np.ndarray,
