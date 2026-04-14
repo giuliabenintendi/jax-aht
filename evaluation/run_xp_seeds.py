@@ -201,8 +201,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         a1_sq = attn_1.squeeze()
         ca_0 = jnp.einsum("hw,chw->c", a0_sq, ja_card_masks)
         ca_1 = jnp.einsum("hw,chw->c", a1_sq, ja_card_masks)
-        perm_0 = init_env_state.env_state.per_agent_perm["agent_0"]
-        perm_1 = init_env_state.env_state.per_agent_perm["agent_1"]
+        perm_0 = init_env_state.env_state.env_state.per_agent_perm["agent_0"]
+        perm_1 = init_env_state.env_state.env_state.per_agent_perm["agent_1"]
         ph_0 = jnp.zeros(5).at[perm_0].set(ca_0)
         ph_1 = jnp.zeros(5).at[perm_1].set(ca_1)
         prev_pca_0 = ph_1[perm_0]
@@ -292,8 +292,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             if _ja_card:
                 ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
                 ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
-                p0 = env_state.env_state.per_agent_perm["agent_0"]
-                p1 = env_state.env_state.per_agent_perm["agent_1"]
+                p0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
+                p1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
                 ph0 = jnp.zeros(5).at[p0].set(ca0)
                 ph1 = jnp.zeros(5).at[p1].set(ca1)
                 next_pca_0 = ph1[p0]
