@@ -262,14 +262,13 @@ class CardGameEnv(BaseEnv):
             # Skip first two steps: step 1 has no prior messages, step 2's
             # messages were sent before either agent saw the other's message.
             can_agree = msgs_match & (new_step > 2)
-            # Message agreement: reward on every step (deliberation + decision)
-            agree_r = jnp.where(can_agree, alpha / 4.0, 0.0)
+            # Message agreement: deliberation steps only (no reward on decision step)
+            agree_r = jnp.where(can_agree & ~is_decision, alpha / 4.0, 0.0)
             # Follow-through: pick the agreed card (decision step only)
-            follow_val = alpha + self.comm_follow_bonus
             follow_r0 = jnp.where(
-                is_decision & msgs_match & jnp.equal(a0, my_msg_0), follow_val, 0.0)
+                is_decision & msgs_match & jnp.equal(a0, my_msg_0), self.comm_follow_bonus, 0.0)
             follow_r1 = jnp.where(
-                is_decision & msgs_match & jnp.equal(a1, my_msg_1), follow_val, 0.0)
+                is_decision & msgs_match & jnp.equal(a1, my_msg_1), self.comm_follow_bonus, 0.0)
             comm_reward_arr = jnp.array([agree_r + follow_r0, agree_r + follow_r1])
         else:
             comm_reward_arr = jnp.zeros(self.num_agents)
