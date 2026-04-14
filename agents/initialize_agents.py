@@ -138,6 +138,9 @@ def initialize_ja_image_agent(config, env, rng):
     # JA_CARD_ATTN appends a 5-dim translated partner attention vector
     if config.get("JA_CARD_ATTN", False):
         num_scalars += 5
+    card_cross_attn = config.get("CARD_CROSS_ATTN", False)
+    if card_cross_attn and not config.get("JA_CARD_ATTN", False):
+        raise ValueError("CARD_CROSS_ATTN requires JA_CARD_ATTN=True")
     obs_dim = img_h * img_w * num_channels + num_scalars
 
     policy = JAImageActorCriticPolicy(
@@ -161,6 +164,7 @@ def initialize_ja_image_agent(config, env, rng):
         scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
         cross_agent_attn=config.get("CROSS_AGENT_ATTN", False),
         query_partner_lstm=config.get("QUERY_PARTNER_LSTM", False),
+        card_cross_attn=card_cross_attn,
     )
 
     rng, init_rng = jax.random.split(rng)

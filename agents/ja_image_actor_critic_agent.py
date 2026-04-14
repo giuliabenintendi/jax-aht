@@ -36,6 +36,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         scalar_embed_dim: int = 5,
         cross_agent_attn: bool = False,
         query_partner_lstm: bool = False,
+        card_cross_attn: bool = False,
     ):
         # Skip JAActorCriticPolicy.__init__ — we set self.network directly
         # but still call AgentPolicy.__init__ for action_dim/obs_dim
@@ -47,6 +48,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         self.message_dim = message_dim
         self.cross_agent_attn = cross_agent_attn
         self.query_partner_lstm = query_partner_lstm
+        self.card_cross_attn = card_cross_attn
         # Cross-attention now exchanges spatial features (H*W, feat_dim)
         feat_h, feat_w = _compute_resnet_output_dims(
             img_height, img_width, conv_stride, conv_kernel_size, conv_padding, conv_num_blocks)
@@ -72,6 +74,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             scalar_embed_dim=scalar_embed_dim,
             cross_agent_attn=cross_agent_attn,
             query_partner_lstm=query_partner_lstm,
+            card_cross_attn=card_cross_attn,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
 

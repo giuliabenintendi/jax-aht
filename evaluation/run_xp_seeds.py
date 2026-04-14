@@ -622,7 +622,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     if algo_cfg.get("JA_CARD_ATTN", False):
         from agents.initialize_agents import _get_image_dims
         from agents.ja_image_actor_critic import _compute_resnet_output_dims
-        from marl.ja_ippo import _build_card_masks
+        from agents.ja_utils import build_card_masks
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(
             _img_h, _img_w,
@@ -631,7 +631,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
             padding=algo_cfg.get("CONV_PADDING", "SAME"),
             num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
         )
-        ja_card_masks = _build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
+        ja_card_masks = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
@@ -893,7 +893,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     if algo_cfg.get("JA_CARD_ATTN", False):
         from agents.initialize_agents import _get_image_dims
         from agents.ja_image_actor_critic import _compute_resnet_output_dims
-        from marl.ja_ippo import _build_card_masks
+        from agents.ja_utils import build_card_masks
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(
             _img_h, _img_w,
@@ -902,7 +902,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
             padding=algo_cfg.get("CONV_PADDING", "SAME"),
             num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
         )
-        ja_card_masks = _build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
+        ja_card_masks = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,

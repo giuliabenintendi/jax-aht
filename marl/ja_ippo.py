@@ -22,7 +22,7 @@ from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent, _get_image_dims
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
-from agents.ja_utils import jsd_divergence
+from agents.ja_utils import jsd_divergence, build_card_masks
 from common.plot_utils import get_stats, get_metric_names, plot_seed_aggregate
 from common.save_load_utils import save_train_run
 from envs import make_env
@@ -30,28 +30,7 @@ from envs.log_wrapper import LogWrapper
 from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
 
 
-def _build_card_masks(img_h, img_w, feat_h, feat_w):
-    """Build soft overlap masks (5, feat_h, feat_w) for card tile regions.
-
-    Each entry is the fraction of the feature cell's area overlapping with
-    the card's colored rectangle. Used by attn-msg reward and JA card attention.
-    """
-    from envs.card_game.rendering import TILE_PIXELS, NUM_CARDS
-    import numpy as _np
-    scale_h = img_h / feat_h
-    scale_w = img_w / feat_w
-    masks = _np.zeros((NUM_CARDS, feat_h, feat_w), dtype=_np.float32)
-    for ci in range(NUM_CARDS):
-        card_py_lo, card_py_hi = TILE_PIXELS + 1, TILE_PIXELS + 6
-        card_px_lo = ci * TILE_PIXELS + 1
-        card_px_hi = ci * TILE_PIXELS + 6
-        for fr in range(feat_h):
-            for fc in range(feat_w):
-                cell_area = scale_h * scale_w
-                ov_y = max(0.0, min(card_py_hi, (fr + 1) * scale_h) - max(card_py_lo, fr * scale_h))
-                ov_x = max(0.0, min(card_px_hi, (fc + 1) * scale_w) - max(card_px_lo, fc * scale_w))
-                masks[ci, fr, fc] = ov_y * ov_x / cell_area
-    return jnp.array(masks)
+_build_card_masks = build_card_masks  # backward compat alias
 from marl.eval_logging import log_greedy_eval, log_eval_video
 
 
@@ -152,8 +131,18 @@ def make_train_loop(config, env):
     ja_card_conc_coef = config.get("JA_CARD_CONC_COEF", 0.1)
     ja_card_align_coef = config.get("JA_CARD_ALIGN_COEF", 0.1)
     ja_card_follow_coef = config.get("JA_CARD_FOLLOW_COEF", 0.5)
+    card_cross_attn = config.get("CARD_CROSS_ATTN", False)
     if ja_card_attn and (feed_other_attn or cross_agent_attn):
         raise ValueError("JA_CARD_ATTN is mutually exclusive with FEED_OTHER_ATTN and CROSS_AGENT_ATTN")
+    if card_cross_attn and not ja_card_attn:
+        raise ValueError("CARD_CROSS_ATTN requires JA_CARD_ATTN=True")
+    if card_cross_attn and (feed_other_attn or cross_agent_attn):
+        raise ValueError("CARD_CROSS_ATTN is mutually exclusive with FEED_OTHER_ATTN and CROSS_AGENT_ATTN")
+    # CARD_CROSS_ATTN is observation-only: disable JA reward shaping
+    if card_cross_attn:
+        ja_card_conc_coef = 0.0
+        ja_card_align_coef = 0.0
+        ja_card_follow_coef = 0.0
     if ja_card_attn:
         env_kwargs = config.get("ENV_KWARGS", {})
         if not (env_kwargs.get("other_play_position_shuffle") and env_kwargs.get("other_play_recolouring")):
@@ -812,6 +801,12 @@ def make_train_loop(config, env):
             metric["ja_card_follow_mean"] = ja_card_follow_batch[:, :num_envs].mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
+            if card_cross_attn:
+                # Log the learned gate values to track mechanism usage
+                actor_params = train_state.params["params"]["actor_lstm"]
+                card_xattn_params = actor_params["card_cross_attn"]
+                metric["card_xattn_attn_gate"] = jnp.tanh(card_xattn_params["card_attn_gate"]).squeeze()
+                metric["card_xattn_ff_gate"] = jnp.tanh(card_xattn_params["card_ff_gate"]).squeeze()
             for card_idx in range(5):
                 metric[f"debug_card_attn_agent0_card{card_idx}"] = dbg_card_attn_0_batch[:, :, card_idx].mean()
                 metric[f"debug_card_attn_agent1_card{card_idx}"] = dbg_card_attn_1_batch[:, :, card_idx].mean()
@@ -1046,6 +1041,10 @@ def log_metrics(config, out, logger):
         ("grad_norm",            "Loss/grad_norm"),
         ("value_mean",           "Value/mean"),
     ]
+    scalar_keys.extend([
+        ("card_xattn_attn_gate", "Debug/card_xattn_attn_gate"),
+        ("card_xattn_ff_gate", "Debug/card_xattn_ff_gate"),
+    ])
     scalar_keys.extend(
         [(f"debug_card_attn_agent0_card{i}", f"Debug/card_attn_agent0_card{i}") for i in range(5)]
     )

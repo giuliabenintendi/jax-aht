@@ -49,8 +49,8 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
             num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
         )
     if ja_card_attn:
-        from marl.ja_ippo import _build_card_masks
-        _card_masks_eval = _build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
+        from agents.ja_utils import build_card_masks
+        _card_masks_eval = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
     def _apply_top1(attn):
         """Filter attention to global argmax (single spike)."""
@@ -281,8 +281,8 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
     if feed_attn:
         feed_attn_dims = (ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
     if ja_card_attn:
-        from marl.ja_ippo import _build_card_masks
-        _card_masks_eval = _build_card_masks(ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
+        from agents.ja_utils import build_card_masks
+        _card_masks_eval = build_card_masks(ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
 
     # Build fixed partner attention for eval visualization
     fixed_partner_pos_eval = algorithm_config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)

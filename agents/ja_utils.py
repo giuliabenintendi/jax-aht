@@ -147,6 +147,31 @@ def inferred_attention(
     return weights / (jnp.sum(weights) + 1e-8)
 
 
+def build_card_masks(img_h, img_w, feat_h, feat_w):
+    """Build soft overlap masks (5, feat_h, feat_w) for card tile regions.
+
+    Each entry is the fraction of the feature cell's area overlapping with
+    the card's colored rectangle. Used by attn-msg reward, JA card attention,
+    and card cross-attention pooling.
+    """
+    from envs.card_game.rendering import TILE_PIXELS, NUM_CARDS
+    import numpy as _np
+    scale_h = img_h / feat_h
+    scale_w = img_w / feat_w
+    masks = _np.zeros((NUM_CARDS, feat_h, feat_w), dtype=_np.float32)
+    for ci in range(NUM_CARDS):
+        card_py_lo, card_py_hi = TILE_PIXELS + 1, TILE_PIXELS + 6
+        card_px_lo = ci * TILE_PIXELS + 1
+        card_px_hi = ci * TILE_PIXELS + 6
+        for fr in range(feat_h):
+            for fc in range(feat_w):
+                cell_area = scale_h * scale_w
+                ov_y = max(0.0, min(card_py_hi, (fr + 1) * scale_h) - max(card_py_lo, fr * scale_h))
+                ov_x = max(0.0, min(card_px_hi, (fc + 1) * scale_w) - max(card_px_lo, fc * scale_w))
+                masks[ci, fr, fc] = ov_y * ov_x / cell_area
+    return jnp.array(masks)
+
+
 def augment_obs_for_eval(obs_flat, other_attn, img_h, img_w):
     """Append other agent's attention as 4th channel during eval."""
     rgb = obs_flat.reshape(img_h, img_w, 3)
