@@ -327,7 +327,11 @@ def make_train_loop(config, env):
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
                         )
-                        return total_loss, (value_loss, loss_actor, entropy)
+                        # PPO diagnostics
+                        approx_kl = ((ratio - 1) - jnp.log(ratio)).mean()
+                        clip_frac = (jnp.abs(ratio - 1.0) > config["CLIP_EPS"]).mean()
+                        return total_loss, (value_loss, loss_actor, entropy,
+                                            approx_kl, clip_frac, ratio.mean(), ratio.std())
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
@@ -794,7 +798,8 @@ def make_train_loop(config, env):
             train_state, loss_info = _ppo_update(
                 train_state, traj_batch, advantages, targets, ppo_rng)
 
-            (total_loss, (value_loss, policy_loss, entropy)), grad_norm = loss_info
+            (total_loss, (value_loss, policy_loss, entropy,
+                         approx_kl, clip_frac, ratio_mean, ratio_std)), grad_norm = loss_info
 
             ja_rew_0 = traj_batch.ja_reward[:, :num_envs]
             jsd_values = -ja_rew_0
@@ -810,6 +815,14 @@ def make_train_loop(config, env):
             metric["loss_policy"] = policy_loss[0].mean()
             metric["entropy"] = entropy.mean()
             metric["grad_norm"] = grad_norm.mean()
+            metric["approx_kl"] = approx_kl.mean()
+            metric["clip_frac"] = clip_frac.mean()
+            metric["ratio_mean"] = ratio_mean.mean()
+            metric["ratio_std"] = ratio_std.mean()
+            # Explained variance: how well value function predicts returns
+            ev_var_ret = jnp.var(targets)
+            ev_var_resid = jnp.var(targets - traj_batch.value)
+            metric["explained_var"] = 1.0 - ev_var_resid / (ev_var_ret + 1e-8)
             metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
             metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
             metric["comm_reward_mean"] = scaled_comm_reward[:, :num_envs].mean()
@@ -1060,6 +1073,11 @@ def log_metrics(config, out, logger):
         ("loss_policy",          "Loss/policy"),
         ("entropy",              "Loss/entropy"),
         ("grad_norm",            "Loss/grad_norm"),
+        ("approx_kl",           "Loss/approx_kl"),
+        ("clip_frac",           "Loss/clip_frac"),
+        ("ratio_mean",          "Loss/ratio_mean"),
+        ("ratio_std",           "Loss/ratio_std"),
+        ("explained_var",       "Loss/explained_var"),
         ("value_mean",           "Value/mean"),
     ]
     scalar_keys.extend([

@@ -62,10 +62,18 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
     greedy = True
     all_returns = []
     all_jsds = []
+    # Confusion matrices for card game communication analysis (per seed)
+    _num_cards = getattr(inner_env, 'num_cards', 5)
+    _is_comm_env = hasattr(inner_env, 'communication') and inner_env.communication
     for seed_idx in range(num_seeds):
         params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
         seed_returns = []
         seed_jsds = []
+        # Per-seed communication matrices
+        own_msg_vs_pick = np.zeros((_num_cards, _num_cards), dtype=np.int32)
+        partner_msg_vs_pick = np.zeros((_num_cards, _num_cards), dtype=np.int32)
+        first_msg_pair = np.zeros((_num_cards, _num_cards), dtype=np.int32)
+        last_msg_pair = np.zeros((_num_cards, _num_cards), dtype=np.int32)
         for ep in range(num_episodes):
             rng = jax.random.PRNGKey(2000 + seed_idx * 10000 + ep)
             rng, reset_rng = jax.random.split(rng)
@@ -102,6 +110,13 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
 
             total_reward = 0.0
             ep_jsds = []
+            # Track messages and picks for confusion matrices
+            last_msg_0, last_msg_1 = -1, -1
+            first_msg_0, first_msg_1 = -1, -1
+            first_msg_set_0, first_msg_set_1 = False, False
+            ep_own_msg_0, ep_pick_0 = -1, -1
+            ep_own_msg_1, ep_pick_1 = -1, -1
+            ep_partner_msg_for_0, ep_partner_msg_for_1 = -1, -1
             step = 0
             while not done["__all__"] and step < max_steps:
                 avail_actions = inner_env.get_avail_actions(env_state)
@@ -200,6 +215,48 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 ep_jsds.append(jsd_val)
 
                 env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1.squeeze()}
+                a0_int = int(act_0.squeeze())
+                a1_int = int(act_1.squeeze())
+                # Track messages during deliberation, picks on decision step
+                if _is_comm_env:
+                    is_last = (step + 1) >= max_steps
+                    if not is_last:
+                        if _num_cards <= a0_int < 2 * _num_cards:
+                            last_msg_0 = a0_int - _num_cards
+                            if not first_msg_set_0:
+                                first_msg_0 = last_msg_0
+                                first_msg_set_0 = True
+                        if _num_cards <= a1_int < 2 * _num_cards:
+                            last_msg_1 = a1_int - _num_cards
+                            if not first_msg_set_1:
+                                first_msg_1 = last_msg_1
+                                first_msg_set_1 = True
+                    else:
+                        pick_0_local = a0_int if a0_int < _num_cards else -1
+                        pick_1_local = a1_int if a1_int < _num_cards else -1
+                        # Actions/messages are color-based. Under OP recolouring we
+                        # invert back to ground-truth color identity; otherwise the
+                        # raw IDs are already in the correct label space.
+                        has_recolour = hasattr(env_state, "per_agent_inv_recolouring")
+                        if has_recolour:
+                            inv_0 = np.array(env_state.per_agent_inv_recolouring["agent_0"])
+                            inv_1 = np.array(env_state.per_agent_inv_recolouring["agent_1"])
+                            ep_pick_0 = int(inv_0[pick_0_local]) if pick_0_local >= 0 else -1
+                            ep_pick_1 = int(inv_1[pick_1_local]) if pick_1_local >= 0 else -1
+                            ep_own_msg_0 = int(inv_0[last_msg_0]) if last_msg_0 >= 0 else -1
+                            ep_own_msg_1 = int(inv_1[last_msg_1]) if last_msg_1 >= 0 else -1
+                            ep_first_msg_0 = int(inv_0[first_msg_0]) if first_msg_0 >= 0 else -1
+                            ep_first_msg_1 = int(inv_1[first_msg_1]) if first_msg_1 >= 0 else -1
+                        else:
+                            ep_pick_0 = pick_0_local
+                            ep_pick_1 = pick_1_local
+                            ep_own_msg_0 = last_msg_0
+                            ep_own_msg_1 = last_msg_1
+                            ep_first_msg_0 = first_msg_0
+                            ep_first_msg_1 = first_msg_1
+                        ep_partner_msg_for_0 = ep_own_msg_1
+                        ep_partner_msg_for_1 = ep_own_msg_0
+
                 obs, env_state, reward, done, info = inner_env.step(step_rng, env_state, env_act)
                 if use_prev_io:
                     prev_reward_0 = reward["agent_0"].reshape(1, 1).astype(jnp.float32)
@@ -212,11 +269,51 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
             ep_jsd_mean = float(np.mean(ep_jsds)) if ep_jsds else 0.0
             seed_returns.append(total_reward)
             seed_jsds.append(ep_jsd_mean)
+            # Accumulate confusion matrices (both agents contribute)
+            if _is_comm_env:
+                for own_msg, pick in [(ep_own_msg_0, ep_pick_0), (ep_own_msg_1, ep_pick_1)]:
+                    if 0 <= own_msg < _num_cards and 0 <= pick < _num_cards:
+                        own_msg_vs_pick[own_msg, pick] += 1
+                for pmsg, pick in [(ep_partner_msg_for_0, ep_pick_0), (ep_partner_msg_for_1, ep_pick_1)]:
+                    if 0 <= pmsg < _num_cards and 0 <= pick < _num_cards:
+                        partner_msg_vs_pick[pmsg, pick] += 1
+                if 0 <= ep_first_msg_0 < _num_cards and 0 <= ep_first_msg_1 < _num_cards:
+                    first_msg_pair[ep_first_msg_0, ep_first_msg_1] += 1
+                if 0 <= ep_own_msg_0 < _num_cards and 0 <= ep_own_msg_1 < _num_cards:
+                    last_msg_pair[ep_own_msg_0, ep_own_msg_1] += 1
             print(f"[eval] {mode_name} seed={seed_idx} ep={ep}: "
                   f"return={total_reward:.1f}  jsd={ep_jsd_mean:.4f}  steps={step}")
 
         all_returns.extend(seed_returns)
         all_jsds.extend(seed_jsds)
+        # Log confusion matrices for this seed
+        if _is_comm_env and np.any(own_msg_vs_pick > 0):
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            for name, mat, xlabel, ylabel in [
+                ("own_msg_vs_pick", own_msg_vs_pick, "Card Picked (physical)", "Own Message (physical)"),
+                ("partner_msg_vs_pick", partner_msg_vs_pick, "Card Picked (physical)", "Partner Message (physical)"),
+                ("first_msg_pair", first_msg_pair, "Agent 1 First Msg (physical)", "Agent 0 First Msg (physical)"),
+                ("last_msg_pair", last_msg_pair, "Agent 1 Last Msg (physical)", "Agent 0 Last Msg (physical)"),
+            ]:
+                fig, ax = plt.subplots(figsize=(4, 4))
+                row_sums = mat.sum(axis=1, keepdims=True)
+                norm_mat = np.zeros_like(mat, dtype=np.float32)
+                nonzero_rows = row_sums[:, 0] > 0
+                if np.any(nonzero_rows):
+                    norm_mat[nonzero_rows] = (
+                        mat[nonzero_rows].astype(np.float32)
+                        / row_sums[nonzero_rows].astype(np.float32)
+                    )
+                ax.imshow(norm_mat, cmap="viridis", vmin=0, vmax=1)
+                ax.set_xticks(range(_num_cards))
+                ax.set_yticks(range(_num_cards))
+                ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
+                ax.set_title(f"seed {seed_idx}")
+                plt.tight_layout()
+                logger.log({f"Eval/{name}/seed_{seed_idx}": wandb.Image(fig)}, commit=False)
+                plt.close(fig)
         print(f"[eval] seed {seed_idx} {mode_name} summary: "
               f"return={np.mean(seed_returns):.1f} ± {np.std(seed_returns):.1f}  "
               f"jsd={np.mean(seed_jsds):.4f} ± {np.std(seed_jsds):.4f}")
