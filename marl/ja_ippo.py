@@ -131,6 +131,7 @@ def make_train_loop(config, env):
     ja_card_conc_coef = config.get("JA_CARD_CONC_COEF", 0.1)
     ja_card_align_coef = config.get("JA_CARD_ALIGN_COEF", 0.1)
     ja_card_follow_coef = config.get("JA_CARD_FOLLOW_COEF", 0.5)
+    ja_card_jsd_coef = config.get("JA_CARD_JSD_COEF", 0.0)
     card_cross_attn = config.get("CARD_CROSS_ATTN", False)
     if ja_card_attn and (feed_other_attn or cross_agent_attn):
         raise ValueError("JA_CARD_ATTN is mutually exclusive with FEED_OTHER_ATTN and CROSS_AGENT_ATTN")
@@ -569,6 +570,23 @@ def make_train_loop(config, env):
                     r_align_env = jnp.where(r_align_valid, r_align_env, 0.0)
                     r_align = jnp.concatenate([r_align_env, r_align_env])  # (num_actors,)
 
+                    # Mass-gated card-level JSD penalty: penalize divergence when both attend to cards
+                    if ja_card_jsd_coef > 0:
+                        m_0 = card_pos_attn_0.sum(axis=-1)  # (num_envs,)
+                        m_1 = card_pos_attn_1.sum(axis=-1)
+                        q_phys_0 = phys_0 / (m_0[:, None] + _eps)
+                        q_phys_1 = phys_1 / (m_1[:, None] + _eps)
+                        mid = (q_phys_0 + q_phys_1) / 2
+                        kl_0 = jnp.sum(q_phys_0 * jnp.log((q_phys_0 + _eps) / (mid + _eps)), axis=-1)
+                        kl_1 = jnp.sum(q_phys_1 * jnp.log((q_phys_1 + _eps) / (mid + _eps)), axis=-1)
+                        card_jsd = (kl_0 + kl_1) / 2
+                        r_card_jsd_env = -ja_card_jsd_coef * jnp.minimum(m_0, m_1) * card_jsd
+                        r_card_jsd_valid = step_count_batch[:num_envs] > 1
+                        r_card_jsd_env = jnp.where(r_card_jsd_valid, r_card_jsd_env, 0.0)
+                        r_card_jsd = jnp.concatenate([r_card_jsd_env, r_card_jsd_env])
+                    else:
+                        r_card_jsd = jnp.zeros(num_actors)
+
                     # Follow-through bonus: match * mean attention on picked card
                     pick_0 = jnp.clip(action[:num_envs], 0, 4)
                     pick_1 = jnp.clip(action[num_envs:], 0, 4)
@@ -580,10 +598,11 @@ def make_train_loop(config, env):
                     r_follow_env = ja_card_follow_coef * match * 0.5 * (mass_on_pick_0 + mass_on_pick_1)
                     r_follow = jnp.concatenate([r_follow_env, r_follow_env])
 
-                    ja_card_reward = jax.lax.stop_gradient(r_conc + r_align + r_follow)
+                    ja_card_reward = jax.lax.stop_gradient(r_conc + r_align + r_follow + r_card_jsd)
                     ja_card_conc_out = jax.lax.stop_gradient(r_conc)
                     ja_card_align_out = jax.lax.stop_gradient(r_align)
                     ja_card_follow_out = jax.lax.stop_gradient(r_follow)
+                    ja_card_jsd_out = jax.lax.stop_gradient(r_card_jsd)
                     dbg_card_attn_0 = jax.lax.stop_gradient(card_pos_attn_0)
                     dbg_card_attn_1 = jax.lax.stop_gradient(card_pos_attn_1)
 
@@ -603,6 +622,7 @@ def make_train_loop(config, env):
                     ja_card_conc_out = jnp.zeros(num_actors)
                     ja_card_align_out = jnp.zeros(num_actors)
                     ja_card_follow_out = jnp.zeros(num_actors)
+                    ja_card_jsd_out = jnp.zeros(num_actors)
                     dbg_card_attn_0 = jnp.zeros((num_envs, 5))
                     dbg_card_attn_1 = jnp.zeros((num_envs, 5))
                     dbg_partner_card_attn_0 = jnp.zeros((num_envs, 5))
@@ -669,11 +689,13 @@ def make_train_loop(config, env):
                     runner_state = runner_state + (new_plh_a, new_plh_c)
                 return runner_state, (transition, intrinsic, comm_reward_batch, attn_msg_reward,
                                      ja_card_reward, ja_card_conc_out, ja_card_align_out, ja_card_follow_out,
+                                     ja_card_jsd_out,
                                      dbg_card_attn_0, dbg_card_attn_1,
                                      dbg_partner_card_attn_0, dbg_partner_card_attn_1)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch, attn_msg_reward_batch,
                            ja_card_reward_batch, ja_card_conc_batch, ja_card_align_batch, ja_card_follow_batch,
+                           ja_card_jsd_batch,
                            dbg_card_attn_0_batch, dbg_card_attn_1_batch,
                            dbg_partner_card_attn_0_batch, dbg_partner_card_attn_1_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
@@ -799,6 +821,7 @@ def make_train_loop(config, env):
             metric["ja_card_conc_mean"] = ja_card_conc_batch[:, :num_envs].mean()
             metric["ja_card_align_mean"] = ja_card_align_batch[:, :num_envs].mean()
             metric["ja_card_follow_mean"] = ja_card_follow_batch[:, :num_envs].mean()
+            metric["ja_card_jsd_mean"] = ja_card_jsd_batch[:, :num_envs].mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
             if card_cross_attn:
@@ -1034,6 +1057,7 @@ def log_metrics(config, out, logger):
         ("ja_card_conc_mean",   "Reward/ja_card_conc"),
         ("ja_card_align_mean",  "Reward/ja_card_align"),
         ("ja_card_follow_mean", "Reward/ja_card_follow"),
+        ("ja_card_jsd_mean",   "Reward/ja_card_jsd"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),

@@ -74,6 +74,9 @@ def _build_run_string(config: dict) -> str:
         parts.append("ja_card")
     if alg_config.get("CARD_CROSS_ATTN", False):
         parts.append("card_xattn")
+    card_jsd = alg_config.get("JA_CARD_JSD_COEF", 0.0)
+    if card_jsd > 0:
+        parts.append(f"card_jsd{card_jsd}")
     if alg_config.get("FEED_OTHER_ATTN", False):
         parts.append("feed_attn")
     if alg_config.get("FILTER_ATTN_TOP1", False):
@@ -135,6 +138,8 @@ def _build_tags(config) -> list[str]:
         tags.append("ja_card_attn")
     if alg_config.get("CARD_CROSS_ATTN", False):
         tags.append("card_cross_attn")
+    if alg_config.get("JA_CARD_JSD_COEF", 0.0) > 0:
+        tags.append("card_jsd")
     if alg_config.get("FILTER_ATTN_TOP1", False):
         tags.append("top1")
     if env_kwargs.get("max_cards") is not None:
