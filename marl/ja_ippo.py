@@ -570,17 +570,14 @@ def make_train_loop(config, env):
                     r_align_env = jnp.where(r_align_valid, r_align_env, 0.0)
                     r_align = jnp.concatenate([r_align_env, r_align_env])  # (num_actors,)
 
-                    # Mass-gated card-level JSD penalty: penalize divergence when both attend to cards
+                    # Mass-gated card attention divergence penalty (L2 on normalized card distributions)
                     if ja_card_jsd_coef > 0:
                         m_0 = card_pos_attn_0.sum(axis=-1)  # (num_envs,)
                         m_1 = card_pos_attn_1.sum(axis=-1)
                         q_phys_0 = phys_0 / (m_0[:, None] + _eps)
                         q_phys_1 = phys_1 / (m_1[:, None] + _eps)
-                        mid = (q_phys_0 + q_phys_1) / 2
-                        kl_0 = jnp.sum(q_phys_0 * jnp.log((q_phys_0 + _eps) / (mid + _eps)), axis=-1)
-                        kl_1 = jnp.sum(q_phys_1 * jnp.log((q_phys_1 + _eps) / (mid + _eps)), axis=-1)
-                        card_jsd = (kl_0 + kl_1) / 2
-                        r_card_jsd_env = -ja_card_jsd_coef * jnp.minimum(m_0, m_1) * card_jsd
+                        l2_div = jnp.sum((q_phys_0 - q_phys_1) ** 2, axis=-1)
+                        r_card_jsd_env = -ja_card_jsd_coef * jnp.minimum(m_0, m_1) * l2_div
                         r_card_jsd_valid = step_count_batch[:num_envs] > 1
                         r_card_jsd_env = jnp.where(r_card_jsd_valid, r_card_jsd_env, 0.0)
                         r_card_jsd = jnp.concatenate([r_card_jsd_env, r_card_jsd_env])
