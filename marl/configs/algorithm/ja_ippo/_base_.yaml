@@ -4,7 +4,7 @@
 # PPO hyperparameters match the reference code defaults.
 ALG: ja_ippo
 NUM_CHECKPOINTS: 5
-ANNEAL_LR: True
+ANNEAL_LR: False
 MAX_GRAD_NORM: 0.5
 
 # PPO — aligned with Forkel et al. 2025 Overcooked baseline
