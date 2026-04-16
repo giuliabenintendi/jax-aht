@@ -9,7 +9,7 @@ import numpy as np
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent, _get_image_dims
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence, augment_obs_for_eval
-from marl.eval_card_game import _log_card_game_attention_grid, _log_card_game_eval_video
+from marl.eval_card_game import _log_card_game_attention_grid, _log_card_game_eval_video, _log_card_game_xp_videos
 from marl.eval_lbf import _render_lbf_eval_frames
 
 
@@ -487,6 +487,17 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
                 num_episodes=30, fps=3,
             )
+            # XP videos: pair different seeds (only when multiple seeds)
+            if num_seeds > 1:
+                _log_card_game_xp_videos(
+                    inner_env, policy, out["final_params"], max_steps,
+                    tag, video_dir, logger,
+                    feed_attn_dims=feed_attn_dims,
+                    ja_card_masks=_card_masks_eval if ja_card_attn else None,
+                    fixed_partner_attn=fixed_partner_attn_eval,
+                    filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
+                    num_episodes=5, fps=3,
+                )
         else:
             # Other envs: videos + attention overlays
             from moviepy import ImageSequenceClip

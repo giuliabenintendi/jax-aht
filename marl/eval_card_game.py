@@ -252,3 +252,117 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                          bitrate='8000k', preset='slow')
     logger.log_video(f"{tag}/eval_video", video_path, commit=False)
     print(f"[card_game] Saved eval video: {video_path} ({len(all_video_frames)} frames, {len(all_video_frames)/fps:.0f}s)")
+
+
+def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, video_dir, logger,
+                              feed_attn_dims=None, ja_card_masks=None,
+                              fixed_partner_attn=None, filter_top1=False,
+                              num_episodes=10, fps=3):
+    """Generate cross-play videos: pair seed_i (agent 0) with seed_j (agent 1).
+
+    Records a few episodes for each off-diagonal pair and logs as wandb videos.
+    """
+    import wandb
+    from envs.card_game.rendering import render_card_game, GRID_ROWS, GRID_COLS, TILE_PIXELS
+
+    num_seeds = jax.tree.leaves(all_params)[0].shape[0]
+    scale = 20
+    padding = 4
+
+    for seed_i in range(num_seeds):
+        for seed_j in range(seed_i + 1, num_seeds):
+            params_i = jax.tree.map(lambda x: x[seed_i], all_params)
+            params_j = jax.tree.map(lambda x: x[seed_j], all_params)
+
+            all_video_frames = []
+            for ep in range(num_episodes):
+                ep_rng = jax.random.PRNGKey(5000 + seed_i * 1000 + seed_j * 100 + ep)
+                ep_states, attn_data, ep_actions, ep_messages = run_episode_with_states(
+                    ep_rng, inner_env, params_i, policy,
+                    params_j, policy, max_steps,
+                    collect_attention=True,
+                    feed_other_attn_dims=feed_attn_dims,
+                    ja_card_masks=ja_card_masks,
+                    fixed_partner_attn=fixed_partner_attn,
+                )
+
+                if filter_top1:
+                    def _top1_np(attn):
+                        a = np.array(attn).squeeze()
+                        out = np.zeros_like(a)
+                        out.flat[np.argmax(a)] = 1.0
+                        return out
+                    for agent_key in ("agent_0", "agent_1"):
+                        attn_data[agent_key] = [_top1_np(m) for m in attn_data.get(agent_key, [])]
+
+                maps_0 = attn_data.get("agent_0", [])
+                maps_1 = attn_data.get("agent_1", [])
+                if not maps_0 or not maps_1:
+                    continue
+
+                n_steps = min(len(maps_0), len(maps_1))
+                from envs.card_game.rendering import _unwrap_card_game_state
+                es0 = _unwrap_card_game_state(ep_states[0])
+
+                if hasattr(es0, 'card_permutation') and not hasattr(es0, 'card_positions'):
+                    base_img = render_card_game(es0.card_permutation)
+                elif hasattr(es0, 'card_positions'):
+                    from envs.card_game.rendering_dynamic import render_card_game as render_dynamic
+                    base_img = render_dynamic(es0.card_positions, es0.card_present)
+                base_np = np.array(base_img)
+                base_up = np.array(Image.fromarray(base_np).resize(
+                    (base_np.shape[1] * scale, base_np.shape[0] * scale), Image.NEAREST))
+
+                last_action = ep_actions[-1] if ep_actions else (-1, -1)
+
+                for t in range(n_steps):
+                    base_up_0 = base_up
+                    base_up_1 = base_up
+                    cell_0 = _overlay_attention(base_up_0, maps_0[t], "Oranges", alpha=0.6).copy()
+                    cell_1 = _overlay_attention(base_up_1, maps_1[t], "RdPu", alpha=0.6).copy()
+
+                    if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
+                        a0_color = [255, 140, 0]
+                        a1_color = [255, 0, 255]
+                        _draw_message_on_cell(cell_0, ep_messages[t - 1][1], scale, color=a1_color)
+                        _draw_message_on_cell(cell_1, ep_messages[t - 1][0], scale, color=a0_color)
+
+                    if t == n_steps - 1:
+                        _draw_decision_square(cell_0, scale)
+                        _draw_decision_square(cell_1, scale)
+
+                    if t == n_steps - 1 and last_action[0] >= 0:
+                        choice_0 = last_action[0] - 5 if last_action[0] >= 5 else last_action[0]
+                        choice_1 = last_action[1] - 5 if last_action[1] >= 5 else last_action[1]
+                        es_ep = _unwrap_card_game_state(ep_states[0])
+                        if hasattr(es_ep, 'card_permutation'):
+                            _perm = np.array(es_ep.card_permutation)
+                            matches_0 = np.where(_perm == choice_0)[0]
+                            if len(matches_0) > 0:
+                                _draw_choice_on_cell(cell_0, int(matches_0[0]), 0, scale)
+                            matches_1 = np.where(_perm == choice_1)[0]
+                            if len(matches_1) > 0:
+                                _draw_choice_on_cell(cell_1, int(matches_1[0]), 1, scale)
+                        else:
+                            _draw_choice_on_cell(cell_0, choice_0, 0, scale)
+                            _draw_choice_on_cell(cell_1, choice_1, 1, scale)
+
+                    _draw_timestep_label(cell_0, t, decision=(t == n_steps - 1))
+                    _draw_timestep_label(cell_1, t, decision=(t == n_steps - 1))
+
+                    cell_h, cell_w = cell_0.shape[:2]
+                    frame = np.full((2 * cell_h + padding, cell_w, 3), 255, dtype=np.uint8)
+                    frame[:cell_h] = cell_0
+                    frame[cell_h + padding:] = cell_1
+                    all_video_frames.append(frame)
+
+            if not all_video_frames:
+                continue
+
+            os.makedirs(video_dir, exist_ok=True)
+            video_path = f"{video_dir}/xp_seed{seed_i}_vs_seed{seed_j}.mp4"
+            clip = ImageSequenceClip(all_video_frames, fps=fps)
+            clip.write_videofile(video_path, fps=fps, codec='libx264', audio=False,
+                                 bitrate='8000k', preset='slow')
+            logger.log_video(f"{tag}/xp_video_s{seed_i}_vs_s{seed_j}", video_path, commit=False)
+            print(f"[card_game] XP video s{seed_i} vs s{seed_j}: {video_path} ({len(all_video_frames)} frames)")
