@@ -8,5 +8,6 @@ ENV_KWARGS:
   other_play_position_shuffle: false
   other_play_recolouring: false
   comm_reward_coef: 0.0
+  comm_stability_bonus: 0.0
   comm_follow_bonus: 0.0
 TASK_NAME: card-game

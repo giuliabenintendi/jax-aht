@@ -80,13 +80,15 @@ class CardGameEnv(BaseEnv):
 
     def __init__(self, max_steps: int = 10, shuffle: bool = True, fixed_partner_pos: int = -1,
                  communication: bool = False, comm_reward_coef: float = 0.0,
-                 comm_follow_bonus: float = 0.0, **kwargs):
+                 comm_follow_bonus: float = 0.0, comm_stability_bonus: float = 0.0,
+                 **kwargs):
         self.max_steps = max_steps
         self.shuffle = shuffle
         self.fixed_partner_pos = fixed_partner_pos
         self.communication = communication
         self.comm_reward_coef = comm_reward_coef
         self.comm_follow_bonus = comm_follow_bonus
+        self.comm_stability_bonus = comm_stability_bonus
         self.num_cards = NUM_CARDS
         self.num_agents = 2
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
@@ -253,7 +255,11 @@ class CardGameEnv(BaseEnv):
         )
 
         # Per-agent communication reward (added to training reward, not to logged return)
-        if self.communication and (self.comm_reward_coef > 0 or self.comm_follow_bonus > 0):
+        if self.communication and (
+            self.comm_reward_coef > 0
+            or self.comm_follow_bonus > 0
+            or self.comm_stability_bonus > 0
+        ):
             my_msg_0 = env_state.messages[0]
             my_msg_1 = env_state.messages[1]
             alpha = self.comm_reward_coef
@@ -264,6 +270,17 @@ class CardGameEnv(BaseEnv):
             can_agree = msgs_match & (new_step > 2)
             # Message agreement: deliberation steps only (no reward on decision step)
             agree_r = jnp.where(can_agree & ~is_decision, alpha / 4.0, 0.0)
+            # Stability reward: once an agreement exists, reward maintaining the
+            # same shared message on the current deliberation step.
+            new_valid = (msg0 >= 0) & (msg1 >= 0)
+            new_msgs_match = new_valid & jnp.equal(msg0, msg1)
+            stable_match = (
+                ~is_decision
+                & can_agree
+                & new_msgs_match
+                & jnp.equal(msg0, my_msg_0)
+            )
+            stable_r = jnp.where(stable_match, self.comm_stability_bonus, 0.0)
             # Follow-through: reward only when both agents jointly pick the
             # previously agreed message on the decision step.
             joint_follow = (
@@ -273,14 +290,25 @@ class CardGameEnv(BaseEnv):
                 & jnp.equal(a1, my_msg_1)
             )
             follow_r = jnp.where(joint_follow, self.comm_follow_bonus, 0.0)
-            comm_reward_arr = jnp.array([agree_r + follow_r, agree_r + follow_r])
+            comm_reward_arr = jnp.array(
+                [agree_r + stable_r + follow_r, agree_r + stable_r + follow_r]
+            )
+            comm_agree_arr = jnp.array([agree_r, agree_r])
+            comm_stable_arr = jnp.array([stable_r, stable_r])
+            comm_follow_arr = jnp.array([follow_r, follow_r])
         else:
             comm_reward_arr = jnp.zeros(self.num_agents)
+            comm_agree_arr = jnp.zeros(self.num_agents)
+            comm_stable_arr = jnp.zeros(self.num_agents)
+            comm_follow_arr = jnp.zeros(self.num_agents)
 
         info = {
             "base_reward": base_reward_arr,
             "base_return": base_return,
             "comm_reward": comm_reward_arr,
+            "comm_reward_agree": comm_agree_arr,
+            "comm_reward_stable": comm_stable_arr,
+            "comm_reward_follow": comm_follow_arr,
             "step_count": jnp.broadcast_to(new_step, (self.num_agents,)),
         }
 

@@ -477,9 +477,16 @@ def make_train_loop(config, env):
                     rng_step, env_state, env_act
                 )
 
-                # Extract per-agent communication reward before interleaving reshape.
+                # Extract per-agent communication reward components before
+                # interleaving reshape.
                 comm_reward_raw = info.pop("comm_reward", jnp.zeros((num_envs, env.num_agents)))
                 comm_reward_batch = comm_reward_raw.transpose(1, 0).reshape(-1)
+                comm_agree_raw = info.pop("comm_reward_agree", jnp.zeros((num_envs, env.num_agents)))
+                comm_agree_batch = comm_agree_raw.transpose(1, 0).reshape(-1)
+                comm_stable_raw = info.pop("comm_reward_stable", jnp.zeros((num_envs, env.num_agents)))
+                comm_stable_batch = comm_stable_raw.transpose(1, 0).reshape(-1)
+                comm_follow_raw = info.pop("comm_reward_follow", jnp.zeros((num_envs, env.num_agents)))
+                comm_follow_batch = comm_follow_raw.transpose(1, 0).reshape(-1)
 
                 # Extract step count for attn-msg reward gating
                 step_count_raw = info.pop("step_count", jnp.zeros((num_envs, env.num_agents)))
@@ -688,13 +695,17 @@ def make_train_loop(config, env):
                     new_plh_a = jnp.where(new_done_batch[:, None], 0.0, new_plh_a)
                     new_plh_c = jnp.where(new_done_batch[:, None], 0.0, new_plh_c)
                     runner_state = runner_state + (new_plh_a, new_plh_c)
-                return runner_state, (transition, intrinsic, comm_reward_batch, attn_msg_reward,
+                return runner_state, (transition, intrinsic, comm_reward_batch,
+                                     comm_agree_batch, comm_stable_batch, comm_follow_batch,
+                                     attn_msg_reward,
                                      ja_card_reward, ja_card_conc_out, ja_card_align_out, ja_card_follow_out,
                                      ja_card_jsd_out,
                                      dbg_card_attn_0, dbg_card_attn_1,
                                      dbg_partner_card_attn_0, dbg_partner_card_attn_1)
 
-            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch, attn_msg_reward_batch,
+            runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
+                           comm_agree_batch, comm_stable_batch, comm_follow_batch,
+                           attn_msg_reward_batch,
                            ja_card_reward_batch, ja_card_conc_batch, ja_card_align_batch, ja_card_follow_batch,
                            ja_card_jsd_batch,
                            dbg_card_attn_0_batch, dbg_card_attn_1_batch,
@@ -782,6 +793,9 @@ def make_train_loop(config, env):
             # Save raw env reward before combining
             raw_env_reward = traj_batch.reward
             scaled_comm_reward = comm_scale * comm_reward_batch
+            scaled_comm_agree = comm_scale * comm_agree_batch
+            scaled_comm_stable = comm_scale * comm_stable_batch
+            scaled_comm_follow = comm_scale * comm_follow_batch
             scaled_attn_msg_reward = attn_msg_coef * attn_msg_reward_batch
 
             combined_raw = raw_env_reward + intrinsic_batch + scaled_comm_reward + scaled_attn_msg_reward + ja_card_reward_batch
@@ -826,6 +840,9 @@ def make_train_loop(config, env):
             metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
             metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
             metric["comm_reward_mean"] = scaled_comm_reward[:, :num_envs].mean()
+            metric["comm_agreement_bonus_mean"] = scaled_comm_agree[:, :num_envs].mean()
+            metric["comm_stability_bonus_mean"] = scaled_comm_stable[:, :num_envs].mean()
+            metric["comm_joint_followthrough_bonus_mean"] = scaled_comm_follow[:, :num_envs].mean()
             metric["attn_msg_reward_mean"] = scaled_attn_msg_reward.mean()
             metric["ja_card_reward_mean"] = ja_card_reward_batch[:, :num_envs].mean()
             metric["ja_card_conc_mean"] = ja_card_conc_batch[:, :num_envs].mean()
@@ -1061,7 +1078,10 @@ def log_metrics(config, out, logger):
         ("jsd_mean",             "JA/jsd"),
         ("raw_env_reward_mean",  "Reward/env_raw"),
         ("combined_reward_mean", "Reward/combined_raw"),
-        ("comm_reward_mean",     "Reward/comm"),
+        ("comm_reward_mean",                     "Reward/comm"),
+        ("comm_agreement_bonus_mean",           "Reward/comm_agreement_bonus"),
+        ("comm_stability_bonus_mean",           "Reward/comm_stability_bonus"),
+        ("comm_joint_followthrough_bonus_mean", "Reward/comm_joint_followthrough_bonus"),
         ("attn_msg_reward_mean", "Reward/attn_msg"),
         ("ja_card_reward_mean",  "Reward/ja_card"),
         ("ja_card_conc_mean",   "Reward/ja_card_conc"),
