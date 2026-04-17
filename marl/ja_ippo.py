@@ -807,6 +807,7 @@ def make_train_loop(config, env):
                 traj_batch = traj_batch._replace(reward=combined_raw)
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
+            adv_std = jnp.std(advantages)
 
             rng, ppo_rng = jax.random.split(rng)
             train_state, loss_info = _ppo_update(
@@ -837,6 +838,7 @@ def make_train_loop(config, env):
             ev_var_ret = jnp.var(targets)
             ev_var_resid = jnp.var(targets - traj_batch.value)
             metric["explained_var"] = 1.0 - ev_var_resid / (ev_var_ret + 1e-8)
+            metric["advantage_std"] = adv_std
             metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
             metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
             metric["comm_reward_mean"] = scaled_comm_reward[:, :num_envs].mean()
@@ -1098,6 +1100,7 @@ def log_metrics(config, out, logger):
         ("ratio_mean",          "Loss/ratio_mean"),
         ("ratio_std",           "Loss/ratio_std"),
         ("explained_var",       "Loss/explained_var"),
+        ("advantage_std",       "Loss/advantage_std"),
         ("value_mean",           "Value/mean"),
     ]
     scalar_keys.extend([
