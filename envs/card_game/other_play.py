@@ -265,9 +265,8 @@ class CardGameRecolouringWrapper:
 
             if self._env.communication:
                 msg_offset = num_cards
-                idle_action = 2 * num_cards
                 is_pick = raw < num_cards
-                is_msg = (raw >= msg_offset) & (raw < idle_action)
+                is_msg = raw >= msg_offset
 
                 pick_action = inv[raw % num_cards]
                 msg_idx = jnp.clip(raw - msg_offset, 0, num_cards - 1)

@@ -16,7 +16,6 @@ Actions (no communication):
 Actions (with communication):
   0-4: pick color i — decision only
   5-9: send message (a-5) — deliberation only
-  10: idle (noop + no message) — deliberation only
 """
 from functools import partial
 from typing import Dict, Tuple, Optional
@@ -114,9 +113,8 @@ class CardGameEnv(BaseEnv):
         if self.communication:
             # 0-4: pick card — decision only
             # 5-9: send message — deliberation only
-            # 10: idle — deliberation only
             return jaxmarl_spaces.Discrete(
-                num_categories=2 * self.num_cards + 1)
+                num_categories=2 * self.num_cards)
         # 0-4: pick color, 5: do nothing
         return jaxmarl_spaces.Discrete(num_categories=self.num_cards + 1)
 
@@ -200,18 +198,16 @@ class CardGameEnv(BaseEnv):
         raw_a1 = actions["agent_1"]
 
         # Decode action into card choice and message.
-        # Idle means "no message this step", represented as -1.
         if self.communication:
             msg_offset = self.num_cards
-            idle_action = 2 * self.num_cards
 
             is_pick_0 = raw_a0 < self.num_cards
-            is_msg_0 = (raw_a0 >= msg_offset) & (raw_a0 < idle_action)
+            is_msg_0 = raw_a0 >= msg_offset
             a0 = jnp.where(is_pick_0, raw_a0, jnp.int32(-1))
             msg0 = jnp.where(is_msg_0, raw_a0 - msg_offset, jnp.int32(-1))
 
             is_pick_1 = raw_a1 < self.num_cards
-            is_msg_1 = (raw_a1 >= msg_offset) & (raw_a1 < idle_action)
+            is_msg_1 = raw_a1 >= msg_offset
             a1 = jnp.where(is_pick_1, raw_a1, jnp.int32(-1))
             msg1 = jnp.where(is_msg_1, raw_a1 - msg_offset, jnp.int32(-1))
 
@@ -335,8 +331,7 @@ class CardGameEnv(BaseEnv):
         if self.communication:
             pick_avail = jnp.where(is_decision, jnp.ones(self.num_cards), jnp.zeros(self.num_cards))
             msg_avail = jnp.where(is_decision, jnp.zeros(self.num_cards), jnp.ones(self.num_cards))
-            idle_avail = jnp.zeros(1)  # idle never legal: agents must message during deliberation
-            mask = jnp.concatenate([pick_avail, msg_avail, idle_avail])
+            mask = jnp.concatenate([pick_avail, msg_avail])
         else:
             # Decision: pick positions 0-4, no do-nothing
             pick_avail = jnp.where(is_decision, jnp.ones(self.num_cards), jnp.zeros(self.num_cards))

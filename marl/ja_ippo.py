@@ -520,8 +520,7 @@ def make_train_loop(config, env):
                 if attn_msg_coef > 0:
                     num_cards = 5
                     msg_offset = num_cards
-                    idle_action = 2 * num_cards
-                    is_msg_action = (action >= msg_offset) & (action < idle_action)
+                    is_msg_action = action >= msg_offset
                     msg_color_idx = jnp.clip(action - msg_offset, 0, num_cards - 1)
 
                     # Read card colors from raw (pre-augmentation) obs at safe pixels.
