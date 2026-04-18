@@ -16,6 +16,10 @@ Actions (no communication):
 Actions (with communication):
   0-4: pick color i — decision only
   5-9: send message (a-5) — deliberation only
+
+Optional diagnostic payoff asymmetry:
+  one designated focal color pays `focal_card_reward` when coordinated on,
+  while every other coordinated color pays `default_match_reward`.
 """
 from functools import partial
 from typing import Dict, Tuple, Optional
@@ -88,6 +92,9 @@ class CardGameEnv(BaseEnv):
                  communication: bool = False, comm_reward_coef: float = 0.0,
                  comm_follow_bonus: float = 0.0, comm_stability_bonus: float = 0.0,
                  odd_one_out_task: bool = False,
+                 focal_card_idx: int = -1,
+                 focal_card_reward: float = 1.0,
+                 default_match_reward: float = 1.0,
                  **kwargs):
         self.max_steps = max_steps
         self.shuffle = shuffle
@@ -96,6 +103,9 @@ class CardGameEnv(BaseEnv):
         self.comm_follow_bonus = comm_follow_bonus
         self.comm_stability_bonus = comm_stability_bonus
         self.odd_one_out_task = odd_one_out_task
+        self.focal_card_idx = jnp.int32(focal_card_idx)
+        self.focal_card_reward = float(focal_card_reward)
+        self.default_match_reward = float(default_match_reward)
         self.num_cards = NUM_CARDS
         self.num_agents = 2
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
@@ -224,6 +234,14 @@ class CardGameEnv(BaseEnv):
         valid = (pick_0 >= 0) & (pick_1 >= 0)
         if self.odd_one_out_task:
             success = valid & jnp.equal(pick_0, target_color) & jnp.equal(pick_1, target_color)
+        elif self.focal_card_idx >= 0:
+            success = valid & jnp.equal(pick_0, pick_1)
+            coord_reward = jnp.where(
+                jnp.equal(pick_0, self.focal_card_idx),
+                self.focal_card_reward,
+                self.default_match_reward,
+            )
+            return jnp.where(is_decision & success, coord_reward, 0.0)
         else:
             success = valid & jnp.equal(pick_0, pick_1)
         return jnp.where(is_decision & success, 1.0, 0.0)

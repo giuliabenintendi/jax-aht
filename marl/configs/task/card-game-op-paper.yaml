@@ -1,0 +1,15 @@
+ENV_NAME: card-game
+ROLLOUT_LENGTH: 128
+ENV_KWARGS:
+  max_steps: 8
+  obs_type: image
+  shuffle: true
+  other_play_position_shuffle: true
+  other_play_recolouring: true
+  focal_card_idx: 0
+  focal_card_reward: 0.9
+  default_match_reward: 1.0
+  comm_reward_coef: 0.0
+  comm_stability_bonus: 0.0
+  comm_follow_bonus: 0.0
+TASK_NAME: card-game-op-paper

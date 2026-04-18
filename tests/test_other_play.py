@@ -15,6 +15,35 @@ from envs.card_game.other_play import (
 )
 
 
+class LeverStyleCardGameEnv(CardGameEnv):
+    """Test-only reward variant mirroring the OP lever-game asymmetry.
+
+    Coordinating on the focal ground-truth color pays `focal_reward`, while
+    coordinating on any other ground-truth color pays `symmetric_reward`.
+    """
+
+    def __init__(
+        self,
+        focal_color: int = 0,
+        focal_reward: float = 0.9,
+        symmetric_reward: float = 1.0,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.focal_color = jnp.int32(focal_color)
+        self.focal_reward = float(focal_reward)
+        self.symmetric_reward = float(symmetric_reward)
+
+    def _base_reward(self, pick_0, pick_1, is_decision, target_color):
+        valid_match = (pick_0 >= 0) & (pick_1 >= 0) & jnp.equal(pick_0, pick_1)
+        coord_reward = jnp.where(
+            jnp.equal(pick_0, self.focal_color),
+            self.focal_reward,
+            self.symmetric_reward,
+        )
+        return jnp.where(is_decision & valid_match, coord_reward, 0.0)
+
+
 def _get_card_color_at(flat_obs, pos, img_h, img_w):
     """Extract the RGB color of the card at a given position from a flat obs.
 
@@ -311,9 +340,9 @@ def test_combined_wrappers_reward():
     assert float(reward["agent_0"]) == 1.0
 
 
-def test_recolouring_reward_preserved_under_shuffle():
-    """Recolouring should preserve same-color coordination for every GT color."""
-    env = CardGameEnv(max_steps=2, shuffle=True)
+def test_recolouring_preserves_focal_low_reward_card():
+    """Recolouring must preserve the paper-style distinctive 0.9 payoff card."""
+    env = LeverStyleCardGameEnv(max_steps=2, shuffle=True, focal_color=0)
     wrapped = CardGameRecolouringWrapper(env)
 
     for seed in range(20):
@@ -323,7 +352,7 @@ def test_recolouring_reward_preserved_under_shuffle():
         recolour_0 = state.per_agent_recolouring["agent_0"]
         recolour_1 = state.per_agent_recolouring["agent_1"]
 
-        for gt_color in range(NUM_CARDS):
+        for gt_color, expected_reward in ((0, 0.9), (1, 1.0)):
             a0 = jnp.int32(recolour_0[gt_color])
             a1 = jnp.int32(recolour_1[gt_color])
 
@@ -335,8 +364,8 @@ def test_recolouring_reward_preserved_under_shuffle():
             _, _, reward, _, _ = wrapped.step(
                 subkey, state, {"agent_0": a0, "agent_1": a1}
             )
-            assert float(reward["agent_0"]) == 1.0, (
-                f"seed={seed} gt_color={gt_color} should survive recolouring"
+            assert float(reward["agent_0"]) == expected_reward, (
+                f"seed={seed} gt_color={gt_color} should yield {expected_reward} under recolouring"
             )
 
             key, reset_key = jax.random.split(key)
@@ -345,9 +374,9 @@ def test_recolouring_reward_preserved_under_shuffle():
             recolour_1 = state.per_agent_recolouring["agent_1"]
 
 
-def test_combined_wrappers_reward_preserved_under_op():
-    """Position shuffle + recolouring should preserve same-color coordination."""
-    env = CardGameEnv(max_steps=2, shuffle=False)
+def test_combined_wrappers_preserve_focal_low_reward_card():
+    """Position shuffle + recolouring must preserve the distinctive 0.9 card."""
+    env = LeverStyleCardGameEnv(max_steps=2, shuffle=False, focal_color=0)
     env = CardGamePositionShuffleWrapper(env)
     env = CardGameRecolouringWrapper(env)
 
@@ -358,7 +387,7 @@ def test_combined_wrappers_reward_preserved_under_op():
         recolour_0 = state.per_agent_recolouring["agent_0"]
         recolour_1 = state.per_agent_recolouring["agent_1"]
 
-        for gt_color in range(NUM_CARDS):
+        for gt_color, expected_reward in ((0, 0.9), (1, 1.0)):
             a0 = jnp.int32(recolour_0[gt_color])
             a1 = jnp.int32(recolour_1[gt_color])
 
@@ -370,8 +399,8 @@ def test_combined_wrappers_reward_preserved_under_op():
             _, _, reward, _, _ = env.step(
                 subkey, state, {"agent_0": a0, "agent_1": a1}
             )
-            assert float(reward["agent_0"]) == 1.0, (
-                f"seed={seed} gt_color={gt_color} should survive combined OP wrappers"
+            assert float(reward["agent_0"]) == expected_reward, (
+                f"seed={seed} gt_color={gt_color} should yield {expected_reward} with combined OP wrappers"
             )
 
             key, reset_key = jax.random.split(key)
