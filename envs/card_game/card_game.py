@@ -103,7 +103,7 @@ class CardGameEnv(BaseEnv):
         self.comm_follow_bonus = comm_follow_bonus
         self.comm_stability_bonus = comm_stability_bonus
         self.odd_one_out_task = odd_one_out_task
-        self.focal_card_idx = jnp.int32(focal_card_idx)
+        self.focal_card_idx = int(focal_card_idx)
         self.focal_card_reward = float(focal_card_reward)
         self.default_match_reward = float(default_match_reward)
         self.num_cards = NUM_CARDS
@@ -237,7 +237,7 @@ class CardGameEnv(BaseEnv):
         elif self.focal_card_idx >= 0:
             success = valid & jnp.equal(pick_0, pick_1)
             coord_reward = jnp.where(
-                jnp.equal(pick_0, self.focal_card_idx),
+                jnp.equal(pick_0, jnp.int32(self.focal_card_idx)),
                 self.focal_card_reward,
                 self.default_match_reward,
             )
