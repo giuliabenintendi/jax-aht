@@ -16,8 +16,7 @@ from marl.eval_utils import (
 
 
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger,
-                                  ep_messages=None, card_positions=None,
-                                  card_permutation=None):
+                                  ep_messages=None, card_permutation=None):
     """Log a 2xT grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
 
     Each cell shows the scene with the attention heatmap overlaid.
@@ -34,11 +33,8 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
     n_steps = min(len(maps_0), len(maps_1), len(frames) - 1)
 
-    # frames come from render_card_game_eval_frames(scale=32)
-    # tile_px = scale * 7. Recover scale from the frame height.
-    # frame_h = grid_rows * 7 * scale -> scale = frame_h / (grid_rows * 7)
-    # But we can just use: one tile = frame_h / grid_rows pixels, scale = tile / 7
-    # Since frames[0] was rendered at scale=32, tile = 32*7=224 px per grid cell
+    # frames come from render_card_game_eval_frames(scale=32);
+    # tile = scale * TILE_PIXELS = 32 * 7 = 224 px per grid cell
     scale = 32
 
     agent0_color = np.array([255, 140, 0], dtype=np.uint8)    # orange
@@ -50,6 +46,14 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     # Use initial frame for all overlays (cards don't change within episode;
     # the last frame in ep_states is the auto-reset with new shuffle)
     base_frame = frames[0]
+
+    def _draw_choice(cell, choice, agent_idx):
+        if card_permutation is not None:
+            matches = np.where(card_permutation == choice)[0]
+            if len(matches) > 0:
+                _draw_choice_on_cell(cell, int(matches[0]), agent_idx, scale)
+        else:
+            _draw_choice_on_cell(cell, choice, agent_idx, scale)
 
     # Build overlay frames for each agent at each timestep
     row_0 = []  # agent 0 attention (Oranges)
@@ -71,31 +75,9 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
         # Draw choice borders on the last timestep
         if t == n_steps - 1 and last_action[0] >= 0:
-            # For flip game, decision actions are 5-9 (color index = action - 5)
-            choice_0 = last_action[0] - 5 if last_action[0] >= 5 else last_action[0]
-            choice_1 = last_action[1] - 5 if last_action[1] >= 5 else last_action[1]
-            if card_positions is not None:
-                r0, c0 = int(card_positions[choice_0][0]), int(card_positions[choice_0][1])
-                _draw_choice_on_cell(cell_0, choice_0, 0, scale, card_row=r0, card_col=c0)
-            elif card_permutation is not None:
-                matches = np.where(card_permutation == choice_0)[0]
-                if len(matches) > 0:
-                    col0 = int(matches[0])
-                    _draw_choice_on_cell(cell_0, col0, 0, scale)
-            else:
-                _draw_choice_on_cell(cell_0, choice_0, 0, scale)
+            _draw_choice(cell_0, last_action[0], 0)
         if t == n_steps - 1 and last_action[1] >= 0:
-            choice_1 = last_action[1] - 5 if last_action[1] >= 5 else last_action[1]
-            if card_positions is not None:
-                r1, c1 = int(card_positions[choice_1][0]), int(card_positions[choice_1][1])
-                _draw_choice_on_cell(cell_1, choice_1, 1, scale, card_row=r1, card_col=c1)
-            elif card_permutation is not None:
-                matches = np.where(card_permutation == choice_1)[0]
-                if len(matches) > 0:
-                    col1 = int(matches[0])
-                    _draw_choice_on_cell(cell_1, col1, 1, scale)
-            else:
-                _draw_choice_on_cell(cell_1, choice_1, 1, scale)
+            _draw_choice(cell_1, last_action[1], 1)
 
         _draw_timestep_label(cell_0, t, decision=(t == n_steps - 1))
         _draw_timestep_label(cell_1, t, decision=(t == n_steps - 1))
@@ -129,7 +111,7 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
                                feed_attn_dims=None,
                                ja_card_masks=None,
-                               fixed_partner_attn=None, filter_top1=False,
+                               filter_top1=False,
                                num_episodes=30, fps=3):
     """Run multiple card game episodes and save a video with attention spots and choices."""
     import wandb
@@ -147,7 +129,6 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             collect_attention=True,
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
-            fixed_partner_attn=fixed_partner_attn,
         )
 
         if filter_top1:
@@ -167,13 +148,8 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
         n_steps = min(len(maps_0), len(maps_1))
         from envs.card_game.rendering import _unwrap_card_game_state
         es0 = _unwrap_card_game_state(ep_states[0])
-        is_flip_game = hasattr(es0, 'revealed_0')
 
-        if hasattr(es0, 'card_permutation') and not hasattr(es0, 'card_positions'):
-            base_img = render_card_game(es0.card_permutation)
-        elif hasattr(es0, 'card_positions'):
-            from envs.card_game.rendering_dynamic import render_card_game as render_dynamic
-            base_img = render_dynamic(es0.card_positions, es0.card_present)
+        base_img = render_card_game(es0.card_permutation)
         base_np = np.array(base_img)
         base_up = np.array(Image.fromarray(base_np).resize(
             (base_np.shape[1] * scale, base_np.shape[0] * scale), Image.NEAREST))
@@ -181,19 +157,8 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
         last_action = ep_actions[-1] if ep_actions else (-1, -1)
 
         for t in range(n_steps):
-            if is_flip_game:
-                es_t = _unwrap_card_game_state(ep_states[t])
-                img_0 = np.array(render_card_game(es_t.card_permutation, revealed=es_t.revealed_0))
-                img_1 = np.array(render_card_game(es_t.card_permutation, revealed=es_t.revealed_1))
-                base_up_0 = np.array(Image.fromarray(img_0).resize(
-                    (img_0.shape[1] * scale, img_0.shape[0] * scale), Image.NEAREST))
-                base_up_1 = np.array(Image.fromarray(img_1).resize(
-                    (img_1.shape[1] * scale, img_1.shape[0] * scale), Image.NEAREST))
-            else:
-                base_up_0 = base_up
-                base_up_1 = base_up
-            cell_0 = _overlay_attention(base_up_0, maps_0[t], "Oranges", alpha=0.6).copy()
-            cell_1 = _overlay_attention(base_up_1, maps_1[t], "RdPu", alpha=0.6).copy()
+            cell_0 = _overlay_attention(base_up, maps_0[t], "Oranges", alpha=0.6).copy()
+            cell_1 = _overlay_attention(base_up, maps_1[t], "RdPu", alpha=0.6).copy()
 
             # Messages sent at step t-1 become visible in observation t.
             if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
@@ -209,27 +174,16 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
 
             # Draw choice borders on decision step
             if t == n_steps - 1 and last_action[0] >= 0:
-                choice_0 = last_action[0] - 5 if last_action[0] >= 5 else last_action[0]
-                choice_1 = last_action[1] - 5 if last_action[1] >= 5 else last_action[1]
+                choice_0 = last_action[0]
+                choice_1 = last_action[1]
                 es_ep = _unwrap_card_game_state(ep_states[0])
-                if hasattr(es_ep, 'card_positions'):
-                    _cp = np.array(es_ep.card_positions)
-                    r0, c0 = int(_cp[choice_0][0]), int(_cp[choice_0][1])
-                    _draw_choice_on_cell(cell_0, choice_0, 0, scale, card_row=r0, card_col=c0)
-                    if choice_1 >= 0:
-                        r1, c1 = int(_cp[choice_1][0]), int(_cp[choice_1][1])
-                        _draw_choice_on_cell(cell_1, choice_1, 1, scale, card_row=r1, card_col=c1)
-                elif hasattr(es_ep, 'card_permutation'):
-                    _perm = np.array(es_ep.card_permutation)
-                    matches_0 = np.where(_perm == choice_0)[0]
-                    if len(matches_0) > 0:
-                        _draw_choice_on_cell(cell_0, int(matches_0[0]), 0, scale)
-                    matches_1 = np.where(_perm == choice_1)[0]
-                    if len(matches_1) > 0:
-                        _draw_choice_on_cell(cell_1, int(matches_1[0]), 1, scale)
-                else:
-                    _draw_choice_on_cell(cell_0, choice_0, 0, scale)
-                    _draw_choice_on_cell(cell_1, choice_1, 1, scale)
+                _perm = np.array(es_ep.card_permutation)
+                matches_0 = np.where(_perm == choice_0)[0]
+                if len(matches_0) > 0:
+                    _draw_choice_on_cell(cell_0, int(matches_0[0]), 0, scale)
+                matches_1 = np.where(_perm == choice_1)[0]
+                if len(matches_1) > 0:
+                    _draw_choice_on_cell(cell_1, int(matches_1[0]), 1, scale)
 
             _draw_timestep_label(cell_0, t, decision=(t == n_steps - 1))
             _draw_timestep_label(cell_1, t, decision=(t == n_steps - 1))
@@ -256,7 +210,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
 
 def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, video_dir, logger,
                               feed_attn_dims=None, ja_card_masks=None,
-                              fixed_partner_attn=None, filter_top1=False,
+                              filter_top1=False,
                               num_episodes=10, fps=3):
     """Generate cross-play videos: pair seed_i (agent 0) with seed_j (agent 1).
 
@@ -283,7 +237,6 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                     collect_attention=True,
                     feed_other_attn_dims=feed_attn_dims,
                     ja_card_masks=ja_card_masks,
-                    fixed_partner_attn=fixed_partner_attn,
                 )
 
                 if filter_top1:
@@ -304,11 +257,7 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                 from envs.card_game.rendering import _unwrap_card_game_state
                 es0 = _unwrap_card_game_state(ep_states[0])
 
-                if hasattr(es0, 'card_permutation') and not hasattr(es0, 'card_positions'):
-                    base_img = render_card_game(es0.card_permutation)
-                elif hasattr(es0, 'card_positions'):
-                    from envs.card_game.rendering_dynamic import render_card_game as render_dynamic
-                    base_img = render_dynamic(es0.card_positions, es0.card_present)
+                base_img = render_card_game(es0.card_permutation)
                 base_np = np.array(base_img)
                 base_up = np.array(Image.fromarray(base_np).resize(
                     (base_np.shape[1] * scale, base_np.shape[0] * scale), Image.NEAREST))
@@ -316,10 +265,8 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                 last_action = ep_actions[-1] if ep_actions else (-1, -1)
 
                 for t in range(n_steps):
-                    base_up_0 = base_up
-                    base_up_1 = base_up
-                    cell_0 = _overlay_attention(base_up_0, maps_0[t], "Oranges", alpha=0.6).copy()
-                    cell_1 = _overlay_attention(base_up_1, maps_1[t], "RdPu", alpha=0.6).copy()
+                    cell_0 = _overlay_attention(base_up, maps_0[t], "Oranges", alpha=0.6).copy()
+                    cell_1 = _overlay_attention(base_up, maps_1[t], "RdPu", alpha=0.6).copy()
 
                     if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
                         a0_color = [255, 140, 0]
@@ -332,20 +279,16 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                         _draw_decision_square(cell_1, scale)
 
                     if t == n_steps - 1 and last_action[0] >= 0:
-                        choice_0 = last_action[0] - 5 if last_action[0] >= 5 else last_action[0]
-                        choice_1 = last_action[1] - 5 if last_action[1] >= 5 else last_action[1]
+                        choice_0 = last_action[0]
+                        choice_1 = last_action[1]
                         es_ep = _unwrap_card_game_state(ep_states[0])
-                        if hasattr(es_ep, 'card_permutation'):
-                            _perm = np.array(es_ep.card_permutation)
-                            matches_0 = np.where(_perm == choice_0)[0]
-                            if len(matches_0) > 0:
-                                _draw_choice_on_cell(cell_0, int(matches_0[0]), 0, scale)
-                            matches_1 = np.where(_perm == choice_1)[0]
-                            if len(matches_1) > 0:
-                                _draw_choice_on_cell(cell_1, int(matches_1[0]), 1, scale)
-                        else:
-                            _draw_choice_on_cell(cell_0, choice_0, 0, scale)
-                            _draw_choice_on_cell(cell_1, choice_1, 1, scale)
+                        _perm = np.array(es_ep.card_permutation)
+                        matches_0 = np.where(_perm == choice_0)[0]
+                        if len(matches_0) > 0:
+                            _draw_choice_on_cell(cell_0, int(matches_0[0]), 0, scale)
+                        matches_1 = np.where(_perm == choice_1)[0]
+                        if len(matches_1) > 0:
+                            _draw_choice_on_cell(cell_1, int(matches_1[0]), 1, scale)
 
                     _draw_timestep_label(cell_0, t, decision=(t == n_steps - 1))
                     _draw_timestep_label(cell_1, t, decision=(t == n_steps - 1))

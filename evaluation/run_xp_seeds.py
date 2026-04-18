@@ -836,9 +836,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
                     "ROLLOUT_LENGTH": algo_cfg["ROLLOUT_LENGTH"]}
         task_name = hydra_cfg.get("TASK_NAME", algo_cfg["ENV_NAME"])
 
-    # Remove fixed_partner_pos from env kwargs for eval (agents use their own attention)
     eval_env_kwargs = dict(task_cfg["ENV_KWARGS"])
-    eval_env_kwargs.pop("fixed_partner_pos", None)
     if algo_cfg.get("COMMUNICATION", False):
         eval_env_kwargs["communication"] = True
     env = make_env(task_cfg["ENV_NAME"], eval_env_kwargs)

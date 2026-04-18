@@ -5,8 +5,6 @@ Saves images showing:
 2. The 4th channel agent 0 receives (partner's attention upsampled)
 3. The 4th channel agent 1 receives (agent 0's attention upsampled)
 
-Tests both normal mode and fixed_partner mode.
-
 Run: ./run_gpu.sh 0 pytest -s tests/test_feed_attn_debug.py
 """
 import jax
@@ -70,7 +68,7 @@ def _save_channel_debug(out_dir, step, obs_flat, prev_attn_partner, attn_own, im
     return path
 
 
-def _run_debug(env_kwargs, out_dir_name, fixed_attn_map=None):
+def _run_debug(env_kwargs, out_dir_name):
     out_dir = Path(f"tests/{out_dir_name}")
     out_dir.mkdir(exist_ok=True)
 
@@ -97,12 +95,8 @@ def _run_debug(env_kwargs, out_dir_name, fixed_attn_map=None):
     hstate_0 = policy.init_hstate(1)
     hstate_1 = policy.init_hstate(1)
 
-    # Initial attention: uniform or fixed
     prev_attn_0 = jnp.ones((feat_h, feat_w)) / (feat_h * feat_w)
-    if fixed_attn_map is not None:
-        prev_attn_1 = fixed_attn_map
-    else:
-        prev_attn_1 = jnp.ones((feat_h, feat_w)) / (feat_h * feat_w)
+    prev_attn_1 = jnp.ones((feat_h, feat_w)) / (feat_h * feat_w)
 
     max_steps = env_kwargs["max_steps"]
     scale = 20
@@ -110,7 +104,6 @@ def _run_debug(env_kwargs, out_dir_name, fixed_attn_map=None):
     print(f"\n{'='*60}")
     print(f"Debug: {out_dir_name}")
     print(f"Image: {img_h}x{img_w}, Feature map: {feat_h}x{feat_w}")
-    print(f"fixed_partner_pos: {env_kwargs.get('fixed_partner_pos', -1)}")
     print(f"{'='*60}")
 
     for step in range(max_steps):
@@ -154,47 +147,17 @@ def _run_debug(env_kwargs, out_dir_name, fixed_attn_map=None):
         p1 = _save_channel_debug(out_dir, step, obs_1, prev_attn_0, attn_1_sq, img_h, img_w, scale, "agent1")
         print(f"  Saved: {p0}, {p1}")
 
-        # Update for next step
         prev_attn_0 = attn_0_sq
-        if fixed_attn_map is not None:
-            prev_attn_1 = fixed_attn_map  # Keep fixed
-        else:
-            prev_attn_1 = attn_1_sq
+        prev_attn_1 = attn_1_sq
 
-        # Override agent 1 action if fixed partner
-        fp = env_kwargs.get("fixed_partner_pos", -1)
-        act_1_final = jnp.int32(fp) if fp >= 0 else act_1.squeeze()
-
-        env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1_final}
+        env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1.squeeze()}
         obs, env_state, reward, dones, info = env.step(step_rng, env_state, env_act)
         print(f"  Reward: {float(reward['agent_0'])}")
 
 
 def test_normal_mode():
-    """Debug feed_attn in normal (no fixed partner) mode."""
+    """Debug feed_attn."""
     _run_debug(
-        env_kwargs={"max_steps": 8, "obs_type": "image", "shuffle": True, "fixed_partner_pos": -1},
+        env_kwargs={"max_steps": 8, "obs_type": "image", "shuffle": True},
         out_dir_name="feed_attn_debug_normal",
-    )
-
-
-def test_fixed_partner_mode():
-    """Debug feed_attn with fixed partner at position 0."""
-    img_h = GRID_ROWS * TILE_PIXELS
-    img_w = GRID_COLS * TILE_PIXELS
-    feat_h, feat_w = _compute_resnet_output_dims(img_h, img_w, stride=2, kernel_size=3, padding="SAME", num_blocks=4)
-
-    # Create fixed attention for position 0
-    pixel_col = 0 * TILE_PIXELS + TILE_PIXELS // 2
-    pixel_row = 1 * TILE_PIXELS + TILE_PIXELS // 2
-    fc = min(int(pixel_col / (img_w / feat_w)), feat_w - 1)
-    fr = min(int(pixel_row / (img_h / feat_h)), feat_h - 1)
-    fixed_attn = jnp.zeros((feat_h, feat_w))
-    fixed_attn = fixed_attn.at[fr, fc].set(1.0)
-    print(f"Fixed attention at feature ({fr},{fc})")
-
-    _run_debug(
-        env_kwargs={"max_steps": 4, "obs_type": "image", "shuffle": True, "fixed_partner_pos": 0},
-        out_dir_name="feed_attn_debug_fixed",
-        fixed_attn_map=fixed_attn,
     )

@@ -9,6 +9,7 @@ import numpy as np
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent, _get_image_dims
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence, augment_obs_for_eval
+from envs.card_game.action_utils import decode_comm_action
 from marl.eval_card_game import _log_card_game_attention_grid, _log_card_game_eval_video, _log_card_game_xp_videos
 from marl.eval_lbf import _render_lbf_eval_frames
 
@@ -221,19 +222,23 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 if _is_comm_env:
                     is_last = (step + 1) >= max_steps
                     if not is_last:
-                        if _num_cards <= a0_int < 2 * _num_cards:
-                            last_msg_0 = a0_int - _num_cards
+                        _, msg_0 = decode_comm_action(a0_int)
+                        _, msg_1 = decode_comm_action(a1_int)
+                        if int(msg_0) >= 0:
+                            last_msg_0 = int(msg_0)
                             if not first_msg_set_0:
                                 first_msg_0 = last_msg_0
                                 first_msg_set_0 = True
-                        if _num_cards <= a1_int < 2 * _num_cards:
-                            last_msg_1 = a1_int - _num_cards
+                        if int(msg_1) >= 0:
+                            last_msg_1 = int(msg_1)
                             if not first_msg_set_1:
                                 first_msg_1 = last_msg_1
                                 first_msg_set_1 = True
                     else:
-                        pick_0_local = a0_int if a0_int < _num_cards else -1
-                        pick_1_local = a1_int if a1_int < _num_cards else -1
+                        pick_0_local, _ = decode_comm_action(a0_int)
+                        pick_1_local, _ = decode_comm_action(a1_int)
+                        pick_0_local = int(pick_0_local)
+                        pick_1_local = int(pick_1_local)
                         # Actions/messages are color-based. Under OP recolouring we
                         # invert back to ground-truth color identity; otherwise the
                         # raw IDs are already in the correct label space.
@@ -382,26 +387,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
         from agents.ja_utils import build_card_masks
         _card_masks_eval = build_card_masks(ev_img_h, ev_img_w, ev_feat_h, ev_feat_w)
 
-    # Build fixed partner attention for eval visualization
-    fixed_partner_pos_eval = algorithm_config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
-    fixed_partner_attn_eval = None
-    if fixed_partner_pos_eval >= 0:
-        ev_img_h_fp, ev_img_w_fp, _ = _get_image_dims(env)
-        ev_fh_fp, ev_fw_fp = _compute_resnet_output_dims(
-            ev_img_h_fp, ev_img_w_fp,
-            stride=algorithm_config.get("CONV_STRIDE", 2),
-            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
-            padding=algorithm_config.get("CONV_PADDING", "SAME"),
-            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
-        )
-        from envs.card_game.rendering import TILE_PIXELS as _TP_eval
-        pixel_col = fixed_partner_pos_eval * _TP_eval + _TP_eval // 2
-        pixel_row = 1 * _TP_eval + _TP_eval // 2
-        fc = min(int(pixel_col / (ev_img_h_fp / ev_fh_fp)), ev_fw_fp - 1)
-        fr = min(int(pixel_row / (ev_img_h_fp / ev_fh_fp)), ev_fh_fp - 1)
-        fixed_partner_attn_eval = jnp.zeros((ev_fh_fp, ev_fw_fp))
-        fixed_partner_attn_eval = fixed_partner_attn_eval.at[fr, fc].set(1.0)
-
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
 
     for seed_idx in range(num_seeds):
@@ -420,7 +405,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 final_params, policy, max_steps,
                 collect_attention=True,
                 feed_other_attn_dims=feed_attn_dims,
-                fixed_partner_attn=fixed_partner_attn_eval,
                 ja_card_masks=_card_masks_eval if ja_card_attn else None,
             )
             all_ep_states.extend(ep_states_i)
@@ -451,40 +435,30 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
         # Render frames from episode states
         if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
             frames = _render_lbf_eval_frames(inner_env, ep_states)
-        elif env_name in ("card-game", "card-game-flip"):
+        elif env_name == "card-game":
             from envs.card_game.rendering import render_card_game_eval_frames
             frames = render_card_game_eval_frames(ep_states, scale=32)
-        elif env_name == "card-game-dynamic":
-            from envs.card_game.rendering_dynamic import render_card_game_eval_frames as render_dynamic_frames
-            frames = render_dynamic_frames(ep_states, scale=32)
         else:
             from evaluation.vis_episodes import render_episode_frames
             frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
 
         tag = f"Eval/seed_{seed_idx}"
 
-        if env_name in ("card-game", "card-game-dynamic", "card-game-flip"):
+        if env_name == "card-game":
             # Card game: 2xT grid image + multi-episode video
             # Pass card layout for border drawing
             import numpy as _np
             from envs.card_game.rendering import _unwrap_card_game_state
-            _card_pos = None
-            _card_perm = None
             es0 = _unwrap_card_game_state(ep_states[0])
-            if hasattr(es0, 'card_positions'):
-                _card_pos = _np.array(es0.card_positions)
-            if hasattr(es0, 'card_permutation'):
-                _card_perm = _np.array(es0.card_permutation)
+            _card_perm = _np.array(es0.card_permutation)
             _log_card_game_attention_grid(
                 frames, attn_data, ep_actions, tag, video_dir, logger,
-                ep_messages=ep_messages, card_positions=_card_pos,
-                card_permutation=_card_perm,
+                ep_messages=ep_messages, card_permutation=_card_perm,
             )
             _log_card_game_eval_video(
                 inner_env, policy, final_params, max_steps, tag, video_dir, logger,
                 feed_attn_dims=feed_attn_dims,
                 ja_card_masks=_card_masks_eval if ja_card_attn else None,
-                fixed_partner_attn=fixed_partner_attn_eval,
                 filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
                 num_episodes=30, fps=3,
             )
@@ -495,7 +469,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     tag, video_dir, logger,
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=_card_masks_eval if ja_card_attn else None,
-                    fixed_partner_attn=fixed_partner_attn_eval,
                     filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
                     num_episodes=5, fps=3,
                 )

@@ -58,7 +58,7 @@ def test_attention_filtering():
     out_dir = Path("tests/attn_filtering")
     out_dir.mkdir(exist_ok=True)
 
-    env_kwargs = {"max_steps": 8, "obs_type": "image", "shuffle": True, "fixed_partner_pos": -1}
+    env_kwargs = {"max_steps": 8, "obs_type": "image", "shuffle": True}
     env = make_env("card-game", env_kwargs)
     env = LogWrapper(env)
 

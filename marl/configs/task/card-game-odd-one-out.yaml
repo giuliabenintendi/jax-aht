@@ -4,9 +4,10 @@ ENV_KWARGS:
   max_steps: 8
   obs_type: image
   shuffle: true
+  odd_one_out_task: true
   other_play_position_shuffle: false
   other_play_recolouring: false
   comm_reward_coef: 0.0
   comm_stability_bonus: 0.0
   comm_follow_bonus: 0.0
-TASK_NAME: card-game
+TASK_NAME: card-game-odd-one-out

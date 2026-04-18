@@ -111,7 +111,6 @@ def make_train_loop(config, env):
     ja_warmup_updates = ja_warmup_env_steps / env_steps_per_update
     feed_other_attn = config.get("FEED_OTHER_ATTN", False)
     filter_attn_top1 = config.get("FILTER_ATTN_TOP1", False)
-    fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
 
     # Precompute image and feature-map dimensions for attention channel
     img_h, img_w, _ = _get_image_dims(env)
@@ -122,20 +121,6 @@ def make_train_loop(config, env):
         padding=config.get("CONV_PADDING", "SAME"),
         num_blocks=config.get("CONV_NUM_BLOCKS", 4),
     )
-
-    # Precompute fixed attention map for hardcoded partner
-    if fixed_partner_pos >= 0:
-        from envs.card_game.rendering import TILE_PIXELS as _TP, GRID_COLS as _GC
-        pixel_col = fixed_partner_pos * _TP + _TP // 2
-        pixel_row = 1 * _TP + _TP // 2
-        fc = min(int(pixel_col / (img_w / feat_w)), feat_w - 1)
-        fr = min(int(pixel_row / (img_h / feat_h)), feat_h - 1)
-        _fixed_attn = jnp.zeros((feat_h, feat_w))
-        _fixed_attn = _fixed_attn.at[fr, fc].set(1.0)
-        print(f"[ja_ippo] Fixed partner: pos={fixed_partner_pos}, feature=({fr},{fc}), "
-              f"feat_map={feat_h}x{feat_w}, attn_sum={float(_fixed_attn.sum())}")
-    else:
-        _fixed_attn = None
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -367,10 +352,6 @@ def make_train_loop(config, env):
                     [comm_reward_raw[:, 0], comm_reward_raw[:, 1]])  # [agent0 | agent1]
 
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
-
-                if fixed_partner_pos >= 0:
-                    attn_map = attn_map.at[:, num_envs:, ...].set(
-                        jnp.broadcast_to(_fixed_attn[None, None], (attn_map.shape[0], num_envs, feat_h, feat_w)))
 
                 if filter_attn_top1:
                     flat = attn_map.reshape(*attn_map.shape[:2], -1)

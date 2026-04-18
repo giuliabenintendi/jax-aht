@@ -26,6 +26,7 @@ from agents.ja_utils import jsd_divergence, build_card_masks
 from common.plot_utils import get_stats, get_metric_names, plot_seed_aggregate
 from common.save_load_utils import save_train_run
 from envs import make_env
+from envs.card_game.action_utils import decode_comm_action
 from envs.log_wrapper import LogWrapper
 from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
 
@@ -125,7 +126,6 @@ def make_train_loop(config, env):
     filter_attn_top1 = config.get("FILTER_ATTN_TOP1", False)
     query_partner_lstm = config.get("QUERY_PARTNER_LSTM", False)
     lstm_hidden_dim = config.get("LSTM_HIDDEN_DIM", 128)
-    fixed_partner_pos = config.get("ENV_KWARGS", {}).get("fixed_partner_pos", -1)
     attn_msg_coef = config.get("ATTN_MSG_REWARD_COEF", 0.0)
     ja_card_attn = config.get("JA_CARD_ATTN", False)
     ja_card_conc_coef = config.get("JA_CARD_CONC_COEF", 0.1)
@@ -185,20 +185,6 @@ def make_train_loop(config, env):
         del _np, _safe_pixel_rows, _safe_pixel_cols
     else:
         _card_masks = _card_colors_f32 = _safe_flat_indices = None
-
-    # Precompute fixed attention map for hardcoded partner
-    if fixed_partner_pos >= 0:
-        from envs.card_game.rendering import TILE_PIXELS as _TP, GRID_COLS as _GC
-        pixel_col = fixed_partner_pos * _TP + _TP // 2
-        pixel_row = 1 * _TP + _TP // 2
-        fc = min(int(pixel_col / (img_w / feat_w)), feat_w - 1)
-        fr = min(int(pixel_row / (img_h / feat_h)), feat_h - 1)
-        _fixed_attn = jnp.zeros((feat_h, feat_w))
-        _fixed_attn = _fixed_attn.at[fr, fc].set(1.0)
-        print(f"[ja_ippo] Fixed partner: pos={fixed_partner_pos}, feature=({fr},{fc}), "
-              f"feat_map={feat_h}x{feat_w}, attn_sum={float(_fixed_attn.sum())}")
-    else:
-        _fixed_attn = None
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -494,11 +480,6 @@ def make_train_loop(config, env):
 
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
 
-                # Override agent 1's attention if hardcoded partner
-                if fixed_partner_pos >= 0:
-                    attn_map = attn_map.at[:, num_envs:, ...].set(
-                        jnp.broadcast_to(_fixed_attn[None, None], (attn_map.shape[0], num_envs, feat_h, feat_w)))
-
                 # Filter attention to global argmax
                 if filter_attn_top1:
                     flat = attn_map.reshape(*attn_map.shape[:2], -1)
@@ -519,9 +500,9 @@ def make_train_loop(config, env):
                 # card the agent is attending to (within-agent, OP-invariant)
                 if attn_msg_coef > 0:
                     num_cards = 5
-                    msg_offset = num_cards
-                    is_msg_action = action >= msg_offset
-                    msg_color_idx = jnp.clip(action - msg_offset, 0, num_cards - 1)
+                    _, msg_color_idx = decode_comm_action(action)
+                    is_msg_action = msg_color_idx >= 0
+                    safe_msg_color_idx = jnp.where(is_msg_action, msg_color_idx, 0)
 
                     # Read card colors from raw (pre-augmentation) obs at safe pixels.
                     # _safe_flat_indices: (5, 5) — 5 cards x 5 sample pixels, each
@@ -536,7 +517,7 @@ def make_train_loop(config, env):
                     card_rgb = card_rgb_sum / 5.0
 
                     # Find which card position has the messaged color
-                    msg_color_rgb = _card_colors_f32[msg_color_idx]  # (num_actors, 3)
+                    msg_color_rgb = _card_colors_f32[safe_msg_color_idx]  # (num_actors, 3)
                     color_dist = jnp.sum(jnp.abs(card_rgb - msg_color_rgb[:, None, :]), axis=-1)
                     msg_card_pos = jnp.argmin(color_dist, axis=-1)  # (num_actors,)
 

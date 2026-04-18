@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import os
+from envs.card_game.action_utils import decode_comm_action
 from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
 
 
@@ -90,7 +91,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            agent_1_param, agent_1_policy,
                            max_episode_steps, collect_attention=False,
                            greedy=True, feed_other_attn_dims=None,
-                           fixed_partner_attn=None,
                            ja_card_masks=None):
     '''
     Run a single episode and collect states for rendering.
@@ -182,7 +182,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         # Get actions for both agents
         rng, act_rng, part_rng, step_rng = jax.random.split(rng, 4)
         has_comm = getattr(env, 'communication', False)
-        num_cards = getattr(env, 'num_cards', 5)
 
         _xattn = getattr(agent_0_policy, 'cross_agent_attn', False)
 
@@ -257,9 +256,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                     prev_reward=prev_reward_1 if use_prev_io else None,
                     prev_action=prev_action_1 if use_prev_io else None,
                 )
-            # Override agent 1's attention if fixed partner
-            if fixed_partner_attn is not None:
-                attn_1 = fixed_partner_attn[None, None]  # match shape
             attn_maps["agent_1"].append(attn_1)
         else:
             act_1, hstate_1 = agent_1_policy.get_action(
@@ -311,19 +307,14 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             prev_action_1 = act_1.reshape(1, 1).astype(jnp.float32)
 
         # Add state and actions to the lists for rendering
-        fp = getattr(env, 'fixed_partner_pos', -1)
         act_0_record = int(render_act["agent_0"])
-        act_1_record = int(fp) if fp >= 0 else int(render_act["agent_1"])
+        act_1_record = int(render_act["agent_1"])
         ep_states.append(env_state)
         if has_comm:
-            a0_int, a1_int = act_0_record, int(render_act["agent_1"])
-            msg_offset = num_cards
-            card_0 = a0_int if a0_int < num_cards else -1
-            card_1 = act_1_record if a1_int < num_cards else -1
-            msg_0 = a0_int - msg_offset if (a0_int >= msg_offset and a0_int < 2 * num_cards) else -1
-            msg_1 = a1_int - msg_offset if (a1_int >= msg_offset and a1_int < 2 * num_cards) else -1
-            ep_actions.append((card_0, card_1))
-            ep_messages.append((msg_0, msg_1))
+            pick_0, msg_0 = decode_comm_action(act_0_record)
+            pick_1, msg_1 = decode_comm_action(int(render_act["agent_1"]))
+            ep_actions.append((int(pick_0), int(pick_1)))
+            ep_messages.append((int(msg_0), int(msg_1)))
         else:
             ep_actions.append((act_0_record, act_1_record))
 

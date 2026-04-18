@@ -53,12 +53,6 @@ def _build_run_string(config: dict) -> str:
     if str(label).lower().startswith("sweep"):
         parts.insert(0, "SWEEP")
     env_kwargs = alg_config.get("ENV_KWARGS", {})
-    max_cards = env_kwargs.get("max_cards", None)
-    if max_cards is not None:
-        from envs.card_game.rendering_dynamic import NUM_COLORS, GRID_ROWS, GRID_COLS
-        parts.append(f"{NUM_COLORS}c")
-        if GRID_ROWS != 3 or GRID_COLS != 5:
-            parts.append(f"{GRID_ROWS}x{GRID_COLS}")
     if alg_config.get("COMMUNICATION", False):
         parts.append("comm")
         comm_coef = env_kwargs.get("comm_reward_coef", 0.0)
@@ -85,9 +79,6 @@ def _build_run_string(config: dict) -> str:
         parts.append("other_play")
     if env_kwargs.get("shuffle") is False:
         parts.append("no_shuffle")
-    fp = env_kwargs.get("fixed_partner_pos", -1)
-    if fp >= 0:
-        parts.append(f"fixed_partner{fp}")
     num_seeds = alg_config.get("NUM_SEEDS", 1)
     if num_seeds > 1:
         parts.append(f"s{num_seeds}")
@@ -142,11 +133,6 @@ def _build_tags(config) -> list[str]:
         tags.append("card_jsd")
     if alg_config.get("FILTER_ATTN_TOP1", False):
         tags.append("top1")
-    if env_kwargs.get("max_cards") is not None:
-        from envs.card_game.rendering_dynamic import NUM_COLORS, GRID_ROWS as _GR, GRID_COLS as _GC
-        tags.append(f"{NUM_COLORS}cards")
-        if _GR != 3 or _GC != 5:
-            tags.append(f"grid{_GR}x{_GC}")
     if env_kwargs.get("other_play_position_shuffle") or env_kwargs.get("other_play_recolouring"):
         tags.append("other_play")
     if env_kwargs.get("shuffle") is False:

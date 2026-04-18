@@ -28,6 +28,7 @@ import jax.numpy as jnp
 import chex
 from flax.struct import dataclass
 
+from envs.card_game.action_utils import remap_recoloured_action
 from envs.card_game.rendering import TILE_PIXELS, NUM_CARDS, CARD_COLORS
 
 
@@ -257,31 +258,12 @@ class CardGameRecolouringWrapper:
     def _invert_actions(self, action, state):
         """Map agent actions from recoloured space back to ground truth."""
         true_action = {}
-        num_cards = self._env.num_cards
 
         for a in self._env.agents:
             inv = state.per_agent_inv_recolouring[a]
-            raw = action[a]
-
-            if self._env.communication:
-                msg_offset = num_cards
-                is_pick = raw < num_cards
-                is_msg = raw >= msg_offset
-
-                pick_action = inv[raw % num_cards]
-                msg_idx = jnp.clip(raw - msg_offset, 0, num_cards - 1)
-                msg_action = inv[msg_idx] + msg_offset
-
-                true_action[a] = jnp.where(
-                    is_pick,
-                    pick_action,
-                    jnp.where(is_msg, msg_action, raw),
-                )
-            else:
-                # 0-4: pick color, 5: do nothing
-                is_pick = raw < num_cards
-                safe_idx = raw % num_cards  # avoid OOB when raw == 5
-                true_action[a] = jnp.where(is_pick, inv[safe_idx], raw)
+            true_action[a] = remap_recoloured_action(
+                action[a], inv, self._env.communication
+            )
 
         return true_action
 
