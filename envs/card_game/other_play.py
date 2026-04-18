@@ -69,9 +69,10 @@ class CardGamePositionShuffleWrapper:
 
     @partial(jax.jit, static_argnums=(0,))
     def reset(self, key):
-        obs, env_state = self._env.reset(key)
+        env_key, wrap_key = jax.random.split(key)
+        obs, env_state = self._env.reset(env_key)
 
-        keys = jax.random.split(key, self._env.num_agents)
+        keys = jax.random.split(wrap_key, self._env.num_agents)
         per_agent_perm = {
             a: jax.random.permutation(keys[i], NUM_CARDS)
             for i, a in enumerate(self._env.agents)
@@ -89,12 +90,13 @@ class CardGamePositionShuffleWrapper:
 
     @partial(jax.jit, static_argnums=(0,))
     def step(self, key, state, action, reset_state=None):
+        env_key, wrap_key = jax.random.split(key)
         obs, env_state, reward, done, info = self._env.step(
-            key, state.env_state, action,
+            env_key, state.env_state, action,
         )
 
         # On auto-reset (episode done), sample new permutations
-        keys = jax.random.split(key, self._env.num_agents + 1)
+        keys = jax.random.split(wrap_key, self._env.num_agents)
         new_perms = {
             a: jax.random.permutation(keys[i], NUM_CARDS)
             for i, a in enumerate(self._env.agents)
@@ -185,9 +187,10 @@ class CardGameRecolouringWrapper:
 
     @partial(jax.jit, static_argnums=(0,))
     def reset(self, key):
-        obs, env_state = self._env.reset(key)
+        env_key, wrap_key = jax.random.split(key)
+        obs, env_state = self._env.reset(env_key)
 
-        keys = jax.random.split(key, self._env.num_agents)
+        keys = jax.random.split(wrap_key, self._env.num_agents)
         per_agent_recolouring = {
             a: self._sample_recolouring(keys[i])
             for i, a in enumerate(self._env.agents)
@@ -213,12 +216,13 @@ class CardGameRecolouringWrapper:
         # Inverse-map agent actions from recoloured space → ground truth
         true_action = self._invert_actions(action, state)
 
+        env_key, wrap_key = jax.random.split(key)
         obs, env_state, reward, done, info = self._env.step(
-            key, state.env_state, true_action,
+            env_key, state.env_state, true_action,
         )
 
         # On auto-reset, sample new recolourings
-        keys = jax.random.split(key, self._env.num_agents + 1)
+        keys = jax.random.split(wrap_key, self._env.num_agents)
         new_recolourings = {
             a: self._sample_recolouring(keys[i])
             for i, a in enumerate(self._env.agents)
