@@ -124,14 +124,6 @@ def make_env(env_name: str, env_kwargs: dict = {}):
             from envs.card_game.other_play import CardGameRecolouringWrapper
             env = CardGameRecolouringWrapper(env)
 
-    elif env_name == 'card-game-flip':
-        from envs.card_game.card_game_flip import CardFlipEnv
-        env = CardFlipEnv(**env_kwargs)
-
-    elif env_name == 'card-game-dynamic':
-        from envs.card_game.card_game_dynamic import CardGameEnv as DynamicCardGameEnv
-        env = DynamicCardGameEnv(**env_kwargs)
-
     elif env_name == 'hanabi':
         default_env_kwargs = {
             "num_agents": 2,

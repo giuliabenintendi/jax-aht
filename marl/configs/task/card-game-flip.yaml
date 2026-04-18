@@ -1,6 +1,0 @@
-ENV_NAME: card-game-flip
-ROLLOUT_LENGTH: 128
-ENV_KWARGS:
-  max_steps: 4
-  obs_type: image
-TASK_NAME: card-game-flip

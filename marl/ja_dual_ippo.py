@@ -678,20 +678,14 @@ def log_eval_video(algorithm_config, env, out, logger, policy):
 
         tag = f"Eval/seed_{seed_idx}"
 
-        if env_name in ("card-game", "card-game-dynamic"):
+        if env_name == "card-game":
             from marl.eval_card_game import _log_card_game_attention_grid, _log_card_game_eval_video
             import numpy as _np
-            _card_pos = None
-            _card_perm = None
             es0 = ep_states[0].env_state
-            if hasattr(es0, 'card_positions'):
-                _card_pos = _np.array(es0.card_positions)
-            if hasattr(es0, 'card_permutation'):
-                _card_perm = _np.array(es0.card_permutation)
+            _card_perm = _np.array(es0.card_permutation)
             _log_card_game_attention_grid(
                 frames, attn_data, ep_actions, tag, video_dir, logger,
-                ep_messages=ep_messages, card_positions=_card_pos,
-                card_permutation=_card_perm,
+                ep_messages=ep_messages, card_permutation=_card_perm,
             )
             _log_card_game_eval_video(
                 inner_env, policy, final_params, max_steps, tag, video_dir, logger,
