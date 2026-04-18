@@ -5,7 +5,8 @@ Produces a (3*TILE_PIXELS, 5*TILE_PIXELS, 3) uint8 RGB image:
   Row 1: card  | card  | card         | card  | card
   Row 2: empty | empty | agent_1 (△) | empty | empty
 
-Cards are colored rectangles (5 maximally distinct colors).
+Cards are colored rectangles (5 maximally distinct colors), optionally with a
+special black distractor card used by OP diagnostics.
 Agents are triangles pointing toward the cards.
 """
 import jax
@@ -16,6 +17,7 @@ TILE_PIXELS = 7
 GRID_ROWS = 3
 GRID_COLS = 5
 NUM_CARDS = 5
+BLACK_CARD_ID = NUM_CARDS
 
 # Pixel coordinate grids for mask definitions
 _Y, _X = jnp.meshgrid(
@@ -65,6 +67,7 @@ CARD_COLORS = jnp.array([
     [220, 200, 50],   # yellow
     [160, 50, 200],   # purple
 ], dtype=jnp.uint8)
+BLACK_CARD_COLOR = jnp.array([20, 20, 20], dtype=jnp.uint8)
 
 AGENT_0_COLOR = jnp.array([255, 140, 0], dtype=jnp.uint8)    # orange
 AGENT_1_COLOR = jnp.array([255, 0, 255], dtype=jnp.uint8)   # magenta
@@ -76,6 +79,18 @@ _EMPTY_TILE = jnp.zeros((TILE_PIXELS, TILE_PIXELS, 3), dtype=jnp.uint8)
 def _render_tile(mask, color):
     """Render a tile with a colored shape on black background."""
     return jnp.where(mask[:, :, None], color[None, None, :], _EMPTY_TILE)
+
+
+def lookup_card_color(card_id: jnp.ndarray) -> jnp.ndarray:
+    """Map a card id to its rendered RGB color.
+
+    The main palette uses ids 0..NUM_CARDS-1. A special black distractor card
+    uses BLACK_CARD_ID and is intentionally left outside the recolouring set.
+    """
+    card_id = jnp.asarray(card_id, dtype=jnp.int32)
+    clipped = jnp.clip(card_id, 0, NUM_CARDS - 1)
+    palette_color = CARD_COLORS[clipped]
+    return jnp.where(card_id == BLACK_CARD_ID, BLACK_CARD_COLOR, palette_color)
 
 
 def render_card_game(card_permutation: jnp.ndarray, revealed=None) -> jnp.ndarray:
@@ -106,7 +121,7 @@ def render_card_game(card_permutation: jnp.ndarray, revealed=None) -> jnp.ndarra
     # Cards at grid row 1, columns 0-4
     def draw_card(img, i):
         card_id = card_permutation[i]
-        color = CARD_COLORS[card_id]
+        color = lookup_card_color(card_id)
         if revealed is not None:
             color = jnp.where(revealed[i], color, GRAY_COLOR)
         card_tile = _render_tile(_CARD_MASK, color)
