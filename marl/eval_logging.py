@@ -440,7 +440,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             frames = render_card_game_eval_frames(ep_states, scale=32)
         elif env_name == "card-game-op-test":
             from envs.card_game.card_game_op_test import render_op_test_eval_frames
-            frames = render_op_test_eval_frames(ep_states, scale=32)
+            frames = render_op_test_eval_frames(ep_states, ep_actions=ep_actions, scale=32)
         else:
             from evaluation.vis_episodes import render_episode_frames
             frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)

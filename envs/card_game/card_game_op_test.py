@@ -133,13 +133,21 @@ def _draw_choice_border_np(img, card_pos, color, thickness):
     return img
 
 
-def render_op_test_eval_frames(ep_states, scale: int = 32):
+def render_op_test_eval_frames(ep_states, ep_actions=None, scale: int = 32):
     """Upscaled RGB frames from a list of episode states.
 
     Shows the GROUND TRUTH view (not per-agent OP-shuffled views). On the
-    decision step, draws a colored border around the card each agent picked
+    final step, draws a colored border around the card each agent picked
     (agent 0 = orange, agent 1 = magenta). Both borders on the red tile means
     the agents coordinated on the focal card.
+
+    Args:
+        ep_states: list of WrappedEnvState. The env auto-resets on done, so
+            agent_choices in state is always -1 at the timestep we record —
+            we can't read picks from state.
+        ep_actions: list of (act_0, act_1) tuples collected by
+            run_episode_with_states. These are GT-space picks (after any OP
+            wrapper inversion). Used to draw the decision-step borders.
     """
     import numpy as np
     from PIL import Image
@@ -149,17 +157,21 @@ def render_op_test_eval_frames(ep_states, scale: int = 32):
     thickness = max(2, scale // 8)
 
     frames = []
-    for state in ep_states:
+    last_action = ep_actions[-1] if ep_actions else None
+    for t, state in enumerate(ep_states):
         inner = _unwrap_op_test_state(state)
         img = np.array(render_op_test_card_game(inner.red_position))
         h, w = img.shape[:2]
         frame = np.array(Image.fromarray(img).resize((w * scale, h * scale), Image.NEAREST))
 
-        choices = np.array(inner.agent_choices)  # GT positions, -1 until decision
-        if choices[0] >= 0:
-            _draw_choice_border_np(frame, int(choices[0]), agent0_border, thickness)
-        if choices[1] >= 0:
-            _draw_choice_border_np(frame, int(choices[1]), agent1_border, thickness)
+        # Draw borders only on the final recorded frame (decision step)
+        is_final = (t == len(ep_states) - 1)
+        if is_final and last_action is not None:
+            a0, a1 = int(last_action[0]), int(last_action[1])
+            if 0 <= a0 < NUM_CARDS:
+                _draw_choice_border_np(frame, a0, agent0_border, thickness)
+            if 0 <= a1 < NUM_CARDS:
+                _draw_choice_border_np(frame, a1, agent1_border, thickness)
 
         frames.append(frame)
     return frames
