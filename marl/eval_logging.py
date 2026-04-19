@@ -356,6 +356,10 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
     )
 
     env_name = algorithm_config["ENV_NAME"]
+    # Diagnostic envs that don't need eval videos or attention metrics.
+    if env_name == "card-game-op-test":
+        print(f"[ja_ippo] {env_name}: skipping eval video / attention logging (diagnostic env)")
+        return
 
     if init_fn is None:
         obs_type = _get_obs_type(algorithm_config)
