@@ -72,6 +72,11 @@ def _run_to_decision(env, key, actions_decision, max_steps=2):
     return env.step(subkey, state, actions_decision)
 
 
+def _approx(actual, expected, tol=1e-5):
+    """Float32 tolerance helper (0.9 isn't exactly representable)."""
+    return abs(float(actual) - float(expected)) < tol
+
+
 def test_reward_red_match_pays_0_9():
     env = make_env("card-game-op-test", {"max_steps": 2})
     for seed in range(10):
@@ -85,7 +90,7 @@ def test_reward_red_match_pays_0_9():
             env, jax.random.PRNGKey(seed), actions, max_steps=2
         )
         assert dones["__all__"]
-        assert float(reward["agent_0"]) == 0.9, (
+        assert _approx(reward["agent_0"], 0.9), (
             f"seed {seed}: red_pos={red_pos} got {float(reward['agent_0'])}"
         )
 
@@ -104,7 +109,7 @@ def test_reward_white_match_pays_1_0():
             env, jax.random.PRNGKey(seed), actions, max_steps=2
         )
         assert dones["__all__"]
-        assert float(reward["agent_0"]) == 1.0, (
+        assert _approx(reward["agent_0"], 1.0), (
             f"seed {seed}: white_pos={white_pos} got {float(reward['agent_0'])}"
         )
 
@@ -115,7 +120,7 @@ def test_reward_mismatch_pays_zero():
     _, _, reward, _, _ = _run_to_decision(
         env, jax.random.PRNGKey(42), actions, max_steps=2
     )
-    assert float(reward["agent_0"]) == 0.0
+    assert _approx(reward["agent_0"], 0.0)
 
 
 def test_reward_only_on_decision_step():
@@ -131,7 +136,7 @@ def test_reward_only_on_decision_step():
         {"agent_0": jnp.int32(red_pos), "agent_1": jnp.int32(red_pos)},
     )
     assert not dones["__all__"]
-    assert float(reward["agent_0"]) == 0.0
+    assert _approx(reward["agent_0"], 0.0)
 
 
 # 3. Position-shuffle wrapper -----------------------------------------------
@@ -185,7 +190,7 @@ def test_position_shuffle_pick_inversion_via_red_view_match():
              "agent_1": jnp.int32(view_pick_1)},
         )
         assert dones["__all__"]
-        assert float(reward["agent_0"]) == 0.9, (
+        assert _approx(reward["agent_0"], 0.9), (
             f"seed {seed}: red GT={red_pos_gt}, "
             f"view picks ({view_pick_0}, {view_pick_1}), "
             f"reward {float(reward['agent_0'])}"
