@@ -124,6 +124,16 @@ def make_env(env_name: str, env_kwargs: dict = {}):
             from envs.card_game.other_play import CardGameRecolouringWrapper
             env = CardGameRecolouringWrapper(env)
 
+    elif env_name == 'card-game-op-test':
+        from envs.card_game.card_game_op_test import (
+            CardGameOPTestEnv, OPTestPositionShuffleWrapper,
+        )
+        env_kwargs = dict(env_kwargs)
+        op_pos = env_kwargs.pop('op_position_shuffle', False)
+        env = CardGameOPTestEnv(**env_kwargs)
+        if op_pos:
+            env = OPTestPositionShuffleWrapper(env)
+
     elif env_name == 'hanabi':
         default_env_kwargs = {
             "num_agents": 2,

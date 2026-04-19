@@ -1,0 +1,7 @@
+ENV_NAME: card-game-op-test
+ROLLOUT_LENGTH: 128
+ENV_KWARGS:
+  max_steps: 8
+  obs_type: image
+  op_position_shuffle: true
+TASK_NAME: card-game-op-test
