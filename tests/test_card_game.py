@@ -10,7 +10,6 @@ from envs.card_game.rendering import (
     GRID_COLS,
     NUM_CARDS,
     CARD_COLORS,
-    BLACK_CARD_COLOR,
 )
 
 
@@ -132,43 +131,6 @@ def test_focal_card_reward_variant():
     )
     assert dones["__all__"]
     assert float(reward["agent_0"]) == 0.9
-
-
-def test_unique_card_task_render_and_reward():
-    """Unique-card diagnostic uses one colored card and four black distractors."""
-    env = make_env(
-        "card-game",
-        {
-            "max_steps": 2,
-            "shuffle": False,
-            "unique_card_task": True,
-            "unique_card_color_idx": 0,
-        },
-    )
-    key = jax.random.PRNGKey(31)
-    obs, state = env.reset(key)
-
-    perm = state.env_state.card_permutation
-    assert int(perm[0]) == 0
-    assert jnp.all(perm[1:] == NUM_CARDS)
-
-    img = render_card_game(perm)
-    red_rgb = img[TILE_PIXELS + 3, 3, :]
-    black_rgb = img[TILE_PIXELS + 3, TILE_PIXELS + 3, :]
-    assert jnp.all(red_rgb == CARD_COLORS[0])
-    assert jnp.all(black_rgb == BLACK_CARD_COLOR)
-
-    key, subkey = jax.random.split(key)
-    obs, state, _, _, _ = env.step(
-        subkey, state, {"agent_0": jnp.int32(NUM_CARDS), "agent_1": jnp.int32(NUM_CARDS)}
-    )
-
-    key, subkey = jax.random.split(key)
-    _, _, reward, dones, _ = env.step(
-        subkey, state, {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}
-    )
-    assert dones["__all__"]
-    assert float(reward["agent_0"]) == 1.0
 
 
 def test_auto_reset():

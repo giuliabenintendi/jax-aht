@@ -43,7 +43,6 @@ from envs.card_game.rendering import (
     GRID_ROWS,
     GRID_COLS,
     NUM_CARDS,
-    BLACK_CARD_ID,
     AGENT_0_COLOR,
     AGENT_1_COLOR,
 )
@@ -93,8 +92,6 @@ class CardGameEnv(BaseEnv):
                  communication: bool = False, comm_reward_coef: float = 0.0,
                  comm_follow_bonus: float = 0.0, comm_stability_bonus: float = 0.0,
                  odd_one_out_task: bool = False,
-                 unique_card_task: bool = False,
-                 unique_card_color_idx: int = 0,
                  focal_card_idx: int = -1,
                  focal_card_reward: float = 1.0,
                  default_match_reward: float = 1.0,
@@ -106,8 +103,6 @@ class CardGameEnv(BaseEnv):
         self.comm_follow_bonus = comm_follow_bonus
         self.comm_stability_bonus = comm_stability_bonus
         self.odd_one_out_task = odd_one_out_task
-        self.unique_card_task = unique_card_task
-        self.unique_card_color_idx = int(unique_card_color_idx)
         self.focal_card_idx = int(focal_card_idx)
         self.focal_card_reward = float(focal_card_reward)
         self.default_match_reward = float(default_match_reward)
@@ -185,20 +180,7 @@ class CardGameEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], WrappedEnvState]:
-        if self.unique_card_task:
-            key_shuffle = key
-            unique_color = jnp.int32(self.unique_card_color_idx)
-            cards = jnp.array(
-                [unique_color, BLACK_CARD_ID, BLACK_CARD_ID, BLACK_CARD_ID, BLACK_CARD_ID],
-                dtype=jnp.int32,
-            )
-            if self.shuffle:
-                shuffle_idx = jax.random.permutation(key_shuffle, self.num_cards)
-                perm = cards[shuffle_idx]
-            else:
-                perm = cards
-            target_color = unique_color
-        elif self.odd_one_out_task:
+        if self.odd_one_out_task:
             key_colors, key_shuffle = jax.random.split(key)
             color_order = jax.random.permutation(key_colors, self.num_cards)
             odd_color = color_order[0]
@@ -250,7 +232,7 @@ class CardGameEnv(BaseEnv):
         leaking through a broken mask) must not satisfy `-1 == -1` and score.
         """
         valid = (pick_0 >= 0) & (pick_1 >= 0)
-        if self.unique_card_task or self.odd_one_out_task:
+        if self.odd_one_out_task:
             success = valid & jnp.equal(pick_0, target_color) & jnp.equal(pick_1, target_color)
         elif self.focal_card_idx >= 0:
             success = valid & jnp.equal(pick_0, pick_1)

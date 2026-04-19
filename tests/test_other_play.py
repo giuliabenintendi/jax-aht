@@ -7,7 +7,6 @@ from envs.card_game.rendering import (
     TILE_PIXELS,
     NUM_CARDS,
     CARD_COLORS,
-    BLACK_CARD_COLOR,
     AGENT_0_COLOR,
 )
 from envs.card_game.other_play import (
@@ -339,82 +338,6 @@ def test_combined_wrappers_reward():
     _, _, reward, _, _ = env.step(
         subkey, state, {"agent_0": a0, "agent_1": a1})
     assert float(reward["agent_0"]) == 1.0
-
-
-def test_unique_card_recolouring_obs_has_single_non_black_card():
-    """Recolouring should preserve one unique colored card among black distractors."""
-    env = CardGameEnv(
-        max_steps=2, shuffle=False, unique_card_task=True, unique_card_color_idx=0
-    )
-    wrapped = CardGameRecolouringWrapper(env)
-
-    key = jax.random.PRNGKey(1234)
-    obs, state = wrapped.reset(key)
-
-    for agent in ["agent_0", "agent_1"]:
-        recolouring = state.per_agent_recolouring[agent]
-        colors = [
-            _get_card_color_at(obs[agent], pos, env._img_h, env._img_w)
-            for pos in range(NUM_CARDS)
-        ]
-        non_black = [rgb for rgb in colors if not jnp.all(rgb == BLACK_CARD_COLOR)]
-        assert len(non_black) == 1
-        assert jnp.all(non_black[0] == CARD_COLORS[recolouring[0]])
-
-
-def test_unique_card_task_with_recolouring():
-    """Both agents should coordinate on the locally unique colored card."""
-    env = CardGameEnv(
-        max_steps=2, shuffle=True, unique_card_task=True, unique_card_color_idx=0
-    )
-    wrapped = CardGameRecolouringWrapper(env)
-
-    for seed in range(10):
-        key = jax.random.PRNGKey(600 + seed)
-        _, state = wrapped.reset(key)
-
-        recolour_0 = state.per_agent_recolouring["agent_0"]
-        recolour_1 = state.per_agent_recolouring["agent_1"]
-        a0 = jnp.int32(recolour_0[0])
-        a1 = jnp.int32(recolour_1[0])
-
-        key, subkey = jax.random.split(key)
-        noop = {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
-        _, state, _, _, _ = wrapped.step(subkey, state, noop)
-
-        key, subkey = jax.random.split(key)
-        _, _, reward, _, _ = wrapped.step(
-            subkey, state, {"agent_0": a0, "agent_1": a1}
-        )
-        assert float(reward["agent_0"]) == 1.0
-
-
-def test_unique_card_task_with_combined_wrappers():
-    """Position shuffle + recolouring should still preserve the unique target card."""
-    env = CardGameEnv(
-        max_steps=2, shuffle=False, unique_card_task=True, unique_card_color_idx=0
-    )
-    env = CardGamePositionShuffleWrapper(env)
-    env = CardGameRecolouringWrapper(env)
-
-    for seed in range(10):
-        key = jax.random.PRNGKey(700 + seed)
-        _, state = env.reset(key)
-
-        recolour_0 = state.per_agent_recolouring["agent_0"]
-        recolour_1 = state.per_agent_recolouring["agent_1"]
-        a0 = jnp.int32(recolour_0[0])
-        a1 = jnp.int32(recolour_1[0])
-
-        key, subkey = jax.random.split(key)
-        noop = {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
-        _, state, _, _, _ = env.step(subkey, state, noop)
-
-        key, subkey = jax.random.split(key)
-        _, _, reward, _, _ = env.step(
-            subkey, state, {"agent_0": a0, "agent_1": a1}
-        )
-        assert float(reward["agent_0"]) == 1.0
 
 
 def test_recolouring_preserves_focal_low_reward_card():
