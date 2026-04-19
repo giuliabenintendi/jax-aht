@@ -111,6 +111,60 @@ def render_op_test_card_game(red_position: jnp.ndarray) -> jnp.ndarray:
     return img
 
 
+def _unwrap_op_test_state(state):
+    """Walk .env_state chain to the base CardGameOPTestState (has red_position)."""
+    s = state
+    while hasattr(s, 'env_state') and not hasattr(s, 'red_position'):
+        s = s.env_state
+    return s
+
+
+def _draw_choice_border_np(img, card_pos, color, thickness):
+    """Draw a thick border around the card tile at GT col card_pos on upscaled img."""
+    h, w = img.shape[:2]
+    tile_h = h // GRID_ROWS
+    tile_w = w // GRID_COLS
+    y0 = tile_h  # card row = 1
+    x0 = card_pos * tile_w
+    img[y0:y0 + thickness, x0:x0 + tile_w] = color
+    img[y0 + tile_h - thickness:y0 + tile_h, x0:x0 + tile_w] = color
+    img[y0:y0 + tile_h, x0:x0 + thickness] = color
+    img[y0:y0 + tile_h, x0 + tile_w - thickness:x0 + tile_w] = color
+    return img
+
+
+def render_op_test_eval_frames(ep_states, scale: int = 32):
+    """Upscaled RGB frames from a list of episode states.
+
+    Shows the GROUND TRUTH view (not per-agent OP-shuffled views). On the
+    decision step, draws a colored border around the card each agent picked
+    (agent 0 = orange, agent 1 = magenta). Both borders on the red tile means
+    the agents coordinated on the focal card.
+    """
+    import numpy as np
+    from PIL import Image
+
+    agent0_border = np.array([255, 140, 0], dtype=np.uint8)
+    agent1_border = np.array([255, 0, 255], dtype=np.uint8)
+    thickness = max(2, scale // 8)
+
+    frames = []
+    for state in ep_states:
+        inner = _unwrap_op_test_state(state)
+        img = np.array(render_op_test_card_game(inner.red_position))
+        h, w = img.shape[:2]
+        frame = np.array(Image.fromarray(img).resize((w * scale, h * scale), Image.NEAREST))
+
+        choices = np.array(inner.agent_choices)  # GT positions, -1 until decision
+        if choices[0] >= 0:
+            _draw_choice_border_np(frame, int(choices[0]), agent0_border, thickness)
+        if choices[1] >= 0:
+            _draw_choice_border_np(frame, int(choices[1]), agent1_border, thickness)
+
+        frames.append(frame)
+    return frames
+
+
 class CardGameOPTestEnv(BaseEnv):
     """OP-test diagnostic env: 4 white + 1 red card, position-based picks.
 

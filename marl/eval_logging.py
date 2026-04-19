@@ -356,10 +356,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
     )
 
     env_name = algorithm_config["ENV_NAME"]
-    # Diagnostic envs that don't need eval videos or attention metrics.
-    if env_name == "card-game-op-test":
-        print(f"[ja_ippo] {env_name}: skipping eval video / attention logging (diagnostic env)")
-        return
 
     if init_fn is None:
         obs_type = _get_obs_type(algorithm_config)
@@ -442,11 +438,24 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
         elif env_name == "card-game":
             from envs.card_game.rendering import render_card_game_eval_frames
             frames = render_card_game_eval_frames(ep_states, scale=32)
+        elif env_name == "card-game-op-test":
+            from envs.card_game.card_game_op_test import render_op_test_eval_frames
+            frames = render_op_test_eval_frames(ep_states, scale=32)
         else:
             from evaluation.vis_episodes import render_episode_frames
             frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
 
         tag = f"Eval/seed_{seed_idx}"
+
+        if env_name == "card-game-op-test":
+            # Diagnostic env: simple eval video only, no attention overlays.
+            from moviepy import ImageSequenceClip
+            video_path = f"{video_dir}/eval_final.mp4"
+            clip = ImageSequenceClip(frames, fps=2)
+            clip.write_videofile(video_path, fps=2, codec='libx264', audio=False,
+                                 bitrate='8000k', preset='slow')
+            logger.log_video(f"{tag}/episode_video", video_path, commit=False)
+            continue
 
         if env_name == "card-game":
             # Card game: 2xT grid image + multi-episode video
