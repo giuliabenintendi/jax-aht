@@ -14,7 +14,14 @@ from PIL import Image
 
 from envs import make_env
 from envs.card_game.action_utils import COMM_MESSAGE_BASE
-from envs.card_game.rendering import GRID_COLS, GRID_ROWS, TILE_PIXELS, render_card_game
+from envs.card_game.rendering import (
+    AGENT_0_COLOR,
+    AGENT_1_COLOR,
+    GRID_COLS,
+    GRID_ROWS,
+    TILE_PIXELS,
+    render_card_game,
+)
 
 
 _OUT_DIR = Path("tests/op_diagnostic")
@@ -40,6 +47,32 @@ def _save_rgb(img, path: Path) -> None:
     arr = np.array(img).astype(np.uint8)
     h, w = arr.shape[:2]
     Image.fromarray(arr).resize((w * _SCALE, h * _SCALE), Image.NEAREST).save(path)
+
+
+def _find_dot_column(flat_obs, dot_rgb_u8) -> int | None:
+    """Find the tile column in the card row showing the dot (exact pixel match)."""
+    h = GRID_ROWS * TILE_PIXELS
+    w = GRID_COLS * TILE_PIXELS
+    img = (np.array(flat_obs) * 255).astype(np.uint8).reshape(h, w, 3)
+    card_band = img[TILE_PIXELS:2 * TILE_PIXELS, :, :]
+    mask = np.all(card_band == np.asarray(dot_rgb_u8, dtype=np.uint8), axis=-1)
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        return None
+    center_x = float(xs.mean())
+    return int(center_x // TILE_PIXELS)
+
+
+def _expected_dot_column(gt_msg: int, card_perm: np.ndarray, pos_perm: np.ndarray) -> int | None:
+    """Column the dot should appear at in an agent's view for a given GT msg."""
+    gt_positions = np.where(card_perm == gt_msg)[0]
+    if len(gt_positions) == 0:
+        return None
+    gt_col = int(gt_positions[0])
+    view_matches = np.where(pos_perm == gt_col)[0]
+    if len(view_matches) == 0:
+        return None
+    return int(view_matches[0])
 
 
 def test_op_diagnostic():
@@ -111,6 +144,27 @@ def test_op_diagnostic():
     _save_flat_obs(obs["agent_0"], _OUT_DIR / "delib_agent_0.png")
     _save_flat_obs(obs["agent_1"], _OUT_DIR / "delib_agent_1.png")
     _save_rgb(render_card_game(base.card_permutation), _OUT_DIR / "delib_gt.png")
+
+    # --- Verify partner-message dot position in each agent's obs ---
+    # Agent 0's obs should show agent 1's GT message as a magenta dot; the
+    # dot column must match GT position of that colour mapped through agent
+    # 0's position shuffle. Symmetric check for agent 1.
+    card_perm_now = np.array(base.card_permutation)
+    found_col_0 = _find_dot_column(obs["agent_0"], np.array(AGENT_1_COLOR))
+    found_col_1 = _find_dot_column(obs["agent_1"], np.array(AGENT_0_COLOR))
+    exp_col_0 = _expected_dot_column(gt_msg_1, card_perm_now, pos_0)
+    exp_col_1 = _expected_dot_column(gt_msg_0, card_perm_now, pos_1)
+
+    print("\n=== Dot-position check (post-deliberation) ===")
+    print(f"  agent_0 view: dot expected at col {exp_col_0}, found at col {found_col_0}")
+    print(f"  agent_1 view: dot expected at col {exp_col_1}, found at col {found_col_1}")
+
+    assert found_col_0 == exp_col_0, (
+        f"agent_0 dot position mismatch: expected {exp_col_0}, found {found_col_0}"
+    )
+    assert found_col_1 == exp_col_1, (
+        f"agent_1 dot position mismatch: expected {exp_col_1}, found {found_col_1}"
+    )
 
     # --- Fast-forward to decision step with noop messages ---
     for _ in range(6):
