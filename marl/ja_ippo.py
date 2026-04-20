@@ -254,6 +254,8 @@ def make_train_loop(config, env):
     def make_step_fn(policy):
 
         def _ppo_update(train_state, traj_batch, advantages, targets, rng):
+            policy_loss_type = config.get("POLICY_LOSS_TYPE", "spo")
+
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
                     init_hstate, traj_batch, advantages, targets = batch_info
@@ -296,17 +298,29 @@ def make_train_loop(config, env):
 
                         ratio = jnp.exp(log_prob - traj_batch.log_prob)
                         gae = (gae - gae.mean()) / (gae.std() + 1e-8)
-                        loss_actor1 = ratio * gae
-                        loss_actor2 = (
-                            jnp.clip(
-                                ratio,
-                                1.0 - config["CLIP_EPS"],
-                                1.0 + config["CLIP_EPS"],
+                        if policy_loss_type == "spo":
+                            # SPO (Simple Policy Optimization):
+                            # loss = -(ratio*A - |A|*(ratio-1)^2 / (2*eps))
+                            # Smooth quadratic penalty around ratio=1 replaces
+                            # PPO's clipped min. Optimum at ratio = 1 + eps*sign(A);
+                            # beyond that the penalty pulls the ratio back, so
+                            # the update can't drift far in a single step.
+                            spo_penalty = (
+                                jnp.abs(gae) * jnp.square(ratio - 1.0)
+                                / (2.0 * config["CLIP_EPS"])
                             )
-                            * gae
-                        )
-                        loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
-                        loss_actor = loss_actor.mean()
+                            loss_actor = -(ratio * gae - spo_penalty).mean()
+                        else:
+                            loss_actor1 = ratio * gae
+                            loss_actor2 = (
+                                jnp.clip(
+                                    ratio,
+                                    1.0 - config["CLIP_EPS"],
+                                    1.0 + config["CLIP_EPS"],
+                                )
+                                * gae
+                            )
+                            loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
 
                         total_loss = (
                             loss_actor
