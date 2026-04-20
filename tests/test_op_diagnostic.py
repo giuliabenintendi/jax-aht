@@ -10,7 +10,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from envs import make_env
 from envs.card_game.action_utils import COMM_MESSAGE_BASE
@@ -47,6 +47,26 @@ def _save_rgb(img, path: Path) -> None:
     arr = np.array(img).astype(np.uint8)
     h, w = arr.shape[:2]
     Image.fromarray(arr).resize((w * _SCALE, h * _SCALE), Image.NEAREST).save(path)
+
+
+def _save_flat_obs_marked(flat_obs, path: Path, expected_col: int | None, card_row: int = 1) -> None:
+    """Save obs with a green crosshair at the expected dot tile centre."""
+    h = GRID_ROWS * TILE_PIXELS
+    w = GRID_COLS * TILE_PIXELS
+    img = (np.array(flat_obs) * 255).astype(np.uint8).reshape(h, w, 3)
+    pil = Image.fromarray(img).resize((w * _SCALE, h * _SCALE), Image.NEAREST).convert("RGB")
+    if expected_col is not None:
+        draw = ImageDraw.Draw(pil)
+        cx = int((expected_col + 0.5) * TILE_PIXELS * _SCALE)
+        cy = int((card_row + 0.5) * TILE_PIXELS * _SCALE)
+        arm = _SCALE * 2
+        draw.line([(cx - arm, cy), (cx + arm, cy)], fill=(0, 255, 0), width=3)
+        draw.line([(cx, cy - arm), (cx, cy + arm)], fill=(0, 255, 0), width=3)
+        draw.ellipse(
+            [(cx - arm, cy - arm), (cx + arm, cy + arm)],
+            outline=(0, 255, 0), width=3,
+        )
+    pil.save(path)
 
 
 def _find_dot_column(flat_obs, dot_rgb_u8) -> int | None:
@@ -165,6 +185,12 @@ def test_op_diagnostic():
     assert found_col_1 == exp_col_1, (
         f"agent_1 dot position mismatch: expected {exp_col_1}, found {found_col_1}"
     )
+
+    # Save visual overlays: green crosshair at the expected dot column. If the
+    # crosshair lands on the partner-colour dot, the OP perception pipeline is
+    # visually verified.
+    _save_flat_obs_marked(obs["agent_0"], _OUT_DIR / "delib_agent_0_marked.png", exp_col_0)
+    _save_flat_obs_marked(obs["agent_1"], _OUT_DIR / "delib_agent_1_marked.png", exp_col_1)
 
     # --- Fast-forward to decision step with noop messages ---
     for _ in range(6):
