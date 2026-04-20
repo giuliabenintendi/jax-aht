@@ -254,10 +254,13 @@ def make_train_loop(config, env):
     def make_step_fn(policy):
 
         def _ppo_update(train_state, traj_batch, advantages, targets, rng):
-            policy_loss_type = config.get("POLICY_LOSS_TYPE", "spo")
+            policy_loss_type = config.get("POLICY_LOSS_TYPE", "ppo")
+            target_kl = float(config.get("TARGET_KL", 0.0))
+            kl_stop_active = target_kl > 0.0
 
             def _update_epoch(update_state, unused):
-                def _update_minbatch(train_state, batch_info):
+                def _update_minbatch(carry, batch_info):
+                    train_state, should_stop = carry
                     init_hstate, traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(params, traj_batch, gae, targets):
@@ -340,22 +343,36 @@ def make_train_loop(config, env):
                     grad_norm = jnp.sqrt(
                         sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads))
                     )
+                    # When KL early-stop has been tripped on a previous epoch,
+                    # zero the gradient so apply_gradients becomes a no-op.
+                    # Forward pass still runs for diagnostics consistency.
+                    grads = jax.tree.map(
+                        lambda g: jnp.where(should_stop, jnp.zeros_like(g), g), grads
+                    )
                     train_state = train_state.apply_gradients(grads=grads)
-                    return train_state, (total_loss, grad_norm)
+                    return (train_state, should_stop), (total_loss, grad_norm)
 
-                train_state, init_hstate, traj_batch, advantages, targets, rng = update_state
+                (train_state, init_hstate, traj_batch, advantages,
+                 targets, rng, should_stop) = update_state
                 rng, perm_rng = jax.random.split(rng)
                 minibatches = _create_minibatches(traj_batch, advantages, targets, init_hstate,
                                                   num_actors, config["NUM_MINIBATCHES"], perm_rng)
 
-                train_state, minibatch_info = jax.lax.scan(
-                    _update_minbatch, train_state, minibatches
+                (train_state, should_stop), minibatch_info = jax.lax.scan(
+                    _update_minbatch, (train_state, should_stop), minibatches
                 )
-                update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
+                if kl_stop_active:
+                    # loss_info structure: ((total_loss, (value, policy, entropy,
+                    #   approx_kl, clip_frac, ratio_mean, ratio_std)), grad_norm).
+                    epoch_approx_kl = minibatch_info[0][1][3].mean()
+                    should_stop = should_stop | (epoch_approx_kl > target_kl)
+                update_state = (train_state, init_hstate, traj_batch, advantages,
+                                targets, rng, should_stop)
                 return update_state, minibatch_info
 
             init_hstate = policy.init_hstate(num_actors)
-            update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
+            update_state = (train_state, init_hstate, traj_batch, advantages,
+                            targets, rng, jnp.bool_(False))
             update_state, loss_info = jax.lax.scan(
                 _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
             )
