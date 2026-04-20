@@ -159,9 +159,9 @@ class CardGameEnv(BaseEnv):
                 msg_pos = jnp.argmin(jnp.abs(env_state.card_permutation - partner_msg))
                 # Draw dot only if partner has sent a valid message (>= 0)
                 has_msg = partner_msg >= 0
-                # Draw 4×4 dot at center of messaged card tile
+                # Draw 2×2 dot at center of messaged card tile
                 card_row = 1
-                dot_size = 4
+                dot_size = 2
                 dot_y = card_row * self.tile_size + (self.tile_size - dot_size) // 2
                 dot_x = msg_pos * self.tile_size + (self.tile_size - dot_size) // 2
                 color_dot = jnp.broadcast_to(partner_colors[i], (dot_size, dot_size, 3))
