@@ -6,6 +6,7 @@ ALG: ja_ippo
 NUM_CHECKPOINTS: 5
 ANNEAL_LR: False
 MAX_GRAD_NORM: 0.5
+NORMALIZE_REWARDS: true
 
 # PPO — aligned with Forkel et al. 2025 Overcooked baseline
 LR: 4e-4
