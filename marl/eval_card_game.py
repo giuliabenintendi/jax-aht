@@ -65,8 +65,20 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
         # Messages sent at step t-1 become visible in observation t.
         if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
-            _draw_message_on_cell(cell_0, ep_messages[t - 1][1], scale, color=agent1_color)
-            _draw_message_on_cell(cell_1, ep_messages[t - 1][0], scale, color=agent0_color)
+            _draw_message_on_cell(
+                cell_0,
+                ep_messages[t - 1][1],
+                scale,
+                color=agent1_color,
+                card_permutation=card_permutation,
+            )
+            _draw_message_on_cell(
+                cell_1,
+                ep_messages[t - 1][0],
+                scale,
+                color=agent0_color,
+                card_permutation=card_permutation,
+            )
 
         # Draw decision square on last timestep
         if t == n_steps - 1:
@@ -148,6 +160,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
         n_steps = min(len(maps_0), len(maps_1))
         from envs.card_game.rendering import _unwrap_card_game_state
         es0 = _unwrap_card_game_state(ep_states[0])
+        card_permutation = np.array(es0.card_permutation)
 
         base_img = render_card_game(es0.card_permutation)
         base_np = np.array(base_img)
@@ -164,8 +177,20 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
                 a0_color = [255, 140, 0]    # orange
                 a1_color = [255, 0, 255]    # magenta
-                _draw_message_on_cell(cell_0, ep_messages[t - 1][1], scale, color=a1_color)
-                _draw_message_on_cell(cell_1, ep_messages[t - 1][0], scale, color=a0_color)
+                _draw_message_on_cell(
+                    cell_0,
+                    ep_messages[t - 1][1],
+                    scale,
+                    color=a1_color,
+                    card_permutation=card_permutation,
+                )
+                _draw_message_on_cell(
+                    cell_1,
+                    ep_messages[t - 1][0],
+                    scale,
+                    color=a0_color,
+                    card_permutation=card_permutation,
+                )
 
             # Draw decision square on last timestep
             if t == n_steps - 1:
@@ -256,6 +281,7 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                 n_steps = min(len(maps_0), len(maps_1))
                 from envs.card_game.rendering import _unwrap_card_game_state
                 es0 = _unwrap_card_game_state(ep_states[0])
+                card_permutation = np.array(es0.card_permutation)
 
                 base_img = render_card_game(es0.card_permutation)
                 base_np = np.array(base_img)
@@ -271,8 +297,20 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                     if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
                         a0_color = [255, 140, 0]
                         a1_color = [255, 0, 255]
-                        _draw_message_on_cell(cell_0, ep_messages[t - 1][1], scale, color=a1_color)
-                        _draw_message_on_cell(cell_1, ep_messages[t - 1][0], scale, color=a0_color)
+                        _draw_message_on_cell(
+                            cell_0,
+                            ep_messages[t - 1][1],
+                            scale,
+                            color=a1_color,
+                            card_permutation=card_permutation,
+                        )
+                        _draw_message_on_cell(
+                            cell_1,
+                            ep_messages[t - 1][0],
+                            scale,
+                            color=a0_color,
+                            card_permutation=card_permutation,
+                        )
 
                     if t == n_steps - 1:
                         _draw_decision_square(cell_0, scale)

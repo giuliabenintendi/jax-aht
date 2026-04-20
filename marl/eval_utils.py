@@ -1,5 +1,7 @@
 """Generic drawing utilities for eval visualization (card-game borders, boxes)."""
 
+import numpy as np
+
 
 def _draw_box(cell, row, col, tile_h, tile_w, color, thickness):
     """Draw a thick border around a tile at grid (row, col) on an upscaled frame."""
@@ -32,15 +34,37 @@ def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_co
     _draw_box(cell, agent_row, agent_col, tile_h, tile_w, white, thickness)
 
 
-def _draw_message_on_cell(cell, msg_pos, scale, color=None):
-    """Draw a dot at center of card at msg_pos (row 1) in the partner's color."""
+def _draw_message_on_cell(cell, msg_value, scale, color=None, card_permutation=None):
+    """Draw a dot on the messaged card.
+
+    Args:
+        cell: Upscaled RGB frame to mutate in place.
+        msg_value: Card color/id in the card game message protocol.
+        scale: Frame upscale factor.
+        color: Dot color.
+        card_permutation: Optional mapping from physical column -> card color/id.
+            When provided, the helper resolves ``msg_value`` to the card's current
+            physical column before drawing. Without it, ``msg_value`` is treated
+            as an already-resolved column index for backward compatibility.
+    """
     tile_h = scale * 7
     tile_w = scale * 7
     if color is None:
         color = [139, 90, 43]
+
+    if msg_value < 0:
+        return
+
+    msg_col = int(msg_value)
+    if card_permutation is not None:
+        matches = np.where(np.asarray(card_permutation) == msg_value)[0]
+        if len(matches) == 0:
+            return
+        msg_col = int(matches[0])
+
     # 2x2 dot at center of card tile (row 1), scaled up
     cy = 1 * tile_h + tile_h // 2
-    cx = msg_pos * tile_w + tile_w // 2
+    cx = msg_col * tile_w + tile_w // 2
     dot_size = scale * 2  # 2 pixels at obs level, scaled
     cell[cy:cy + dot_size, cx:cx + dot_size] = color
 
