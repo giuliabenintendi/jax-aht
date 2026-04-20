@@ -55,12 +55,12 @@ def _build_run_string(config: dict) -> str:
     env_kwargs = alg_config.get("ENV_KWARGS", {})
     if alg_config.get("COMMUNICATION", False):
         parts.append("comm")
-        comm_coef = env_kwargs.get("comm_reward_coef", 0.0)
-        if comm_coef > 0:
-            parts.append(f"reward{comm_coef}")
-    follow_bonus = env_kwargs.get("comm_follow_bonus", 0.0)
-    if follow_bonus > 0:
-        parts.append(f"follow{follow_bonus}")
+        match_coef = env_kwargs.get("match_coef", 0.0)
+        if match_coef > 0:
+            parts.append(f"match{match_coef}")
+    follow_coef = env_kwargs.get("follow_coef", 0.0)
+    if follow_coef > 0:
+        parts.append(f"follow{follow_coef}")
     attn_msg = alg_config.get("ATTN_MSG_REWARD_COEF", 0.0)
     if attn_msg > 0:
         parts.append(f"attn_msg{attn_msg}")
@@ -123,7 +123,7 @@ def _build_tags(config) -> list[str]:
         tags.append("query_plstm")
     if alg_config.get("ATTN_MSG_REWARD_COEF", 0.0) > 0:
         tags.append("attn_msg")
-    if env_kwargs.get("comm_follow_bonus", 0.0) > 0:
+    if env_kwargs.get("follow_coef", 0.0) > 0:
         tags.append("follow_bonus")
     if alg_config.get("JA_CARD_ATTN", False):
         tags.append("ja_card_attn")

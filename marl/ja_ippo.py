@@ -467,10 +467,8 @@ def make_train_loop(config, env):
                 # interleaving reshape.
                 comm_reward_raw = info.pop("comm_reward", jnp.zeros((num_envs, env.num_agents)))
                 comm_reward_batch = comm_reward_raw.transpose(1, 0).reshape(-1)
-                comm_agree_raw = info.pop("comm_reward_agree", jnp.zeros((num_envs, env.num_agents)))
-                comm_agree_batch = comm_agree_raw.transpose(1, 0).reshape(-1)
-                comm_stable_raw = info.pop("comm_reward_stable", jnp.zeros((num_envs, env.num_agents)))
-                comm_stable_batch = comm_stable_raw.transpose(1, 0).reshape(-1)
+                comm_match_raw = info.pop("comm_reward_match", jnp.zeros((num_envs, env.num_agents)))
+                comm_match_batch = comm_match_raw.transpose(1, 0).reshape(-1)
                 comm_follow_raw = info.pop("comm_reward_follow", jnp.zeros((num_envs, env.num_agents)))
                 comm_follow_batch = comm_follow_raw.transpose(1, 0).reshape(-1)
 
@@ -587,10 +585,6 @@ def make_train_loop(config, env):
                     r_follow = jnp.concatenate([r_follow_env, r_follow_env])
 
                     ja_card_reward = jax.lax.stop_gradient(r_conc + r_align + r_follow + r_card_jsd)
-                    ja_card_conc_out = jax.lax.stop_gradient(r_conc)
-                    ja_card_align_out = jax.lax.stop_gradient(r_align)
-                    ja_card_follow_out = jax.lax.stop_gradient(r_follow)
-                    ja_card_jsd_out = jax.lax.stop_gradient(r_card_jsd)
                     dbg_card_attn_0 = jax.lax.stop_gradient(card_pos_attn_0)
                     dbg_card_attn_1 = jax.lax.stop_gradient(card_pos_attn_1)
 
@@ -607,10 +601,6 @@ def make_train_loop(config, env):
                         new_done_batch_ja[:, None], 0.0, new_partner_card_attn)
                 else:
                     ja_card_reward = jnp.zeros(num_actors)
-                    ja_card_conc_out = jnp.zeros(num_actors)
-                    ja_card_align_out = jnp.zeros(num_actors)
-                    ja_card_follow_out = jnp.zeros(num_actors)
-                    ja_card_jsd_out = jnp.zeros(num_actors)
                     dbg_card_attn_0 = jnp.zeros((num_envs, 5))
                     dbg_card_attn_1 = jnp.zeros((num_envs, 5))
                     dbg_partner_card_attn_0 = jnp.zeros((num_envs, 5))
@@ -676,18 +666,16 @@ def make_train_loop(config, env):
                     new_plh_c = jnp.where(new_done_batch[:, None], 0.0, new_plh_c)
                     runner_state = runner_state + (new_plh_a, new_plh_c)
                 return runner_state, (transition, intrinsic, comm_reward_batch,
-                                     comm_agree_batch, comm_stable_batch, comm_follow_batch,
+                                     comm_match_batch, comm_follow_batch,
                                      attn_msg_reward,
-                                     ja_card_reward, ja_card_conc_out, ja_card_align_out, ja_card_follow_out,
-                                     ja_card_jsd_out,
+                                     ja_card_reward,
                                      dbg_card_attn_0, dbg_card_attn_1,
                                      dbg_partner_card_attn_0, dbg_partner_card_attn_1)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
-                           comm_agree_batch, comm_stable_batch, comm_follow_batch,
+                           comm_match_batch, comm_follow_batch,
                            attn_msg_reward_batch,
-                           ja_card_reward_batch, ja_card_conc_batch, ja_card_align_batch, ja_card_follow_batch,
-                           ja_card_jsd_batch,
+                           ja_card_reward_batch,
                            dbg_card_attn_0_batch, dbg_card_attn_1_batch,
                            dbg_partner_card_attn_0_batch, dbg_partner_card_attn_1_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
@@ -773,8 +761,7 @@ def make_train_loop(config, env):
             # Save raw env reward before combining
             raw_env_reward = traj_batch.reward
             scaled_comm_reward = comm_scale * comm_reward_batch
-            scaled_comm_agree = comm_scale * comm_agree_batch
-            scaled_comm_stable = comm_scale * comm_stable_batch
+            scaled_comm_match = comm_scale * comm_match_batch
             scaled_comm_follow = comm_scale * comm_follow_batch
             scaled_attn_msg_reward = attn_msg_coef * attn_msg_reward_batch
 
@@ -796,15 +783,13 @@ def make_train_loop(config, env):
             (total_loss, (value_loss, policy_loss, entropy,
                          approx_kl, clip_frac, ratio_mean, ratio_std)), grad_norm = loss_info
 
-            ja_rew_0 = traj_batch.ja_reward[:, :num_envs]
-            jsd_values = -ja_rew_0
+            jsd_values = -traj_batch.ja_reward[:, :num_envs]
 
             metric = traj_batch.info
             metric["update_steps"] = update_steps
             metric["ja_beta"] = ja_beta
             metric["comm_scale"] = comm_scale
             metric["jsd_mean"] = jsd_values.mean()
-            metric["ja_reward_mean"] = ja_rew_0.mean()
             metric["loss_total"] = total_loss[0].mean()
             metric["loss_value"] = value_loss[0].mean()
             metric["loss_policy"] = policy_loss[0].mean()
@@ -820,17 +805,9 @@ def make_train_loop(config, env):
             metric["explained_var"] = 1.0 - ev_var_resid / (ev_var_ret + 1e-8)
             metric["advantage_std"] = adv_std
             metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
-            metric["intrinsic_mean"] = intrinsic_batch[:, :num_envs].mean()
             metric["comm_reward_mean"] = scaled_comm_reward[:, :num_envs].mean()
-            metric["comm_agreement_bonus_mean"] = scaled_comm_agree[:, :num_envs].mean()
-            metric["comm_stability_bonus_mean"] = scaled_comm_stable[:, :num_envs].mean()
+            metric["comm_match_bonus_mean"] = scaled_comm_match[:, :num_envs].mean()
             metric["comm_joint_followthrough_bonus_mean"] = scaled_comm_follow[:, :num_envs].mean()
-            metric["attn_msg_reward_mean"] = scaled_attn_msg_reward.mean()
-            metric["ja_card_reward_mean"] = ja_card_reward_batch[:, :num_envs].mean()
-            metric["ja_card_conc_mean"] = ja_card_conc_batch[:, :num_envs].mean()
-            metric["ja_card_align_mean"] = ja_card_align_batch[:, :num_envs].mean()
-            metric["ja_card_follow_mean"] = ja_card_follow_batch[:, :num_envs].mean()
-            metric["ja_card_jsd_mean"] = ja_card_jsd_batch[:, :num_envs].mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
             if card_cross_attn:
@@ -1053,7 +1030,6 @@ def log_metrics(config, out, logger):
         ], axis=-1)
 
     # Scalar metrics: (metric_key, wandb_name)
-    # Dropped ja_reward_mean (= -jsd) and intrinsic_mean (= -beta*jsd) as redundant
     scalar_keys = [
         ("ja_beta",              "JA/beta"),
         ("comm_scale",           "Comm/scale"),
@@ -1061,15 +1037,8 @@ def log_metrics(config, out, logger):
         ("raw_env_reward_mean",  "Reward/env_raw"),
         ("combined_reward_mean", "Reward/combined_raw"),
         ("comm_reward_mean",                     "Reward/comm"),
-        ("comm_agreement_bonus_mean",           "Reward/comm_agreement_bonus"),
-        ("comm_stability_bonus_mean",           "Reward/comm_stability_bonus"),
+        ("comm_match_bonus_mean",               "Reward/comm_match_bonus"),
         ("comm_joint_followthrough_bonus_mean", "Reward/comm_joint_followthrough_bonus"),
-        ("attn_msg_reward_mean", "Reward/attn_msg"),
-        ("ja_card_reward_mean",  "Reward/ja_card"),
-        ("ja_card_conc_mean",   "Reward/ja_card_conc"),
-        ("ja_card_align_mean",  "Reward/ja_card_align"),
-        ("ja_card_follow_mean", "Reward/ja_card_follow"),
-        ("ja_card_jsd_mean",   "Reward/ja_card_jsd"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),

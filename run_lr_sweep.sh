@@ -2,7 +2,7 @@
 # LR sweep: 6 configs across 2 GPUs, 1 seed each, 5M steps, sequential per GPU.
 # GPU 3: MB=16 EP=4 (default) with LR=1e-3, 7e-4, 4e-4
 # GPU 6: MB=8  EP=6            with LR=1e-3, 7e-4, 4e-4
-# All use: NUM_ENVS=64, GAE=0.95, comm=0.5, follow=2.0, stability=0.02, no LR anneal
+# All use: NUM_ENVS=64, GAE=0.95, match=0.05, follow=2.0, no LR anneal
 
 COMMON="marl.run -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-game \
   algorithm.COMMUNICATION=true algorithm.JA_BETA_MAX=0.0 \
@@ -10,9 +10,8 @@ COMMON="marl.run -cn base_config_ja_ippo task=card-game algorithm=ja_ippo/card-g
   algorithm.TOTAL_TIMESTEPS=5000000 algorithm.COMM_WARMUP_ENV_STEPS=0 \
   task.ENV_KWARGS.other_play_position_shuffle=true \
   task.ENV_KWARGS.other_play_recolouring=true \
-  task.ENV_KWARGS.comm_reward_coef=0.5 \
-  task.ENV_KWARGS.comm_follow_bonus=2.0 \
-  task.ENV_KWARGS.comm_stability_bonus=0.02"
+  task.ENV_KWARGS.match_coef=0.05 \
+  task.ENV_KWARGS.follow_coef=2.0"
 
 # GPU 3: default minibatches (MB=16, EP=4)
 nohup bash -c "

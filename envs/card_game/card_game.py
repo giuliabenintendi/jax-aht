@@ -63,6 +63,7 @@ class CardGameState:
     agent_choices: chex.Array     # (2,) chosen positions, -1 until decision step
     messages: chex.Array          # (2,) last message per agent, int32
     target_color: chex.Array      # scalar int32, odd-card color for diagnostic mode; -1 otherwise
+    committed_streak: chex.Array  # scalar int32: consecutive steps with both agents holding their message
 
 
 def _draw_border(img, row, col, tile_size, color):
@@ -89,8 +90,9 @@ class CardGameEnv(BaseEnv):
     """
 
     def __init__(self, max_steps: int = 10, shuffle: bool = True,
-                 communication: bool = False, comm_reward_coef: float = 0.0,
-                 comm_follow_bonus: float = 0.0, comm_stability_bonus: float = 0.0,
+                 communication: bool = False,
+                 match_coef: float = 0.0,
+                 follow_coef: float = 0.0,
                  odd_one_out_task: bool = False,
                  focal_card_idx: int = -1,
                  focal_card_reward: float = 1.0,
@@ -99,9 +101,8 @@ class CardGameEnv(BaseEnv):
         self.max_steps = max_steps
         self.shuffle = shuffle
         self.communication = communication
-        self.comm_reward_coef = comm_reward_coef
-        self.comm_follow_bonus = comm_follow_bonus
-        self.comm_stability_bonus = comm_stability_bonus
+        self.match_coef = match_coef
+        self.follow_coef = follow_coef
         self.odd_one_out_task = odd_one_out_task
         self.focal_card_idx = int(focal_card_idx)
         self.focal_card_reward = float(focal_card_reward)
@@ -204,6 +205,7 @@ class CardGameEnv(BaseEnv):
             agent_choices=jnp.full(2, -1, dtype=jnp.int32),
             messages=jnp.full(2, -1, dtype=jnp.int32),
             target_color=target_color,
+            committed_streak=jnp.int32(0),
         )
         obs = self._make_obs(env_state)
         return obs, WrappedEnvState(
@@ -246,54 +248,58 @@ class CardGameEnv(BaseEnv):
             success = valid & jnp.equal(pick_0, pick_1)
         return jnp.where(is_decision & success, 1.0, 0.0)
 
-    def _comm_shaping(self, prev_messages, new_messages, picks, is_decision, new_step):
-        """Per-agent (agree, stable, follow) shaping rewards for the comm channel.
+    def _comm_shaping(self, prev_messages, new_messages, prev_streak, picks, is_decision):
+        """Match-with-committed-streak bonus on deliberation steps + follow bonus on decision.
 
-        All three are symmetric across agents (shared reward).
+        - match bonus = match_coef * new_streak on non-decision steps when new messages agree.
+          new_streak increments only when both agents held their message from prev → new; resets
+          to 1 otherwise. At the first step, prev messages are the -1 reset sentinel so
+          both_held is False and the streak is 1.
+        - follow bonus = follow_coef on the decision step when prev (step-7) messages matched
+          and each agent picks their own prev message.
+
+        Returns (match_arr, follow_arr, new_streak). Arrays are shape (num_agents,) and
+        symmetric (shared reward); new_streak is scalar int32.
         """
         shaping_active = self.communication and (
-            self.comm_reward_coef > 0
-            or self.comm_follow_bonus > 0
-            or self.comm_stability_bonus > 0
+            self.match_coef > 0 or self.follow_coef > 0
         )
         if not shaping_active:
             zeros = jnp.zeros(self.num_agents)
-            return zeros, zeros, zeros
+            return zeros, zeros, jnp.int32(0)
 
         prev_msg_0, prev_msg_1 = prev_messages[0], prev_messages[1]
         new_msg_0, new_msg_1 = new_messages[0], new_messages[1]
         pick_0, pick_1 = picks
 
-        prev_valid = (prev_msg_0 >= 0) & (prev_msg_1 >= 0)
-        prev_match = prev_valid & jnp.equal(prev_msg_0, prev_msg_1)
-        # Skip first two steps: step 1 has no prior messages, step 2's
-        # messages were sent before either agent saw the other's message.
-        can_agree = prev_match & (new_step > 2)
-
-        agree = jnp.where(
-            can_agree & ~is_decision, self.comm_reward_coef / 4.0, 0.0
-        )
-
         new_valid = (new_msg_0 >= 0) & (new_msg_1 >= 0)
         new_match = new_valid & jnp.equal(new_msg_0, new_msg_1)
-        stable_ok = (
-            ~is_decision
-            & can_agree
-            & new_match
-            & jnp.equal(new_msg_0, prev_msg_0)
-        )
-        stable = jnp.where(stable_ok, self.comm_stability_bonus, 0.0)
 
+        prev_valid = (prev_msg_0 >= 0) & (prev_msg_1 >= 0)
+        both_held = (
+            prev_valid
+            & jnp.equal(new_msg_0, prev_msg_0)
+            & jnp.equal(new_msg_1, prev_msg_1)
+        )
+        new_streak = jnp.where(both_held, prev_streak + 1, jnp.int32(1))
+
+        match_val = jnp.where(
+            new_match & ~is_decision,
+            self.match_coef * new_streak.astype(jnp.float32),
+            0.0,
+        )
+
+        prev_match = prev_valid & jnp.equal(prev_msg_0, prev_msg_1)
         follow_ok = (
             is_decision
             & prev_match
             & jnp.equal(pick_0, prev_msg_0)
             & jnp.equal(pick_1, prev_msg_1)
         )
-        follow = jnp.where(follow_ok, self.comm_follow_bonus, 0.0)
+        follow_val = jnp.where(follow_ok, self.follow_coef, 0.0)
 
         broadcast = lambda x: jnp.array([x, x])
-        return broadcast(agree), broadcast(stable), broadcast(follow)
+        return broadcast(match_val), broadcast(follow_val), new_streak
 
     @partial(jax.jit, static_argnums=(0,))
     def step(
@@ -323,8 +329,16 @@ class CardGameEnv(BaseEnv):
             jnp.array([pick_0, pick_1], dtype=jnp.int32),
             jnp.full(2, -1, dtype=jnp.int32),
         )
+        match_arr, follow_arr, new_streak = self._comm_shaping(
+            env_state.messages, new_messages, env_state.committed_streak,
+            (pick_0, pick_1), is_decision,
+        )
+        comm_reward_arr = match_arr + follow_arr
+
         new_env_state = env_state.replace(
-            step_count=new_step, agent_choices=choices, messages=new_messages)
+            step_count=new_step, agent_choices=choices, messages=new_messages,
+            committed_streak=new_streak,
+        )
         obs_st = self._make_obs(new_env_state)
 
         base_reward_arr = jnp.array([reward_val, reward_val])
@@ -336,18 +350,13 @@ class CardGameEnv(BaseEnv):
             step=new_step,
         )
 
-        agree_arr, stable_arr, follow_arr = self._comm_shaping(
-            env_state.messages, new_messages, (pick_0, pick_1), is_decision, new_step,
-        )
-        comm_reward_arr = agree_arr + stable_arr + follow_arr
-
         info = {
             "base_reward": base_reward_arr,
             "base_return": base_return,
             "comm_reward": comm_reward_arr,
-            "comm_reward_agree": agree_arr,
-            "comm_reward_stable": stable_arr,
+            "comm_reward_match": match_arr,
             "comm_reward_follow": follow_arr,
+            "committed_streak": jnp.broadcast_to(new_streak, (self.num_agents,)),
             "step_count": jnp.broadcast_to(new_step, (self.num_agents,)),
             "target_color": jnp.broadcast_to(env_state.target_color, (self.num_agents,)),
         }

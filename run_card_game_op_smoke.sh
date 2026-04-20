@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # Quick Other-Play sanity run for the static card game communication setup.
-# Usage: ./run_card_game_op_smoke.sh <gpu> [comm_reward_coef] [timesteps]
+# Usage: ./run_card_game_op_smoke.sh <gpu> [match_coef] [timesteps]
 
 set -euo pipefail
 
-GPU="${1:?Usage: ./run_card_game_op_smoke.sh <gpu> [comm_reward_coef] [timesteps]}"
-COMM_REWARD="${2:-0.25}"
+GPU="${1:?Usage: ./run_card_game_op_smoke.sh <gpu> [match_coef] [timesteps]}"
+MATCH_COEF="${2:-0.05}"
 TOTAL_TIMESTEPS="${3:-100000}"
 WARMUP_STEPS=$((TOTAL_TIMESTEPS / 2))
 
-LABEL="op_comm_smoke_r${COMM_REWARD}_t${TOTAL_TIMESTEPS}"
+LABEL="op_comm_smoke_m${MATCH_COEF}_t${TOTAL_TIMESTEPS}"
 
 echo "Running static card-game OP smoke test"
 echo "  gpu: ${GPU}"
-echo "  comm_reward_coef: ${COMM_REWARD}"
+echo "  match_coef: ${MATCH_COEF}"
 echo "  total_timesteps: ${TOTAL_TIMESTEPS}"
 echo "  label: ${LABEL}"
 
@@ -31,5 +31,5 @@ echo "  label: ${LABEL}"
   algorithm.ENT_COEF=0.1 \
   task.ENV_KWARGS.other_play_position_shuffle=true \
   task.ENV_KWARGS.other_play_recolouring=true \
-  task.ENV_KWARGS.comm_reward_coef="${COMM_REWARD}" \
+  task.ENV_KWARGS.match_coef="${MATCH_COEF}" \
   label="${LABEL}"
