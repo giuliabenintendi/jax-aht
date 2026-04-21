@@ -7,5 +7,6 @@ ENV_KWARGS:
   other_play_position_shuffle: false
   other_play_recolouring: false
   match_coef: 0.0
+  stability_coef: 0.0
   follow_coef: 0.0
 TASK_NAME: card-game
