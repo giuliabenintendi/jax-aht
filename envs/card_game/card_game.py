@@ -63,7 +63,6 @@ class CardGameState:
     agent_choices: chex.Array     # (2,) chosen positions, -1 until decision step
     messages: chex.Array          # (2,) last message per agent, int32
     target_color: chex.Array      # scalar int32, odd-card color for diagnostic mode; -1 otherwise
-    committed_streak: chex.Array  # scalar int32: consecutive steps with both agents holding their message
 
 
 def _draw_border(img, row, col, tile_size, color):
@@ -205,7 +204,6 @@ class CardGameEnv(BaseEnv):
             agent_choices=jnp.full(2, -1, dtype=jnp.int32),
             messages=jnp.full(2, -1, dtype=jnp.int32),
             target_color=target_color,
-            committed_streak=jnp.int32(0),
         )
         obs = self._make_obs(env_state)
         return obs, WrappedEnvState(
@@ -248,25 +246,22 @@ class CardGameEnv(BaseEnv):
             success = valid & jnp.equal(pick_0, pick_1)
         return jnp.where(is_decision & success, 1.0, 0.0)
 
-    def _comm_shaping(self, prev_messages, new_messages, prev_streak, picks, is_decision):
-        """Match-with-committed-streak bonus on deliberation steps + follow bonus on decision.
+    def _comm_shaping(self, prev_messages, new_messages, picks, is_decision):
+        """Flat match reward on deliberation steps + follow-through bonus on decision.
 
-        - match bonus = match_coef * new_streak on non-decision steps when new messages agree.
-          new_streak increments only when both agents held their message from prev → new; resets
-          to 1 otherwise. At the first step, prev messages are the -1 reset sentinel so
-          both_held is False and the streak is 1.
-        - follow bonus = follow_coef on the decision step when prev (step-7) messages matched
-          and each agent picks their own prev message.
+        - match: +match_coef per non-decision step when new messages agree (flat; no streak).
+        - follow: +follow_coef on decision step when both agents pick their own prev message.
+          No prev-match requirement: each agent just has to follow through on what it said,
+          regardless of whether the two agents agreed on messages.
 
-        Returns (match_arr, follow_arr, new_streak). Arrays are shape (num_agents,) and
-        symmetric (shared reward); new_streak is scalar int32.
+        Returns (match_arr, follow_arr). Both shape (num_agents,), shared/symmetric reward.
         """
         shaping_active = self.communication and (
             self.match_coef > 0 or self.follow_coef > 0
         )
         if not shaping_active:
             zeros = jnp.zeros(self.num_agents)
-            return zeros, zeros, jnp.int32(0)
+            return zeros, zeros
 
         prev_msg_0, prev_msg_1 = prev_messages[0], prev_messages[1]
         new_msg_0, new_msg_1 = new_messages[0], new_messages[1]
@@ -274,32 +269,19 @@ class CardGameEnv(BaseEnv):
 
         new_valid = (new_msg_0 >= 0) & (new_msg_1 >= 0)
         new_match = new_valid & jnp.equal(new_msg_0, new_msg_1)
+        match_val = jnp.where(new_match & ~is_decision, self.match_coef, 0.0)
 
         prev_valid = (prev_msg_0 >= 0) & (prev_msg_1 >= 0)
-        both_held = (
-            prev_valid
-            & jnp.equal(new_msg_0, prev_msg_0)
-            & jnp.equal(new_msg_1, prev_msg_1)
-        )
-        new_streak = jnp.where(both_held, prev_streak + 1, jnp.int32(1))
-
-        match_val = jnp.where(
-            new_match & ~is_decision,
-            self.match_coef * new_streak.astype(jnp.float32),
-            0.0,
-        )
-
-        prev_match = prev_valid & jnp.equal(prev_msg_0, prev_msg_1)
         follow_ok = (
             is_decision
-            & prev_match
+            & prev_valid
             & jnp.equal(pick_0, prev_msg_0)
             & jnp.equal(pick_1, prev_msg_1)
         )
         follow_val = jnp.where(follow_ok, self.follow_coef, 0.0)
 
         broadcast = lambda x: jnp.array([x, x])
-        return broadcast(match_val), broadcast(follow_val), new_streak
+        return broadcast(match_val), broadcast(follow_val)
 
     @partial(jax.jit, static_argnums=(0,))
     def step(
@@ -329,15 +311,14 @@ class CardGameEnv(BaseEnv):
             jnp.array([pick_0, pick_1], dtype=jnp.int32),
             jnp.full(2, -1, dtype=jnp.int32),
         )
-        match_arr, follow_arr, new_streak = self._comm_shaping(
-            env_state.messages, new_messages, env_state.committed_streak,
+        match_arr, follow_arr = self._comm_shaping(
+            env_state.messages, new_messages,
             (pick_0, pick_1), is_decision,
         )
         comm_reward_arr = match_arr + follow_arr
 
         new_env_state = env_state.replace(
             step_count=new_step, agent_choices=choices, messages=new_messages,
-            committed_streak=new_streak,
         )
         obs_st = self._make_obs(new_env_state)
 
@@ -356,7 +337,6 @@ class CardGameEnv(BaseEnv):
             "comm_reward": comm_reward_arr,
             "comm_reward_match": match_arr,
             "comm_reward_follow": follow_arr,
-            "committed_streak": jnp.broadcast_to(new_streak, (self.num_agents,)),
             "step_count": jnp.broadcast_to(new_step, (self.num_agents,)),
             "target_color": jnp.broadcast_to(env_state.target_color, (self.num_agents,)),
         }
