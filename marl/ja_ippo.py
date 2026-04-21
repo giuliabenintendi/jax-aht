@@ -504,6 +504,8 @@ def make_train_loop(config, env):
                 comm_stable_batch = comm_stable_raw.transpose(1, 0).reshape(-1)
                 comm_follow_raw = info.pop("comm_reward_follow", jnp.zeros((num_envs, env.num_agents)))
                 comm_follow_batch = comm_follow_raw.transpose(1, 0).reshape(-1)
+                idle_raw = info.pop("idle", jnp.zeros((num_envs, env.num_agents)))
+                idle_batch = idle_raw.transpose(1, 0).reshape(-1)
 
                 # Extract step count for attn-msg reward gating
                 step_count_raw = info.pop("step_count", jnp.zeros((num_envs, env.num_agents)))
@@ -700,6 +702,7 @@ def make_train_loop(config, env):
                     runner_state = runner_state + (new_plh_a, new_plh_c)
                 return runner_state, (transition, intrinsic, comm_reward_batch,
                                      comm_match_batch, comm_stable_batch, comm_follow_batch,
+                                     idle_batch,
                                      attn_msg_reward,
                                      ja_card_reward,
                                      dbg_card_attn_0, dbg_card_attn_1,
@@ -707,6 +710,7 @@ def make_train_loop(config, env):
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
                            comm_match_batch, comm_stable_batch, comm_follow_batch,
+                           idle_batch,
                            attn_msg_reward_batch,
                            ja_card_reward_batch,
                            dbg_card_attn_0_batch, dbg_card_attn_1_batch,
@@ -845,6 +849,8 @@ def make_train_loop(config, env):
             # follow is per-agent now; log both agents' means separately
             metric["comm_follow_bonus_agent0_mean"] = scaled_comm_follow[:, :num_envs].mean()
             metric["comm_follow_bonus_agent1_mean"] = scaled_comm_follow[:, num_envs:].mean()
+            metric["idle_frac_agent0_mean"] = idle_batch[:, :num_envs].mean()
+            metric["idle_frac_agent1_mean"] = idle_batch[:, num_envs:].mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
             if card_cross_attn:
@@ -1078,6 +1084,8 @@ def log_metrics(config, out, logger):
         ("comm_stability_bonus_mean",           "Reward/comm_stability_bonus"),
         ("comm_follow_bonus_agent0_mean",       "Reward/comm_follow_bonus_agent0"),
         ("comm_follow_bonus_agent1_mean",       "Reward/comm_follow_bonus_agent1"),
+        ("idle_frac_agent0_mean",               "Debug/idle_frac_agent0"),
+        ("idle_frac_agent1_mean",               "Debug/idle_frac_agent1"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),

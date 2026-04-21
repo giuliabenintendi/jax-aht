@@ -33,6 +33,8 @@ from jaxmarl.environments import spaces as jaxmarl_spaces
 from envs.base_env import BaseEnv, WrappedEnvState
 from envs.card_game.action_utils import (
     COMM_ACTION_DIM,
+    COMM_ACTION_DIM_WITH_IDLE,
+    COMM_IDLE_ACTION,
     decode_comm_action,
     decode_pick_or_noop,
     get_action_mask,
@@ -90,6 +92,7 @@ class CardGameEnv(BaseEnv):
 
     def __init__(self, max_steps: int = 10, shuffle: bool = True,
                  communication: bool = False,
+                 allow_idle: bool = False,
                  match_coef: float = 0.0,
                  stability_coef: float = 0.0,
                  follow_coef: float = 0.0,
@@ -101,6 +104,7 @@ class CardGameEnv(BaseEnv):
         self.max_steps = max_steps
         self.shuffle = shuffle
         self.communication = communication
+        self.allow_idle = allow_idle
         self.match_coef = match_coef
         self.stability_coef = stability_coef
         self.follow_coef = follow_coef
@@ -131,7 +135,8 @@ class CardGameEnv(BaseEnv):
 
     def action_space(self, agent: str):
         if self.communication:
-            return jaxmarl_spaces.Discrete(num_categories=COMM_ACTION_DIM)
+            dim = COMM_ACTION_DIM_WITH_IDLE if self.allow_idle else COMM_ACTION_DIM
+            return jaxmarl_spaces.Discrete(num_categories=dim)
         # 0-4: pick color, 5: do nothing
         return jaxmarl_spaces.Discrete(num_categories=self.num_cards + 1)
 
@@ -352,6 +357,13 @@ class CardGameEnv(BaseEnv):
             step=new_step,
         )
 
+        if self.allow_idle and self.communication:
+            is_idle_0 = jnp.equal(actions["agent_0"], COMM_IDLE_ACTION).astype(jnp.float32)
+            is_idle_1 = jnp.equal(actions["agent_1"], COMM_IDLE_ACTION).astype(jnp.float32)
+            idle_arr = jnp.array([is_idle_0, is_idle_1])
+        else:
+            idle_arr = jnp.zeros(self.num_agents, dtype=jnp.float32)
+
         info = {
             "base_reward": base_reward_arr,
             "base_return": base_return,
@@ -359,6 +371,7 @@ class CardGameEnv(BaseEnv):
             "comm_reward_match": match_arr,
             "comm_reward_stable": stable_arr,
             "comm_reward_follow": follow_arr,
+            "idle": idle_arr,
             "step_count": jnp.broadcast_to(new_step, (self.num_agents,)),
             "target_color": jnp.broadcast_to(env_state.target_color, (self.num_agents,)),
         }
@@ -382,7 +395,7 @@ class CardGameEnv(BaseEnv):
     def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
         next_step = state.env_state.step_count + 1
         is_decision = next_step >= self.max_steps
-        mask = get_action_mask(is_decision, self.communication)
+        mask = get_action_mask(is_decision, self.communication, self.allow_idle)
         return {agent: mask for agent in self.agents}
 
     @partial(jax.jit, static_argnums=(0,))

@@ -4,6 +4,7 @@ ENV_KWARGS:
   max_steps: 8
   obs_type: image
   shuffle: true
+  allow_idle: false
   other_play_position_shuffle: true
   other_play_recolouring: true
   focal_card_idx: 0

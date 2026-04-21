@@ -19,6 +19,11 @@ NO_COMM_ACTION_DIM = NUM_CARDS + 1
 
 COMM_MESSAGE_BASE = NUM_CARDS
 COMM_ACTION_DIM = 2 * NUM_CARDS
+# Optional idle action that sits one slot past the message range. When the env
+# is built with allow_idle=True, the action space grows by 1 and this index
+# becomes legal only during deliberation.
+COMM_IDLE_ACTION = 2 * NUM_CARDS
+COMM_ACTION_DIM_WITH_IDLE = 2 * NUM_CARDS + 1
 
 
 def decode_pick_or_noop(action):
@@ -65,13 +70,20 @@ def remap_recoloured_action(action, inv_recolouring, communication):
     return jnp.where(pick >= 0, inv_recolouring[pick], action)
 
 
-def get_action_mask(is_decision, communication):
-    """Return the valid action mask for the current phase."""
+def get_action_mask(is_decision, communication, allow_idle=False):
+    """Return the valid action mask for the current phase.
+
+    When allow_idle=True and communication is enabled, an idle slot is exposed
+    during deliberation so agents can opt out of sending a message.
+    """
     is_decision = jnp.asarray(is_decision)
     pick_avail = jnp.where(is_decision, jnp.ones(NUM_CARDS), jnp.zeros(NUM_CARDS))
 
     if communication:
         msg_avail = jnp.where(is_decision, jnp.zeros(NUM_CARDS), jnp.ones(NUM_CARDS))
+        if allow_idle:
+            idle_avail = jnp.where(is_decision, jnp.zeros(1), jnp.ones(1))
+            return jnp.concatenate([pick_avail, msg_avail, idle_avail])
         return jnp.concatenate([pick_avail, msg_avail])
 
     noop_avail = jnp.where(is_decision, jnp.zeros(1), jnp.ones(1))
