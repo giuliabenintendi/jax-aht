@@ -91,6 +91,7 @@ class CardGameEnv(BaseEnv):
     def __init__(self, max_steps: int = 10, shuffle: bool = True,
                  communication: bool = False,
                  match_coef: float = 0.0,
+                 stability_coef: float = 0.0,
                  follow_coef: float = 0.0,
                  odd_one_out_task: bool = False,
                  focal_card_idx: int = -1,
@@ -101,6 +102,7 @@ class CardGameEnv(BaseEnv):
         self.shuffle = shuffle
         self.communication = communication
         self.match_coef = match_coef
+        self.stability_coef = stability_coef
         self.follow_coef = follow_coef
         self.odd_one_out_task = odd_one_out_task
         self.focal_card_idx = int(focal_card_idx)
@@ -247,21 +249,25 @@ class CardGameEnv(BaseEnv):
         return jnp.where(is_decision & success, 1.0, 0.0)
 
     def _comm_shaping(self, prev_messages, new_messages, picks, is_decision):
-        """Flat match reward on deliberation steps + follow-through bonus on decision.
+        """Comm-shaping rewards: match (shared), stability (shared), follow (per-agent).
 
-        - match: +match_coef per non-decision step when new messages agree (flat; no streak).
-        - follow: +follow_coef on decision step when both agents pick their own prev message.
-          No prev-match requirement: each agent just has to follow through on what it said,
-          regardless of whether the two agents agreed on messages.
+        - match: +match_coef per non-decision step when new messages agree (shared).
+        - stability: +stability_coef per non-decision step when prev msgs matched, new msgs
+          still match, and both agents kept their own message (shared; rewards committed
+          persistence, discriminates against oscillation or synchronised flips).
+        - follow (per-agent): +follow_coef on decision step when prev msgs matched AND
+          agent i's pick equals agent i's prev message. Credit is assigned individually
+          — agent 0 and agent 1 each earn (or don't) independently, to give the shared
+          policy a cleaner per-agent training signal.
 
-        Returns (match_arr, follow_arr). Both shape (num_agents,), shared/symmetric reward.
+        Returns (match_arr, stable_arr, follow_arr), all shape (num_agents,).
         """
         shaping_active = self.communication and (
-            self.match_coef > 0 or self.follow_coef > 0
+            self.match_coef > 0 or self.stability_coef > 0 or self.follow_coef > 0
         )
         if not shaping_active:
             zeros = jnp.zeros(self.num_agents)
-            return zeros, zeros
+            return zeros, zeros, zeros
 
         prev_msg_0, prev_msg_1 = prev_messages[0], prev_messages[1]
         new_msg_0, new_msg_1 = new_messages[0], new_messages[1]
@@ -269,19 +275,34 @@ class CardGameEnv(BaseEnv):
 
         new_valid = (new_msg_0 >= 0) & (new_msg_1 >= 0)
         new_match = new_valid & jnp.equal(new_msg_0, new_msg_1)
-        match_val = jnp.where(new_match & ~is_decision, self.match_coef, 0.0)
 
         prev_valid = (prev_msg_0 >= 0) & (prev_msg_1 >= 0)
-        follow_ok = (
-            is_decision
-            & prev_valid
-            & jnp.equal(pick_0, prev_msg_0)
-            & jnp.equal(pick_1, prev_msg_1)
+        prev_match = prev_valid & jnp.equal(prev_msg_0, prev_msg_1)
+
+        both_held = (
+            prev_valid
+            & jnp.equal(new_msg_0, prev_msg_0)
+            & jnp.equal(new_msg_1, prev_msg_1)
         )
-        follow_val = jnp.where(follow_ok, self.follow_coef, 0.0)
+
+        match_val = jnp.where(new_match & ~is_decision, self.match_coef, 0.0)
+        stable_val = jnp.where(
+            prev_match & new_match & both_held & ~is_decision,
+            self.stability_coef,
+            0.0,
+        )
+
+        follow_ok_0 = is_decision & prev_match & jnp.equal(pick_0, prev_msg_0)
+        follow_ok_1 = is_decision & prev_match & jnp.equal(pick_1, prev_msg_1)
+        follow_val_0 = jnp.where(follow_ok_0, self.follow_coef, 0.0)
+        follow_val_1 = jnp.where(follow_ok_1, self.follow_coef, 0.0)
 
         broadcast = lambda x: jnp.array([x, x])
-        return broadcast(match_val), broadcast(follow_val)
+        return (
+            broadcast(match_val),
+            broadcast(stable_val),
+            jnp.array([follow_val_0, follow_val_1]),
+        )
 
     @partial(jax.jit, static_argnums=(0,))
     def step(
@@ -311,11 +332,11 @@ class CardGameEnv(BaseEnv):
             jnp.array([pick_0, pick_1], dtype=jnp.int32),
             jnp.full(2, -1, dtype=jnp.int32),
         )
-        match_arr, follow_arr = self._comm_shaping(
+        match_arr, stable_arr, follow_arr = self._comm_shaping(
             env_state.messages, new_messages,
             (pick_0, pick_1), is_decision,
         )
-        comm_reward_arr = match_arr + follow_arr
+        comm_reward_arr = match_arr + stable_arr + follow_arr
 
         new_env_state = env_state.replace(
             step_count=new_step, agent_choices=choices, messages=new_messages,
@@ -336,6 +357,7 @@ class CardGameEnv(BaseEnv):
             "base_return": base_return,
             "comm_reward": comm_reward_arr,
             "comm_reward_match": match_arr,
+            "comm_reward_stable": stable_arr,
             "comm_reward_follow": follow_arr,
             "step_count": jnp.broadcast_to(new_step, (self.num_agents,)),
             "target_color": jnp.broadcast_to(env_state.target_color, (self.num_agents,)),

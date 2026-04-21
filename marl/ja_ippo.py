@@ -500,6 +500,8 @@ def make_train_loop(config, env):
                 comm_reward_batch = comm_reward_raw.transpose(1, 0).reshape(-1)
                 comm_match_raw = info.pop("comm_reward_match", jnp.zeros((num_envs, env.num_agents)))
                 comm_match_batch = comm_match_raw.transpose(1, 0).reshape(-1)
+                comm_stable_raw = info.pop("comm_reward_stable", jnp.zeros((num_envs, env.num_agents)))
+                comm_stable_batch = comm_stable_raw.transpose(1, 0).reshape(-1)
                 comm_follow_raw = info.pop("comm_reward_follow", jnp.zeros((num_envs, env.num_agents)))
                 comm_follow_batch = comm_follow_raw.transpose(1, 0).reshape(-1)
 
@@ -697,14 +699,14 @@ def make_train_loop(config, env):
                     new_plh_c = jnp.where(new_done_batch[:, None], 0.0, new_plh_c)
                     runner_state = runner_state + (new_plh_a, new_plh_c)
                 return runner_state, (transition, intrinsic, comm_reward_batch,
-                                     comm_match_batch, comm_follow_batch,
+                                     comm_match_batch, comm_stable_batch, comm_follow_batch,
                                      attn_msg_reward,
                                      ja_card_reward,
                                      dbg_card_attn_0, dbg_card_attn_1,
                                      dbg_partner_card_attn_0, dbg_partner_card_attn_1)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
-                           comm_match_batch, comm_follow_batch,
+                           comm_match_batch, comm_stable_batch, comm_follow_batch,
                            attn_msg_reward_batch,
                            ja_card_reward_batch,
                            dbg_card_attn_0_batch, dbg_card_attn_1_batch,
@@ -793,6 +795,7 @@ def make_train_loop(config, env):
             raw_env_reward = traj_batch.reward
             scaled_comm_reward = comm_scale * comm_reward_batch
             scaled_comm_match = comm_scale * comm_match_batch
+            scaled_comm_stable = comm_scale * comm_stable_batch
             scaled_comm_follow = comm_scale * comm_follow_batch
             scaled_attn_msg_reward = attn_msg_coef * attn_msg_reward_batch
 
@@ -838,7 +841,10 @@ def make_train_loop(config, env):
             metric["raw_env_reward_mean"] = raw_env_reward[:, :num_envs].mean()
             metric["comm_reward_mean"] = scaled_comm_reward[:, :num_envs].mean()
             metric["comm_match_bonus_mean"] = scaled_comm_match[:, :num_envs].mean()
-            metric["comm_joint_followthrough_bonus_mean"] = scaled_comm_follow[:, :num_envs].mean()
+            metric["comm_stability_bonus_mean"] = scaled_comm_stable[:, :num_envs].mean()
+            # follow is per-agent now; log both agents' means separately
+            metric["comm_follow_bonus_agent0_mean"] = scaled_comm_follow[:, :num_envs].mean()
+            metric["comm_follow_bonus_agent1_mean"] = scaled_comm_follow[:, num_envs:].mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
             if card_cross_attn:
@@ -1069,7 +1075,9 @@ def log_metrics(config, out, logger):
         ("combined_reward_mean", "Reward/combined_raw"),
         ("comm_reward_mean",                     "Reward/comm"),
         ("comm_match_bonus_mean",               "Reward/comm_match_bonus"),
-        ("comm_joint_followthrough_bonus_mean", "Reward/comm_joint_followthrough_bonus"),
+        ("comm_stability_bonus_mean",           "Reward/comm_stability_bonus"),
+        ("comm_follow_bonus_agent0_mean",       "Reward/comm_follow_bonus_agent0"),
+        ("comm_follow_bonus_agent1_mean",       "Reward/comm_follow_bonus_agent1"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
