@@ -24,6 +24,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib
 matplotlib.use("Agg")  # headless
+import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import OmegaConf
@@ -114,7 +115,8 @@ def _render_own_frame(card_perm, pos_perm, recolouring, agent_idx: int,
     if is_decision:
         base[:4, :4, :] = _WHITE
 
-    # Agent's own-colour dot on the card it acted on this step
+    # Agent's own-colour marker: dot on messaged card (deliberation), bounding
+    # box around picked card (decision step).
     if own_gt_value >= 0:
         gt_positions = np.where(card_perm == own_gt_value)[0]
         if len(gt_positions):
@@ -122,11 +124,16 @@ def _render_own_frame(card_perm, pos_perm, recolouring, agent_idx: int,
             view_positions = np.where(pos_perm == gt_col)[0]
             if len(view_positions):
                 view_col = int(view_positions[0])
-                dot_size = 2
-                dy = TP + (TP - dot_size) // 2
-                dx = view_col * TP + (TP - dot_size) // 2
-                agent_color = AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR
-                base[dy:dy + dot_size, dx:dx + dot_size] = np.asarray(agent_color)
+                agent_color = np.asarray(
+                    AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR
+                )
+                if is_decision:
+                    base = _draw_border_np(base, 1, view_col, TP, agent_color)
+                else:
+                    dot_size = 2
+                    dy = TP + (TP - dot_size) // 2
+                    dx = view_col * TP + (TP - dot_size) // 2
+                    base[dy:dy + dot_size, dx:dx + dot_size] = agent_color
 
     return base
 
@@ -156,10 +163,9 @@ def _render_obs_sequence(ep_states, ep_actions, ep_messages, agent_idx: int,
             card_perm, pos_perm, recolouring, agent_idx, own_value, is_decision,
         )
         axes[t].imshow(img, interpolation="nearest")
-        axes[t].set_title(f"t={t + 1}" + (" (D)" if is_decision else ""), fontsize=10)
         axes[t].axis("off")
 
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.88, bottom=0.02, wspace=0.05)
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.98, bottom=0.02, wspace=0.05)
     fig.savefig(output_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
 
@@ -183,17 +189,30 @@ def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
         axes = [axes]
 
     extent = (0, _W, _H, 0)
+    TP = TILE_PIXELS
+    # Tile outlines (transparent fill + black border) to give spatial context
+    tile_rects = []
+    for agent_row, agent_col in _AGENT_GRID_POSITIONS:
+        tile_rects.append((agent_col * TP, agent_row * TP))
+    for card_col in range(NUM_CARDS):
+        tile_rects.append((card_col * TP, 1 * TP))  # card row = 1
+
     for t in range(num_steps):
-        is_decision = (t == num_steps - 1)
         attn = np.asarray(attn_maps[agent_key][t]).squeeze()
         axes[t].imshow(
             attn, cmap=cmap, vmin=0.0, vmax=attn_max,
             interpolation="nearest", extent=extent,
         )
-        axes[t].set_title(f"t={t + 1}" + (" (D)" if is_decision else ""), fontsize=10)
+        for (x, y) in tile_rects:
+            axes[t].add_patch(patches.Rectangle(
+                (x, y), TP, TP,
+                linewidth=0.8, edgecolor="black", facecolor="none",
+            ))
+        axes[t].set_xlim(0, _W)
+        axes[t].set_ylim(_H, 0)
         axes[t].axis("off")
 
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.88, bottom=0.02, wspace=0.05)
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.98, bottom=0.02, wspace=0.05)
     fig.savefig(output_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
 
