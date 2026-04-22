@@ -200,11 +200,9 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
     agent_rgb = (
         np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR) / 255.0
     )
-    agent_row, agent_col = _AGENT_GRID_POSITIONS[agent_idx]
-    agent_center = (
-        agent_col * TP + TP / 2.0,
-        agent_row * TP + TP / 2.0,
-    )
+    # Arrow is always straight: starts from top of image for agent 0,
+    # bottom of image for agent 1, on the X-column of the messaged card.
+    arrow_start_y = 0.0 if agent_idx == 0 else float(_H)
 
     def _add_card_outlines(ax):
         for card_col in range(NUM_CARDS):
@@ -243,29 +241,33 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
             pick_gt = int(ep_actions[t][agent_idx]) if t < len(ep_actions) else -1
             view_col = _view_col_of(card_perm, pos_perm, pick_gt)
             if view_col is not None:
+                # External to the 5x5 card — use full tile footprint (7x7)
                 axes[t].add_patch(patches.Rectangle(
-                    (view_col * TP + CARD_INSET, 1 * TP + CARD_INSET),
-                    CARD_SIZE, CARD_SIZE,
+                    (view_col * TP, 1 * TP),
+                    TP, TP,
                     linewidth=1.8, edgecolor=agent_rgb, facecolor="none",
                 ))
         else:
             msg_gt = int(ep_messages[t][agent_idx]) if t < len(ep_messages) else -1
             view_col = _view_col_of(card_perm, pos_perm, msg_gt)
             if view_col is not None:
+                # Straight vertical arrow on the card's X column; tip lands on
+                # the card centre.
                 card_center = (
                     view_col * TP + TP / 2.0,
                     1 * TP + TP / 2.0,
                 )
+                arrow_start = (card_center[0], arrow_start_y)
                 axes[t].annotate(
                     "",
                     xy=card_center,
-                    xytext=agent_center,
+                    xytext=arrow_start,
                     arrowprops=dict(
                         arrowstyle="->",
                         color=agent_rgb,
                         lw=1.3,
-                        shrinkA=2.0,
-                        shrinkB=3.0,
+                        shrinkA=0.0,
+                        shrinkB=2.0,
                     ),
                 )
 
