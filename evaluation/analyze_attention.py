@@ -190,12 +190,28 @@ def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
 
     extent = (0, _W, _H, 0)
     TP = TILE_PIXELS
-    # Tile outlines (transparent fill + black border) to give spatial context
-    tile_rects = []
-    for agent_row, agent_col in _AGENT_GRID_POSITIONS:
-        tile_rects.append((agent_col * TP, agent_row * TP))
-    for card_col in range(NUM_CARDS):
-        tile_rects.append((card_col * TP, 1 * TP))  # card row = 1
+
+    def _add_board_outlines(ax):
+        # 5 card tiles (row 1): rectangles
+        for card_col in range(NUM_CARDS):
+            x = card_col * TP
+            y = 1 * TP
+            ax.add_patch(patches.Rectangle(
+                (x, y), TP, TP,
+                linewidth=0.8, edgecolor="black", facecolor="none",
+            ))
+        # Agent 0 (top-center, row 0 col 2): down-pointing triangle
+        x0, y0 = 2 * TP, 0 * TP
+        ax.add_patch(patches.Polygon(
+            [(x0, y0), (x0 + TP, y0), (x0 + TP / 2, y0 + TP)],
+            closed=True, linewidth=0.8, edgecolor="black", facecolor="none",
+        ))
+        # Agent 1 (bottom-center, row 2 col 2): up-pointing triangle
+        x1, y1 = 2 * TP, 2 * TP
+        ax.add_patch(patches.Polygon(
+            [(x1, y1 + TP), (x1 + TP, y1 + TP), (x1 + TP / 2, y1)],
+            closed=True, linewidth=0.8, edgecolor="black", facecolor="none",
+        ))
 
     for t in range(num_steps):
         attn = np.asarray(attn_maps[agent_key][t]).squeeze()
@@ -203,11 +219,7 @@ def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
             attn, cmap=cmap, vmin=0.0, vmax=attn_max,
             interpolation="nearest", extent=extent,
         )
-        for (x, y) in tile_rects:
-            axes[t].add_patch(patches.Rectangle(
-                (x, y), TP, TP,
-                linewidth=0.8, edgecolor="black", facecolor="none",
-            ))
+        _add_board_outlines(axes[t])
         axes[t].set_xlim(0, _W)
         axes[t].set_ylim(_H, 0)
         axes[t].axis("off")
