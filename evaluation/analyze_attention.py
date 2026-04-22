@@ -26,6 +26,8 @@ import matplotlib
 matplotlib.use("Agg")  # headless
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
+plt.rcParams["figure.dpi"] = 300
+plt.rcParams["savefig.dpi"] = 300
 import numpy as np
 from omegaconf import OmegaConf
 
@@ -166,7 +168,7 @@ def _render_obs_sequence(ep_states, ep_actions, ep_messages, agent_idx: int,
         axes[t].axis("off")
 
     fig.subplots_adjust(left=0.01, right=0.99, top=0.98, bottom=0.02, wspace=0.05)
-    fig.savefig(output_path, dpi=110, bbox_inches="tight")
+    fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -225,7 +227,7 @@ def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
         axes[t].axis("off")
 
     fig.subplots_adjust(left=0.01, right=0.99, top=0.98, bottom=0.02, wspace=0.05)
-    fig.savefig(output_path, dpi=110, bbox_inches="tight")
+    fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
 
