@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 import os
 from envs.card_game.action_utils import decode_comm_action
 from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
@@ -91,7 +92,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            agent_1_param, agent_1_policy,
                            max_episode_steps, collect_attention=False,
                            greedy=True, feed_other_attn_dims=None,
-                           ja_card_masks=None):
+                           ja_card_masks=None, collect_obs=False):
     '''
     Run a single episode and collect states for rendering.
 
@@ -100,10 +101,13 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             attention maps via get_action_and_attention.
         feed_other_attn_dims: if not None, a tuple (img_h, img_w, feat_h, feat_w)
             for augmenting obs with the other agent's previous attention map.
+        collect_obs: if True, also return per-step per-agent observations (the
+            obs the agent saw BEFORE each action, including the decision step).
 
     Returns:
-        ep_states when collect_attention=False,
-        (ep_states, {"agent_0": [...], "agent_1": [...]}) when True.
+        When collect_attention=False: (ep_states, ep_actions, ep_messages)
+        When collect_attention=True: (ep_states, attn_maps, ep_actions, ep_messages)
+        When collect_obs=True, ep_obs is appended to whichever tuple above.
     '''
     from agents.ja_utils import augment_obs_for_eval
 
@@ -150,11 +154,14 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
     ep_states = [env_state]
     ep_actions = []
     ep_messages = []  # (msg_0, msg_1) per step, empty if no communication
+    ep_obs = []       # per-step {"agent_0": obs, "agent_1": obs}, collected at the start of each step
     attn_maps = {"agent_0": [], "agent_1": []}
 
     # Run episode until done or max steps reached
     step = 0
     while not done["__all__"] and step < max_episode_steps:
+        if collect_obs:
+            ep_obs.append({k: np.array(obs[k]) for k in env.agents})
         # Get available actions for each agent
         avail_actions = env.get_avail_actions(env_state)
         avail_actions = jax.lax.stop_gradient(avail_actions)
@@ -321,7 +328,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         step += 1
 
     if collect_attention:
+        if collect_obs:
+            return ep_states, attn_maps, ep_actions, ep_messages, ep_obs
         return ep_states, attn_maps, ep_actions, ep_messages
+    if collect_obs:
+        return ep_states, ep_actions, ep_messages, ep_obs
     return ep_states, ep_actions, ep_messages
 
 def _render_heatmap_panel(attn, title, cmap, target_height, figwidth=3.0):
