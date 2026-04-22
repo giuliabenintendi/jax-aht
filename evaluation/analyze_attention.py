@@ -200,9 +200,10 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
     agent_rgb = (
         np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR) / 255.0
     )
-    # Arrow is always straight: starts from top of image for agent 0,
-    # bottom of image for agent 1, on the X-column of the messaged card.
-    arrow_start_y = 0.0 if agent_idx == 0 else float(_H)
+    # Arrow is always straight vertical: starts from the vertical centre of the
+    # agent's row on the X-column of the messaged card, points toward the card.
+    agent_row, _agent_col = _AGENT_GRID_POSITIONS[agent_idx]
+    arrow_start_y = agent_row * TP + TP / 2.0
 
     def _add_card_outlines(ax):
         for card_col in range(NUM_CARDS):
