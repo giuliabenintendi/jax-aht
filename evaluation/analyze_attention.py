@@ -252,7 +252,7 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
             cy = 1 * TP + TP / 2.0
             axes[t].add_patch(patches.Circle(
                 (cx, cy), radius=1.2,
-                facecolor=partner_rgb, edgecolor="black", linewidth=0.4,
+                facecolor=partner_rgb, edgecolor="none",
             ))
 
         if is_decision:
