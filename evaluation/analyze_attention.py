@@ -44,7 +44,7 @@ def _obs_to_image(flat_obs):
 
 
 def _render_agent_figure(ep_obs, attn_maps, agent_key: str, episode_idx: int,
-                        output_path: Path, max_steps: int):
+                        output_path: Path, max_steps: int, cmap: str = "Oranges"):
     """Render one agent's episode: 2 rows × max_steps columns (obs + attn)."""
     num_steps = min(len(ep_obs), len(attn_maps[agent_key]))
     if num_steps == 0:
@@ -89,7 +89,7 @@ def _render_agent_figure(ep_obs, attn_maps, agent_key: str, episode_idx: int,
         # coordinate space so both panels have identical footprint.
         attn = np.asarray(attn_maps[agent_key][t]).squeeze()
         im = axes[1, t].imshow(
-            attn, cmap="coolwarm", vmin=0.0, vmax=attn_max,
+            attn, cmap=cmap, vmin=0.0, vmax=attn_max,
             interpolation="nearest", extent=obs_extent,
         )
         axes[1, t].set_xticks([])
@@ -200,11 +200,11 @@ def main():
         ep_dir = output_dir / f"episode_{ep}"
         ep_dir.mkdir(exist_ok=True)
 
-        for agent_key in ("agent_0", "agent_1"):
+        for agent_key, cmap in (("agent_0", "Oranges"), ("agent_1", "RdPu")):
             _render_agent_figure(
                 ep_obs, attn_maps, agent_key, ep,
                 output_path=ep_dir / f"{agent_key}_obs_and_attention.png",
-                max_steps=max_steps,
+                max_steps=max_steps, cmap=cmap,
             )
 
         # Small text summary per episode
