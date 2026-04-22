@@ -193,27 +193,19 @@ def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
     extent = (0, _W, _H, 0)
     TP = TILE_PIXELS
 
+    # Card visuals in the real env are 5x5 with a 1-pixel inset inside each
+    # 7x7 tile (see _CARD_MASK in envs/card_game/rendering.py).
+    CARD_INSET = 1
+    CARD_SIZE = TP - 2 * CARD_INSET  # 5
+
     def _add_board_outlines(ax):
-        # 5 card tiles (row 1): rectangles
         for card_col in range(NUM_CARDS):
-            x = card_col * TP
-            y = 1 * TP
+            x = card_col * TP + CARD_INSET
+            y = 1 * TP + CARD_INSET
             ax.add_patch(patches.Rectangle(
-                (x, y), TP, TP,
+                (x, y), CARD_SIZE, CARD_SIZE,
                 linewidth=0.8, edgecolor="black", facecolor="none",
             ))
-        # Agent 0 (top-center, row 0 col 2): down-pointing triangle
-        x0, y0 = 2 * TP, 0 * TP
-        ax.add_patch(patches.Polygon(
-            [(x0, y0), (x0 + TP, y0), (x0 + TP / 2, y0 + TP)],
-            closed=True, linewidth=0.8, edgecolor="black", facecolor="none",
-        ))
-        # Agent 1 (bottom-center, row 2 col 2): up-pointing triangle
-        x1, y1 = 2 * TP, 2 * TP
-        ax.add_patch(patches.Polygon(
-            [(x1, y1 + TP), (x1 + TP, y1 + TP), (x1 + TP / 2, y1)],
-            closed=True, linewidth=0.8, edgecolor="black", facecolor="none",
-        ))
 
     for t in range(num_steps):
         attn = np.asarray(attn_maps[agent_key][t]).squeeze()
