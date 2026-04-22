@@ -174,10 +174,17 @@ def _render_obs_sequence(ep_states, ep_actions, ep_messages, agent_idx: int,
 
 def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
                               output_path: Path, max_steps: int):
-    """1 row × T columns: attention heatmap per step (per-step max normalization)."""
+    """1 row × T columns: attention heatmap per step (global max across episode)."""
     num_steps = min(len(attn_maps[agent_key]), max_steps)
     if num_steps == 0:
         return
+
+    attn_stack = np.array([
+        np.asarray(attn_maps[agent_key][t]).squeeze() for t in range(num_steps)
+    ])
+    attn_max = float(attn_stack.max())
+    if attn_max <= 0:
+        attn_max = 1.0
 
     fig, axes = plt.subplots(1, num_steps, figsize=(num_steps * 1.8, 2.0))
     if num_steps == 1:
@@ -202,11 +209,8 @@ def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
 
     for t in range(num_steps):
         attn = np.asarray(attn_maps[agent_key][t]).squeeze()
-        step_max = float(attn.max())
-        if step_max <= 0:
-            step_max = 1.0
         axes[t].imshow(
-            attn, cmap=cmap, vmin=0.0, vmax=step_max,
+            attn, cmap=cmap, vmin=0.0, vmax=attn_max,
             interpolation="nearest", extent=extent,
         )
         _add_board_outlines(axes[t])
