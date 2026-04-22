@@ -21,6 +21,7 @@ import argparse
 from pathlib import Path
 
 import jax
+import jax.numpy as jnp
 import matplotlib
 matplotlib.use("Agg")  # headless
 import matplotlib.pyplot as plt
@@ -83,7 +84,8 @@ def _render_own_frame(card_perm, pos_perm, recolouring, agent_idx: int,
                      own_gt_value: int, is_decision: bool):
     """Render agent's own-frame view (post-OP), with agent's own-colour dot on
     the card it just acted on (messaged card, or picked card on decision step)."""
-    base = np.asarray(render_card_game(card_perm)).copy()
+    # render_card_game uses jax.lax.scan, so input must be a JAX array
+    base = np.asarray(render_card_game(jnp.asarray(card_perm))).copy()
     TP = TILE_PIXELS
 
     # Position shuffle of the card row
