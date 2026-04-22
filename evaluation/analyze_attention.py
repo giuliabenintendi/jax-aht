@@ -8,11 +8,11 @@ and produces for each agent a 2-row figure showing:
     on the obs image).
 
 Usage:
-    uv run python -m evaluation.analyze_attention \\
+    ./run_gpu.sh <gpu> evaluation.analyze_attention \\
         --checkpoint /path/to/saved/train_run \\
         --seed-idx 0 \\
         --num-episodes 5 \\
-        --output-dir analysis/attention/run_xyz
+        --output-dir plots/card_game/<run_name>
 """
 from __future__ import annotations
 
@@ -125,7 +125,7 @@ def main():
     parser.add_argument("--seed-idx", type=int, default=0,
                         help="Which seed to analyze (0..NUM_SEEDS-1)")
     parser.add_argument("--num-episodes", type=int, default=5)
-    parser.add_argument("--output-dir", default="analysis/attention")
+    parser.add_argument("--output-dir", default="plots/card_game")
     parser.add_argument("--episode-rng-base", type=int, default=100,
                         help="Base seed for per-episode RNGs: key = base + ep")
     args = parser.parse_args()
