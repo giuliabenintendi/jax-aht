@@ -67,12 +67,13 @@ def _render_agent_figure(ep_obs, attn_maps, agent_key: str, episode_idx: int,
         axes = axes.reshape(2, 1)
 
     im = None
+    obs_extent = (0, _W, _H, 0)  # obs coordinate space; reused for attention so shapes align
     for t in range(num_steps):
         is_decision = (t == num_steps - 1)
 
         # Top: obs image (own frame)
         obs_img = _obs_to_image(ep_obs[t][agent_key])
-        axes[0, t].imshow(obs_img, interpolation="nearest")
+        axes[0, t].imshow(obs_img, interpolation="nearest", extent=obs_extent)
         label = f"t={t + 1}"
         if is_decision:
             label += " (D)"
@@ -84,11 +85,12 @@ def _render_agent_figure(ep_obs, attn_maps, agent_key: str, episode_idx: int,
                 spine.set_edgecolor("red")
                 spine.set_linewidth(2)
 
-        # Bottom: attention heatmap (coolwarm, global-max across episode)
+        # Bottom: attention heatmap. Upscale via extent to share the obs
+        # coordinate space so both panels have identical footprint.
         attn = np.asarray(attn_maps[agent_key][t]).squeeze()
         im = axes[1, t].imshow(
             attn, cmap="coolwarm", vmin=0.0, vmax=attn_max,
-            interpolation="nearest", aspect="auto",
+            interpolation="nearest", extent=obs_extent,
         )
         axes[1, t].set_xticks([])
         axes[1, t].set_yticks([])
