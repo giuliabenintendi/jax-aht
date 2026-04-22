@@ -94,15 +94,17 @@ def _render_own_frame(card_perm, pos_perm, recolouring, agent_idx: int,
     shuffled = tiles[:, pos_perm, :, :]
     base[TP:2 * TP, :, :] = shuffled.reshape(TP, NUM_CARDS * TP, 3)
 
-    # Recolouring of the card row
-    card_band = base[TP:2 * TP, :, :].copy()
+    # Recolouring of the card row: read from the original source, write to a
+    # separate destination so permutation cycles don't cascade through each other.
+    src = base[TP:2 * TP, :, :]
+    dst = src.copy()
     card_colors_np = np.asarray(CARD_COLORS)
     for gt_idx in range(NUM_CARDS):
         original = card_colors_np[gt_idx]
         new_color = card_colors_np[int(recolouring[gt_idx])]
-        mask = np.all(card_band == original, axis=-1)
-        card_band[mask] = new_color
-    base[TP:2 * TP, :, :] = card_band
+        mask = np.all(src == original, axis=-1)
+        dst[mask] = new_color
+    base[TP:2 * TP, :, :] = dst
 
     # Ego highlight — white border around this agent's tile
     agent_row, agent_col = _AGENT_GRID_POSITIONS[agent_idx]
