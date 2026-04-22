@@ -367,6 +367,11 @@ def main():
             ("agent_0", "Oranges"),
             ("agent_1", "RdPu"),
         ]):
+            _render_obs_sequence(
+                ep_states, ep_actions, ep_messages, agent_idx,
+                output_path=ep_dir / f"{agent_key}_obs.png",
+                max_steps=max_steps,
+            )
             _render_attention_sequence(
                 attn_maps, ep_states, ep_actions, ep_messages,
                 agent_idx, agent_key, cmap,
