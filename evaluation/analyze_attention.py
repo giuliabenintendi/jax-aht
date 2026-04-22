@@ -149,6 +149,12 @@ def main():
     cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
     alg_config = cfg["algorithm"]
 
+    # Propagate COMMUNICATION flag into ENV_KWARGS (matches ja_ippo training path)
+    if alg_config.get("COMMUNICATION", False):
+        env_kwargs = dict(alg_config["ENV_KWARGS"])
+        env_kwargs["communication"] = True
+        alg_config["ENV_KWARGS"] = env_kwargs
+
     # Build env + policy
     env = make_env(alg_config["ENV_NAME"], alg_config["ENV_KWARGS"])
     env = LogWrapper(env)
