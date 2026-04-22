@@ -268,7 +268,7 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
                         color="red",
                         lw=1.8,
                         shrinkA=0.0,
-                        shrinkB=6.0,
+                        shrinkB=0.0,
                         mutation_scale=14,
                     ),
                 )
