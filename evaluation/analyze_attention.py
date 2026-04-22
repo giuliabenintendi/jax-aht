@@ -84,9 +84,14 @@ def _get_per_agent_info(state, agent_idx: int):
 
 
 def _render_own_frame(card_perm, pos_perm, recolouring, agent_idx: int,
-                     own_gt_value: int, is_decision: bool):
-    """Render agent's own-frame view (post-OP), with agent's own-colour dot on
-    the card it just acted on (messaged card, or picked card on decision step)."""
+                     own_gt_value: int, partner_msg_gt: int, is_decision: bool):
+    """Render agent's own-frame view (post-OP) with action markers:
+    - Own action: agent-colour dot on messaged card (delib), or external
+      bounding box around picked card (decision).
+    - Partner's incoming message: partner-colour dot on the card partner
+      messaged about, remapped into this agent's view via the OP perms.
+    If both dots land on the same card they sit side-by-side inside it.
+    """
     # render_card_game uses jax.lax.scan, so input must be a JAX array
     base = np.asarray(render_card_game(jnp.asarray(card_perm))).copy()
     TP = TILE_PIXELS
@@ -117,25 +122,47 @@ def _render_own_frame(card_perm, pos_perm, recolouring, agent_idx: int,
     if is_decision:
         base[:4, :4, :] = _WHITE
 
-    # Agent's own-colour marker: dot on messaged card (deliberation), bounding
-    # box around picked card (decision step).
-    if own_gt_value >= 0:
-        gt_positions = np.where(card_perm == own_gt_value)[0]
-        if len(gt_positions):
-            gt_col = int(gt_positions[0])
-            view_positions = np.where(pos_perm == gt_col)[0]
-            if len(view_positions):
-                view_col = int(view_positions[0])
-                agent_color = np.asarray(
-                    AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR
-                )
-                if is_decision:
-                    base = _draw_border_np(base, 1, view_col, TP, agent_color)
-                else:
-                    dot_size = 2
-                    dy = TP + (TP - dot_size) // 2
-                    dx = view_col * TP + (TP - dot_size) // 2
-                    base[dy:dy + dot_size, dx:dx + dot_size] = agent_color
+    # Dot layout inside a card tile (TP=7, card is 5x5 at rows 1-5, cols 1-5):
+    #   own dot on the left (cols 1-2), partner dot on the right (cols 4-5),
+    #   both vertically centred (rows 2-3). Both are 2x2.
+    dot_size = 2
+    own_dot_xoff = 1
+    partner_dot_xoff = 4
+    dy = TP + (TP - dot_size) // 2
+    agent_color = np.asarray(
+        AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR
+    )
+    partner_color = np.asarray(
+        AGENT_1_COLOR if agent_idx == 0 else AGENT_0_COLOR
+    )
+
+    def _card_view_col(gt_value):
+        if gt_value < 0:
+            return None
+        gt_positions = np.where(card_perm == gt_value)[0]
+        if len(gt_positions) == 0:
+            return None
+        gt_col = int(gt_positions[0])
+        view_positions = np.where(pos_perm == gt_col)[0]
+        if len(view_positions) == 0:
+            return None
+        return int(view_positions[0])
+
+    # Own action: dot on messaged card or external bbox on picked card
+    own_view_col = _card_view_col(own_gt_value)
+    if own_view_col is not None:
+        if is_decision:
+            base = _draw_border_np(base, 1, own_view_col, TP, agent_color)
+        else:
+            dx = own_view_col * TP + own_dot_xoff
+            base[dy:dy + dot_size, dx:dx + dot_size] = agent_color
+
+    # Partner's incoming message: dot in partner's colour on their messaged
+    # card, remapped into this agent's view
+    partner_view_col = _card_view_col(partner_msg_gt)
+    if partner_view_col is not None:
+        dx = partner_view_col * TP + partner_dot_xoff
+        base[dy:dy + dot_size, dx:dx + dot_size] = partner_color
 
     return base
 
@@ -160,9 +187,12 @@ def _render_obs_sequence(ep_states, ep_actions, ep_messages, agent_idx: int,
 
         state = ep_states[t]
         card_perm, pos_perm, recolouring = _get_per_agent_info(state, agent_idx)
+        card_state = _walk_to_card_state(state)
+        partner_msg_gt = int(np.asarray(card_state.messages)[1 - agent_idx])
 
         img = _render_own_frame(
-            card_perm, pos_perm, recolouring, agent_idx, own_value, is_decision,
+            card_perm, pos_perm, recolouring, agent_idx,
+            own_value, partner_msg_gt, is_decision,
         )
         axes[t].imshow(img, interpolation="nearest")
         axes[t].axis("off")
