@@ -172,9 +172,10 @@ def _render_obs_sequence(ep_states, ep_actions, ep_messages, agent_idx: int,
     plt.close(fig)
 
 
-def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
+def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
+                              agent_idx: int, agent_key: str, cmap: str,
                               output_path: Path, max_steps: int):
-    """1 row × T columns: attention heatmap per step (global max across episode)."""
+    """1 row × T columns: per-step attention + arrow to messaged card or pick bbox."""
     num_steps = min(len(attn_maps[agent_key]), max_steps)
     if num_steps == 0:
         return
@@ -193,12 +194,19 @@ def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
     extent = (0, _W, _H, 0)
     TP = TILE_PIXELS
 
-    # Card visuals in the real env are 5x5 with a 1-pixel inset inside each
-    # 7x7 tile (see _CARD_MASK in envs/card_game/rendering.py).
     CARD_INSET = 1
     CARD_SIZE = TP - 2 * CARD_INSET  # 5
 
-    def _add_board_outlines(ax):
+    agent_rgb = (
+        np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR) / 255.0
+    )
+    agent_row, agent_col = _AGENT_GRID_POSITIONS[agent_idx]
+    agent_center = (
+        agent_col * TP + TP / 2.0,
+        agent_row * TP + TP / 2.0,
+    )
+
+    def _add_card_outlines(ax):
         for card_col in range(NUM_CARDS):
             x = card_col * TP + CARD_INSET
             y = 1 * TP + CARD_INSET
@@ -207,13 +215,60 @@ def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
                 linewidth=0.8, edgecolor="black", facecolor="none",
             ))
 
+    def _view_col_of(card_perm, pos_perm, gt_value):
+        if gt_value < 0:
+            return None
+        gt_cols = np.where(card_perm == gt_value)[0]
+        if len(gt_cols) == 0:
+            return None
+        gt_col = int(gt_cols[0])
+        view_cols = np.where(pos_perm == gt_col)[0]
+        if len(view_cols) == 0:
+            return None
+        return int(view_cols[0])
+
     for t in range(num_steps):
+        is_decision = (t == num_steps - 1)
         attn = np.asarray(attn_maps[agent_key][t]).squeeze()
         axes[t].imshow(
             attn, cmap=cmap, vmin=0.0, vmax=attn_max,
             interpolation="nearest", extent=extent,
         )
-        _add_board_outlines(axes[t])
+        _add_card_outlines(axes[t])
+
+        # Overlay action indicator
+        state = ep_states[t]
+        card_perm, pos_perm, _ = _get_per_agent_info(state, agent_idx)
+        if is_decision:
+            pick_gt = int(ep_actions[t][agent_idx]) if t < len(ep_actions) else -1
+            view_col = _view_col_of(card_perm, pos_perm, pick_gt)
+            if view_col is not None:
+                axes[t].add_patch(patches.Rectangle(
+                    (view_col * TP + CARD_INSET, 1 * TP + CARD_INSET),
+                    CARD_SIZE, CARD_SIZE,
+                    linewidth=1.8, edgecolor=agent_rgb, facecolor="none",
+                ))
+        else:
+            msg_gt = int(ep_messages[t][agent_idx]) if t < len(ep_messages) else -1
+            view_col = _view_col_of(card_perm, pos_perm, msg_gt)
+            if view_col is not None:
+                card_center = (
+                    view_col * TP + TP / 2.0,
+                    1 * TP + TP / 2.0,
+                )
+                axes[t].annotate(
+                    "",
+                    xy=card_center,
+                    xytext=agent_center,
+                    arrowprops=dict(
+                        arrowstyle="->",
+                        color=agent_rgb,
+                        lw=1.3,
+                        shrinkA=2.0,
+                        shrinkB=3.0,
+                    ),
+                )
+
         axes[t].set_xlim(0, _W)
         axes[t].set_ylim(_H, 0)
         axes[t].axis("off")
@@ -308,13 +363,9 @@ def main():
             ("agent_0", "Oranges"),
             ("agent_1", "RdPu"),
         ]):
-            _render_obs_sequence(
-                ep_states, ep_actions, ep_messages, agent_idx,
-                output_path=ep_dir / f"{agent_key}_obs.png",
-                max_steps=max_steps,
-            )
             _render_attention_sequence(
-                attn_maps, agent_key, cmap,
+                attn_maps, ep_states, ep_actions, ep_messages,
+                agent_idx, agent_key, cmap,
                 output_path=ep_dir / f"{agent_key}_attention.png",
                 max_steps=max_steps,
             )
