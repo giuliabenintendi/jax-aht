@@ -1,11 +1,12 @@
 """Post-hoc per-agent attention analysis for the card game.
 
 Loads a saved training checkpoint, runs N eval episodes with a chosen seed,
-and produces for each agent a 2-row figure showing:
-  - Top row: the agent's own-frame observation at each step.
-  - Bottom row: the agent's attention map at each step, rendered with the
-    coolwarm palette and normalized to the episode's global max (no overlay
-    on the obs image).
+and for each agent produces two separate figures per episode:
+  - <agent>_obs.png: agent's own-frame view across the episode, with a dot
+    highlighting the agent's own message (or pick, on the decision step) in
+    its own colour (orange for agent 0, magenta for agent 1).
+  - <agent>_attention.png: attention map per step rendered with the agent's
+    palette (Oranges / RdPu), normalised to the episode's global max.
 
 Usage:
     ./run_gpu.sh <gpu> evaluation.analyze_attention \\
@@ -26,89 +27,169 @@ import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import OmegaConf
 
-from agents.initialize_agents import initialize_ja_image_agent, initialize_ja_agent
+from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent
 from common.save_load_utils import load_train_run
 from envs import make_env
-from envs.card_game.rendering import GRID_COLS, GRID_ROWS, TILE_PIXELS
+from envs.card_game.rendering import (
+    AGENT_0_COLOR,
+    AGENT_1_COLOR,
+    CARD_COLORS,
+    GRID_COLS,
+    GRID_ROWS,
+    NUM_CARDS,
+    TILE_PIXELS,
+    render_card_game,
+)
 from envs.log_wrapper import LogWrapper
 from evaluation.vis_episodes import run_episode_with_states
 
 
-_H = GRID_ROWS * TILE_PIXELS  # 21
-_W = GRID_COLS * TILE_PIXELS  # 35
+_H = GRID_ROWS * TILE_PIXELS
+_W = GRID_COLS * TILE_PIXELS
+_WHITE = np.array([255, 255, 255], dtype=np.uint8)
+_AGENT_GRID_POSITIONS = [(0, 2), (2, 2)]  # (row, col) of agent 0, agent 1 tiles
 
 
-def _obs_to_image(flat_obs):
-    """Flat obs → (H, W, 3) uint8 RGB image."""
-    return (np.asarray(flat_obs) * 255).astype(np.uint8).reshape(_H, _W, 3)
+def _draw_border_np(img, row, col, tile_size, color):
+    """Draw 1-pixel border around the tile at (row, col)."""
+    y = row * tile_size
+    x = col * tile_size
+    img[y, x:x + tile_size] = color
+    img[y + tile_size - 1, x:x + tile_size] = color
+    img[y:y + tile_size, x] = color
+    img[y:y + tile_size, x + tile_size - 1] = color
+    return img
 
 
-def _render_agent_figure(ep_obs, attn_maps, agent_key: str, episode_idx: int,
-                        output_path: Path, max_steps: int, cmap: str = "Oranges"):
-    """Render one agent's episode: 2 rows × max_steps columns (obs + attn)."""
-    num_steps = min(len(ep_obs), len(attn_maps[agent_key]))
+def _walk_to_card_state(state):
+    """Walk .env_state chain to the innermost CardGameState."""
+    s = state
+    while hasattr(s, "env_state") and not hasattr(s, "card_permutation"):
+        s = s.env_state
+    return s
+
+
+def _get_per_agent_info(state, agent_idx: int):
+    """Return (card_permutation, pos_perm, recolouring) for agent_idx from a wrapped state."""
+    name = f"agent_{agent_idx}"
+    recol = np.asarray(state.per_agent_recolouring[name])
+    pos_perm = np.asarray(state.env_state.per_agent_perm[name])
+    card_state = _walk_to_card_state(state)
+    card_perm = np.asarray(card_state.card_permutation)
+    return card_perm, pos_perm, recol
+
+
+def _render_own_frame(card_perm, pos_perm, recolouring, agent_idx: int,
+                     own_gt_value: int, is_decision: bool):
+    """Render agent's own-frame view (post-OP), with agent's own-colour dot on
+    the card it just acted on (messaged card, or picked card on decision step)."""
+    base = np.asarray(render_card_game(card_perm)).copy()
+    TP = TILE_PIXELS
+
+    # Position shuffle of the card row
+    card_row = base[TP:2 * TP, :, :].copy()
+    tiles = card_row.reshape(TP, NUM_CARDS, TP, 3)
+    shuffled = tiles[:, pos_perm, :, :]
+    base[TP:2 * TP, :, :] = shuffled.reshape(TP, NUM_CARDS * TP, 3)
+
+    # Recolouring of the card row
+    card_band = base[TP:2 * TP, :, :].copy()
+    card_colors_np = np.asarray(CARD_COLORS)
+    for gt_idx in range(NUM_CARDS):
+        original = card_colors_np[gt_idx]
+        new_color = card_colors_np[int(recolouring[gt_idx])]
+        mask = np.all(card_band == original, axis=-1)
+        card_band[mask] = new_color
+    base[TP:2 * TP, :, :] = card_band
+
+    # Ego highlight — white border around this agent's tile
+    agent_row, agent_col = _AGENT_GRID_POSITIONS[agent_idx]
+    base = _draw_border_np(base, agent_row, agent_col, TP, _WHITE)
+
+    # Decision indicator (white 4×4 top-left)
+    if is_decision:
+        base[:4, :4, :] = _WHITE
+
+    # Agent's own-colour dot on the card it acted on this step
+    if own_gt_value >= 0:
+        gt_positions = np.where(card_perm == own_gt_value)[0]
+        if len(gt_positions):
+            gt_col = int(gt_positions[0])
+            view_positions = np.where(pos_perm == gt_col)[0]
+            if len(view_positions):
+                view_col = int(view_positions[0])
+                dot_size = 2
+                dy = TP + (TP - dot_size) // 2
+                dx = view_col * TP + (TP - dot_size) // 2
+                agent_color = AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR
+                base[dy:dy + dot_size, dx:dx + dot_size] = np.asarray(agent_color)
+
+    return base
+
+
+def _render_obs_sequence(ep_states, ep_actions, ep_messages, agent_idx: int,
+                        output_path: Path, max_steps: int):
+    """1 row × T columns: agent's own view with own-action dot per step."""
+    num_steps = min(len(ep_states) - 1, max_steps)
+    if num_steps == 0:
+        return
+
+    fig, axes = plt.subplots(1, num_steps, figsize=(num_steps * 1.8, 2.0))
+    if num_steps == 1:
+        axes = [axes]
+
+    for t in range(num_steps):
+        is_decision = (t == num_steps - 1)
+        if is_decision:
+            own_value = int(ep_actions[t][agent_idx]) if t < len(ep_actions) else -1
+        else:
+            own_value = int(ep_messages[t][agent_idx]) if t < len(ep_messages) else -1
+
+        state = ep_states[t]
+        card_perm, pos_perm, recolouring = _get_per_agent_info(state, agent_idx)
+
+        img = _render_own_frame(
+            card_perm, pos_perm, recolouring, agent_idx, own_value, is_decision,
+        )
+        axes[t].imshow(img, interpolation="nearest")
+        axes[t].set_title(f"t={t + 1}" + (" (D)" if is_decision else ""), fontsize=10)
+        axes[t].axis("off")
+
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.88, bottom=0.02, wspace=0.05)
+    fig.savefig(output_path, dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _render_attention_sequence(attn_maps, agent_key: str, cmap: str,
+                              output_path: Path, max_steps: int):
+    """1 row × T columns: attention heatmap per step (global-max within episode)."""
+    num_steps = min(len(attn_maps[agent_key]), max_steps)
     if num_steps == 0:
         return
 
     attn_stack = np.array([
-        np.asarray(attn_maps[agent_key][t]).squeeze()
-        for t in range(num_steps)
+        np.asarray(attn_maps[agent_key][t]).squeeze() for t in range(num_steps)
     ])
     attn_max = float(attn_stack.max())
     if attn_max <= 0:
         attn_max = 1.0
 
-    fig, axes = plt.subplots(
-        2, num_steps,
-        figsize=(num_steps * 1.8, 4.0),
-        gridspec_kw={"height_ratios": [1.2, 1.0]},
-    )
+    fig, axes = plt.subplots(1, num_steps, figsize=(num_steps * 1.8, 2.0))
     if num_steps == 1:
-        axes = axes.reshape(2, 1)
+        axes = [axes]
 
-    im = None
-    obs_extent = (0, _W, _H, 0)  # obs coordinate space; reused for attention so shapes align
+    extent = (0, _W, _H, 0)
     for t in range(num_steps):
         is_decision = (t == num_steps - 1)
-
-        # Top: obs image (own frame)
-        obs_img = _obs_to_image(ep_obs[t][agent_key])
-        axes[0, t].imshow(obs_img, interpolation="nearest", extent=obs_extent)
-        label = f"t={t + 1}"
-        if is_decision:
-            label += " (D)"
-        axes[0, t].set_title(label, fontsize=10)
-        axes[0, t].set_xticks([])
-        axes[0, t].set_yticks([])
-        if is_decision:
-            for spine in axes[0, t].spines.values():
-                spine.set_edgecolor("red")
-                spine.set_linewidth(2)
-
-        # Bottom: attention heatmap. Upscale via extent to share the obs
-        # coordinate space so both panels have identical footprint.
         attn = np.asarray(attn_maps[agent_key][t]).squeeze()
-        im = axes[1, t].imshow(
+        axes[t].imshow(
             attn, cmap=cmap, vmin=0.0, vmax=attn_max,
-            interpolation="nearest", extent=obs_extent,
+            interpolation="nearest", extent=extent,
         )
-        axes[1, t].set_xticks([])
-        axes[1, t].set_yticks([])
-        if is_decision:
-            for spine in axes[1, t].spines.values():
-                spine.set_edgecolor("red")
-                spine.set_linewidth(2)
+        axes[t].set_title(f"t={t + 1}" + (" (D)" if is_decision else ""), fontsize=10)
+        axes[t].axis("off")
 
-    axes[0, 0].set_ylabel("obs", fontsize=10)
-    axes[1, 0].set_ylabel("attention", fontsize=10)
-
-    fig.subplots_adjust(left=0.03, right=0.9, top=0.90, bottom=0.05,
-                        wspace=0.05, hspace=0.15)
-    cbar_ax = fig.add_axes([0.91, 0.08, 0.012, 0.35])
-    fig.colorbar(im, cax=cbar_ax)
-
-    fig.suptitle(f"Episode {episode_idx} — {agent_key}  (vmax={attn_max:.3f})",
-                 fontsize=11)
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.88, bottom=0.02, wspace=0.05)
     fig.savefig(output_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
 
@@ -132,10 +213,8 @@ def main():
                         help="Base seed for per-episode RNGs: key = base + ep")
     args = parser.parse_args()
 
-    # Load config from adjacent .hydra/config.yaml
     ckpt_path = Path(args.checkpoint).resolve()
     run_dir = ckpt_path.parent if ckpt_path.is_file() else ckpt_path
-    # walk up to find .hydra
     config_path = None
     cur = run_dir
     for _ in range(4):
@@ -151,13 +230,11 @@ def main():
     cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
     alg_config = cfg["algorithm"]
 
-    # Propagate COMMUNICATION flag into ENV_KWARGS (matches ja_ippo training path)
     if alg_config.get("COMMUNICATION", False):
         env_kwargs = dict(alg_config["ENV_KWARGS"])
         env_kwargs["communication"] = True
         alg_config["ENV_KWARGS"] = env_kwargs
 
-    # Build env + policy
     env = make_env(alg_config["ENV_NAME"], alg_config["ENV_KWARGS"])
     env = LogWrapper(env)
     inner_env = env._env
@@ -171,7 +248,6 @@ def main():
     rng = jax.random.PRNGKey(0)
     policy, _ = init_fn(alg_config, env, rng)
 
-    # Load params, pick the requested seed
     run_data = load_train_run(str(ckpt_path))
     final_params = run_data["final_params"]
     num_seeds = jax.tree.leaves(final_params)[0].shape[0]
@@ -191,23 +267,29 @@ def main():
 
     for ep in range(args.num_episodes):
         ep_rng = jax.random.PRNGKey(args.episode_rng_base + ep)
-        result = run_episode_with_states(
+        ep_states, attn_maps, ep_actions, ep_messages = run_episode_with_states(
             ep_rng, inner_env, params, policy, params, policy, max_steps,
-            collect_attention=True, collect_obs=True,
+            collect_attention=True,
         )
-        ep_states, attn_maps, ep_actions, ep_messages, ep_obs = result
 
         ep_dir = output_dir / f"episode_{ep}"
         ep_dir.mkdir(exist_ok=True)
 
-        for agent_key, cmap in (("agent_0", "Oranges"), ("agent_1", "RdPu")):
-            _render_agent_figure(
-                ep_obs, attn_maps, agent_key, ep,
-                output_path=ep_dir / f"{agent_key}_obs_and_attention.png",
-                max_steps=max_steps, cmap=cmap,
+        for agent_idx, (agent_key, cmap) in enumerate([
+            ("agent_0", "Oranges"),
+            ("agent_1", "RdPu"),
+        ]):
+            _render_obs_sequence(
+                ep_states, ep_actions, ep_messages, agent_idx,
+                output_path=ep_dir / f"{agent_key}_obs.png",
+                max_steps=max_steps,
+            )
+            _render_attention_sequence(
+                attn_maps, agent_key, cmap,
+                output_path=ep_dir / f"{agent_key}_attention.png",
+                max_steps=max_steps,
             )
 
-        # Small text summary per episode
         summary = ep_dir / "summary.txt"
         with summary.open("w") as f:
             f.write(f"Episode {ep}\n")
