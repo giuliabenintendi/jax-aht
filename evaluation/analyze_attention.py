@@ -242,10 +242,16 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
         state = ep_states[t]
         card_perm, pos_perm, _ = _get_per_agent_info(state, agent_idx)
 
-        # Partner's incoming message: small filled dot in partner's colour on
-        # the card partner messaged about, remapped into this agent's view.
-        card_state = _walk_to_card_state(state)
-        partner_msg_gt = int(np.asarray(card_state.messages)[1 - agent_idx])
+        # Partner's message this step, sourced from ep_messages so it shares
+        # the same step index (and GT frame) as the own arrow. ep_states[t]
+        # holds the pre-step state, whose .messages field is from step t-1 —
+        # using it here would be off by one. At the decision step there is
+        # no concurrent message, so fall back to partner's last-sent one.
+        partner_t = t - 1 if is_decision else t
+        partner_msg_gt = (
+            int(ep_messages[partner_t][1 - agent_idx])
+            if 0 <= partner_t < len(ep_messages) else -1
+        )
         partner_view_col = _view_col_of(card_perm, pos_perm, partner_msg_gt)
         if partner_view_col is not None:
             cx = partner_view_col * TP + TP / 2.0
