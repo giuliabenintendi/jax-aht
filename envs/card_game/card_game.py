@@ -97,6 +97,7 @@ class CardGameEnv(BaseEnv):
                  focal_card_idx: int = -1,
                  focal_card_reward: float = 1.0,
                  default_match_reward: float = 1.0,
+                 scramble_partner_msg: bool = False,
                  **kwargs):
         self.max_steps = max_steps
         self.shuffle = shuffle
@@ -108,6 +109,11 @@ class CardGameEnv(BaseEnv):
         self.focal_card_idx = int(focal_card_idx)
         self.focal_card_reward = float(focal_card_reward)
         self.default_match_reward = float(default_match_reward)
+        # When True, the partner-message dot rendered into each agent's obs is
+        # drawn at a uniformly random card color instead of the color the
+        # partner actually sent. env_state.messages is left untouched, so the
+        # speaker's own reward shaping (match/stability/follow) is unaffected.
+        self.scramble_partner_msg = scramble_partner_msg
         self.num_cards = NUM_CARDS
         self.num_agents = 2
         self.agents = [f"agent_{i}" for i in range(self.num_agents)]
@@ -135,11 +141,17 @@ class CardGameEnv(BaseEnv):
         # 0-4: pick color, 5: do nothing
         return jaxmarl_spaces.Discrete(num_categories=self.num_cards + 1)
 
-    def _make_obs(self, env_state: CardGameState) -> Dict[str, jnp.ndarray]:
+    def _make_obs(
+        self, env_state: CardGameState, key: chex.PRNGKey,
+    ) -> Dict[str, jnp.ndarray]:
         """Render image observation for each agent.
 
         Each agent sees: ego border (white) + a colored dot (partner color)
         at the center of the card tile the partner messaged about.
+
+        `key` is used only when `self.scramble_partner_msg` is True, to
+        independently resample each agent's perceived partner message. When
+        the flag is False the key is unused.
         """
         img = render_card_game(env_state.card_permutation)
 
@@ -147,19 +159,29 @@ class CardGameEnv(BaseEnv):
         partner_colors = [AGENT_1_COLOR, AGENT_0_COLOR]  # agent i sees partner's color
         is_decision = (env_state.step_count + 1) >= self.max_steps
         white = jnp.array([255, 255, 255], dtype=jnp.uint8)
+        # Per-agent subkeys for message scrambling; safe to split even when unused.
+        agent_keys = jax.random.split(key, self.num_agents)
         for i in range(self.num_agents):
             row, col = _AGENT_POSITIONS[i]
             agent_img = _draw_border(
                 img, row, col, self.tile_size, _EGO_HIGHLIGHT_COLOR
             )
             if self.communication:
-                partner_msg = env_state.messages[1 - i]
+                real_msg = env_state.messages[1 - i]
+                # has_msg is driven by the *real* message so step 0 (no message
+                # yet) still produces an empty frame even when scrambling is on.
+                has_msg = real_msg >= 0
+                if self.scramble_partner_msg:
+                    scrambled_msg = jax.random.randint(
+                        agent_keys[i], (), 0, self.num_cards
+                    )
+                    partner_msg = jnp.where(has_msg, scrambled_msg, real_msg)
+                else:
+                    partner_msg = real_msg
                 # Find the position of the messaged color via card_permutation
                 # card_permutation[pos] = color, so we need pos where color == msg
                 # Use argmin on |perm - msg| to find the position (exact match = 0)
                 msg_pos = jnp.argmin(jnp.abs(env_state.card_permutation - partner_msg))
-                # Draw dot only if partner has sent a valid message (>= 0)
-                has_msg = partner_msg >= 0
                 # Draw 2×2 dot at center of messaged card tile
                 card_row = 1
                 dot_size = 2
@@ -182,6 +204,7 @@ class CardGameEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], WrappedEnvState]:
+        key, key_obs = jax.random.split(key)
         if self.odd_one_out_task:
             key_colors, key_shuffle = jax.random.split(key)
             color_order = jax.random.permutation(key_colors, self.num_cards)
@@ -207,7 +230,7 @@ class CardGameEnv(BaseEnv):
             messages=jnp.full(2, -1, dtype=jnp.int32),
             target_color=target_color,
         )
-        obs = self._make_obs(env_state)
+        obs = self._make_obs(env_state, key_obs)
         return obs, WrappedEnvState(
             env_state=env_state,
             base_return_so_far=jnp.zeros(self.num_agents),
@@ -312,7 +335,7 @@ class CardGameEnv(BaseEnv):
         actions: Dict[str, chex.Array],
         reset_state: Optional[WrappedEnvState] = None,
     ) -> Tuple[Dict[str, chex.Array], WrappedEnvState, Dict[str, float], Dict[str, bool], Dict]:
-        key, key_reset = jax.random.split(key)
+        key, key_reset, key_obs = jax.random.split(key, 3)
         env_state = state.env_state
         new_step = env_state.step_count + 1
         is_decision = new_step >= self.max_steps
@@ -341,7 +364,7 @@ class CardGameEnv(BaseEnv):
         new_env_state = env_state.replace(
             step_count=new_step, agent_choices=choices, messages=new_messages,
         )
-        obs_st = self._make_obs(new_env_state)
+        obs_st = self._make_obs(new_env_state, key_obs)
 
         base_reward_arr = jnp.array([reward_val, reward_val])
         base_return = state.base_return_so_far + base_reward_arr
