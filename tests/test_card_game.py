@@ -215,6 +215,68 @@ def test_comm_decision_pick_reward():
     assert float(reward["agent_0"]) == 1.0
 
 
+def test_following_partner_message_is_chance_without_follow_reward():
+    """Following partner messages can yield 0.2 return without any shaping.
+
+    Protocol:
+    - step 1: each agent sends an arbitrary color message
+    - step 2: each agent picks the partner's previous message
+
+    With zero communication shaping, this still succeeds exactly when the two
+    messages matched, i.e. 5 successes out of 25 message pairs.
+    """
+    env = make_env(
+        "card-game",
+        {
+            "max_steps": 2,
+            "communication": True,
+            "shuffle": False,
+            "match_coef": 0.0,
+            "follow_coef": 0.0,
+        },
+    )
+
+    reward_sum = 0.0
+    num_pairs = 0
+    key = jax.random.PRNGKey(123)
+
+    for msg_0 in range(NUM_CARDS):
+        for msg_1 in range(NUM_CARDS):
+            key, reset_key, step1_key, step2_key = jax.random.split(key, 4)
+            _, state = env.reset(reset_key)
+
+            _, state, step1_reward, step1_dones, step1_info = env.step(
+                step1_key,
+                state,
+                {
+                    "agent_0": jnp.int32(NUM_CARDS + msg_0),
+                    "agent_1": jnp.int32(NUM_CARDS + msg_1),
+                },
+            )
+            assert not step1_dones["__all__"]
+            assert float(step1_reward["agent_0"]) == 0.0
+            assert float(step1_info["comm_reward_follow"][0]) == 0.0
+
+            _, _, step2_reward, step2_dones, step2_info = env.step(
+                step2_key,
+                state,
+                {
+                    "agent_0": jnp.int32(msg_1),
+                    "agent_1": jnp.int32(msg_0),
+                },
+            )
+            assert step2_dones["__all__"]
+            assert float(step2_info["comm_reward_follow"][0]) == 0.0
+            assert float(step2_info["comm_reward"][0]) == 0.0
+
+            reward_sum += float(step2_reward["agent_0"])
+            num_pairs += 1
+
+    assert num_pairs == NUM_CARDS * NUM_CARDS
+    assert reward_sum == float(NUM_CARDS)
+    assert reward_sum / num_pairs == 1.0 / NUM_CARDS
+
+
 def test_ego_highlight():
     """Each agent's observation should differ (different ego borders)."""
     env = make_env("card-game", {})
