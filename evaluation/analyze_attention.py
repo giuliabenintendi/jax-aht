@@ -296,10 +296,16 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
 
     fig.subplots_adjust(left=0.01, right=0.93, top=0.98, bottom=0.02, wspace=0.05)
 
-    cbar_ax = fig.add_axes([0.945, 0.10, 0.008, 0.80])
+    # Colorbar aligned to the actual rendered axis bbox (imshow shrinks the
+    # subplot to preserve aspect, so we need the post-layout position).
+    fig.canvas.draw()
+    axis_bbox = axes[-1].get_position()
+    cbar_ax = fig.add_axes([
+        axis_bbox.x1 + 0.01, axis_bbox.y0, 0.008, axis_bbox.height,
+    ])
     cbar = fig.colorbar(axes[0].images[0], cax=cbar_ax)
     cbar.set_ticks([0.0, attn_max])
-    cbar.ax.tick_params(labelsize=6)
+    cbar.ax.tick_params(labelsize=6, length=0)
     cbar.outline.set_linewidth(0.3)
 
     fig.savefig(output_path, bbox_inches="tight")
