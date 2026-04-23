@@ -294,7 +294,14 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
         axes[t].set_ylim(_H, 0)
         axes[t].axis("off")
 
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.98, bottom=0.02, wspace=0.05)
+    fig.subplots_adjust(left=0.01, right=0.93, top=0.98, bottom=0.02, wspace=0.05)
+
+    cbar_ax = fig.add_axes([0.945, 0.10, 0.008, 0.80])
+    cbar = fig.colorbar(axes[0].images[0], cax=cbar_ax)
+    cbar.set_ticks([0.0, attn_max])
+    cbar.ax.tick_params(labelsize=6)
+    cbar.outline.set_linewidth(0.3)
+
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
