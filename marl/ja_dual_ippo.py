@@ -48,6 +48,20 @@ def _get_obs_type(config):
     return config.get("OBS_TYPE", config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
 
 
+def _kl_stop_decision(should_stop: jnp.ndarray, approx_kl: jnp.ndarray, target_kl: float):
+    """Decide whether a PPO minibatch update should still be applied."""
+    target_kl = jnp.asarray(target_kl, dtype=approx_kl.dtype)
+    hit_target = (target_kl > 0.0) & (approx_kl > target_kl)
+    stop_now = should_stop | hit_target
+    return stop_now, ~stop_now
+
+
+def _masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+    """Average only over minibatches that actually applied gradients."""
+    mask = mask.astype(values.dtype)
+    return (values * mask).sum() / jnp.maximum(mask.sum(), 1.0)
+
+
 def make_train_loop(config, env):
     """Build init and step functions for dual-critic JA-IPPO (Python-loop path)."""
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
@@ -123,8 +137,11 @@ def make_train_loop(config, env):
     def make_step_fn(policy):
 
         def _ppo_update(train_state, traj_batch, adv_ext, adv_int, targets_ext, targets_int, rng):
+            target_kl = jnp.asarray(config.get("TARGET_KL", 0.0), dtype=jnp.float32)
+
             def _update_epoch(update_state, unused):
-                def _update_minbatch(train_state, batch_info):
+                def _update_minbatch(carry, batch_info):
+                    train_state, should_stop = carry
                     init_hstate, traj_batch, adv_ext, adv_int, targets_ext, targets_int = batch_info
 
                     def _loss_fn(params, traj_batch, adv_ext, adv_int, targets_ext, targets_int):
@@ -170,36 +187,78 @@ def make_train_loop(config, env):
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
                         )
-                        return total_loss, (value_loss_ext, value_loss_int, loss_actor, entropy)
+                        approx_kl = ((ratio - 1) - jnp.log(ratio)).mean()
+                        clip_frac = (jnp.abs(ratio - 1.0) > config["CLIP_EPS"]).mean()
+                        return total_loss, (
+                            value_loss_ext,
+                            value_loss_int,
+                            loss_actor,
+                            entropy,
+                            approx_kl,
+                            clip_frac,
+                            ratio.mean(),
+                            ratio.std(),
+                        )
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
                         train_state.params, traj_batch, adv_ext, adv_int, targets_ext, targets_int
                     )
+                    _, (_, _, _, _, approx_kl, _, _, _) = total_loss
                     grad_norm = jnp.sqrt(
                         sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads))
                     )
+                    should_stop, apply_update = _kl_stop_decision(
+                        should_stop, approx_kl, target_kl
+                    )
+                    grads = jax.tree.map(
+                        lambda g: jnp.where(apply_update, g, jnp.zeros_like(g)), grads
+                    )
                     train_state = train_state.apply_gradients(grads=grads)
-                    return train_state, (total_loss, grad_norm)
+                    return (train_state, should_stop), (
+                        total_loss,
+                        grad_norm,
+                        apply_update.astype(jnp.float32),
+                    )
 
-                train_state, init_hstate, traj_batch, adv_ext, adv_int, targets_ext, targets_int, rng = update_state
+                train_state, init_hstate, traj_batch, adv_ext, adv_int, targets_ext, targets_int, rng, should_stop = update_state
                 rng, perm_rng = jax.random.split(rng)
                 minibatches = _create_dual_minibatches(
                     traj_batch, adv_ext, adv_int, targets_ext, targets_int,
                     init_hstate, num_actors, config["NUM_MINIBATCHES"], perm_rng)
 
-                train_state, minibatch_info = jax.lax.scan(
-                    _update_minbatch, train_state, minibatches
+                (train_state, should_stop), minibatch_info = jax.lax.scan(
+                    _update_minbatch, (train_state, should_stop), minibatches
                 )
-                update_state = (train_state, init_hstate, traj_batch, adv_ext, adv_int, targets_ext, targets_int, rng)
+                update_state = (
+                    train_state,
+                    init_hstate,
+                    traj_batch,
+                    adv_ext,
+                    adv_int,
+                    targets_ext,
+                    targets_int,
+                    rng,
+                    should_stop,
+                )
                 return update_state, minibatch_info
 
             init_hstate = policy.init_hstate(num_actors)
-            update_state = (train_state, init_hstate, traj_batch, adv_ext, adv_int, targets_ext, targets_int, rng)
+            update_state = (
+                train_state,
+                init_hstate,
+                traj_batch,
+                adv_ext,
+                adv_int,
+                targets_ext,
+                targets_int,
+                rng,
+                jnp.bool_(False),
+            )
             update_state, loss_info = jax.lax.scan(
                 _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
             )
-            return update_state[0], loss_info
+            return update_state[0], loss_info, update_state[-1]
 
         def _augment_obs_with_attn(obs_batch, prev_other_attn):
             """Append upsampled other-agent attention as 4th image channel."""
@@ -357,10 +416,14 @@ def make_train_loop(config, env):
                 traj_batch.reward_int, traj_batch.value_int, last_val_int, traj_batch.done)
 
             rng, ppo_rng = jax.random.split(rng)
-            train_state, loss_info = _ppo_update(
+            train_state, loss_info, kl_stop_triggered = _ppo_update(
                 train_state, traj_batch, adv_ext, adv_int, targets_ext, targets_int, ppo_rng)
 
-            (total_loss, (value_loss_ext, value_loss_int, policy_loss, entropy)), grad_norm = loss_info
+            (
+                total_loss,
+                (value_loss_ext, value_loss_int, policy_loss, entropy,
+                 approx_kl, clip_frac, ratio_mean, ratio_std),
+            ), grad_norm, update_applied = loss_info
 
             ja_rew_0 = traj_batch.ja_reward[:, :num_envs]
             jsd_values = -ja_rew_0
@@ -370,12 +433,20 @@ def make_train_loop(config, env):
             metric["ja_beta"] = ja_beta
             metric["jsd_mean"] = jsd_values.mean()
             metric["ja_reward_mean"] = ja_rew_0.mean()
-            metric["loss_total"] = total_loss[0].mean()
-            metric["loss_value_ext"] = value_loss_ext[0].mean()
-            metric["loss_value_int"] = value_loss_int[0].mean()
-            metric["loss_policy"] = policy_loss[0].mean()
-            metric["entropy"] = entropy.mean()
-            metric["grad_norm"] = grad_norm.mean()
+            metric["loss_total"] = _masked_mean(total_loss, update_applied)
+            metric["loss_value_ext"] = _masked_mean(value_loss_ext, update_applied)
+            metric["loss_value_int"] = _masked_mean(value_loss_int, update_applied)
+            metric["loss_policy"] = _masked_mean(policy_loss, update_applied)
+            metric["entropy"] = _masked_mean(entropy, update_applied)
+            metric["grad_norm"] = _masked_mean(grad_norm, update_applied)
+            metric["approx_kl"] = _masked_mean(approx_kl, update_applied)
+            metric["approx_kl_all"] = approx_kl.mean()
+            metric["approx_kl_max"] = approx_kl.max()
+            metric["clip_frac"] = _masked_mean(clip_frac, update_applied)
+            metric["ratio_mean"] = _masked_mean(ratio_mean, update_applied)
+            metric["ratio_std"] = _masked_mean(ratio_std, update_applied)
+            metric["ppo_updates_applied_frac"] = update_applied.mean()
+            metric["kl_stop_triggered"] = kl_stop_triggered.astype(jnp.float32)
             metric["raw_env_reward_mean"] = traj_batch.reward_ext[:, :num_envs].mean()
             metric["intrinsic_mean"] = traj_batch.reward_int[:, :num_envs].mean()
             metric["value_ext_mean"] = traj_batch.value_ext.mean()
@@ -842,6 +913,14 @@ def log_metrics(config, out, logger):
         ("loss_policy",          "Loss/policy"),
         ("entropy",              "Loss/entropy"),
         ("grad_norm",            "Loss/grad_norm"),
+        ("approx_kl",            "Loss/approx_kl"),
+        ("approx_kl_all",        "Loss/approx_kl_all"),
+        ("approx_kl_max",        "Loss/approx_kl_max"),
+        ("clip_frac",            "Loss/clip_frac"),
+        ("ppo_updates_applied_frac", "Loss/ppo_updates_applied_frac"),
+        ("kl_stop_triggered",    "Loss/kl_stop_triggered"),
+        ("ratio_mean",           "Loss/ratio_mean"),
+        ("ratio_std",            "Loss/ratio_std"),
         ("value_ext_mean",       "Value/ext_mean"),
         ("value_int_mean",       "Value/int_mean"),
     ]

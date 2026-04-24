@@ -7,7 +7,12 @@ from envs.base_env import get_inner_env
 from envs.log_wrapper import LogWrapper
 from agents.ja_actor_critic_agent import JAActorCriticPolicy
 from common.run_episodes import run_single_episode
-from marl.ja_ippo import make_train_loop, reward_norm_init
+from marl.ja_ippo import (
+    _kl_stop_decision,
+    _masked_mean,
+    make_train_loop,
+    reward_norm_init,
+)
 
 
 def _make_tiny_ja_policy(env):
@@ -160,3 +165,26 @@ def test_ja_train_loop():
 
     # JSD should be non-negative
     assert jnp.all(all_metrics[-1]["jsd_mean"] >= 0)
+
+
+def test_target_kl_stop_decision_and_masked_mean():
+    """KL stop should skip the triggering minibatch and masked means should ignore it."""
+    stop_now, apply_update = _kl_stop_decision(
+        should_stop=jnp.bool_(False),
+        approx_kl=jnp.asarray(0.2, dtype=jnp.float32),
+        target_kl=0.15,
+    )
+    assert bool(stop_now)
+    assert not bool(apply_update)
+
+    stop_now, apply_update = _kl_stop_decision(
+        should_stop=jnp.bool_(False),
+        approx_kl=jnp.asarray(0.1, dtype=jnp.float32),
+        target_kl=0.15,
+    )
+    assert not bool(stop_now)
+    assert bool(apply_update)
+
+    values = jnp.asarray([[0.05, 0.30], [0.30, 0.30]], dtype=jnp.float32)
+    applied = jnp.asarray([[1.0, 0.0], [0.0, 0.0]], dtype=jnp.float32)
+    assert jnp.isclose(_masked_mean(values, applied), 0.05)
