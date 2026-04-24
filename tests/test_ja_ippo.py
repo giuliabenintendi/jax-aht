@@ -168,10 +168,18 @@ def test_ja_train_loop():
 
 
 def test_target_kl_stop_decision_and_masked_mean():
-    """KL stop should skip the triggering minibatch and masked means should ignore it."""
+    """KL stop should allow the triggering minibatch, then skip subsequent ones."""
     stop_now, apply_update = _kl_stop_decision(
         should_stop=jnp.bool_(False),
         approx_kl=jnp.asarray(0.2, dtype=jnp.float32),
+        target_kl=0.15,
+    )
+    assert bool(stop_now)
+    assert bool(apply_update)
+
+    stop_now, apply_update = _kl_stop_decision(
+        should_stop=jnp.bool_(True),
+        approx_kl=jnp.asarray(0.1, dtype=jnp.float32),
         target_kl=0.15,
     )
     assert bool(stop_now)
@@ -186,5 +194,5 @@ def test_target_kl_stop_decision_and_masked_mean():
     assert bool(apply_update)
 
     values = jnp.asarray([[0.05, 0.30], [0.30, 0.30]], dtype=jnp.float32)
-    applied = jnp.asarray([[1.0, 0.0], [0.0, 0.0]], dtype=jnp.float32)
-    assert jnp.isclose(_masked_mean(values, applied), 0.05)
+    applied = jnp.asarray([[1.0, 1.0], [0.0, 0.0]], dtype=jnp.float32)
+    assert jnp.isclose(_masked_mean(values, applied), 0.175)

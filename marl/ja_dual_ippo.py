@@ -49,11 +49,12 @@ def _get_obs_type(config):
 
 
 def _kl_stop_decision(should_stop: jnp.ndarray, approx_kl: jnp.ndarray, target_kl: float):
-    """Decide whether a PPO minibatch update should still be applied."""
+    """Apply the current minibatch unless a prior minibatch already tripped the KL guard."""
     target_kl = jnp.asarray(target_kl, dtype=approx_kl.dtype)
     hit_target = (target_kl > 0.0) & (approx_kl > target_kl)
-    stop_now = should_stop | hit_target
-    return stop_now, ~stop_now
+    apply_update = ~should_stop
+    next_should_stop = should_stop | hit_target
+    return next_should_stop, apply_update
 
 
 def _masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
