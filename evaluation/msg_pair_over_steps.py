@@ -1,14 +1,15 @@
-"""Per-step message-pair agreement heatmaps across all seeds (card game).
+"""Per-step message-pair joint matrices averaged across seeds (card game).
 
 Loads a saved training checkpoint, runs N greedy eval episodes per seed on the
-communication card game, and produces aligned (num_seeds x num_cards) heatmaps
-for every deliberation step (message pair at step t) and the final decision
-step (pick pair). Columns are shifted so column 0 = "agent_1 matched agent_0";
-the remaining columns are cyclic offsets. Action/message labels are mapped back
-to ground-truth colour identity via `_invert_actions` on the wrapper chain.
+communication card game, and produces one 5x5 joint heatmap per step:
+  - Deliberation steps t=0..max_steps-2: joint over (agent_0 msg, agent_1 msg).
+  - Decision step t=max_steps-1: joint over (agent_0 pick, agent_1 pick).
+Each seed's per-step 5x5 count matrix is row-normalized (matching the current
+per-seed logging convention), then averaged element-wise across seeds. Labels
+are in ground-truth card space via `_invert_actions` on the wrapper chain.
 
 Outputs inside --output-dir:
-  step_{t}.png   — (num_seeds x num_cards) heatmap for step t
+  step_{t}.png   — 5x5 heatmap for step t
   all_steps.png  — all steps side-by-side, shared colorbar
 
 Usage:
@@ -46,39 +47,40 @@ def _get_obs_type(alg_config: dict) -> str:
     )
 
 
-def _align_and_collapse(counts: np.ndarray) -> np.ndarray:
-    """Row-normalize a (num_cards, num_cards) count matrix, cyclically shift
-    each row r by -r so column 0 = diagonal, then mean across non-empty rows.
-    Returns a (num_cards,) vector where index 0 is the agreement rate.
+def _row_normalize(counts: np.ndarray) -> np.ndarray:
+    """Row-normalize a (num_cards, num_cards) count matrix; empty rows stay 0.
+    Matches eval_logging.py's per-seed normalization convention.
     """
-    num_cards = counts.shape[0]
-    row_sums = counts.sum(axis=1, keepdims=True)
+    out = counts.astype(np.float32)
+    row_sums = out.sum(axis=1, keepdims=True)
     nonzero = row_sums[:, 0] > 0
-    if not np.any(nonzero):
-        return np.zeros(num_cards, dtype=np.float32)
-    norm = counts.astype(np.float32)
-    norm[nonzero] = norm[nonzero] / row_sums[nonzero].astype(np.float32)
-    aligned = np.zeros_like(norm)
-    for r in range(num_cards):
-        aligned[r] = np.roll(norm[r], -r)
-    return aligned[nonzero].mean(axis=0)
+    if np.any(nonzero):
+        out[nonzero] = out[nonzero] / row_sums[nonzero]
+    return out
 
 
 def _plot_heatmap(ax, mat: np.ndarray, title: str, vmin: float, vmax: float,
-                  show_ylabel: bool):
-    num_seeds, num_cards = mat.shape
-    im = ax.imshow(mat, cmap="viridis", vmin=vmin, vmax=vmax, aspect="auto")
+                  show_ylabel: bool, show_xlabel: bool, annotate: bool):
+    num_cards = mat.shape[0]
+    im = ax.imshow(mat, cmap="viridis", vmin=vmin, vmax=vmax, aspect="equal")
     ax.set_xticks(range(num_cards))
-    ax.set_xticklabels([str(s) for s in range(num_cards)])
-    ax.set_xlabel("offset (0 = match)", fontsize=8)
+    ax.set_yticks(range(num_cards))
+    ax.set_xticklabels([str(c) for c in range(num_cards)])
+    ax.set_yticklabels([str(c) for c in range(num_cards)])
+    if show_xlabel:
+        ax.set_xlabel("agent_1 card", fontsize=8)
     if show_ylabel:
-        ax.set_yticks(range(num_seeds))
-        ax.set_yticklabels([str(s) for s in range(num_seeds)])
-        ax.set_ylabel("seed", fontsize=8)
-    else:
-        ax.set_yticks([])
+        ax.set_ylabel("agent_0 card", fontsize=8)
     ax.set_title(title, fontsize=9)
     ax.tick_params(axis="both", labelsize=7)
+    if annotate:
+        thresh = vmax * 0.6
+        for r in range(num_cards):
+            for c in range(num_cards):
+                val = float(mat[r, c])
+                color = "white" if val > thresh else "black"
+                ax.text(c, r, f"{val:.2f}", ha="center", va="center",
+                        fontsize=6, color=color)
     return im
 
 
@@ -172,22 +174,22 @@ def main():
                     counts[decision_t, seed_idx, int(p0), int(p1)] += 1
         print(f"  [msg_pair] seed {seed_idx}/{num_seeds - 1} done")
 
-    aligned = np.zeros((max_steps, num_seeds, num_cards), dtype=np.float32)
+    # Per-seed row-normalized matrices, then element-wise mean across seeds.
+    avg = np.zeros((max_steps, num_cards, num_cards), dtype=np.float32)
     for t in range(max_steps):
-        for s in range(num_seeds):
-            aligned[t, s] = _align_and_collapse(counts[t, s])
+        per_seed = np.stack([_row_normalize(counts[t, s]) for s in range(num_seeds)])
+        avg[t] = per_seed.mean(axis=0)
 
-    vmax = float(aligned.max()) if aligned.size else 1.0
-    if vmax <= 0:
-        vmax = 1.0
+    vmax = 1.0
     vmin = 0.0
 
     for t in range(max_steps):
         is_decision = t == max_steps - 1
         kind = "pick" if is_decision else "msg"
-        fig, ax = plt.subplots(figsize=(3.0, max(2.0, num_seeds * 0.15) + 0.3))
+        fig, ax = plt.subplots(figsize=(3.2, 3.0))
         im = _plot_heatmap(
-            ax, aligned[t], f"step {t} ({kind})", vmin, vmax, show_ylabel=True,
+            ax, avg[t], f"step {t} ({kind})",
+            vmin, vmax, show_ylabel=True, show_xlabel=True, annotate=True,
         )
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         fig.tight_layout()
@@ -195,9 +197,7 @@ def main():
         plt.close(fig)
 
     fig, axes = plt.subplots(
-        1, max_steps,
-        figsize=(max_steps * 1.8, max(2.0, num_seeds * 0.15) + 0.8),
-        sharey=True,
+        1, max_steps, figsize=(max_steps * 1.9, 2.6), sharey=True,
     )
     if max_steps == 1:
         axes = [axes]
@@ -206,10 +206,11 @@ def main():
         is_decision = t == max_steps - 1
         kind = "pick" if is_decision else "msg"
         im = _plot_heatmap(
-            ax, aligned[t], f"step {t} ({kind})",
-            vmin, vmax, show_ylabel=(t == 0),
+            ax, avg[t], f"step {t} ({kind})",
+            vmin, vmax,
+            show_ylabel=(t == 0), show_xlabel=True, annotate=False,
         )
-    fig.subplots_adjust(right=0.92, wspace=0.15)
+    fig.subplots_adjust(right=0.92, wspace=0.25)
     cbar_ax = fig.add_axes([0.935, 0.15, 0.010, 0.7])
     fig.colorbar(im, cax=cbar_ax)
     fig.savefig(output_dir / "all_steps.png", bbox_inches="tight")
