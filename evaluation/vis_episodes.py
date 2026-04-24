@@ -222,6 +222,10 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 )
             attn_maps["agent_0"].append(attn_0)
         else:
+            extra_kwargs_0 = (
+                {"prev_reward": prev_reward_0, "prev_action": prev_action_0}
+                if use_prev_io else {}
+            )
             act_0, hstate_0 = agent_0_policy.get_action(
                 params=agent_0_param,
                 obs=obs_0_reshaped,
@@ -230,8 +234,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_0,
                 rng=act_rng,
                 greedy=greedy,
-                prev_reward=prev_reward_0 if use_prev_io else None,
-                prev_action=prev_action_0 if use_prev_io else None,
+                **extra_kwargs_0,
             )
         act_0 = act_0.squeeze()
 
@@ -265,6 +268,10 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 )
             attn_maps["agent_1"].append(attn_1)
         else:
+            extra_kwargs_1 = (
+                {"prev_reward": prev_reward_1, "prev_action": prev_action_1}
+                if use_prev_io else {}
+            )
             act_1, hstate_1 = agent_1_policy.get_action(
                 params=agent_1_param,
                 obs=obs_1_reshaped,
@@ -273,8 +280,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_1,
                 rng=part_rng,
                 greedy=greedy,
-                prev_reward=prev_reward_1 if use_prev_io else None,
-                prev_action=prev_action_1 if use_prev_io else None,
+                **extra_kwargs_1,
             )
         act_1 = act_1.squeeze()
 
