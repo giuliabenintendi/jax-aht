@@ -49,12 +49,13 @@ def _get_obs_type(config):
 
 
 def _kl_stop_decision(should_stop: jnp.ndarray, approx_kl: jnp.ndarray, target_kl: float):
-    """Apply the current minibatch unless a prior minibatch already tripped the KL guard."""
+    """Mimic standard PPO early stop: evaluate current minibatch, skip its step if KL is too high."""
     target_kl = jnp.asarray(target_kl, dtype=approx_kl.dtype)
-    hit_target = (target_kl > 0.0) & (approx_kl > target_kl)
-    apply_update = ~should_stop
+    active_minibatch = ~should_stop
+    hit_target = active_minibatch & (target_kl > 0.0) & (approx_kl > (1.5 * target_kl))
+    apply_update = active_minibatch & ~hit_target
     next_should_stop = should_stop | hit_target
-    return next_should_stop, apply_update
+    return next_should_stop, apply_update, active_minibatch
 
 
 def _masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
@@ -209,7 +210,7 @@ def make_train_loop(config, env):
                     grad_norm = jnp.sqrt(
                         sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads))
                     )
-                    should_stop, apply_update = _kl_stop_decision(
+                    should_stop, apply_update, active_minibatch = _kl_stop_decision(
                         should_stop, approx_kl, target_kl
                     )
                     grads = jax.tree.map(
@@ -220,6 +221,7 @@ def make_train_loop(config, env):
                         total_loss,
                         grad_norm,
                         apply_update.astype(jnp.float32),
+                        active_minibatch.astype(jnp.float32),
                     )
 
                 train_state, init_hstate, traj_batch, adv_ext, adv_int, targets_ext, targets_int, rng, should_stop = update_state
@@ -424,7 +426,7 @@ def make_train_loop(config, env):
                 total_loss,
                 (value_loss_ext, value_loss_int, policy_loss, entropy,
                  approx_kl, clip_frac, ratio_mean, ratio_std),
-            ), grad_norm, update_applied = loss_info
+            ), grad_norm, update_applied, minibatch_evaluated = loss_info
 
             ja_rew_0 = traj_batch.ja_reward[:, :num_envs]
             jsd_values = -ja_rew_0
@@ -434,18 +436,23 @@ def make_train_loop(config, env):
             metric["ja_beta"] = ja_beta
             metric["jsd_mean"] = jsd_values.mean()
             metric["ja_reward_mean"] = ja_rew_0.mean()
-            metric["loss_total"] = _masked_mean(total_loss, update_applied)
-            metric["loss_value_ext"] = _masked_mean(value_loss_ext, update_applied)
-            metric["loss_value_int"] = _masked_mean(value_loss_int, update_applied)
-            metric["loss_policy"] = _masked_mean(policy_loss, update_applied)
-            metric["entropy"] = _masked_mean(entropy, update_applied)
+            metric["loss_total"] = _masked_mean(total_loss, minibatch_evaluated)
+            metric["loss_value_ext"] = _masked_mean(value_loss_ext, minibatch_evaluated)
+            metric["loss_value_int"] = _masked_mean(value_loss_int, minibatch_evaluated)
+            metric["loss_policy"] = _masked_mean(policy_loss, minibatch_evaluated)
+            metric["entropy"] = _masked_mean(entropy, minibatch_evaluated)
             metric["grad_norm"] = _masked_mean(grad_norm, update_applied)
-            metric["approx_kl"] = _masked_mean(approx_kl, update_applied)
+            metric["approx_kl"] = _masked_mean(approx_kl, minibatch_evaluated)
+            metric["approx_kl_applied"] = _masked_mean(approx_kl, update_applied)
+            metric["approx_kl_trigger"] = _masked_mean(
+                approx_kl, jnp.clip(minibatch_evaluated - update_applied, 0.0, 1.0)
+            )
             metric["approx_kl_all"] = approx_kl.mean()
             metric["approx_kl_max"] = approx_kl.max()
-            metric["clip_frac"] = _masked_mean(clip_frac, update_applied)
-            metric["ratio_mean"] = _masked_mean(ratio_mean, update_applied)
-            metric["ratio_std"] = _masked_mean(ratio_std, update_applied)
+            metric["clip_frac"] = _masked_mean(clip_frac, minibatch_evaluated)
+            metric["ratio_mean"] = _masked_mean(ratio_mean, minibatch_evaluated)
+            metric["ratio_std"] = _masked_mean(ratio_std, minibatch_evaluated)
+            metric["ppo_minibatches_evaluated_frac"] = minibatch_evaluated.mean()
             metric["ppo_updates_applied_frac"] = update_applied.mean()
             metric["kl_stop_triggered"] = kl_stop_triggered.astype(jnp.float32)
             metric["raw_env_reward_mean"] = traj_batch.reward_ext[:, :num_envs].mean()
@@ -534,9 +541,17 @@ def run_ja_dual_ippo(config, logger):
             if cs > 0:
                 next_ckpt_in = max(1, (next_ckpt * ckpt_interval) - steps_done) if next_ckpt < num_ckpts else remaining
                 cs = min(cs, next_ckpt_in)
+            chunk_start = steps_done
             runner_state, update_steps, chunk_metrics = chunked_step_fn(
                 runner_state, update_steps, cs)
             seed_metrics.append(chunk_metrics)
+            kl_stops = np.asarray(chunk_metrics["kl_stop_triggered"])
+            trigger_kls = np.asarray(chunk_metrics["approx_kl_trigger"])
+            for local_idx in np.where(kl_stops > 0.5)[0]:
+                print(
+                    f"[ja_dual_ippo] Early stopping at update {chunk_start + int(local_idx)} "
+                    f"due to reaching max kl: {float(trigger_kls[local_idx]):.4f}"
+                )
             steps_done += cs
             steps_done += 1
 
@@ -915,9 +930,12 @@ def log_metrics(config, out, logger):
         ("entropy",              "Loss/entropy"),
         ("grad_norm",            "Loss/grad_norm"),
         ("approx_kl",            "Loss/approx_kl"),
+        ("approx_kl_applied",    "Loss/approx_kl_applied"),
+        ("approx_kl_trigger",    "Loss/approx_kl_trigger"),
         ("approx_kl_all",        "Loss/approx_kl_all"),
         ("approx_kl_max",        "Loss/approx_kl_max"),
         ("clip_frac",            "Loss/clip_frac"),
+        ("ppo_minibatches_evaluated_frac", "Loss/ppo_minibatches_evaluated_frac"),
         ("ppo_updates_applied_frac", "Loss/ppo_updates_applied_frac"),
         ("kl_stop_triggered",    "Loss/kl_stop_triggered"),
         ("ratio_mean",           "Loss/ratio_mean"),
