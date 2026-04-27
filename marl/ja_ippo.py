@@ -94,22 +94,6 @@ def _get_obs_type(config):
     return config.get("OBS_TYPE", config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
 
 
-def _kl_stop_decision(should_stop: jnp.ndarray, approx_kl: jnp.ndarray, target_kl: float):
-    """Mimic standard PPO early stop: evaluate current minibatch, skip its step if KL is too high."""
-    target_kl = jnp.asarray(target_kl, dtype=approx_kl.dtype)
-    active_minibatch = ~should_stop
-    hit_target = active_minibatch & (target_kl > 0.0) & (approx_kl > (1.5 * target_kl))
-    apply_update = active_minibatch & ~hit_target
-    next_should_stop = should_stop | hit_target
-    return next_should_stop, apply_update, active_minibatch
-
-
-def _masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
-    """Average only over minibatches that actually applied gradients."""
-    mask = mask.astype(values.dtype)
-    return (values * mask).sum() / jnp.maximum(mask.sum(), 1.0)
-
-
 
 def make_train_loop(config, env):
     """Build init and step functions for JA-IPPO with Python-loop training.
@@ -271,11 +255,9 @@ def make_train_loop(config, env):
 
         def _ppo_update(train_state, traj_batch, advantages, targets, rng):
             policy_loss_type = config.get("POLICY_LOSS_TYPE", "ppo")
-            target_kl = jnp.asarray(config.get("TARGET_KL", 0.0), dtype=jnp.float32)
 
             def _update_epoch(update_state, unused):
-                def _update_minbatch(carry, batch_info):
-                    train_state, should_stop = carry
+                def _update_minbatch(train_state, batch_info):
                     init_hstate, traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(params, traj_batch, gae, targets):
@@ -355,46 +337,29 @@ def make_train_loop(config, env):
                     total_loss, grads = grad_fn(
                         train_state.params, traj_batch, advantages, targets
                     )
-                    _, (_, _, _, approx_kl, _, _, _) = total_loss
                     grad_norm = jnp.sqrt(
                         sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads))
                     )
-                    should_stop, apply_update, active_minibatch = _kl_stop_decision(
-                        should_stop, approx_kl, target_kl
-                    )
-                    # Once the KL guard has tripped, skip the current and all
-                    # subsequent PPO minibatch updates for this rollout.
-                    grads = jax.tree.map(
-                        lambda g: jnp.where(apply_update, g, jnp.zeros_like(g)), grads
-                    )
                     train_state = train_state.apply_gradients(grads=grads)
-                    return (train_state, should_stop), (
-                        total_loss,
-                        grad_norm,
-                        apply_update.astype(jnp.float32),
-                        active_minibatch.astype(jnp.float32),
-                    )
+                    return train_state, (total_loss, grad_norm)
 
-                (train_state, init_hstate, traj_batch, advantages,
-                 targets, rng, should_stop) = update_state
+                train_state, init_hstate, traj_batch, advantages, targets, rng = update_state
                 rng, perm_rng = jax.random.split(rng)
                 minibatches = _create_minibatches(traj_batch, advantages, targets, init_hstate,
                                                   num_actors, config["NUM_MINIBATCHES"], perm_rng)
 
-                (train_state, should_stop), minibatch_info = jax.lax.scan(
-                    _update_minbatch, (train_state, should_stop), minibatches
+                train_state, minibatch_info = jax.lax.scan(
+                    _update_minbatch, train_state, minibatches
                 )
-                update_state = (train_state, init_hstate, traj_batch, advantages,
-                                targets, rng, should_stop)
+                update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
                 return update_state, minibatch_info
 
             init_hstate = policy.init_hstate(num_actors)
-            update_state = (train_state, init_hstate, traj_batch, advantages,
-                            targets, rng, jnp.bool_(False))
+            update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
             update_state, loss_info = jax.lax.scan(
                 _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
             )
-            return update_state[0], loss_info, update_state[-1]
+            return update_state[0], loss_info
 
         def _augment_obs_with_attn(obs_batch, prev_other_attn):
             """Append upsampled other-agent attention as 4th image channel."""
@@ -829,11 +794,11 @@ def make_train_loop(config, env):
             adv_std = jnp.std(advantages)
 
             rng, ppo_rng = jax.random.split(rng)
-            train_state, loss_info, kl_stop_triggered = _ppo_update(
+            train_state, loss_info = _ppo_update(
                 train_state, traj_batch, advantages, targets, ppo_rng)
 
             (total_loss, (value_loss, policy_loss, entropy,
-                         approx_kl, clip_frac, ratio_mean, ratio_std)), grad_norm, update_applied, minibatch_evaluated = loss_info
+                         approx_kl, clip_frac, ratio_mean, ratio_std)), grad_norm = loss_info
 
             jsd_values = -traj_batch.ja_reward[:, :num_envs]
 
@@ -842,24 +807,17 @@ def make_train_loop(config, env):
             metric["ja_beta"] = ja_beta
             metric["comm_scale"] = comm_scale
             metric["jsd_mean"] = jsd_values.mean()
-            metric["loss_total"] = _masked_mean(total_loss, minibatch_evaluated)
-            metric["loss_value"] = _masked_mean(value_loss, minibatch_evaluated)
-            metric["loss_policy"] = _masked_mean(policy_loss, minibatch_evaluated)
-            metric["entropy"] = _masked_mean(entropy, minibatch_evaluated)
-            metric["grad_norm"] = _masked_mean(grad_norm, update_applied)
-            metric["approx_kl"] = _masked_mean(approx_kl, minibatch_evaluated)
-            metric["approx_kl_applied"] = _masked_mean(approx_kl, update_applied)
-            metric["approx_kl_trigger"] = _masked_mean(
-                approx_kl, jnp.clip(minibatch_evaluated - update_applied, 0.0, 1.0)
-            )
+            metric["loss_total"] = total_loss[0].mean()
+            metric["loss_value"] = value_loss[0].mean()
+            metric["loss_policy"] = policy_loss[0].mean()
+            metric["entropy"] = entropy.mean()
+            metric["grad_norm"] = grad_norm.mean()
+            metric["approx_kl"] = approx_kl.mean()
             metric["approx_kl_all"] = approx_kl.mean()
             metric["approx_kl_max"] = approx_kl.max()
-            metric["clip_frac"] = _masked_mean(clip_frac, minibatch_evaluated)
-            metric["ratio_mean"] = _masked_mean(ratio_mean, minibatch_evaluated)
-            metric["ratio_std"] = _masked_mean(ratio_std, minibatch_evaluated)
-            metric["ppo_minibatches_evaluated_frac"] = minibatch_evaluated.mean()
-            metric["ppo_updates_applied_frac"] = update_applied.mean()
-            metric["kl_stop_triggered"] = kl_stop_triggered.astype(jnp.float32)
+            metric["clip_frac"] = clip_frac.mean()
+            metric["ratio_mean"] = ratio_mean.mean()
+            metric["ratio_std"] = ratio_std.mean()
             # Explained variance: how well value function predicts returns
             ev_var_ret = jnp.var(targets)
             ev_var_resid = jnp.var(targets - traj_batch.value)
@@ -989,17 +947,9 @@ def run_ja_ippo(config, logger):
             if chunk_size <= 0:
                 continue
 
-            chunk_start = steps_done
             runner_state, update_steps, rew_norm_state, chunk_metrics = chunked_step_fn(
                 runner_state, update_steps, rew_norm_state, chunk_size)
             seed_metrics.append(chunk_metrics)
-            kl_stops = np.asarray(chunk_metrics["kl_stop_triggered"])
-            trigger_kls = np.asarray(chunk_metrics["approx_kl_trigger"])
-            for local_idx in np.where(kl_stops > 0.5)[0]:
-                print(
-                    f"[ja_ippo] Early stopping at update {chunk_start + int(local_idx)} "
-                    f"due to reaching max kl: {float(trigger_kls[local_idx]):.4f}"
-                )
             steps_done = chunk_end
 
             # Checkpoint after each chunk
@@ -1119,14 +1069,9 @@ def log_metrics(config, out, logger):
         ("entropy",              "Loss/entropy"),
         ("grad_norm",            "Loss/grad_norm"),
         ("approx_kl",           "Loss/approx_kl"),
-        ("approx_kl_applied",   "Loss/approx_kl_applied"),
-        ("approx_kl_trigger",   "Loss/approx_kl_trigger"),
         ("approx_kl_all",       "Loss/approx_kl_all"),
         ("approx_kl_max",       "Loss/approx_kl_max"),
         ("clip_frac",           "Loss/clip_frac"),
-        ("ppo_minibatches_evaluated_frac", "Loss/ppo_minibatches_evaluated_frac"),
-        ("ppo_updates_applied_frac", "Loss/ppo_updates_applied_frac"),
-        ("kl_stop_triggered",   "Loss/kl_stop_triggered"),
         ("ratio_mean",          "Loss/ratio_mean"),
         ("ratio_std",           "Loss/ratio_std"),
         ("explained_var",       "Loss/explained_var"),

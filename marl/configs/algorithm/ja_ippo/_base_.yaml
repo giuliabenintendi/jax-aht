@@ -18,7 +18,6 @@ NUM_MINIBATCHES: 16
 CLIP_EPS: 0.2
 ENT_COEF: 0.01
 POLICY_LOSS_TYPE: ppo  # "ppo" or "spo"
-TARGET_KL: 0.0         # >0 enables PPO epoch-level early stop when mean approx_kl exceeds this
 
 # JA network (paper Appendix A)
 ACTIVATION: relu
