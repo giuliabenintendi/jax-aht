@@ -252,6 +252,67 @@ def main():
     joint_vmax = max(1.0 / num_cards, float(avg_joint.max()))
     _save_all_steps(avg_joint, "all_steps_joint.png", vmax=joint_vmax)
 
+    # Per-seed combined figures.
+    per_seed_dir = output_dir / "per_seed"
+    per_seed_dir.mkdir(exist_ok=True)
+    print("\nPer-seed raw agreement (trace/total) per step:")
+    header = "seed " + " ".join(
+        f"{'pick' if t == max_steps - 1 else 'msg':>6s}{t}" for t in range(max_steps)
+    )
+    print("  " + header)
+    for s in range(num_seeds):
+        row_norm_per_step = np.stack([_row_normalize(counts[t, s]) for t in range(max_steps)])
+        joint_per_step = np.stack([_joint_normalize(counts[t, s]) for t in range(max_steps)])
+
+        fig, axes = plt.subplots(
+            1, max_steps, figsize=(max_steps * 1.9, 2.8), sharey=True,
+        )
+        if max_steps == 1:
+            axes = [axes]
+        im = None
+        for t, ax in enumerate(axes):
+            kind = "pick" if t == max_steps - 1 else "msg"
+            im = _plot_heatmap(
+                ax, row_norm_per_step[t], f"step {t} ({kind})",
+                0.0, 1.0,
+                show_ylabel=(t == 0), show_xlabel=True, annotate=False,
+            )
+        fig.suptitle(f"seed {s} — row-normalized", fontsize=10)
+        fig.subplots_adjust(right=0.92, wspace=0.25, top=0.85)
+        cbar_ax = fig.add_axes([0.935, 0.15, 0.010, 0.65])
+        fig.colorbar(im, cax=cbar_ax)
+        fig.savefig(per_seed_dir / f"seed_{s}_all_steps.png", bbox_inches="tight")
+        plt.close(fig)
+
+        joint_local_max = max(1.0 / num_cards, float(joint_per_step.max()))
+        fig, axes = plt.subplots(
+            1, max_steps, figsize=(max_steps * 1.9, 2.8), sharey=True,
+        )
+        if max_steps == 1:
+            axes = [axes]
+        im = None
+        for t, ax in enumerate(axes):
+            kind = "pick" if t == max_steps - 1 else "msg"
+            im = _plot_heatmap(
+                ax, joint_per_step[t], f"step {t} ({kind})",
+                0.0, joint_local_max,
+                show_ylabel=(t == 0), show_xlabel=True, annotate=False,
+            )
+        fig.suptitle(f"seed {s} — joint P(m0, m1)", fontsize=10)
+        fig.subplots_adjust(right=0.92, wspace=0.25, top=0.85)
+        cbar_ax = fig.add_axes([0.935, 0.15, 0.010, 0.65])
+        fig.colorbar(im, cax=cbar_ax)
+        fig.savefig(per_seed_dir / f"seed_{s}_all_steps_joint.png", bbox_inches="tight")
+        plt.close(fig)
+
+        agreements = []
+        for t in range(max_steps):
+            tot = counts[t, s].sum()
+            agreements.append(
+                f"{np.trace(counts[t, s]) / tot:6.3f}" if tot > 0 else "   nan"
+            )
+        print(f"  {s:>4d} " + " ".join(f"{a:>7s}" for a in agreements))
+
     print(f"Done. Figures in {output_dir.resolve()}/")
 
 
