@@ -389,8 +389,21 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
 
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
 
+    # Video volume controls: rendering N seeds * many episodes + XP pairs is the long-tail cost.
+    # Keep the per-seed metrics loop running for all seeds, but gate the heavy mp4 encodes.
+    n_video_seeds = int(algorithm_config.get("EVAL_VIDEO_NUM_SEEDS", num_seeds))
+    n_video_seeds = max(0, min(num_seeds, n_video_seeds))
+    log_xp_videos = bool(algorithm_config.get("EVAL_VIDEO_LOG_XP", False))
+    sp_video_episodes = int(algorithm_config.get("EVAL_VIDEO_NUM_EPISODES", 30))
+    xp_video_episodes = int(algorithm_config.get("EVAL_VIDEO_XP_NUM_EPISODES", 5))
+    print(f"[eval_video] per-seed videos: {n_video_seeds}/{num_seeds} seeds "
+          f"({sp_video_episodes} eps each); XP videos: "
+          f"{'on' if log_xp_videos else 'off'} ({xp_video_episodes} eps/pair)")
+
     for seed_idx in range(num_seeds):
         final_params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
+        do_videos = seed_idx < n_video_seeds
+        tag = f"Eval/seed_{seed_idx}"
 
         # Keep eval videos to a single episode so logging stays quick and watchable.
         num_eval_video_eps = 1
@@ -429,81 +442,73 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
 
         print(f"[ja_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
 
-        video_dir = f"{savedir}/videos/seed_{seed_idx}"
-        os.makedirs(video_dir, exist_ok=True)
-
-        # Render frames from episode states
-        if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
-            frames = _render_lbf_eval_frames(inner_env, ep_states)
-        elif env_name == "card-game":
-            from envs.card_game.rendering import render_card_game_eval_frames
-            frames = render_card_game_eval_frames(ep_states, scale=32)
-        elif env_name == "card-game-op-test":
-            from envs.card_game.card_game_op_test import render_op_test_eval_frames
-            frames = render_op_test_eval_frames(ep_states, ep_actions=ep_actions, scale=32)
-        else:
-            from evaluation.vis_episodes import render_episode_frames
-            frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
-
-        tag = f"Eval/seed_{seed_idx}"
-
-        if env_name == "card-game-op-test":
-            # Diagnostic env: simple eval video only, no attention overlays.
-            from moviepy import ImageSequenceClip
-            video_path = f"{video_dir}/eval_final.mp4"
-            clip = ImageSequenceClip(frames, fps=2)
-            clip.write_videofile(video_path, fps=2, codec='libx264', audio=False,
-                                 bitrate='8000k', preset='slow')
-            logger.log_video(f"{tag}/episode_video", video_path, commit=False)
+        # op-test has no attention metrics; skip both video and metrics when video is gated off.
+        if env_name == "card-game-op-test" and not do_videos:
             continue
 
-        if env_name == "card-game":
-            # Card game: 2xT grid image + multi-episode video
-            # Pass card layout for border drawing
-            import numpy as _np
-            from envs.card_game.rendering import _unwrap_card_game_state
-            es0 = _unwrap_card_game_state(ep_states[0])
-            _card_perm = _np.array(es0.card_permutation)
-            _log_card_game_attention_grid(
-                frames, attn_data, ep_actions, tag, video_dir, logger,
-                ep_messages=ep_messages, card_permutation=_card_perm,
-            )
-            _log_card_game_eval_video(
-                inner_env, policy, final_params, max_steps, tag, video_dir, logger,
-                feed_attn_dims=feed_attn_dims,
-                ja_card_masks=_card_masks_eval if ja_card_attn else None,
-                filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
-                num_episodes=30, fps=3,
-            )
-            # XP videos: pair different seeds (only when multiple seeds)
-            if num_seeds > 1:
-                _log_card_game_xp_videos(
-                    inner_env, policy, out["final_params"], max_steps,
-                    tag, video_dir, logger,
+        if do_videos:
+            video_dir = f"{savedir}/videos/seed_{seed_idx}"
+            os.makedirs(video_dir, exist_ok=True)
+
+            # Render frames from episode states
+            if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
+                frames = _render_lbf_eval_frames(inner_env, ep_states)
+            elif env_name == "card-game":
+                from envs.card_game.rendering import render_card_game_eval_frames
+                frames = render_card_game_eval_frames(ep_states, scale=32)
+            elif env_name == "card-game-op-test":
+                from envs.card_game.card_game_op_test import render_op_test_eval_frames
+                frames = render_op_test_eval_frames(ep_states, ep_actions=ep_actions, scale=32)
+            else:
+                from evaluation.vis_episodes import render_episode_frames
+                frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
+
+            if env_name == "card-game-op-test":
+                from moviepy import ImageSequenceClip
+                video_path = f"{video_dir}/eval_final.mp4"
+                clip = ImageSequenceClip(frames, fps=2)
+                clip.write_videofile(video_path, fps=2, codec='libx264', audio=False,
+                                     bitrate='8000k', preset='slow')
+                logger.log_video(f"{tag}/episode_video", video_path, commit=False)
+                continue
+
+            if env_name == "card-game":
+                # Card game: 2xT grid image + multi-episode video.
+                # XP videos are rendered ONCE outside this loop (was previously inside, causing N-fold dup).
+                import numpy as _np
+                from envs.card_game.rendering import _unwrap_card_game_state
+                es0 = _unwrap_card_game_state(ep_states[0])
+                _card_perm = _np.array(es0.card_permutation)
+                _log_card_game_attention_grid(
+                    frames, attn_data, ep_actions, tag, video_dir, logger,
+                    ep_messages=ep_messages, card_permutation=_card_perm,
+                )
+                _log_card_game_eval_video(
+                    inner_env, policy, final_params, max_steps, tag, video_dir, logger,
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=_card_masks_eval if ja_card_attn else None,
                     filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
-                    num_episodes=5, fps=3,
+                    num_episodes=sp_video_episodes, fps=3,
                 )
-        else:
-            # Other envs: videos + attention overlays
-            from moviepy import ImageSequenceClip
-            video_path = f"{video_dir}/eval_final.mp4"
-            clip = ImageSequenceClip(frames, fps=10)
-            clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
-                                 bitrate='8000k', preset='slow')
-            logger.log_video(f"{tag}/episode_video", video_path, commit=False)
+            else:
+                # Other envs: videos + attention overlays
+                from moviepy import ImageSequenceClip
+                video_path = f"{video_dir}/eval_final.mp4"
+                clip = ImageSequenceClip(frames, fps=10)
+                clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
+                                     bitrate='8000k', preset='slow')
+                logger.log_video(f"{tag}/episode_video", video_path, commit=False)
 
-            log_attention_to_wandb(
-                attn_data, logger, step=None, tag_prefix=tag, commit=False,
-                frames=frames,
-            )
+                log_attention_to_wandb(
+                    attn_data, logger, step=None, tag_prefix=tag, commit=False,
+                    frames=frames,
+                )
 
-            attn_video_base = f"{video_dir}/eval_attention.mp4"
-            make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
-            logger.log_video(f"{tag}/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
-            logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
-            logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
+                attn_video_base = f"{video_dir}/eval_attention.mp4"
+                make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
+                logger.log_video(f"{tag}/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
+                logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
+                logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
 
         # Multi-episode attention metrics
         import numpy as np
@@ -597,3 +602,17 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 print(f"[ja_ippo] Seed {seed_idx} {agent_label} top categories: {', '.join(parts)}")
                 for cat, val in sorted_cats:
                     logger.log({f"{tag}/{agent_label}_attn_{cat}": val / n_eps}, commit=False)
+
+    # Cross-play videos: render once across all seed pairs (was previously inside the per-seed
+    # loop, generating each pair N_SEEDS times). Gated by EVAL_VIDEO_LOG_XP because it's heavy.
+    if log_xp_videos and num_seeds > 1 and env_name == "card-game":
+        xp_video_dir = f"{savedir}/videos/xp"
+        os.makedirs(xp_video_dir, exist_ok=True)
+        _log_card_game_xp_videos(
+            inner_env, policy, out["final_params"], max_steps,
+            "Eval/XP", xp_video_dir, logger,
+            feed_attn_dims=feed_attn_dims,
+            ja_card_masks=_card_masks_eval if ja_card_attn else None,
+            filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
+            num_episodes=xp_video_episodes, fps=3,
+        )
