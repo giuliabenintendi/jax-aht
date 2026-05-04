@@ -1,15 +1,17 @@
 """Emergent-communication metrics from Lowe et al. 2019
 "On the Pitfalls of Measuring Emergent Communication" (AAMAS).
 
-Currently provides Speaker Consistency (SC) — the mutual information between
-an agent's own message and its own subsequent environment action, computed
-from empirical co-occurrence counts (no interventions).
+Provides:
+- Speaker Consistency (SC): empirical MI between an agent's own message and
+  its own subsequent environment action. Observational, no interventions.
+- Causal Influence of Communication (CIC): MI under do-intervention on the
+  speaker's message, measured via the listener's policy distribution. Needs
+  model access at eval time.
 
 For a multi-slot dialogue (our card game emits one message per deliberation
-step, K messages before a single decision-step pick per agent), we report SC
-slot-by-slot: SC_i^(k) = I(M_{i,k}; A_i), where A_i is the decision-step pick.
-This is the natural per-slot extension discussed in the paper, which is only
-fully precise on one-message-per-round settings.
+step, K messages before a single decision-step pick per agent), we report
+both metrics slot-by-slot. See `compute_sc_slotwise` and the CIC-side driver
+in `evaluation.eval_comm_cic` for the per-slot extensions.
 """
 
 from __future__ import annotations
@@ -126,6 +128,42 @@ def compute_sc_slotwise(
     return sc
 
 
+def calc_cic(
+    p_a_given_do_c: np.ndarray,
+    p_c: np.ndarray,
+    n_comm: int,
+    n_acts: int,
+) -> float:
+    """Causal Influence of Communication for a single context.
+
+    Direct port of Lowe et al. 2019's `calc_cic`. Computes MI between
+    `do(c)` and `a` for one (state, speaker, listener) triple.
+
+    Args:
+        p_a_given_do_c: shape (n_comm, n_acts). Row `c` is the listener's
+            action distribution when the speaker's message is forced to `c`.
+        p_c: shape (n_comm,). The speaker's *natural* message distribution
+            in the same context (softmax of policy logits, not empirical).
+
+    Returns:
+        CIC in nats. Floor (no causal influence) is `log(n_comm)` because
+        the paper uses `np.mean` (not `np.sum`) when marginalizing over `c`,
+        which adds a `log(n_comm)` offset to the standard MI.
+    """
+    p_ac = p_a_given_do_c * np.expand_dims(p_c, axis=1)
+    p_ac /= np.sum(p_ac)
+    p_a = np.mean(p_ac, axis=0)
+
+    cic = 0.0
+    for c in range(n_comm):
+        if p_c[c] <= 0:
+            continue
+        for a in range(n_acts):
+            if p_ac[c, a] > 0 and p_a[a] > 0:
+                cic += p_ac[c, a] * math.log(p_ac[c, a] / (p_c[c] * p_a[a]))
+    return cic
+
+
 ## Tests
 
 def _test_calc_mutinfo_independence() -> None:
@@ -166,3 +204,22 @@ def _test_compute_sc_slotwise_shapes() -> None:
     ]
     sc = compute_sc_slotwise(ep_messages, ep_actions, n_messages=5, n_picks=5)
     assert sc.shape == (2, 2)
+
+
+def _test_calc_cic_no_influence() -> None:
+    """If p(a|do(c)) is identical for every c, CIC should equal log(n_comm)."""
+    n_comm, n_acts = 5, 5
+    p_a = np.array([0.1, 0.2, 0.3, 0.25, 0.15])
+    p_a_given_do_c = np.tile(p_a, (n_comm, 1))
+    p_c = np.array([0.2, 0.2, 0.2, 0.2, 0.2])
+    cic = calc_cic(p_a_given_do_c, p_c, n_comm, n_acts)
+    assert abs(cic - math.log(n_comm)) < 1e-9
+
+
+def _test_calc_cic_perfect_influence() -> None:
+    """If do(c=k) deterministically forces a=k, CIC = 2*log(n_comm)."""
+    n_comm = n_acts = 5
+    p_a_given_do_c = np.eye(n_comm, n_acts)
+    p_c = np.full(n_comm, 1.0 / n_comm)
+    cic = calc_cic(p_a_given_do_c, p_c, n_comm, n_acts)
+    assert abs(cic - 2 * math.log(n_comm)) < 1e-9
