@@ -9,13 +9,13 @@ Layout (3×5 grid, TILE_PIXELS=7 → 21×35 px):
   Row 1: [card] [card] [card] [card] [card]
   Row 2: [ ] [ ] [agent_1 △] [ ] [ ]
 
-Actions (no communication):
-  0-4: pick color i (only legal on decision step)
-  5: do nothing (only legal during deliberation)
+Actions: a single Discrete(NUM_CARDS) at every step. The same emitted
+card is interpreted as a deliberation message when not on the decision
+step and as a pick on the decision step (intent-expression layout).
 
-Actions (with communication):
-  0-4: pick color i — decision only
-  5-9: send message (a-5) — deliberation only
+The `communication` flag now toggles only whether the partner's last
+emitted card is rendered into each agent's obs as a coloured dot — the
+action layout is unified either way.
 
 Optional diagnostic payoff asymmetry:
   one designated focal color pays `focal_card_reward` when coordinated on,
@@ -31,12 +31,6 @@ from flax.struct import dataclass
 from jaxmarl.environments import spaces as jaxmarl_spaces
 
 from envs.base_env import BaseEnv, WrappedEnvState
-from envs.card_game.action_utils import (
-    COMM_ACTION_DIM,
-    decode_comm_action,
-    decode_pick_or_noop,
-    get_action_mask,
-)
 from envs.card_game.rendering import (
     render_card_game,
     TILE_PIXELS,
@@ -136,10 +130,7 @@ class CardGameEnv(BaseEnv):
         return jaxmarl_spaces.Box(0.0, 1.0, (self._obs_dim,))
 
     def action_space(self, agent: str):
-        if self.communication:
-            return jaxmarl_spaces.Discrete(num_categories=COMM_ACTION_DIM)
-        # 0-4: pick color, 5: do nothing
-        return jaxmarl_spaces.Discrete(num_categories=self.num_cards + 1)
+        return jaxmarl_spaces.Discrete(num_categories=self.num_cards)
 
     def _make_obs(
         self, env_state: CardGameState, key: chex.PRNGKey,
@@ -238,16 +229,22 @@ class CardGameEnv(BaseEnv):
             step=jnp.int32(0),
         )
 
-    def _decode_actions(self, raw_a0, raw_a1, prev_messages):
-        """Return (pick_0, pick_1, new_messages) with -1 for inactive channels."""
-        if self.communication:
-            pick_0, msg_0 = decode_comm_action(raw_a0)
-            pick_1, msg_1 = decode_comm_action(raw_a1)
-            new_messages = jnp.array([msg_0, msg_1], dtype=jnp.int32)
-        else:
-            pick_0 = decode_pick_or_noop(raw_a0)
-            pick_1 = decode_pick_or_noop(raw_a1)
-            new_messages = prev_messages
+    def _decode_actions(self, raw_a0, raw_a1, prev_messages, is_decision):
+        """Return (pick_0, pick_1, new_messages) with -1 for inactive channels.
+
+        Unified action layout: each action is a card identity. On deliberation
+        steps the action populates `messages`; on the decision step it
+        populates the pick and `messages` is held at its previous value.
+        """
+        a0 = jnp.asarray(raw_a0, dtype=jnp.int32)
+        a1 = jnp.asarray(raw_a1, dtype=jnp.int32)
+        pick_0 = jnp.where(is_decision, a0, jnp.int32(-1))
+        pick_1 = jnp.where(is_decision, a1, jnp.int32(-1))
+        new_messages = jnp.where(
+            is_decision,
+            prev_messages,
+            jnp.array([a0, a1], dtype=jnp.int32),
+        )
         return pick_0, pick_1, new_messages
 
     def _base_reward(self, pick_0, pick_1, is_decision, target_color):
@@ -343,6 +340,7 @@ class CardGameEnv(BaseEnv):
 
         pick_0, pick_1, new_messages = self._decode_actions(
             actions["agent_0"], actions["agent_1"], env_state.messages,
+            is_decision,
         )
 
         reward_val = self._base_reward(pick_0, pick_1, is_decision, env_state.target_color)
@@ -403,9 +401,7 @@ class CardGameEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
-        next_step = state.env_state.step_count + 1
-        is_decision = next_step >= self.max_steps
-        mask = get_action_mask(is_decision, self.communication)
+        mask = jnp.ones(self.num_cards, dtype=jnp.float32)
         return {agent: mask for agent in self.agents}
 
     @partial(jax.jit, static_argnums=(0,))

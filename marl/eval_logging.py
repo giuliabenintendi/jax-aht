@@ -9,7 +9,6 @@ import numpy as np
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent, _get_image_dims
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence, augment_obs_for_eval
-from envs.card_game.action_utils import decode_comm_action
 from marl.eval_card_game import _log_card_game_attention_grid, _log_card_game_eval_video, _log_card_game_xp_videos
 from marl.eval_lbf import _render_lbf_eval_frames
 
@@ -218,27 +217,23 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 env_act = {"agent_0": act_0.squeeze(), "agent_1": act_1.squeeze()}
                 a0_int = int(act_0.squeeze())
                 a1_int = int(act_1.squeeze())
-                # Track messages during deliberation, picks on decision step
+                # Track messages during deliberation, picks on decision step.
+                # Unified action: a0_int / a1_int are card identities; the env
+                # phase (deliberation vs decision) determines the role.
                 if _is_comm_env:
                     is_last = (step + 1) >= max_steps
                     if not is_last:
-                        _, msg_0 = decode_comm_action(a0_int)
-                        _, msg_1 = decode_comm_action(a1_int)
-                        if int(msg_0) >= 0:
-                            last_msg_0 = int(msg_0)
-                            if not first_msg_set_0:
-                                first_msg_0 = last_msg_0
-                                first_msg_set_0 = True
-                        if int(msg_1) >= 0:
-                            last_msg_1 = int(msg_1)
-                            if not first_msg_set_1:
-                                first_msg_1 = last_msg_1
-                                first_msg_set_1 = True
+                        last_msg_0 = a0_int
+                        if not first_msg_set_0:
+                            first_msg_0 = last_msg_0
+                            first_msg_set_0 = True
+                        last_msg_1 = a1_int
+                        if not first_msg_set_1:
+                            first_msg_1 = last_msg_1
+                            first_msg_set_1 = True
                     else:
-                        pick_0_local, _ = decode_comm_action(a0_int)
-                        pick_1_local, _ = decode_comm_action(a1_int)
-                        pick_0_local = int(pick_0_local)
-                        pick_1_local = int(pick_1_local)
+                        pick_0_local = a0_int
+                        pick_1_local = a1_int
                         # Actions/messages are color-based. Under OP recolouring we
                         # invert back to ground-truth color identity; otherwise the
                         # raw IDs are already in the correct label space.

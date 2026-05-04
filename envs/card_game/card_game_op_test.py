@@ -6,8 +6,9 @@ Layout (3×5 grid, TILE_PIXELS=7 → 21×35 px):
   Row 2: [ ] [ ] [agent_1 △] [ ] [ ]
 
 Actions:
-  0-4: pick position i (only legal on decision step)
-  5  : noop          (only legal during deliberation)
+  Discrete(NUM_CARDS) at every step. The same emitted card is treated as
+  a deliberation action when `!is_decision` (no effect on this env, since
+  there is no comm channel) and as the pick on the decision step.
 
 Reward (decision step only):
   +0.9 if both agents pick the red card,
@@ -32,11 +33,6 @@ from flax.struct import dataclass
 from jaxmarl.environments import spaces as jaxmarl_spaces
 
 from envs.base_env import BaseEnv, WrappedEnvState
-from envs.card_game.action_utils import (
-    NO_COMM_ACTION_DIM,
-    decode_pick_or_noop,
-    get_action_mask,
-)
 from envs.card_game.rendering import (
     AGENT_0_COLOR,
     AGENT_1_COLOR,
@@ -209,7 +205,7 @@ class CardGameOPTestEnv(BaseEnv):
         return jaxmarl_spaces.Box(0.0, 1.0, (self._obs_dim,))
 
     def action_space(self, agent: str):
-        return jaxmarl_spaces.Discrete(num_categories=NO_COMM_ACTION_DIM)
+        return jaxmarl_spaces.Discrete(num_categories=NUM_CARDS)
 
     def _make_obs(self, env_state: CardGameOPTestState) -> Dict[str, jnp.ndarray]:
         """Per-agent obs: scene + ego highlight + decision indicator."""
@@ -270,8 +266,10 @@ class CardGameOPTestEnv(BaseEnv):
         is_decision = new_step >= self.max_steps
         done = is_decision
 
-        pick_0 = decode_pick_or_noop(actions["agent_0"])
-        pick_1 = decode_pick_or_noop(actions["agent_1"])
+        a0 = jnp.asarray(actions["agent_0"], dtype=jnp.int32)
+        a1 = jnp.asarray(actions["agent_1"], dtype=jnp.int32)
+        pick_0 = jnp.where(is_decision, a0, jnp.int32(-1))
+        pick_1 = jnp.where(is_decision, a1, jnp.int32(-1))
 
         reward_val = self._base_reward(
             pick_0, pick_1, is_decision, env_state.red_position
@@ -336,9 +334,7 @@ class CardGameOPTestEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
-        next_step = state.env_state.step_count + 1
-        is_decision = next_step >= self.max_steps
-        mask = get_action_mask(is_decision, communication=False)
+        mask = jnp.ones(NUM_CARDS, dtype=jnp.float32)
         return {agent: mask for agent in self.agents}
 
     @partial(jax.jit, static_argnums=(0,))
@@ -446,10 +442,7 @@ class OPTestPositionShuffleWrapper:
         for a in self._env.agents:
             perm = state.per_agent_perm[a]
             view_pick = jnp.asarray(action[a], dtype=jnp.int32)
-            is_pick = view_pick < NUM_CARDS
-            safe_idx = jnp.clip(view_pick, 0, NUM_CARDS - 1)
-            gt_pick = perm[safe_idx]
-            true_action[a] = jnp.where(is_pick, gt_pick, view_pick)
+            true_action[a] = perm[view_pick]
         return true_action
 
     # -- pass-through --------------------------------------------------------

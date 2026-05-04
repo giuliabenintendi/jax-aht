@@ -26,7 +26,6 @@ from agents.ja_utils import jsd_divergence, build_card_masks
 from common.plot_utils import get_stats, get_metric_names, plot_seed_aggregate
 from common.save_load_utils import save_train_run, REPO_PATH
 from envs import make_env
-from envs.card_game.action_utils import decode_comm_action
 from envs.log_wrapper import LogWrapper
 from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
 
@@ -165,6 +164,7 @@ def make_train_loop(config, env):
 
     xattn_num_positions = feat_h * feat_w
     xattn_feat_dim = config.get("CONV_FILTERS", 32) + config.get("JA_SPATIAL_BASIS_DEPTH", 8)
+    _env_max_steps = int(config.get("ENV_KWARGS", {}).get("max_steps", 8))
 
     # Precompute card tile masks (shared by attn-msg reward and JA card attention)
     _need_card_masks = (attn_msg_coef > 0 or ja_card_attn) and feat_h > 0
@@ -514,8 +514,12 @@ def make_train_loop(config, env):
                 # card the agent is attending to (within-agent, OP-invariant)
                 if attn_msg_coef > 0:
                     num_cards = 5
-                    _, msg_color_idx = decode_comm_action(action)
-                    is_msg_action = msg_color_idx >= 0
+                    msg_color_idx = jnp.asarray(action, dtype=jnp.int32)
+                    # In the unified action layout every action is a card
+                    # identity; treat it as a message only on deliberation
+                    # steps (i.e. step_count < max_steps means the action
+                    # just taken was not the decision-step pick).
+                    is_msg_action = step_count_batch < _env_max_steps
                     safe_msg_color_idx = jnp.where(is_msg_action, msg_color_idx, 0)
 
                     # Read card colors from raw (pre-augmentation) obs at safe pixels.

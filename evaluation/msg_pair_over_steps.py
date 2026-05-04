@@ -252,6 +252,38 @@ def main():
     joint_vmax = max(1.0 / num_cards, float(avg_joint.max()))
     _save_all_steps(avg_joint, "all_steps_joint.png", vmax=joint_vmax)
 
+    # Confidence-over-time line: per-step diagonal-sum of the joint-normalized
+    # 5x5 (= overall agreement rate at that step). Faded line per seed plus
+    # the across-seed mean overlaid.
+    per_seed_agreement = np.full((num_seeds, max_steps), np.nan, dtype=np.float32)
+    for s in range(num_seeds):
+        for t in range(max_steps):
+            tot = counts[t, s].sum()
+            if tot > 0:
+                per_seed_agreement[s, t] = float(np.trace(counts[t, s])) / float(tot)
+    mean_agreement = np.nanmean(per_seed_agreement, axis=0)
+
+    fig, ax = plt.subplots(figsize=(max_steps * 0.7 + 1.0, 2.8))
+    xs = np.arange(max_steps)
+    for s in range(num_seeds):
+        label = "per seed" if s == 0 else None
+        ax.plot(xs, per_seed_agreement[s], color="gray", alpha=0.35,
+                linewidth=0.8, marker="o", markersize=3, label=label)
+    ax.plot(xs, mean_agreement, color="C0", linewidth=2.0,
+            marker="o", markersize=5, label="mean across seeds")
+    ax.set_xticks(xs)
+    ax.set_xticklabels(
+        [f"step {t}\n({'pick' if t == max_steps - 1 else 'msg'})" for t in xs],
+        fontsize=7,
+    )
+    ax.set_ylabel("agreement rate (diagonal sum)", fontsize=9)
+    ax.set_ylim(0.0, 1.05)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=7, loc="lower right")
+    fig.tight_layout()
+    fig.savefig(output_dir / "agreement_line.png", bbox_inches="tight")
+    plt.close(fig)
+
     # Per-seed combined figures.
     per_seed_dir = output_dir / "per_seed"
     per_seed_dir.mkdir(exist_ok=True)

@@ -24,7 +24,6 @@ import numpy as np
 from PIL import Image
 
 from envs import make_env
-from envs.card_game.action_utils import COMM_MESSAGE_BASE
 from envs.card_game.rendering import (
     AGENT_0_COLOR,
     AGENT_1_COLOR,
@@ -105,8 +104,8 @@ def test_scramble_partner_msg_visual() -> None:
 
     msg_0, msg_1 = 2, 3
     actions = {
-        "agent_0": jnp.int32(COMM_MESSAGE_BASE + msg_0),
-        "agent_1": jnp.int32(COMM_MESSAGE_BASE + msg_1),
+        "agent_0": jnp.int32(msg_0),
+        "agent_1": jnp.int32(msg_1),
     }
     # agent 0 sees agent 1's msg (msg_1); agent 1 sees agent 0's msg (msg_0).
     expected_a0_col = int(np.where(perm == msg_1)[0][0])

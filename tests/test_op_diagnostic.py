@@ -13,7 +13,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from envs import make_env
-from envs.card_game.action_utils import COMM_MESSAGE_BASE
 from envs.card_game.rendering import (
     AGENT_0_COLOR,
     AGENT_1_COLOR,
@@ -138,8 +137,8 @@ def test_op_diagnostic():
     msg_frame_0 = 2
     msg_frame_1 = 3
     act = {
-        "agent_0": jnp.int32(COMM_MESSAGE_BASE + msg_frame_0),
-        "agent_1": jnp.int32(COMM_MESSAGE_BASE + msg_frame_1),
+        "agent_0": jnp.int32(msg_frame_0),
+        "agent_1": jnp.int32(msg_frame_1),
     }
     key, step_key = jax.random.split(key)
     obs, state, reward, done, info = env.step(step_key, state, act)
@@ -196,8 +195,8 @@ def test_op_diagnostic():
     for _ in range(6):
         key, step_key = jax.random.split(key)
         hold = {
-            "agent_0": jnp.int32(COMM_MESSAGE_BASE + msg_frame_0),
-            "agent_1": jnp.int32(COMM_MESSAGE_BASE + msg_frame_1),
+            "agent_0": jnp.int32(msg_frame_0),
+            "agent_1": jnp.int32(msg_frame_1),
         }
         obs, state, _, done, _ = env.step(step_key, state, hold)
 

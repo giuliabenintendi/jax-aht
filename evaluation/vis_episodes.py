@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import os
-from envs.card_game.action_utils import decode_comm_action
 from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
 
 
@@ -319,15 +318,20 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             prev_action_0 = act_0.reshape(1, 1).astype(jnp.float32)
             prev_action_1 = act_1.reshape(1, 1).astype(jnp.float32)
 
-        # Add state and actions to the lists for rendering
+        # Add state and actions to the lists for rendering. Under the unified
+        # action layout, the same card index is interpreted as a message at
+        # deliberation steps and as a pick on the decision step.
         act_0_record = int(render_act["agent_0"])
         act_1_record = int(render_act["agent_1"])
         ep_states.append(env_state)
         if has_comm:
-            pick_0, msg_0 = decode_comm_action(act_0_record)
-            pick_1, msg_1 = decode_comm_action(int(render_act["agent_1"]))
-            ep_actions.append((int(pick_0), int(pick_1)))
-            ep_messages.append((int(msg_0), int(msg_1)))
+            is_decision = step == max_episode_steps - 1
+            pick_0 = act_0_record if is_decision else -1
+            pick_1 = act_1_record if is_decision else -1
+            msg_0 = -1 if is_decision else act_0_record
+            msg_1 = -1 if is_decision else act_1_record
+            ep_actions.append((pick_0, pick_1))
+            ep_messages.append((msg_0, msg_1))
         else:
             ep_actions.append((act_0_record, act_1_record))
 

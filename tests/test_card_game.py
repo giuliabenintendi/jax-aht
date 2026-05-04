@@ -150,47 +150,37 @@ def test_auto_reset():
     assert int(state.env_state.step_count) == 0
 
 
-def test_comm_action_space_and_masks():
-    """Communication uses flat macro-actions with phase-specific masks.
+def test_comm_action_space_is_unified():
+    """Unified intent-expression layout: Discrete(NUM_CARDS) at every step.
 
-    With max_steps=3, the decision step is step 3, so steps 1-2 are
-    deliberation (picks masked, messages legal) and step 3 is decision
-    (picks legal, messages masked).
+    All cards are always legal; the env's `is_decision` flag routes the
+    same emitted card to either `messages` (deliberation) or `agent_choices`
+    (decision).
     """
     env = make_env("card-game", {"max_steps": 3, "communication": True, "shuffle": False})
-    assert env.action_space("agent_0").n == 2 * NUM_CARDS
+    assert env.action_space("agent_0").n == NUM_CARDS
 
     key = jax.random.PRNGKey(5)
     obs, state = env.reset(key)
 
-    expected_deliberation = jnp.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1], dtype=jnp.float32)
-    expected_decision = jnp.array([1, 1, 1, 1, 1, 0, 0, 0, 0, 0], dtype=jnp.float32)
+    expected_mask = jnp.ones(NUM_CARDS, dtype=jnp.float32)
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
 
-    # Mask at step 1 (next_step = 1, still deliberation)
-    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_deliberation)
-
-    # Take a deliberation step, mask at step 2 (next_step = 2, still deliberation)
     key, subkey = jax.random.split(key)
-    msg_actions = {"agent_0": jnp.int32(NUM_CARDS), "agent_1": jnp.int32(NUM_CARDS + 1)}
-    obs, state, _, dones, _ = env.step(subkey, state, msg_actions)
+    actions = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(1)}
+    obs, state, _, dones, _ = env.step(subkey, state, actions)
     assert not dones["__all__"]
-    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_deliberation)
-
-    # Take another deliberation step, mask at step 3 (next_step = 3, decision)
-    key, subkey = jax.random.split(key)
-    obs, state, _, dones, _ = env.step(subkey, state, msg_actions)
-    assert not dones["__all__"]
-    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_decision)
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
 
 
 def test_comm_message_updates_state():
-    """Message actions set the current message per agent."""
+    """Deliberation-step actions populate the messages field."""
     env = make_env("card-game", {"max_steps": 3, "communication": True, "shuffle": False})
     key = jax.random.PRNGKey(11)
     obs, state = env.reset(key)
 
     key, subkey = jax.random.split(key)
-    actions = {"agent_0": jnp.int32(NUM_CARDS + 2), "agent_1": jnp.int32(NUM_CARDS + 4)}
+    actions = {"agent_0": jnp.int32(2), "agent_1": jnp.int32(4)}
     obs, state, _, dones, _ = env.step(subkey, state, actions)
     assert not dones["__all__"]
     assert int(state.env_state.messages[0]) == 2
@@ -198,13 +188,13 @@ def test_comm_message_updates_state():
 
 
 def test_comm_decision_pick_reward():
-    """Final-step picks are plain card actions under communication."""
+    """Decision-step actions are picks under the unified layout."""
     env = make_env("card-game", {"max_steps": 2, "communication": True, "shuffle": False})
     key = jax.random.PRNGKey(13)
     obs, state = env.reset(key)
 
     key, subkey = jax.random.split(key)
-    msg = {"agent_0": jnp.int32(NUM_CARDS), "agent_1": jnp.int32(NUM_CARDS)}
+    msg = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}
     obs, state, _, dones, _ = env.step(subkey, state, msg)
     assert not dones["__all__"]
 
@@ -249,8 +239,8 @@ def test_following_partner_message_is_chance_without_follow_reward():
                 step1_key,
                 state,
                 {
-                    "agent_0": jnp.int32(NUM_CARDS + msg_0),
-                    "agent_1": jnp.int32(NUM_CARDS + msg_1),
+                    "agent_0": jnp.int32(msg_0),
+                    "agent_1": jnp.int32(msg_1),
                 },
             )
             assert not step1_dones["__all__"]

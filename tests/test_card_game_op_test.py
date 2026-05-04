@@ -3,7 +3,6 @@ import jax
 import jax.numpy as jnp
 
 from envs import make_env
-from envs.card_game.action_utils import NO_COMM_NOOP_ACTION
 from envs.card_game.card_game_op_test import (
     CardGameOPTestEnv,
     OPTestPositionShuffleWrapper,
@@ -22,9 +21,9 @@ def _get_card_color_at(flat_obs, pos, img_h, img_w):
 
 # 1. Env basics --------------------------------------------------------------
 
-def test_env_action_space_is_six():
+def test_env_action_space_is_num_cards():
     env = make_env("card-game-op-test", {})
-    assert env.action_space("agent_0").n == NUM_CARDS + 1
+    assert env.action_space("agent_0").n == NUM_CARDS
 
 
 def test_env_obs_has_one_red_four_white():
@@ -59,14 +58,19 @@ def test_red_position_resampled_per_episode():
 # 2. Reward semantics --------------------------------------------------------
 
 def _run_to_decision(env, key, actions_decision, max_steps=2):
-    """Drive an episode through deliberation noops to a decision step."""
+    """Drive an episode through deliberation steps to a decision step.
+
+    With the unified action layout there's no noop; deliberation actions
+    are arbitrary card indices that don't affect the env outcome (the
+    OP-test env uses no comm channel and only the decision-step picks
+    contribute to reward).
+    """
     obs, state = env.reset(key)
-    noop = NO_COMM_NOOP_ACTION
     for _ in range(max_steps - 1):
         key, subkey = jax.random.split(key)
         obs, state, _, _, _ = env.step(
             subkey, state,
-            {"agent_0": jnp.int32(noop), "agent_1": jnp.int32(noop)},
+            {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)},
         )
     key, subkey = jax.random.split(key)
     return env.step(subkey, state, actions_decision)
@@ -180,8 +184,8 @@ def test_position_shuffle_pick_inversion_via_red_view_match():
         key, subkey = jax.random.split(key)
         obs, state, _, _, _ = env.step(
             subkey, state,
-            {"agent_0": jnp.int32(NO_COMM_NOOP_ACTION),
-             "agent_1": jnp.int32(NO_COMM_NOOP_ACTION)},
+            {"agent_0": jnp.int32(0),
+             "agent_1": jnp.int32(0)},
         )
         key, subkey = jax.random.split(key)
         _, _, reward, dones, _ = env.step(
@@ -213,8 +217,8 @@ def test_position_shuffle_same_view_pick_can_mismatch_gt():
                 key, subkey = jax.random.split(key)
                 obs, state, _, _, _ = env.step(
                     subkey, state,
-                    {"agent_0": jnp.int32(NO_COMM_NOOP_ACTION),
-                     "agent_1": jnp.int32(NO_COMM_NOOP_ACTION)},
+                    {"agent_0": jnp.int32(0),
+                     "agent_1": jnp.int32(0)},
                 )
                 key, subkey = jax.random.split(key)
                 _, _, reward, _, _ = env.step(
@@ -246,8 +250,8 @@ def test_position_shuffle_perm_resampled_on_auto_reset():
     key, subkey = jax.random.split(key)
     _, state, _, _, _ = env.step(
         subkey, state,
-        {"agent_0": jnp.int32(NO_COMM_NOOP_ACTION),
-         "agent_1": jnp.int32(NO_COMM_NOOP_ACTION)},
+        {"agent_0": jnp.int32(0),
+         "agent_1": jnp.int32(0)},
     )
     key, subkey = jax.random.split(key)
     _, state, _, dones, _ = env.step(

@@ -265,9 +265,7 @@ class CardGameRecolouringWrapper:
 
         for a in self._env.agents:
             inv = state.per_agent_inv_recolouring[a]
-            true_action[a] = remap_recoloured_action(
-                action[a], inv, self._env.communication
-            )
+            true_action[a] = remap_recoloured_action(action[a], inv)
 
         return true_action
 

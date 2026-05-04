@@ -91,10 +91,10 @@ def test_recolouring_reward_match():
     a0 = jnp.int32(π0[2])
     a1 = jnp.int32(π1[2])
 
-    # Deliberation
+    # Deliberation: action is arbitrary under the unified layout.
     key, subkey = jax.random.split(key)
-    noop = {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
-    obs, state, reward, dones, info = wrapped.step(subkey, state, noop)
+    delib = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}
+    obs, state, reward, dones, info = wrapped.step(subkey, state, delib)
 
     # Decision
     key, subkey = jax.random.split(key)
@@ -119,7 +119,7 @@ def test_recolouring_reward_mismatch():
     a1 = jnp.int32(π1[3])
 
     key, subkey = jax.random.split(key)
-    noop = {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
+    noop = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}  # arbitrary deliberation card
     obs, state, reward, dones, info = wrapped.step(subkey, state, noop)
 
     key, subkey = jax.random.split(key)
@@ -145,7 +145,7 @@ def test_recolouring_reward_all_gt_colors():
         a1 = jnp.int32(π1[gt_color])
 
         key, subkey = jax.random.split(key)
-        noop = {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
+        noop = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}  # arbitrary deliberation card
         obs, state, _, _, _ = wrapped.step(subkey, state, noop)
 
         key, subkey = jax.random.split(key)
@@ -261,7 +261,7 @@ def test_auto_reset_obs_matches_new_perms():
 
     # Deliberation
     key, subkey = jax.random.split(key)
-    noop = {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
+    noop = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}  # arbitrary deliberation card
     obs, state, _, _, _ = wrapped.step(subkey, state, noop)
 
     # Decision → done=True, auto-reset
@@ -331,7 +331,7 @@ def test_combined_wrappers_reward():
     a1 = jnp.int32(π1[4])
 
     key, subkey = jax.random.split(key)
-    noop = {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
+    noop = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}  # arbitrary deliberation card
     obs, state, _, _, _ = env.step(subkey, state, noop)
 
     key, subkey = jax.random.split(key)
@@ -357,7 +357,7 @@ def test_recolouring_preserves_focal_low_reward_card():
             a1 = jnp.int32(recolour_1[gt_color])
 
             key, subkey = jax.random.split(key)
-            noop = {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
+            noop = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}  # arbitrary deliberation card
             obs, state, _, _, _ = wrapped.step(subkey, state, noop)
 
             key, subkey = jax.random.split(key)
@@ -392,7 +392,7 @@ def test_combined_wrappers_preserve_focal_low_reward_card():
             a1 = jnp.int32(recolour_1[gt_color])
 
             key, subkey = jax.random.split(key)
-            noop = {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
+            noop = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}  # arbitrary deliberation card
             obs, state, _, _, _ = env.step(subkey, state, noop)
 
             key, subkey = jax.random.split(key)
