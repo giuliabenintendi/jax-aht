@@ -6,7 +6,7 @@
 GPU="${1:?Usage: ./run_card_game_ent_sweep.sh <gpu>}"
 SEED=43
 TIMESTEPS=5e6
-ENT_VALUES="0.01 0.05 0.1"
+ENT_VALUES="0.05 0.1 0.2"
 
 COMMON="algorithm.NUM_SEEDS=1 algorithm.TRAIN_SEED=$SEED \
 algorithm.TOTAL_TIMESTEPS=$TIMESTEPS \
