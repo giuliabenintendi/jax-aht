@@ -312,12 +312,8 @@ class CardGameEnv(BaseEnv):
             0.0,
         )
 
-        # Gate follow on env success (picks coincide). Without this gate, agent earns
-        # follow_coef just by being self-consistent regardless of cross-agent agreement,
-        # which makes "trivial deterministic protocol" a strong local optimum.
-        env_success = (pick_0 >= 0) & (pick_1 >= 0) & jnp.equal(pick_0, pick_1)
-        follow_ok_0 = is_decision & prev_match & env_success & jnp.equal(pick_0, prev_msg_0)
-        follow_ok_1 = is_decision & prev_match & env_success & jnp.equal(pick_1, prev_msg_1)
+        follow_ok_0 = is_decision & prev_match & jnp.equal(pick_0, prev_msg_0)
+        follow_ok_1 = is_decision & prev_match & jnp.equal(pick_1, prev_msg_1)
         follow_val_0 = jnp.where(follow_ok_0, self.follow_coef, 0.0)
         follow_val_1 = jnp.where(follow_ok_1, self.follow_coef, 0.0)
 
