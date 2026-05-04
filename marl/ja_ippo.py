@@ -24,7 +24,7 @@ from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_ag
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence, build_card_masks
 from common.plot_utils import get_stats, get_metric_names, plot_seed_aggregate
-from common.save_load_utils import save_train_run
+from common.save_load_utils import save_train_run, REPO_PATH
 from envs import make_env
 from envs.card_game.action_utils import decode_comm_action
 from envs.log_wrapper import LogWrapper
@@ -888,6 +888,94 @@ def make_train_loop(config, env):
     return init, make_step_fn, init_policy, init_state
 
 
+def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
+    """Push aggregated chunk metrics to wandb live, once per training chunk.
+
+    The training loop is sequential per seed, so live curves grow seed-by-seed under
+    `LiveTrain/seed_<i>/...`. Step axis is env_step; chunk-mean for scalars; mask-weighted
+    mean for episodic returns (skips chunks with zero completed episodes).
+    """
+    if logger is None or getattr(logger, "run", None) is None:
+        return
+
+    m = chunk_metrics
+    returned = np.asarray(m["returned_episode"])
+    returns = np.asarray(m["returned_episode_returns"])
+    n_ep = float(returned.sum())
+    if n_ep > 0:
+        mean = float((returns * returned).sum() / n_ep)
+        sq = float(((returns - mean) ** 2 * returned).sum() / n_ep)
+        std = float(np.sqrt(max(sq, 0.0)))
+    else:
+        mean = float("nan")
+        std = float("nan")
+
+    data: dict[str, float | int] = {
+        f"LiveTrain/seed_{seed_idx}/return_mean": mean,
+        f"LiveTrain/seed_{seed_idx}/return_std": std,
+        f"LiveTrain/seed_{seed_idx}/n_episodes": int(n_ep),
+        "env_step": int(env_step),
+    }
+
+    scalar_keys = [
+        ("ja_beta",              "JA/beta"),
+        ("comm_scale",           "Comm/scale"),
+        ("jsd_mean",             "JA/jsd"),
+        ("loss_total",           "Loss/total"),
+        ("loss_value",           "Loss/value"),
+        ("loss_policy",          "Loss/policy"),
+        ("entropy",              "Loss/entropy"),
+        ("grad_norm",            "Loss/grad_norm"),
+        ("approx_kl",            "Loss/approx_kl"),
+        ("clip_frac",            "Loss/clip_frac"),
+        ("explained_var",        "Loss/explained_var"),
+        ("raw_env_reward_mean",  "Reward/env_raw"),
+        ("comm_reward_mean",     "Reward/comm"),
+    ]
+    for key, name in scalar_keys:
+        if key in m:
+            data[f"LiveTrain/seed_{seed_idx}/{name}"] = float(np.asarray(m[key]).mean())
+
+    logger.log(data, commit=True)
+
+
+def _select_best_per_seed_ckpt(out, chunk_boundaries):
+    """Score each saved checkpoint by mean episodic return over the chunk that produced it.
+
+    Returns (best_params, best_idx, per_ckpt_chunk_return).
+    `best_params` has the same tree structure as `out["final_params"]` (leading dim = num_seeds).
+    `best_idx` is shape (num_seeds,). `per_ckpt_chunk_return` is shape (num_seeds, num_ckpts).
+
+    Picking based on the chunk that *produced* a checkpoint approximates eval-time return
+    cheaply (no extra rollouts). The argmax is per seed: each seed contributes its own peak.
+    """
+    metrics = out["metrics"]
+    stacked_ckpts = out["checkpoints"]
+    num_seeds, num_ckpts = jax.tree.leaves(stacked_ckpts)[0].shape[:2]
+
+    returned = np.asarray(metrics["returned_episode"])         # (S, U, ...)
+    returns = np.asarray(metrics["returned_episode_returns"])  # (S, U, ...)
+
+    # Use only chunks whose params were actually saved (guards the +1 boundary edge case).
+    n_chunks = min(num_ckpts, len(chunk_boundaries))
+    los = [0] + list(chunk_boundaries[:n_chunks - 1])
+    his = list(chunk_boundaries[:n_chunks])
+
+    per_ckpt_returns = np.zeros((num_seeds, num_ckpts), dtype=np.float64)
+    for i, (lo, hi) in enumerate(zip(los, his)):
+        m = returned[:, lo:hi]
+        v = returns[:, lo:hi]
+        reduce_axes = tuple(range(1, m.ndim))
+        denom = np.maximum(m.sum(axis=reduce_axes), 1)
+        numer = (v * m).sum(axis=reduce_axes)
+        per_ckpt_returns[:, i] = numer / denom
+
+    best_idx = per_ckpt_returns.argmax(axis=1).astype(np.int32)  # (num_seeds,)
+    seed_arange = np.arange(num_seeds)
+    best_params = jax.tree.map(lambda c: c[seed_arange, best_idx], stacked_ckpts)
+    return best_params, best_idx, per_ckpt_returns
+
+
 def run_ja_ippo(config, logger):
     algorithm_config = dict(config.algorithm)
     # Propagate COMMUNICATION flag into ENV_KWARGS so the env is created with it
@@ -911,8 +999,27 @@ def run_ja_ippo(config, logger):
 
     init_fn, make_step_fn, init_policy_fn, init_state_fn = make_train_loop(algorithm_config, env)
 
-    num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
-    ckpt_interval = num_updates // max(1, num_ckpts - 1)
+    env_steps_per_update = int(algorithm_config["ROLLOUT_LENGTH"]) * int(algorithm_config["NUM_ENVS"])
+    freq_timesteps = float(algorithm_config.get("CHECKPOINT_FREQ_TIMESTEPS", 0) or 0)
+    if freq_timesteps > 0:
+        # Frequency-based: derive num_ckpts from desired env-step interval. Each chunk
+        # spans freq_updates updates; final chunk may be shorter to land exactly on num_updates.
+        freq_updates = max(1, int(round(freq_timesteps / env_steps_per_update)))
+        chunk_boundaries: list[int] = []
+        b = 0
+        while b < num_updates:
+            b = min(b + freq_updates, num_updates)
+            chunk_boundaries.append(b)
+        num_ckpts = len(chunk_boundaries)
+        print(f"[ja_ippo] Checkpoint cadence: every {freq_timesteps:.0f} env steps "
+              f"({freq_updates} updates) -> {num_ckpts} checkpoints")
+    else:
+        num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
+        ckpt_interval = num_updates // max(1, num_ckpts - 1)
+        chunk_boundaries = [min((i + 1) * ckpt_interval, num_updates) for i in range(num_ckpts)]
+        if chunk_boundaries[-1] < num_updates:
+            chunk_boundaries.append(num_updates)
+        print(f"[ja_ippo] Checkpoint cadence: NUM_CHECKPOINTS={num_ckpts} evenly spaced")
 
     # Compile once for a single seed, then loop over seeds sequentially.
     # This reuses the same compiled step_fn for every seed -- no vmap, no
@@ -921,16 +1028,11 @@ def run_ja_ippo(config, logger):
     policy = init_policy_fn(rngs[0])
     step_fn, chunked_step_fn, _ = make_step_fn(policy)
 
+    live_wandb = bool(algorithm_config.get("LIVE_WANDB_LOGGING", True))
+
     all_seed_metrics = []
     all_seed_ckpts = []
     all_seed_final_params = []
-
-    # Compute chunk boundaries aligned to checkpoint intervals
-    chunk_boundaries = []
-    for i in range(num_ckpts):
-        chunk_boundaries.append(min((i + 1) * ckpt_interval, num_updates))
-    if chunk_boundaries[-1] < num_updates:
-        chunk_boundaries.append(num_updates)
 
     for seed_idx in range(num_seeds):
         runner_state = init_state_fn(rngs[seed_idx], policy)
@@ -958,6 +1060,14 @@ def run_ja_ippo(config, logger):
 
             print(f"[ja_ippo]   step {steps_done}/{num_updates}")
 
+            if live_wandb:
+                _push_chunk_to_wandb(
+                    chunk_metrics,
+                    env_step=steps_done * env_steps_per_update,
+                    seed_idx=seed_idx,
+                    logger=logger,
+                )
+
         all_seed_final_params.append(runner_state[0].params)
         # Concatenate chunk metrics along the update axis (axis 0)
         all_seed_metrics.append(jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *seed_metrics))
@@ -976,12 +1086,103 @@ def run_ja_ippo(config, logger):
         "final_ckpt_idx": num_ckpts,
     }
 
+    use_best = bool(algorithm_config.get("USE_BEST_CKPT_FOR_EVAL", True))
+    best_params, best_idx, per_ckpt_returns = _select_best_per_seed_ckpt(out, chunk_boundaries)
+    ckpt_env_steps = [int(b) * env_steps_per_update for b in chunk_boundaries[:num_ckpts]]
+    out["best_params"] = best_params
+    out["best_ckpt_idx"] = best_idx
+    out["per_ckpt_chunk_return"] = per_ckpt_returns
+    out["ckpt_env_steps"] = np.asarray(ckpt_env_steps, dtype=np.int64)
+
+    best_env_steps = [ckpt_env_steps[int(i)] for i in best_idx]
+    print(f"[ja_ippo] best_ckpt_idx per seed: {best_idx.tolist()} (of {num_ckpts}); "
+          f"best env_step per seed: {best_env_steps}; "
+          f"chunk-return at best: "
+          f"{[round(float(per_ckpt_returns[s, best_idx[s]]), 3) for s in range(num_seeds)]}")
+
+    savedir_for_scores = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+
+    # Per-checkpoint folder: lives OUTSIDE the hydra output dir for easy enumeration across runs.
+    # Resolves to {CHECKPOINT_ROOT}/{run_name}/ where CHECKPOINT_ROOT is repo-root-relative unless absolute.
+    # Structure: <ckpt_root>/ckpt_{i:02d}_step_{env_steps}/  (params, shape (num_seeds, ...))
+    #            <ckpt_root>/chunk_scores.json
+    # `best`/`final` aliases are not written: best params flow into XP/greedy/video eval via eval_out;
+    # final params and the full stacked checkpoints are still in saved_train_run.
+    ckpt_root_setting = str(algorithm_config.get("CHECKPOINT_ROOT", "checkpoints"))
+    if not os.path.isabs(ckpt_root_setting):
+        ckpt_root_setting = os.path.join(REPO_PATH, ckpt_root_setting)
+    run_name = None
+    if logger is not None and getattr(logger, "run", None) is not None:
+        run_name = getattr(logger.run, "name", None)
+    if not run_name:
+        run_name = os.path.basename(savedir_for_scores.rstrip("/")) or "unnamed_run"
+    ckpt_root = os.path.join(ckpt_root_setting, run_name)
+
+    ckpt_folder_paths: list[str] = []
+    if bool(algorithm_config.get("SAVE_CHECKPOINT_FOLDER", True)):
+        os.makedirs(ckpt_root, exist_ok=True)
+        for i in range(num_ckpts):
+            params_i = jax.tree.map(lambda c, _i=i: c[:, _i], stacked_ckpts)  # (num_seeds, ...)
+            ckpt_name = f"ckpt_{i:02d}_step_{ckpt_env_steps[i]}"
+            save_train_run(params_i, ckpt_root, ckpt_name)
+            ckpt_folder_paths.append(os.path.join(ckpt_root, ckpt_name))
+        print(f"[ja_ippo] Checkpoint folder: {ckpt_root} ({num_ckpts} ckpts)")
+
+    # Sidecar JSON: lives next to the per-ckpt folders so everything checkpoint-related is in one place.
+    scores_dir = ckpt_root if bool(algorithm_config.get("SAVE_CHECKPOINT_FOLDER", True)) else savedir_for_scores
+    os.makedirs(scores_dir, exist_ok=True)
+    scores_path = os.path.join(scores_dir, "chunk_scores.json")
+    import json as _json
+    with open(scores_path, "w") as _fh:
+        _json.dump({
+            "run_name": run_name,
+            "num_seeds": int(num_seeds),
+            "num_ckpts": int(num_ckpts),
+            "ckpt_root": ckpt_root,
+            "ckpt_env_steps": ckpt_env_steps,
+            "ckpt_update_boundaries": [int(b) for b in chunk_boundaries[:num_ckpts]],
+            "ckpt_folder_paths": ckpt_folder_paths,
+            "per_seed_per_ckpt_return": per_ckpt_returns.tolist(),
+            "best_ckpt_idx_per_seed": best_idx.tolist(),
+            "best_env_step_per_seed": best_env_steps,
+            "best_chunk_return_per_seed": [float(per_ckpt_returns[s, best_idx[s]]) for s in range(num_seeds)],
+        }, _fh, indent=2)
+    print(f"[ja_ippo] Wrote per-checkpoint scores: {scores_path}")
+
+    import wandb as _wandb_eval
+    if _wandb_eval.run is not None:
+        last_idx = num_ckpts - 1
+        best_returns = per_ckpt_returns[np.arange(num_seeds), best_idx]
+        last_returns = per_ckpt_returns[:, last_idx]
+        summary = {
+            "BestCkpt/best_ckpt_idx_mean": float(best_idx.mean()),
+            "BestCkpt/best_chunk_return_mean": float(best_returns.mean()),
+            "BestCkpt/best_chunk_return_std": float(best_returns.std()),
+            "BestCkpt/last_chunk_return_mean": float(last_returns.mean()),
+            "BestCkpt/improvement_over_last_mean": float((best_returns - last_returns).mean()),
+            "BestCkpt/best_env_step_mean": float(np.mean(best_env_steps)),
+        }
+        for s in range(num_seeds):
+            summary[f"BestCkpt/seed_{s}/best_ckpt_idx"] = int(best_idx[s])
+            summary[f"BestCkpt/seed_{s}/best_env_step"] = int(best_env_steps[s])
+            summary[f"BestCkpt/seed_{s}/best_chunk_return"] = float(best_returns[s])
+        logger.log(summary, commit=False)
+        table = _wandb_eval.Table(columns=["seed", "ckpt_idx", "env_step", "chunk_return", "is_best"])
+        for s in range(num_seeds):
+            for i in range(num_ckpts):
+                table.add_data(int(s), int(i), int(ckpt_env_steps[i]),
+                               float(per_ckpt_returns[s, i]), bool(i == best_idx[s]))
+        logger.log_item("BestCkpt/per_seed_chunk_returns", table, commit=False)
+        _wandb_eval.save(scores_path, base_path=scores_dir)
+
     log_metrics(config, out, logger)
-    log_greedy_eval(algorithm_config, env, out, logger)
-    log_eval_video(algorithm_config, env, out, logger)
+
+    eval_out = {**out, "final_params": best_params} if use_best else out
+    log_greedy_eval(algorithm_config, env, eval_out, logger)
+    log_eval_video(algorithm_config, env, eval_out, logger)
 
     if num_seeds > 1:
-        log_xp_eval(algorithm_config, env, out)
+        log_xp_eval(algorithm_config, env, eval_out)
 
     return out
 

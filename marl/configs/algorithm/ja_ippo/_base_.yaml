@@ -4,6 +4,18 @@
 # PPO hyperparameters match the reference code defaults.
 ALG: ja_ippo
 NUM_CHECKPOINTS: 5
+CHECKPOINT_FREQ_TIMESTEPS: 0   # if >0, save a checkpoint every N env steps (overrides NUM_CHECKPOINTS); 0 = use NUM_CHECKPOINTS evenly spaced
+USE_BEST_CKPT_FOR_EVAL: true   # at end of training, run greedy/video/XP eval on per-seed best checkpoint instead of final params
+SAVE_CHECKPOINT_FOLDER: true   # write each checkpoint as its own orbax sub-dir under <CHECKPOINT_ROOT>/<run_name>/ (plus chunk_scores.json)
+CHECKPOINT_ROOT: "checkpoints" # repo-root-relative path (or absolute) where checkpoint folders are stored, separate from hydra output dir
+LIVE_WANDB_LOGGING: true       # push aggregated metrics to wandb after each training chunk (same cadence as checkpoint saves) for live monitoring
+
+# Eval-video volume controls (videos are slow + heavy on disk/wandb).
+# With NUM_SEEDS=N the previous defaults rendered ~N SP videos + N*C(N,2) XP videos (XP was duplicated per seed).
+EVAL_VIDEO_NUM_SEEDS: 1        # render per-seed videos for first N seeds only (0 disables per-seed videos entirely)
+EVAL_VIDEO_LOG_XP: false       # render cross-play seed_i x seed_j videos (off by default; expensive)
+EVAL_VIDEO_NUM_EPISODES: 10    # episodes per per-seed (SP) eval video
+EVAL_VIDEO_XP_NUM_EPISODES: 3  # episodes per cross-play pair video
 ANNEAL_LR: False
 MAX_GRAD_NORM: 0.5
 NORMALIZE_REWARDS: true
