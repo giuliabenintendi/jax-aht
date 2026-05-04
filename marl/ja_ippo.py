@@ -998,8 +998,19 @@ def run_ja_ippo(config, logger):
     print(f"[ja_ippo] NUM_UPDATES={num_updates}, NUM_SEEDS={num_seeds}, "
           f"NUM_ENVS={algorithm_config['NUM_ENVS']}, obs_type={obs_type}")
 
-    rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
-    rngs = jax.random.split(rng, num_seeds)
+    # Per-seed PRNG keys: either user-supplied (TRAIN_SEEDS list) or derived from a single TRAIN_SEED.
+    seed_list = algorithm_config.get("TRAIN_SEEDS", None)
+    if seed_list is not None and len(seed_list) > 0:
+        seed_list = [int(s) for s in seed_list]
+        if len(seed_list) != num_seeds:
+            raise ValueError(
+                f"TRAIN_SEEDS has {len(seed_list)} entries but NUM_SEEDS={num_seeds}"
+            )
+        rngs = jnp.stack([jax.random.PRNGKey(s) for s in seed_list])
+        print(f"[ja_ippo] Per-seed PRNGKeys from TRAIN_SEEDS: {seed_list}")
+    else:
+        rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
+        rngs = jax.random.split(rng, num_seeds)
 
     init_fn, make_step_fn, init_policy_fn, init_state_fn = make_train_loop(algorithm_config, env)
 
