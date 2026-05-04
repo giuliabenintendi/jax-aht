@@ -1108,7 +1108,7 @@ def run_ja_ippo(config, logger):
 
     # Per-checkpoint folder: lives OUTSIDE the hydra output dir for easy enumeration across runs.
     # Resolves to {CHECKPOINT_ROOT}/{run_name}/ where CHECKPOINT_ROOT is repo-root-relative unless absolute.
-    # Structure: <ckpt_root>/ckpt_{i:02d}_step_{env_steps}/  (params, shape (num_seeds, ...))
+    # Structure: <ckpt_root>/ckpt_{i:02d}_ret_{seed_mean_return}/  (params, shape (num_seeds, ...))
     #            <ckpt_root>/chunk_scores.json
     # `best`/`final` aliases are not written: best params flow into XP/greedy/video eval via eval_out;
     # final params and the full stacked checkpoints are still in saved_train_run.
@@ -1128,7 +1128,7 @@ def run_ja_ippo(config, logger):
         for i in range(num_ckpts):
             params_i = jax.tree.map(lambda c, _i=i: c[:, _i], stacked_ckpts)  # (num_seeds, ...)
             ret_mean = float(per_ckpt_returns[:, i].mean())
-            ckpt_name = f"ckpt_{i:02d}_step_{ckpt_env_steps[i]}_ret_{ret_mean:.2f}"
+            ckpt_name = f"ckpt_{i:02d}_ret_{ret_mean:.2f}"
             save_train_run(params_i, ckpt_root, ckpt_name)
             ckpt_folder_paths.append(os.path.join(ckpt_root, ckpt_name))
         print(f"[ja_ippo] Checkpoint folder: {ckpt_root} ({num_ckpts} ckpts)")
