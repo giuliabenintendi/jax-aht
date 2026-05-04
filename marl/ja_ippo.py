@@ -1127,7 +1127,8 @@ def run_ja_ippo(config, logger):
         os.makedirs(ckpt_root, exist_ok=True)
         for i in range(num_ckpts):
             params_i = jax.tree.map(lambda c, _i=i: c[:, _i], stacked_ckpts)  # (num_seeds, ...)
-            ckpt_name = f"ckpt_{i:02d}_step_{ckpt_env_steps[i]}"
+            ret_mean = float(per_ckpt_returns[:, i].mean())
+            ckpt_name = f"ckpt_{i:02d}_step_{ckpt_env_steps[i]}_ret_{ret_mean:.2f}"
             save_train_run(params_i, ckpt_root, ckpt_name)
             ckpt_folder_paths.append(os.path.join(ckpt_root, ckpt_name))
         print(f"[ja_ippo] Checkpoint folder: {ckpt_root} ({num_ckpts} ckpts)")
