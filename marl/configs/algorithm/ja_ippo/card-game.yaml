@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 TOTAL_TIMESTEPS: 5e6
-NUM_ENVS: 64
+NUM_ENVS: 1024
 NUM_SEEDS: 5
 ENT_COEF: 0.01
 FEED_OTHER_ATTN: false

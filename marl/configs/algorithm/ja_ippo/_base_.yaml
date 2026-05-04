@@ -4,7 +4,7 @@
 # PPO hyperparameters match the reference code defaults.
 ALG: ja_ippo
 NUM_CHECKPOINTS: 5
-CHECKPOINT_FREQ_TIMESTEPS: 0   # if >0, save a checkpoint every N env steps (overrides NUM_CHECKPOINTS); 0 = use NUM_CHECKPOINTS evenly spaced
+CHECKPOINT_FREQ_TIMESTEPS: 200000  # save a checkpoint every N env steps (overrides NUM_CHECKPOINTS); set 0 to fall back to NUM_CHECKPOINTS evenly spaced
 USE_BEST_CKPT_FOR_EVAL: true   # at end of training, run greedy/video/XP eval on per-seed best checkpoint instead of final params
 SAVE_CHECKPOINT_FOLDER: true   # write each checkpoint as its own orbax sub-dir under <CHECKPOINT_ROOT>/<run_name>/ (plus chunk_scores.json)
 CHECKPOINT_ROOT: "checkpoints" # repo-root-relative path (or absolute) where checkpoint folders are stored, separate from hydra output dir
