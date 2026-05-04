@@ -1041,62 +1041,119 @@ def run_ja_ippo(config, logger):
             chunk_boundaries.append(num_updates)
         print(f"[ja_ippo] Checkpoint cadence: NUM_CHECKPOINTS={num_ckpts} evenly spaced")
 
-    # Compile once for a single seed, then loop over seeds sequentially.
-    # This reuses the same compiled step_fn for every seed -- no vmap, no
-    # per-seed-count recompilation, constant memory regardless of NUM_SEEDS.
     print(f"[ja_ippo] Initializing policy and {num_seeds} seeds...")
     policy = init_policy_fn(rngs[0])
     step_fn, chunked_step_fn, _ = make_step_fn(policy)
 
     live_wandb = bool(algorithm_config.get("LIVE_WANDB_LOGGING", True))
+    use_vmap = bool(algorithm_config.get("VMAP_SEEDS", False))
 
-    all_seed_metrics = []
-    all_seed_ckpts = []
-    all_seed_final_params = []
+    if use_vmap:
+        # Vmap mode: train all seeds in parallel on one GPU. Each seed has independent
+        # weights, env state, RNG; only the JIT-compiled step_fn graph is shared. Memory
+        # cost scales linearly with num_seeds; for card-game's small model + NUM_ENVS=64
+        # per seed, fits easily on a 32GB GPU.
+        print(f"[ja_ippo] VMAP_SEEDS=true: parallelizing {num_seeds} seeds on one GPU")
+        runner_states = jax.vmap(init_state_fn, in_axes=(0, None))(rngs, policy)
+        update_steps_v = jnp.zeros((num_seeds,), dtype=jnp.int32)
+        rew_norm_state_one = reward_norm_init()
+        rew_norm_states = jax.tree.map(
+            lambda x: jnp.broadcast_to(x[None], (num_seeds,) + x.shape).copy(),
+            rew_norm_state_one,
+        )
+        chunked_step_vmap = jax.vmap(chunked_step_fn, in_axes=(0, 0, 0, None))
 
-    for seed_idx in range(num_seeds):
-        runner_state = init_state_fn(rngs[seed_idx], policy)
-        update_steps = jnp.zeros((), dtype=jnp.int32)
-        rew_norm_state = reward_norm_init()
-
-        seed_metrics = []
-        seed_ckpts = []
+        all_chunk_metrics = []
+        all_chunk_ckpts: list = []
         steps_done = 0
 
-        print(f"[ja_ippo] Seed {seed_idx}/{num_seeds}: training {num_updates} steps...")
         for chunk_end in chunk_boundaries:
             chunk_size = chunk_end - steps_done
             if chunk_size <= 0:
                 continue
-
-            runner_state, update_steps, rew_norm_state, chunk_metrics = chunked_step_fn(
-                runner_state, update_steps, rew_norm_state, chunk_size)
-            seed_metrics.append(chunk_metrics)
+            runner_states, update_steps_v, rew_norm_states, chunk_metrics = chunked_step_vmap(
+                runner_states, update_steps_v, rew_norm_states, chunk_size,
+            )
+            # chunk_metrics shape: (num_seeds, chunk_size, ...) — seed dim is leading from vmap
+            all_chunk_metrics.append(chunk_metrics)
             steps_done = chunk_end
 
-            # Checkpoint after each chunk
-            if len(seed_ckpts) < num_ckpts:
-                seed_ckpts.append(jax.tree.map(jnp.copy, runner_state[0].params))
+            if len(all_chunk_ckpts) < num_ckpts:
+                # runner_states[0].params has leading seed dim from vmap
+                all_chunk_ckpts.append(jax.tree.map(jnp.copy, runner_states[0].params))
 
-            print(f"[ja_ippo]   step {steps_done}/{num_updates}")
+            print(f"[ja_ippo]   step {steps_done}/{num_updates} (all {num_seeds} seeds)")
 
             if live_wandb:
-                _push_chunk_to_wandb(
-                    chunk_metrics,
-                    env_step=steps_done * env_steps_per_update,
-                    seed_idx=seed_idx,
-                    logger=logger,
-                )
+                for s in range(num_seeds):
+                    seed_chunk_metrics = jax.tree.map(lambda x, _s=s: x[_s], chunk_metrics)
+                    _push_chunk_to_wandb(
+                        seed_chunk_metrics,
+                        env_step=steps_done * env_steps_per_update,
+                        seed_idx=s,
+                        logger=logger,
+                    )
 
-        all_seed_final_params.append(runner_state[0].params)
-        # Concatenate chunk metrics along the update axis (axis 0)
-        all_seed_metrics.append(jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *seed_metrics))
-        all_seed_ckpts.append(jax.tree.map(lambda *xs: jnp.stack(xs), *seed_ckpts))
+        # Final shapes match the sequential path:
+        #   stacked_params:  (num_seeds, ...)
+        #   stacked_metrics: (num_seeds, total_updates, ...)
+        #   stacked_ckpts:   (num_seeds, num_ckpts, ...)
+        stacked_params = runner_states[0].params
+        stacked_metrics = jax.tree.map(
+            lambda *xs: jnp.concatenate(xs, axis=1), *all_chunk_metrics,
+        )
+        stacked_ckpts = jax.tree.map(
+            lambda *xs: jnp.swapaxes(jnp.stack(xs, axis=0), 0, 1),
+            *all_chunk_ckpts,
+        )
+    else:
+        # Sequential mode: loop over seeds, reuse compiled step_fn. Constant memory in
+        # NUM_SEEDS (one seed's worth at a time), but wall clock scales linearly with
+        # num_seeds. Default — VMAP_SEEDS=true if you have GPU memory headroom.
+        all_seed_metrics = []
+        all_seed_ckpts = []
+        all_seed_final_params = []
 
-    # Stack across seeds: (num_seeds, ...)
-    stacked_params = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_final_params)
-    stacked_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_metrics)
-    stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_ckpts)
+        for seed_idx in range(num_seeds):
+            runner_state = init_state_fn(rngs[seed_idx], policy)
+            update_steps = jnp.zeros((), dtype=jnp.int32)
+            rew_norm_state = reward_norm_init()
+
+            seed_metrics = []
+            seed_ckpts = []
+            steps_done = 0
+
+            print(f"[ja_ippo] Seed {seed_idx}/{num_seeds}: training {num_updates} steps...")
+            for chunk_end in chunk_boundaries:
+                chunk_size = chunk_end - steps_done
+                if chunk_size <= 0:
+                    continue
+
+                runner_state, update_steps, rew_norm_state, chunk_metrics = chunked_step_fn(
+                    runner_state, update_steps, rew_norm_state, chunk_size)
+                seed_metrics.append(chunk_metrics)
+                steps_done = chunk_end
+
+                if len(seed_ckpts) < num_ckpts:
+                    seed_ckpts.append(jax.tree.map(jnp.copy, runner_state[0].params))
+
+                print(f"[ja_ippo]   step {steps_done}/{num_updates}")
+
+                if live_wandb:
+                    _push_chunk_to_wandb(
+                        chunk_metrics,
+                        env_step=steps_done * env_steps_per_update,
+                        seed_idx=seed_idx,
+                        logger=logger,
+                    )
+
+            all_seed_final_params.append(runner_state[0].params)
+            all_seed_metrics.append(jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *seed_metrics))
+            all_seed_ckpts.append(jax.tree.map(lambda *xs: jnp.stack(xs), *seed_ckpts))
+
+        stacked_params = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_final_params)
+        stacked_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_metrics)
+        stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_ckpts)
 
     print("[ja_ippo] Training complete.")
     out = {
