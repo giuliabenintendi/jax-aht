@@ -231,7 +231,6 @@ class Logger:
         # Live per-chunk metrics pushed during training; x-axis is env_step so per-seed
         # curves align across the same env-step trajectory rather than wandb's auto _step.
         wandb.define_metric("LiveTrain/*", step_metric="env_step")
-        wandb.define_metric("BestCkpt/*", step_metric="env_step")
     
     def log_artifact(self, name, path, type_name):
         artifact = wandb.Artifact(name, type=type_name)

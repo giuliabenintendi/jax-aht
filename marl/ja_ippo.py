@@ -1153,32 +1153,6 @@ def run_ja_ippo(config, logger):
         }, _fh, indent=2)
     print(f"[ja_ippo] Wrote per-checkpoint scores: {scores_path}")
 
-    import wandb as _wandb_eval
-    if _wandb_eval.run is not None:
-        last_idx = num_ckpts - 1
-        best_returns = per_ckpt_returns[np.arange(num_seeds), best_idx]
-        last_returns = per_ckpt_returns[:, last_idx]
-        summary = {
-            "BestCkpt/best_ckpt_idx_mean": float(best_idx.mean()),
-            "BestCkpt/best_chunk_return_mean": float(best_returns.mean()),
-            "BestCkpt/best_chunk_return_std": float(best_returns.std()),
-            "BestCkpt/last_chunk_return_mean": float(last_returns.mean()),
-            "BestCkpt/improvement_over_last_mean": float((best_returns - last_returns).mean()),
-            "BestCkpt/best_env_step_mean": float(np.mean(best_env_steps)),
-        }
-        for s in range(num_seeds):
-            summary[f"BestCkpt/seed_{s}/best_ckpt_idx"] = int(best_idx[s])
-            summary[f"BestCkpt/seed_{s}/best_env_step"] = int(best_env_steps[s])
-            summary[f"BestCkpt/seed_{s}/best_chunk_return"] = float(best_returns[s])
-        logger.log(summary, commit=False)
-        table = _wandb_eval.Table(columns=["seed", "ckpt_idx", "env_step", "chunk_return", "is_best"])
-        for s in range(num_seeds):
-            for i in range(num_ckpts):
-                table.add_data(int(s), int(i), int(ckpt_env_steps[i]),
-                               float(per_ckpt_returns[s, i]), bool(i == best_idx[s]))
-        logger.log_item("BestCkpt/per_seed_chunk_returns", table, commit=False)
-        _wandb_eval.save(scores_path, base_path=scores_dir)
-
     log_metrics(config, out, logger)
 
     eval_out = {**out, "final_params": best_params} if use_best else out
