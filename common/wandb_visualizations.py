@@ -184,7 +184,15 @@ class Logger:
             reinit=True,
         )
 
-        self.run.name = run_string
+        # Keep wandb's auto-generated name (e.g. "dainty-cherry-42") as a unique prefix,
+        # then append the descriptive run_string. This preserves wandb's collision-free
+        # identifier while keeping the searchable config tag in the run name.
+        auto_name = self.run.name or ""
+        composed = f"{auto_name}_{run_string}" if auto_name else run_string
+        # wandb run names are file-path components; keep under a sane length.
+        if len(composed) > 250:
+            composed = composed[:250]
+        self.run.name = composed
 
         self.define_metrics()
 
@@ -214,11 +222,16 @@ class Logger:
     def define_metrics(self):
         wandb.define_metric("train_step")
         wandb.define_metric("checkpoint")
+        wandb.define_metric("env_step")
         wandb.define_metric("Train/*", step_metric="train_step")
         wandb.define_metric("Losses/*", step_metric="train_step")
         wandb.define_metric("Eval/*", step_metric="train_step")
         wandb.define_metric("Returns/*", step_metric="train_step")
         wandb.define_metric("HeldoutEval/*", step_metric="iter")
+        # Live per-chunk metrics pushed during training; x-axis is env_step so per-seed
+        # curves align across the same env-step trajectory rather than wandb's auto _step.
+        wandb.define_metric("LiveTrain/*", step_metric="env_step")
+        wandb.define_metric("BestCkpt/*", step_metric="env_step")
     
     def log_artifact(self, name, path, type_name):
         artifact = wandb.Artifact(name, type=type_name)
