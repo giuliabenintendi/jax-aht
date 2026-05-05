@@ -127,6 +127,11 @@ def make_train_loop(config, env):
     lstm_hidden_dim = config.get("LSTM_HIDDEN_DIM", 128)
     attn_msg_coef = config.get("ATTN_MSG_REWARD_COEF", 0.0)
     ja_card_attn = config.get("JA_CARD_ATTN", False)
+    # Whether to feed the partner's translated card-attention back into the
+    # next step's obs. Defaults to True (BC). When False, JSD/CONC/etc.
+    # reward terms still fire but the policy receives no partner info beyond
+    # what the message channel and rendered dot already provide.
+    ja_card_partner_feed = ja_card_attn and config.get("JA_CARD_PARTNER_FEED", True)
     ja_card_conc_coef = config.get("JA_CARD_CONC_COEF", 0.1)
     ja_card_align_coef = config.get("JA_CARD_ALIGN_COEF", 0.1)
     ja_card_follow_coef = config.get("JA_CARD_FOLLOW_COEF", 0.5)
@@ -232,7 +237,7 @@ def make_train_loop(config, env):
             init_pe_critic = jnp.zeros((num_actors, xattn_num_positions, xattn_feat_dim))
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng,
                             init_pe_actor, init_pe_critic)
-        elif ja_card_attn:
+        elif ja_card_partner_feed:
             init_partner_card_attn = jnp.zeros((num_actors, 5))
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng,
                             init_partner_card_attn)
@@ -409,7 +414,7 @@ def make_train_loop(config, env):
                 elif cross_agent_attn:
                     (train_state, env_state, last_obs, last_done, hstate, rng,
                      prev_pe_actor, prev_pe_critic) = runner_state_core
-                elif ja_card_attn:
+                elif ja_card_partner_feed:
                     (train_state, env_state, last_obs, last_done, hstate, rng,
                      prev_partner_card_attn) = runner_state_core
                 else:
@@ -426,7 +431,7 @@ def make_train_loop(config, env):
                     last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
 
                 # Append partner's translated card attention as scalar suffix
-                if ja_card_attn:
+                if ja_card_partner_feed:
                     last_obs_batch = jnp.concatenate(
                         [last_obs_batch, prev_partner_card_attn], axis=-1)
 
@@ -669,7 +674,7 @@ def make_train_loop(config, env):
                     new_pe_critic = jnp.where(pe_done_mask, 0.0, new_pe_critic)
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng,
                                     new_pe_actor, new_pe_critic)
-                elif ja_card_attn:
+                elif ja_card_partner_feed:
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng,
                                     new_partner_card_attn)
                 else:

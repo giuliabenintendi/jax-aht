@@ -115,6 +115,10 @@ def _resolve_eval_inputs(alg_config, inner_env):
     """
     feed_attn = alg_config.get("FEED_OTHER_ATTN", False)
     ja_card_attn = alg_config.get("JA_CARD_ATTN", False)
+    # The 5-dim partner-attention concat only happens when JA_CARD_PARTNER_FEED
+    # is on (default true for BC). Must match training, otherwise the network
+    # gets a malformed input.
+    ja_card_partner_feed = ja_card_attn and alg_config.get("JA_CARD_PARTNER_FEED", True)
     img_h = inner_env.grid_height * inner_env.tile_size
     img_w = inner_env.grid_width * inner_env.tile_size
     feat_h, feat_w = _compute_resnet_output_dims(
@@ -127,7 +131,7 @@ def _resolve_eval_inputs(alg_config, inner_env):
     masks_jax = build_card_masks(img_h, img_w, feat_h, feat_w)
     card_masks = np.asarray(masks_jax)
     feed_dims = (img_h, img_w, feat_h, feat_w) if feed_attn else None
-    masks_for_policy = masks_jax if ja_card_attn else None
+    masks_for_policy = masks_jax if ja_card_partner_feed else None
     return card_masks, feed_dims, masks_for_policy
 
 

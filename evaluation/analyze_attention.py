@@ -380,9 +380,13 @@ def main():
     # gets a malformed input and init/apply shape-checks fail.
     feed_attn = alg_config.get("FEED_OTHER_ATTN", False)
     ja_card_attn = alg_config.get("JA_CARD_ATTN", False)
+    # The 5-dim partner-attention concat only happens when JA_CARD_PARTNER_FEED
+    # is on (default true for BC). Match training, otherwise the network's
+    # input shape is mis-sized.
+    ja_card_partner_feed = ja_card_attn and alg_config.get("JA_CARD_PARTNER_FEED", True)
     feed_attn_dims = None
     ja_card_masks = None
-    if feed_attn or ja_card_attn:
+    if feed_attn or ja_card_partner_feed:
         from agents.ja_image_actor_critic import _compute_resnet_output_dims
         img_h = inner_env.grid_height * inner_env.tile_size
         img_w = inner_env.grid_width * inner_env.tile_size
@@ -395,7 +399,7 @@ def main():
         )
         if feed_attn:
             feed_attn_dims = (img_h, img_w, feat_h, feat_w)
-        if ja_card_attn:
+        if ja_card_partner_feed:
             from agents.ja_utils import build_card_masks
             ja_card_masks = build_card_masks(img_h, img_w, feat_h, feat_w)
 

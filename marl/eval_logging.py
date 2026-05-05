@@ -37,6 +37,9 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
 
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
     ja_card_attn = algorithm_config.get("JA_CARD_ATTN", False)
+    # JA_CARD_PARTNER_FEED gates whether the 5-dim partner attention vector
+    # is appended to the obs at eval time (must match training).
+    ja_card_partner_feed = ja_card_attn and algorithm_config.get("JA_CARD_PARTNER_FEED", True)
     cross_agent_attn = algorithm_config.get("CROSS_AGENT_ATTN", False)
     if cross_agent_attn:
         _xattn_npos = getattr(policy, 'xattn_num_positions', 0)
@@ -98,7 +101,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
                 prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
-            if ja_card_attn:
+            if ja_card_partner_feed:
                 prev_partner_card_attn_0 = jnp.zeros(5)
                 prev_partner_card_attn_1 = jnp.zeros(5)
 
@@ -132,7 +135,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 if feed_attn:
                     obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
                     obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
-                if ja_card_attn:
+                if ja_card_partner_feed:
                     obs_0 = jnp.concatenate([obs_0, prev_partner_card_attn_0])
                     obs_1 = jnp.concatenate([obs_1, prev_partner_card_attn_1])
 
@@ -199,7 +202,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                     prev_attn_0 = attn_0.squeeze()
                     prev_attn_1 = attn_1.squeeze()
 
-                if ja_card_attn:
+                if ja_card_partner_feed:
                     # Compute card-level attention and translate through OP perms
                     a0_sq = attn_0.squeeze()  # (feat_h, feat_w)
                     a1_sq = attn_1.squeeze()
@@ -371,6 +374,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
 
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
     ja_card_attn = algorithm_config.get("JA_CARD_ATTN", False)
+    ja_card_partner_feed = ja_card_attn and algorithm_config.get("JA_CARD_PARTNER_FEED", True)
     feed_attn_dims = None
     if feed_attn or ja_card_attn:
         ev_img_h, ev_img_w, _ = _get_image_dims(env)
@@ -418,7 +422,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 final_params, policy, max_steps,
                 collect_attention=True,
                 feed_other_attn_dims=feed_attn_dims,
-                ja_card_masks=_card_masks_eval if ja_card_attn else None,
+                ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
             )
             all_ep_states.extend(ep_states_i)
             for ak in ("agent_0", "agent_1"):
@@ -486,7 +490,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 _log_card_game_eval_video(
                     inner_env, policy, final_params, max_steps, tag, video_dir, logger,
                     feed_attn_dims=feed_attn_dims,
-                    ja_card_masks=_card_masks_eval if ja_card_attn else None,
+                    ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                     filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
                     num_episodes=sp_video_episodes, fps=3,
                 )
@@ -498,7 +502,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     _log_card_game_per_agent_obs_video(
                         inner_env, policy, final_params, max_steps, tag, video_dir, logger,
                         feed_attn_dims=feed_attn_dims,
-                        ja_card_masks=_card_masks_eval,
+                        ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                         filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
                         num_episodes=sp_video_episodes, fps=3,
                     )
@@ -572,7 +576,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 final_params, policy, max_steps,
                 collect_attention=True,
                 feed_other_attn_dims=feed_attn_dims,
-                ja_card_masks=_card_masks_eval if ja_card_attn else None,
+                ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
             )
             _accumulate_episode(attn_data_extra, ep_states_extra)
 
@@ -624,7 +628,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             inner_env, policy, out["final_params"], max_steps,
             "Eval/XP", xp_video_dir, logger,
             feed_attn_dims=feed_attn_dims,
-            ja_card_masks=_card_masks_eval if ja_card_attn else None,
+            ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
             filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
             num_episodes=xp_video_episodes, fps=3,
         )
