@@ -50,7 +50,6 @@ from agents.initialize_agents import (
 )
 from common.save_load_utils import load_train_run
 from envs import make_env
-from envs.card_game.action_utils import COMM_MESSAGE_BASE
 from envs.card_game.rendering import NUM_CARDS
 from envs.log_wrapper import LogWrapper
 from evaluation.comm_metrics import calc_cic
@@ -66,9 +65,10 @@ def _get_obs_type(alg_config):
 def _policy_step(policy, params, obs_dict, agent_id, hstate, avail, rng):
     """One forward pass of `policy.get_action_value_policy` for a single agent.
 
-    Returns (sampled_action_int, pi_probs[10], new_hstate). The probs vector
-    has zeros on masked actions: messages are masked during decision, picks
-    masked during deliberation.
+    Returns (sampled_action_int, pi_probs[NUM_CARDS], new_hstate). The action
+    space is a unified Discrete(NUM_CARDS): the same emitted value is
+    interpreted as a message during deliberation and as a pick on the
+    decision step, so `pi.probs` is always a NUM_CARDS-dim distribution.
     """
     obs = obs_dict[f"agent_{agent_id}"].reshape(1, 1, -1)
     done = jnp.zeros((1, 1), dtype=bool)
@@ -81,7 +81,7 @@ def _policy_step(policy, params, obs_dict, agent_id, hstate, avail, rng):
         hstate=hstate,
         rng=rng,
     )
-    probs = np.asarray(pi.probs).reshape(-1)  # length 10
+    probs = np.asarray(pi.probs).reshape(-1)
     return int(action.squeeze()), probs, new_hstate
 
 
@@ -112,9 +112,9 @@ def _baseline_pass(env, policy, params, reset_rng, max_steps):
         baseline_actions[c, 0] = a0
         baseline_actions[c, 1] = a1
         if c < K:
-            # Slot c is a deliberation slot: messages occupy actions 5..9.
-            p_c[c, 0] = probs0[NUM_CARDS:NUM_CARDS * 2]
-            p_c[c, 1] = probs1[NUM_CARDS:NUM_CARDS * 2]
+            # Deliberation slot: pi.probs is the speaker's msg distribution.
+            p_c[c, 0] = probs0
+            p_c[c, 1] = probs1
 
         env_act = {"agent_0": jnp.int32(a0), "agent_1": jnp.int32(a1)}
         obs, state, _r, _d, _info = env.step(kstep, state, env_act)
@@ -135,12 +135,13 @@ def _replay_with_intervention(
         Listener LSTM at the start of step k+1 is identical to baseline,
         because nothing observed by either agent up to step k differs from
         baseline (the intervention only affects obs at step k+1).
-      - At step c == k: listener uses baseline action; speaker uses
-        COMM_MESSAGE_BASE + intervened_m. Step env. Now env_state.messages[i]
-        = intervened_m.
+      - At step c == k: listener uses baseline action; speaker's action is
+        forced to `intervened_m`. Step env. Now env_state.messages[i] = m.
       - At step c == k+1: listener observes the modified dot. Forward
-        listener's policy ONCE on this obs. Return its 5-dim post-mask
-        distribution (picks if k+1 is the decision step, msgs otherwise).
+        listener's policy ONCE on this obs. Return its NUM_CARDS-dim
+        distribution (over picks if k+1 is the decision step, over msgs
+        otherwise — both routed by the env's `is_decision`, same
+        Discrete(NUM_CARDS) layout).
 
     The function returns just the listener's 5-dim distribution; we don't
     care about the speaker's distribution past slot k for CIC.
@@ -167,7 +168,7 @@ def _replay_with_intervention(
         a0 = int(baseline_actions[c, 0])
         a1 = int(baseline_actions[c, 1])
         if c == slot_k:
-            forced = COMM_MESSAGE_BASE + int(intervened_m)
+            forced = int(intervened_m)
             if speaker_idx == 0:
                 a0 = forced
             else:
@@ -176,26 +177,13 @@ def _replay_with_intervention(
         obs, state, _r, _d, _info = env.step(kstep, state, env_act)
 
     # Now `obs` is observed BEFORE listener acts at step k+1. Forward the
-    # listener's policy once and read its distribution.
+    # listener's policy once and read its NUM_CARDS-dim distribution.
     avail = env.get_avail_actions(state)
     rng, kl = jax.random.split(rng)
-    _, probs_l, _ = _policy_step(policy, params, obs, listener_idx, (h_0, h_1)[listener_idx], avail, kl)
-
-    # If step k+1 is the decision step, the legal actions are picks 0..4
-    # (msgs 5..9 masked). Otherwise (k+1 < max_steps - 1) it's deliberation
-    # and picks are masked. Either way one of the two halves is all-zero —
-    # we want whichever 5-dim half has nonzero mass.
-    pick_half = probs_l[0:NUM_CARDS]
-    msg_half = probs_l[NUM_CARDS:NUM_CARDS * 2]
-    if pick_half.sum() > msg_half.sum():
-        listener_dist = pick_half
-    else:
-        listener_dist = msg_half
-    # Renormalize defensively (mass should already be 1.0 on whichever half).
-    s = listener_dist.sum()
-    if s > 0:
-        listener_dist = listener_dist / s
-    return listener_dist
+    _, probs_l, _ = _policy_step(
+        policy, params, obs, listener_idx, (h_0, h_1)[listener_idx], avail, kl,
+    )
+    return probs_l
 
 
 def _compute_cic_one_episode(env, policy, params, reset_rng, max_steps):
