@@ -1,12 +1,12 @@
-"""Per-step message-pair joint matrices averaged across seeds (card game).
+"""Per-step message-pair matrices averaged across seeds (card game).
 
 Loads a saved training checkpoint, runs N greedy eval episodes per seed on the
-communication card game, and produces one 5x5 joint heatmap per step:
-  - Deliberation steps t=0..max_steps-2: joint over (agent_0 msg, agent_1 msg).
-  - Decision step t=max_steps-1: joint over (agent_0 pick, agent_1 pick).
-Each seed's per-step 5x5 count matrix is row-normalized (matching the current
-per-seed logging convention), then averaged element-wise across seeds. Labels
-are in ground-truth card space via `_invert_actions` on the wrapper chain.
+communication card game, and produces one 5x5 row-normalized heatmap per step:
+  - Deliberation steps t=0..max_steps-2: P(agent_1 msg | agent_0 msg).
+  - Decision step t=max_steps-1: P(agent_1 pick | agent_0 pick).
+Each seed's per-step 5x5 count matrix is row-normalized, then averaged
+element-wise across seeds. Labels are in ground-truth card space via
+`_invert_actions` on the wrapper chain.
 
 Outputs inside --output-dir:
   step_{t}.png   — 5x5 heatmap for step t
@@ -57,16 +57,6 @@ def _row_normalize(counts: np.ndarray) -> np.ndarray:
     if np.any(nonzero):
         out[nonzero] = out[nonzero] / row_sums[nonzero]
     return out
-
-
-def _joint_normalize(counts: np.ndarray) -> np.ndarray:
-    """Normalize by total count so the matrix sums to 1 (joint P(m0, m1)).
-    Diagonal sum = overall agreement rate; no sparse-row amplification.
-    """
-    total = counts.sum()
-    if total <= 0:
-        return np.zeros_like(counts, dtype=np.float32)
-    return counts.astype(np.float32) / float(total)
 
 
 def _plot_heatmap(ax, mat: np.ndarray, title: str, vmin: float, vmax: float,
@@ -186,16 +176,11 @@ def main():
                     counts[decision_t, seed_idx, int(p0), int(p1)] += 1
         print(f"  [msg_pair] seed {seed_idx}/{num_seeds - 1} done")
 
-    # Two normalizations for comparison:
-    #   row: per-seed row-normalized, then mean across seeds (existing convention)
-    #   joint: per-seed divided by total count (P(m0, m1)), then mean across seeds
+    # Per-seed row-normalized, then mean across seeds.
     avg_row = np.zeros((max_steps, num_cards, num_cards), dtype=np.float32)
-    avg_joint = np.zeros((max_steps, num_cards, num_cards), dtype=np.float32)
     for t in range(max_steps):
         row_stack = np.stack([_row_normalize(counts[t, s]) for s in range(num_seeds)])
         avg_row[t] = row_stack.mean(axis=0)
-        joint_stack = np.stack([_joint_normalize(counts[t, s]) for s in range(num_seeds)])
-        avg_joint[t] = joint_stack.mean(axis=0)
 
     # Per-step agreement rates for the console log, straight from counts.
     print("\nPer-step raw agreement (trace/total, mean across seeds):")
@@ -250,13 +235,8 @@ def main():
 
     _save_all_steps(avg_row, "all_steps.png", vmax=1.0)
 
-    # Joint-normalized combined figure — diagonal sum = overall agreement rate.
-    joint_vmax = max(1.0 / num_cards, float(avg_joint.max()))
-    _save_all_steps(avg_joint, "all_steps_joint.png", vmax=joint_vmax)
-
-    # Confidence-over-time line: per-step diagonal-sum of the joint-normalized
-    # 5x5 (= overall agreement rate at that step). Faded line per seed plus
-    # the across-seed mean overlaid.
+    # Confidence-over-time line: per-step agreement rate (trace / total) computed
+    # straight from the count matrix. Faded line per seed plus across-seed mean.
     per_seed_agreement = np.full((num_seeds, max_steps), np.nan, dtype=np.float32)
     for s in range(num_seeds):
         for t in range(max_steps):
@@ -315,7 +295,6 @@ def main():
     print("  " + header)
     for s in range(num_seeds):
         row_norm_per_step = np.stack([_row_normalize(counts[t, s]) for t in range(max_steps)])
-        joint_per_step = np.stack([_joint_normalize(counts[t, s]) for t in range(max_steps)])
 
         fig, axes = plt.subplots(
             1, max_steps, figsize=(max_steps * 1.9, 2.8), sharey=True,
@@ -330,32 +309,11 @@ def main():
                 0.0, 1.0,
                 show_ylabel=(t == 0), show_xlabel=True, annotate=False,
             )
-        fig.suptitle(f"seed {s} — row-normalized", fontsize=10)
+        fig.suptitle(f"seed {s}", fontsize=10)
         fig.subplots_adjust(right=0.92, wspace=0.25, top=0.85)
         cbar_ax = fig.add_axes([0.935, 0.15, 0.010, 0.65])
         fig.colorbar(im, cax=cbar_ax)
         fig.savefig(per_seed_dir / f"seed_{s}_all_steps.png", bbox_inches="tight")
-        plt.close(fig)
-
-        joint_local_max = max(1.0 / num_cards, float(joint_per_step.max()))
-        fig, axes = plt.subplots(
-            1, max_steps, figsize=(max_steps * 1.9, 2.8), sharey=True,
-        )
-        if max_steps == 1:
-            axes = [axes]
-        im = None
-        for t, ax in enumerate(axes):
-            kind = "pick" if t == max_steps - 1 else "msg"
-            im = _plot_heatmap(
-                ax, joint_per_step[t], f"step {t} ({kind})",
-                0.0, joint_local_max,
-                show_ylabel=(t == 0), show_xlabel=True, annotate=False,
-            )
-        fig.suptitle(f"seed {s} — joint P(m0, m1)", fontsize=10)
-        fig.subplots_adjust(right=0.92, wspace=0.25, top=0.85)
-        cbar_ax = fig.add_axes([0.935, 0.15, 0.010, 0.65])
-        fig.colorbar(im, cax=cbar_ax)
-        fig.savefig(per_seed_dir / f"seed_{s}_all_steps_joint.png", bbox_inches="tight")
         plt.close(fig)
 
         agreements = []
