@@ -714,7 +714,7 @@ def make_train_loop(config, env):
             elif cross_agent_attn:
                 (train_state, env_state, last_obs, last_done, hstate, rng,
                  prev_pe_actor, prev_pe_critic) = runner_state
-            elif ja_card_attn:
+            elif ja_card_partner_feed:
                 (train_state, env_state, last_obs, last_done, hstate, rng,
                  prev_partner_card_attn) = runner_state
             else:
@@ -724,7 +724,7 @@ def make_train_loop(config, env):
             last_done_batch = batchify(last_done, env.agents, num_actors)
             if feed_other_attn:
                 last_obs_batch = _augment_obs_with_attn(last_obs_batch, prev_other_attn)
-            if ja_card_attn:
+            if ja_card_partner_feed:
                 last_obs_batch = jnp.concatenate(
                     [last_obs_batch, prev_partner_card_attn], axis=-1)
             last_avail = jax.vmap(env.get_avail_actions)(env_state)
@@ -858,7 +858,7 @@ def make_train_loop(config, env):
             elif cross_agent_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng,
                                 prev_pe_actor, prev_pe_critic)
-            elif ja_card_attn:
+            elif ja_card_partner_feed:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng,
                                 prev_partner_card_attn)
             else:
