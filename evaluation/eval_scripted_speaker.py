@@ -80,12 +80,19 @@ def _greedy_action(policy, params, obs_dict, agent_id, hstate, avail, rng):
 def _run_scripted_episode(
     env, policy, params, reset_rng, speaker_idx, script, max_steps,
 ):
-    """Run one episode with the speaker scripted; return listener's decision pick.
+    """Run one episode with the speaker scripted; return coordination signal.
 
     `script` is an int array of length max_steps - 1 giving the speaker's
     deliberation action at each slot (k = 0..max_steps-2). The speaker's
-    decision-step action is sampled greedily (we don't use it).
-    Listener acts greedily from policy at every step.
+    decision-step action is sampled greedily (we don't use the value, just
+    let the speaker pick from policy). Listener acts greedily throughout.
+
+    Returns (coord, listener_pick) where:
+      coord: 1 if both agents coordinated on the same canonical color at
+        the decision step (i.e. env's `base_reward` is positive), 0 otherwise.
+      listener_pick: listener's decision-step action in the listener's
+        recoloured frame (informational; not directly comparable to script
+        when OP recolouring is on).
     """
     listener_idx = 1 - speaker_idx
     rng = jax.random.fold_in(reset_rng, 1)
@@ -94,6 +101,7 @@ def _run_scripted_episode(
     h_listener = policy.init_hstate(1)
 
     listener_pick = -1
+    coord = 0
     for c in range(max_steps):
         avail = env.get_avail_actions(state)
         rng, k_s, k_l, k_step = jax.random.split(rng, 4)
@@ -109,38 +117,44 @@ def _run_scripted_episode(
             a_s = int(script[c])
         else:
             a_s = a_s_sampled
-            listener_pick = a_l  # listener's decision-step action = pick
+            listener_pick = a_l  # listener's decision-step action
 
         env_act = {
             f"agent_{speaker_idx}": jnp.int32(a_s),
             f"agent_{listener_idx}": jnp.int32(a_l),
         }
-        obs, state, _r, _d, _info = env.step(k_step, state, env_act)
+        obs, state, reward, _d, info = env.step(k_step, state, env_act)
+        if c == max_steps - 1:
+            # Pull the env's base reward (canonical-frame coordination signal)
+            # rather than the shaped/comm reward; same value for both agents.
+            coord = int(float(info["base_reward"][0]) > 0)
 
-    return listener_pick
+    return coord, listener_pick
 
 
 def _eval_constant(env, policy, params, n_episodes, max_steps, base_seed):
     """For each (direction, X), run N episodes with script = [X]*K.
 
     Returns:
-        counts: (2, NUM_CARDS, NUM_CARDS) int -- counts of listener picks.
-            counts[direction, X, pick] = how often the listener picked `pick`
-            when the speaker (= agent direction) said `X` at every slot.
+        coord_count: (2, NUM_CARDS) int -- # episodes where canonical
+            coordination was achieved when the speaker said X at every slot.
+        n_total: (2, NUM_CARDS) int -- # episodes per cell (= n_episodes).
     """
     K = max_steps - 1
-    counts = np.zeros((2, NUM_CARDS, NUM_CARDS), dtype=np.int64)
+    coord_count = np.zeros((2, NUM_CARDS), dtype=np.int64)
+    n_total = np.zeros((2, NUM_CARDS), dtype=np.int64)
     for direction in range(2):
         for X in range(NUM_CARDS):
             script = np.full(K, X, dtype=np.int32)
             for ep in range(n_episodes):
                 reset_rng = jax.random.PRNGKey(base_seed + ep + X * 1009)
-                pick = _run_scripted_episode(
+                coord, _ = _run_scripted_episode(
                     env, policy, params, reset_rng,
                     speaker_idx=direction, script=script, max_steps=max_steps,
                 )
-                counts[direction, X, pick] += 1
-    return counts
+                coord_count[direction, X] += coord
+                n_total[direction, X] += 1
+    return coord_count, n_total
 
 
 def _eval_switch(env, policy, params, n_episodes, max_steps, base_seed):
@@ -148,19 +162,18 @@ def _eval_switch(env, policy, params, n_episodes, max_steps, base_seed):
     script = [X]*k + [Y]*(K-k) ("stick after switch").
 
     Returns:
-        late: (2, K-1) int -- counts of "listener picked Y" per (direction, k_idx).
-        early: (2, K-1) int -- counts of "listener picked X" per (direction, k_idx).
-        other: (2, K-1) int -- counts of "listener picked something else".
-        total: (2, K-1) int -- total episodes per cell.
-        Note: k_idx 0 corresponds to switch slot k=1 (skipping k=0 which is
+        coord_count: (2, K-1) int -- # episodes where canonical coordination
+            was achieved per (direction, k_idx). Aggregated across all
+            (X, Y!=X) pairs.
+        n_total: (2, K-1) int -- total episodes per cell.
+
+    Note: k_idx 0 corresponds to switch slot k=1 (skipping k=0 which is
         equivalent to constant Y).
     """
     K = max_steps - 1
     n_k = K - 1  # k = 1..K-1 -> n_k slots
-    late = np.zeros((2, n_k), dtype=np.int64)
-    early = np.zeros((2, n_k), dtype=np.int64)
-    other = np.zeros((2, n_k), dtype=np.int64)
-    total = np.zeros((2, n_k), dtype=np.int64)
+    coord_count = np.zeros((2, n_k), dtype=np.int64)
+    n_total = np.zeros((2, n_k), dtype=np.int64)
 
     for direction in range(2):
         for X in range(NUM_CARDS):
@@ -176,37 +189,30 @@ def _eval_switch(env, policy, params, n_episodes, max_steps, base_seed):
                         reset_rng = jax.random.PRNGKey(
                             base_seed + ep + X * 31 + Y * 113 + k * 1097,
                         )
-                        pick = _run_scripted_episode(
+                        coord, _ = _run_scripted_episode(
                             env, policy, params, reset_rng,
                             speaker_idx=direction, script=script,
                             max_steps=max_steps,
                         )
-                        total[direction, k_idx] += 1
-                        if pick == Y:
-                            late[direction, k_idx] += 1
-                        elif pick == X:
-                            early[direction, k_idx] += 1
-                        else:
-                            other[direction, k_idx] += 1
-    return late, early, other, total
+                        coord_count[direction, k_idx] += coord
+                        n_total[direction, k_idx] += 1
+    return coord_count, n_total
 
 
-def _format_constant(counts: np.ndarray) -> str:
-    """Format the per-seed (2, 5, 5) constant counts as follow-rate table."""
-    totals = counts.sum(axis=2, keepdims=True)
-    probs = counts / np.maximum(totals, 1)
-    follow_diag = np.array([probs[d, x, x] for d in range(2) for x in range(NUM_CARDS)]).reshape(2, NUM_CARDS)
+def _format_constant(coord: np.ndarray, total: np.ndarray) -> str:
+    """Format the per-seed (2, NUM_CARDS) coordination-rate table."""
+    rate = coord / np.maximum(total, 1)
     header = "    direction  " + "  ".join(f"X={x}" for x in range(NUM_CARDS)) + "    mean"
     rows = []
     for d, name in enumerate(("agent_0->1", "agent_1->0")):
-        per_X = "  ".join(f"{follow_diag[d, x]:.3f}" for x in range(NUM_CARDS))
-        rows.append(f"    {name}  {per_X}    {follow_diag[d].mean():.3f}")
+        per_X = "  ".join(f"{rate[d, x]:.3f}" for x in range(NUM_CARDS))
+        rows.append(f"    {name}  {per_X}    {rate[d].mean():.3f}")
     return "\n".join((header, *rows))
 
 
-def _format_switch(late: np.ndarray, total: np.ndarray) -> str:
-    """Format follow-late rate per (direction, k)."""
-    rate = late / np.maximum(total, 1)
+def _format_switch(coord: np.ndarray, total: np.ndarray) -> str:
+    """Format coordination rate per (direction, k)."""
+    rate = coord / np.maximum(total, 1)
     n_k = rate.shape[1]
     header = "    k:    " + "  ".join(f"k={k+1}" for k in range(n_k))
     rows = []
@@ -270,14 +276,15 @@ def main() -> None:
         f"  seeds={num_seeds}  episodes/condition={args.num_episodes}"
         f"  max_steps={max_steps}"
         f"  experiment={args.experiment}"
-        f"\n  Listener: greedy. Chance follow rate (constant) = {1.0/NUM_CARDS:.3f}."
+        f"\n  Listener: greedy. Metric: P(canonical coordination) per condition."
+        f"\n  Chance coordination = {1.0/NUM_CARDS:.3f} (1 / NUM_CARDS)."
     )
 
     do_constant = args.experiment in ("constant", "both")
     do_switch = args.experiment in ("switch", "both")
 
-    constant_per_seed = []  # list of (2, 5, 5) count arrays
-    switch_per_seed = []    # list of dicts of (2, K-1) count arrays
+    constant_per_seed = []  # list of (coord_count[2, 5], n_total[2, 5]) tuples
+    switch_per_seed = []    # list of (coord_count[2, K-1], n_total[2, K-1]) tuples
 
     for seed_idx in range(num_seeds):
         params = jax.tree.map(lambda x: x[seed_idx], final_params)
@@ -286,13 +293,14 @@ def main() -> None:
         if do_constant:
             print(f"\n[Seed {seed_idx}] Running constant experiment "
                   f"(2 dirs x {NUM_CARDS} X-values x {args.num_episodes} eps)...")
-            const_counts = _eval_constant(
+            coord_count, n_total = _eval_constant(
                 inner_env, policy, params, args.num_episodes, max_steps, base_seed,
             )
-            constant_per_seed.append(const_counts)
-            print(f"\nSeed {seed_idx}  Constant follow rate "
-                  f"(P[listener pick = X | speaker says X], chance={1.0/NUM_CARDS:.2f}):")
-            print(_format_constant(const_counts))
+            constant_per_seed.append((coord_count, n_total))
+            print(f"\nSeed {seed_idx}  Constant coordination rate "
+                  f"(P[both agents picked same canonical color | speaker says X], "
+                  f"chance={1.0/NUM_CARDS:.2f}):")
+            print(_format_constant(coord_count, n_total))
 
         if do_switch:
             n_pairs = NUM_CARDS * (NUM_CARDS - 1)
@@ -300,54 +308,47 @@ def main() -> None:
             n_eps_total = 2 * n_pairs * n_k_slots * args.num_episodes
             print(f"\n[Seed {seed_idx}] Running switch experiment "
                   f"({n_eps_total} episodes total)...")
-            late, early, other, total = _eval_switch(
+            coord_count, n_total = _eval_switch(
                 inner_env, policy, params, args.num_episodes, max_steps, base_seed + 5_000,
             )
-            switch_per_seed.append(
-                {"late": late, "early": early, "other": other, "total": total}
-            )
-            print(f"\nSeed {seed_idx}  Switch follow-late rate "
-                  f"(P[listener pick = Y | speaker switched X->Y at slot k]):")
-            print(_format_switch(late, total))
+            switch_per_seed.append((coord_count, n_total))
+            print(f"\nSeed {seed_idx}  Switch coordination rate "
+                  f"(P[canonical coordination | speaker switched X->Y at slot k]):")
+            print(_format_switch(coord_count, n_total))
 
     # --- Aggregate across seeds ---
     if do_constant:
-        all_const = np.stack(constant_per_seed, axis=0)  # (S, 2, 5, 5)
-        per_seed_follow = np.zeros((num_seeds, 2, NUM_CARDS), dtype=np.float64)
-        for s in range(num_seeds):
-            totals = all_const[s].sum(axis=2, keepdims=True)
-            probs = all_const[s] / np.maximum(totals, 1)
-            per_seed_follow[s] = np.array(
-                [[probs[d, x, x] for x in range(NUM_CARDS)] for d in range(2)],
-            )
-        mean_follow = per_seed_follow.mean(axis=0)
-        sem_follow = (
-            per_seed_follow.std(axis=0, ddof=1) / math.sqrt(num_seeds)
-            if num_seeds > 1 else np.zeros_like(mean_follow)
+        per_seed_rate = np.zeros((num_seeds, 2, NUM_CARDS), dtype=np.float64)
+        for s, (coord, total) in enumerate(constant_per_seed):
+            per_seed_rate[s] = coord / np.maximum(total, 1)
+        mean_rate = per_seed_rate.mean(axis=0)
+        sem_rate = (
+            per_seed_rate.std(axis=0, ddof=1) / math.sqrt(num_seeds)
+            if num_seeds > 1 else np.zeros_like(mean_rate)
         )
-        print(f"\nAggregate Constant follow rate across {num_seeds} seeds (mean ± SEM):")
+        print(f"\nAggregate Constant coordination rate across {num_seeds} seeds (mean ± SEM):")
         for d, name in enumerate(("agent_0->1", "agent_1->0")):
             parts = [
-                f"{mean_follow[d, x]:.3f}±{sem_follow[d, x]:.3f}"
+                f"{mean_rate[d, x]:.3f}±{sem_rate[d, x]:.3f}"
                 for x in range(NUM_CARDS)
             ]
             print(f"  {name}: " + "  ".join(parts)
-                  + f"    mean={mean_follow[d].mean():.3f}")
+                  + f"    mean={mean_rate[d].mean():.3f}")
 
     if do_switch:
         n_k = max_steps - 2
-        per_seed_late = np.zeros((num_seeds, 2, n_k), dtype=np.float64)
-        for s, dat in enumerate(switch_per_seed):
-            per_seed_late[s] = dat["late"] / np.maximum(dat["total"], 1)
-        mean_late = per_seed_late.mean(axis=0)
-        sem_late = (
-            per_seed_late.std(axis=0, ddof=1) / math.sqrt(num_seeds)
-            if num_seeds > 1 else np.zeros_like(mean_late)
+        per_seed_rate = np.zeros((num_seeds, 2, n_k), dtype=np.float64)
+        for s, (coord, total) in enumerate(switch_per_seed):
+            per_seed_rate[s] = coord / np.maximum(total, 1)
+        mean_rate = per_seed_rate.mean(axis=0)
+        sem_rate = (
+            per_seed_rate.std(axis=0, ddof=1) / math.sqrt(num_seeds)
+            if num_seeds > 1 else np.zeros_like(mean_rate)
         )
-        print(f"\nAggregate Switch follow-late rate across {num_seeds} seeds (mean ± SEM):")
+        print(f"\nAggregate Switch coordination rate across {num_seeds} seeds (mean ± SEM):")
         for d, name in enumerate(("0->1", "1->0")):
             parts = [
-                f"{mean_late[d, k]:.3f}±{sem_late[d, k]:.3f}"
+                f"{mean_rate[d, k]:.3f}±{sem_rate[d, k]:.3f}"
                 for k in range(n_k)
             ]
             print(f"  {name}: " + "  ".join(parts))
@@ -357,15 +358,19 @@ def main() -> None:
         out.mkdir(parents=True, exist_ok=True)
         slug = label.replace("/", "_").replace(" ", "_")
         if do_constant:
-            np.save(out / f"scripted_constant_{slug}.npy", np.stack(constant_per_seed))
-            print(f"\nSaved {out / f'scripted_constant_{slug}.npy'}")
+            coord_arr = np.stack([c for c, _ in constant_per_seed])
+            total_arr = np.stack([t for _, t in constant_per_seed])
+            np.savez(
+                out / f"scripted_constant_{slug}.npz",
+                coord=coord_arr, total=total_arr,
+            )
+            print(f"\nSaved {out / f'scripted_constant_{slug}.npz'}")
         if do_switch:
-            late_arr = np.stack([d["late"] for d in switch_per_seed])
-            early_arr = np.stack([d["early"] for d in switch_per_seed])
-            total_arr = np.stack([d["total"] for d in switch_per_seed])
+            coord_arr = np.stack([c for c, _ in switch_per_seed])
+            total_arr = np.stack([t for _, t in switch_per_seed])
             np.savez(
                 out / f"scripted_switch_{slug}.npz",
-                late=late_arr, early=early_arr, total=total_arr,
+                coord=coord_arr, total=total_arr,
             )
             print(f"Saved {out / f'scripted_switch_{slug}.npz'}")
 
