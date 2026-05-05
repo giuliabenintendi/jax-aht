@@ -57,9 +57,15 @@ from omegaconf import OmegaConf
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent
 from common.save_load_utils import load_train_run
 from envs import make_env
-from envs.card_game.rendering import NUM_CARDS
+from envs.card_game.rendering import CARD_COLORS, NUM_CARDS
 from envs.log_wrapper import LogWrapper
 from evaluation.analyze_attention import _get_per_agent_info, _render_own_frame
+
+
+def _gt_color(value: int):
+    """Matplotlib RGB tuple in [0, 1] for a canonical card value."""
+    rgb = np.asarray(CARD_COLORS)[value]
+    return tuple(float(c) / 255.0 for c in rgb)
 
 
 def _get_obs_type(alg_config):
@@ -178,6 +184,8 @@ def _render_combined(
         else:
             speaker_value = int(result["ep_messages"][t][speaker_idx])
             listener_value = int(result["ep_messages"][t][listener_idx])
+        gt_speaker = int(result["speaker_inv"][speaker_value])
+        gt_listener = int(result["listener_inv"][listener_value])
 
         # Speaker (top)
         cps, pps, recs = _get_per_agent_info(state, speaker_idx)
@@ -196,23 +204,21 @@ def _render_combined(
         step_label = "decision" if is_decision else f"step {t}"
         axes[0, t].set_title(step_label, fontsize=9)
 
-        # Bottom labels
-        sent_label = (
-            f"sent: {speaker_value}" if not is_decision
-            else f"pick: {speaker_value}"
-        )
+        # Bottom labels — display ground-truth canonical values (after OP
+        # inverse-mapping) so speaker and listener emissions are directly
+        # comparable column-by-column. Label is coloured with the canonical
+        # card colour to make matches visible at a glance.
+        sent_prefix = "pick GT" if is_decision else "GT"
+        sent_label = f"{sent_prefix}: {gt_speaker}"
         if mode == "switch" and not is_decision:
             tag = "X" if t < switch_k else "Y"
-            sent_label = f"sent: {speaker_value} ({tag})"
-        axes[0, t].set_xlabel(sent_label, fontsize=9)
+            sent_label = f"GT: {gt_speaker} ({tag})"
+        axes[0, t].set_xlabel(sent_label, fontsize=10,
+                              color=_gt_color(gt_speaker), fontweight="bold")
 
-        listener_label = (
-            f"sent: {listener_value}" if not is_decision
-            else f"pick: {listener_value}"
-        )
-        axes[1, t].set_xlabel(listener_label, fontsize=9, fontweight=(
-            "bold" if is_decision else "normal"
-        ))
+        listener_label = f"{sent_prefix}: {gt_listener}"
+        axes[1, t].set_xlabel(listener_label, fontsize=10,
+                              color=_gt_color(gt_listener), fontweight="bold")
 
     # Switch markers
     if mode == "switch":
