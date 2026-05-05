@@ -330,7 +330,9 @@ def main():
     parser.add_argument("--checkpoint", required=True,
                         help="Path to saved train run checkpoint directory")
     parser.add_argument("--seed-idx", type=int, default=0,
-                        help="Which seed to analyze (0..NUM_SEEDS-1)")
+                        help="Which seed to analyze (0..NUM_SEEDS-1). Ignored when --all-seeds is set.")
+    parser.add_argument("--all-seeds", action="store_true",
+                        help="Analyze every seed in the checkpoint; output goes to {output_dir}/seed_{i}/ per seed.")
     parser.add_argument("--num-episodes", type=int, default=5)
     parser.add_argument("--output-dir", default="plots/card_game")
     parser.add_argument("--episode-rng-base", type=int, default=100,
@@ -375,56 +377,67 @@ def main():
     run_data = load_train_run(str(ckpt_path))
     final_params = run_data["final_params"]
     num_seeds = jax.tree.leaves(final_params)[0].shape[0]
-    if args.seed_idx >= num_seeds:
-        raise ValueError(
-            f"seed_idx={args.seed_idx} out of range for {num_seeds} seeds"
-        )
-    params = jax.tree.map(lambda x: x[args.seed_idx], final_params)
+
+    if args.all_seeds:
+        seed_indices = list(range(num_seeds))
+    else:
+        if args.seed_idx >= num_seeds:
+            raise ValueError(
+                f"seed_idx={args.seed_idx} out of range for {num_seeds} seeds"
+            )
+        seed_indices = [args.seed_idx]
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loaded checkpoint from {ckpt_path}")
-    print(f"  seeds in checkpoint: {num_seeds}, analyzing seed {args.seed_idx}")
+    print(f"  seeds in checkpoint: {num_seeds}, analyzing seeds: {seed_indices}")
     print(f"  max_steps: {max_steps}")
     print(f"  saving to: {output_dir.resolve()}")
 
-    for ep in range(args.num_episodes):
-        ep_rng = jax.random.PRNGKey(args.episode_rng_base + ep)
-        ep_states, attn_maps, ep_actions, ep_messages = run_episode_with_states(
-            ep_rng, inner_env, params, policy, params, policy, max_steps,
-            collect_attention=True,
-        )
+    for seed_idx in seed_indices:
+        params = jax.tree.map(lambda x, _i=seed_idx: x[_i], final_params)
+        seed_out = output_dir / f"seed_{seed_idx}" if args.all_seeds else output_dir
+        seed_out.mkdir(parents=True, exist_ok=True)
+        print(f"\n[seed {seed_idx}] -> {seed_out.resolve()}")
 
-        ep_dir = output_dir / f"episode_{ep}"
-        ep_dir.mkdir(exist_ok=True)
-
-        for agent_idx, (agent_key, cmap) in enumerate([
-            ("agent_0", "Oranges"),
-            ("agent_1", "RdPu"),
-        ]):
-            _render_obs_sequence(
-                ep_states, ep_actions, ep_messages, agent_idx,
-                output_path=ep_dir / f"{agent_key}_obs.png",
-                max_steps=max_steps,
-            )
-            _render_attention_sequence(
-                attn_maps, ep_states, ep_actions, ep_messages,
-                agent_idx, agent_key, cmap,
-                output_path=ep_dir / f"{agent_key}_attention.png",
-                max_steps=max_steps,
+        for ep in range(args.num_episodes):
+            ep_rng = jax.random.PRNGKey(args.episode_rng_base + ep)
+            ep_states, attn_maps, ep_actions, ep_messages = run_episode_with_states(
+                ep_rng, inner_env, params, policy, params, policy, max_steps,
+                collect_attention=True,
             )
 
-        summary = ep_dir / "summary.txt"
-        with summary.open("w") as f:
-            f.write(f"Episode {ep}\n")
-            f.write(f"  max_steps: {max_steps}\n")
-            f.write(f"  ep_actions (GT): {ep_actions}\n")
-            f.write(f"  ep_messages (GT): {ep_messages}\n")
+            ep_dir = seed_out / f"episode_{ep}"
+            ep_dir.mkdir(exist_ok=True)
 
-        print(f"  episode {ep}: saved to {ep_dir}/")
+            for agent_idx, (agent_key, cmap) in enumerate([
+                ("agent_0", "Oranges"),
+                ("agent_1", "RdPu"),
+            ]):
+                _render_obs_sequence(
+                    ep_states, ep_actions, ep_messages, agent_idx,
+                    output_path=ep_dir / f"{agent_key}_obs.png",
+                    max_steps=max_steps,
+                )
+                _render_attention_sequence(
+                    attn_maps, ep_states, ep_actions, ep_messages,
+                    agent_idx, agent_key, cmap,
+                    output_path=ep_dir / f"{agent_key}_attention.png",
+                    max_steps=max_steps,
+                )
 
-    print(f"Done. Figures in {output_dir.resolve()}/")
+            summary = ep_dir / "summary.txt"
+            with summary.open("w") as f:
+                f.write(f"Episode {ep}\n")
+                f.write(f"  seed_idx: {seed_idx}\n")
+                f.write(f"  max_steps: {max_steps}\n")
+                f.write(f"  ep_actions (GT): {ep_actions}\n")
+                f.write(f"  ep_messages (GT): {ep_messages}\n")
+
+            print(f"  seed {seed_idx} episode {ep}: saved to {ep_dir}/")
+
+    print(f"\nDone. Figures in {output_dir.resolve()}/")
 
 
 if __name__ == "__main__":
