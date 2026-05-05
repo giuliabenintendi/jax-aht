@@ -374,6 +374,31 @@ def main():
     rng = jax.random.PRNGKey(0)
     policy, _ = init_fn(alg_config, env, rng)
 
+    # JA_CARD_ATTN policies expect a 5-dim translated-partner-attention vector
+    # appended to the obs; FEED_OTHER_ATTN policies expect a 4th obs channel.
+    # Both must be passed through to run_episode_with_states or the policy
+    # gets a malformed input and init/apply shape-checks fail.
+    feed_attn = alg_config.get("FEED_OTHER_ATTN", False)
+    ja_card_attn = alg_config.get("JA_CARD_ATTN", False)
+    feed_attn_dims = None
+    ja_card_masks = None
+    if feed_attn or ja_card_attn:
+        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        img_h = inner_env.grid_height * inner_env.tile_size
+        img_w = inner_env.grid_width * inner_env.tile_size
+        feat_h, feat_w = _compute_resnet_output_dims(
+            img_h, img_w,
+            stride=alg_config.get("CONV_STRIDE", 2),
+            kernel_size=alg_config.get("CONV_KERNEL_SIZE", 3),
+            padding=alg_config.get("CONV_PADDING", "SAME"),
+            num_blocks=alg_config.get("CONV_NUM_BLOCKS", 4),
+        )
+        if feed_attn:
+            feed_attn_dims = (img_h, img_w, feat_h, feat_w)
+        if ja_card_attn:
+            from agents.ja_utils import build_card_masks
+            ja_card_masks = build_card_masks(img_h, img_w, feat_h, feat_w)
+
     run_data = load_train_run(str(ckpt_path))
     final_params = run_data["final_params"]
     num_seeds = jax.tree.leaves(final_params)[0].shape[0]
@@ -406,6 +431,8 @@ def main():
             ep_states, attn_maps, ep_actions, ep_messages = run_episode_with_states(
                 ep_rng, inner_env, params, policy, params, policy, max_steps,
                 collect_attention=True,
+                feed_other_attn_dims=feed_attn_dims,
+                ja_card_masks=ja_card_masks,
             )
 
             ep_dir = seed_out / f"episode_{ep}"
