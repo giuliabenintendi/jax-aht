@@ -103,6 +103,8 @@ def main():
     parser.add_argument("--output-dir", default="plots/card_game")
     parser.add_argument("--episode-rng-base", type=int, default=2000,
                         help="Base seed; per-episode key = base + seed*10000 + ep")
+    parser.add_argument("--confidence-threshold", type=float, default=0.7,
+                        help="Agreement rate at which to mark 'confidence reached' on agreement_line.png")
     args = parser.parse_args()
 
     ckpt_path = Path(args.checkpoint).resolve()
@@ -271,6 +273,25 @@ def main():
                 linewidth=0.8, marker="o", markersize=3, label=label)
     ax.plot(xs, mean_agreement, color="C0", linewidth=2.0,
             marker="o", markersize=5, label="mean across seeds")
+
+    # "Confidence reached" indicator: dashed horizontal at threshold + dotted
+    # vertical at the first step where the across-seed mean crosses it.
+    thr = float(args.confidence_threshold)
+    ax.axhline(thr, color="crimson", linestyle="--", linewidth=1.0, alpha=0.7,
+               label=f"threshold = {thr:.2f}")
+    crossing = next((int(t) for t, v in enumerate(mean_agreement) if not np.isnan(v) and v >= thr), None)
+    if crossing is not None:
+        ax.axvline(crossing, color="crimson", linestyle=":", linewidth=1.0, alpha=0.7)
+        ax.annotate(
+            f"first crossing\nstep {crossing}",
+            xy=(crossing, thr), xytext=(crossing + 0.15, thr - 0.18),
+            fontsize=7, color="crimson",
+            arrowprops=dict(arrowstyle="-", color="crimson", lw=0.7, alpha=0.7),
+        )
+        print(f"[confidence] mean agreement first reaches {thr:.2f} at step {crossing}")
+    else:
+        print(f"[confidence] mean agreement never reaches {thr:.2f} within {max_steps} steps")
+
     ax.set_xticks(xs)
     ax.set_xticklabels(
         [f"step {t}\n({'pick' if t == max_steps - 1 else 'msg'})" for t in xs],
