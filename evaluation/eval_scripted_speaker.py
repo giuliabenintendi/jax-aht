@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 from pathlib import Path
 
 import jax
@@ -44,23 +43,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from omegaconf import OmegaConf
 
-from agents.initialize_agents import (
-    initialize_ja_dual_image_agent,
-    initialize_ja_image_agent,
-)
-from common.save_load_utils import load_train_run
-from envs import make_env
 from envs.card_game.rendering import NUM_CARDS
-from envs.log_wrapper import LogWrapper
-
-
-def _get_obs_type(alg_config):
-    return alg_config.get(
-        "OBS_TYPE",
-        alg_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"),
-    )
+from evaluation._card_game_utils import load_card_game_eval
 
 
 def _greedy_action(policy, params, obs_dict, agent_id, hstate, avail, rng):
@@ -372,52 +357,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    run_dir = os.path.dirname(args.checkpoint)
-    cfg = OmegaConf.to_container(
-        OmegaConf.load(os.path.join(run_dir, ".hydra", "config.yaml")), resolve=True,
-    )
-    alg_config = cfg["algorithm"]
-
-    env_name = alg_config["ENV_NAME"]
-    env_kwargs = dict(alg_config.get("ENV_KWARGS", {}))
-    if alg_config.get("COMMUNICATION", False):
-        env_kwargs["communication"] = True
-    if not env_kwargs.get("communication", False):
+    ev = load_card_game_eval(args.checkpoint)
+    if not ev.env_kwargs.get("communication", False):
         raise SystemExit(
-            "Checkpoint was trained without communication; scripted-speaker"
-            " probe is undefined."
+            "Checkpoint was trained without communication; scripted-speaker probe is undefined."
         )
-    env_kwargs["scramble_partner_msg"] = False
 
-    env = make_env(env_name, env_kwargs)
-    inner_env = env
-    env_wrapped = LogWrapper(env)
-
-    obs_type = _get_obs_type(alg_config)
-    use_dual = alg_config.get("USE_DUAL_CRITIC", False)
-    if obs_type in ("image", "fov"):
-        init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
-    else:
-        from agents.initialize_agents import initialize_ja_agent
-        init_fn = initialize_ja_agent
-
-    rng = jax.random.PRNGKey(0)
-    policy, _ = init_fn(alg_config, env_wrapped, rng)
-
-    run_data = load_train_run(args.checkpoint)
-    final_params = run_data["final_params"]
-    num_seeds = jax.tree.leaves(final_params)[0].shape[0]
-    max_steps = int(env_kwargs.get("max_steps", 8))
-
-    label = cfg.get("label", "(unlabeled)")
     print(
         f"\nCheckpoint: {args.checkpoint}"
-        f"\n  label={label}  comm=on  scramble_eval=False"
-        f"  seeds={num_seeds}  episodes/condition={args.num_episodes}"
-        f"  max_steps={max_steps}"
+        f"\n  label={ev.label}  comm=on  scramble_eval=False  best_idx={ev.best_idx.tolist()}"
+        f"\n  seeds={ev.num_seeds}  episodes/condition={args.num_episodes}"
+        f"  max_steps={ev.max_steps}"
         f"  experiment={args.experiment}"
-        f"\n  Listener: greedy. Metric: P(canonical coordination) per condition."
-        f"\n  Chance coordination = {1.0/NUM_CARDS:.3f} (1 / NUM_CARDS)."
+        f"\n  Listener: greedy. Chance = {1.0/NUM_CARDS:.3f} (1 / NUM_CARDS)."
     )
 
     do_constant = args.experiment in ("constant", "both")
@@ -426,15 +378,15 @@ def main() -> None:
     constant_per_seed = []  # list of (coord, follow, total) triples, each (2, 5)
     switch_per_seed = []    # list of (coord, follow, total) triples, each (2, K-1)
 
-    for seed_idx in range(num_seeds):
-        params = jax.tree.map(lambda x: x[seed_idx], final_params)
+    for seed_idx in range(ev.num_seeds):
+        params = jax.tree.map(lambda x: x[seed_idx], ev.params)
         base_seed = 8_000 + seed_idx * 100_000
 
         if do_constant:
             print(f"\n[Seed {seed_idx}] Running constant experiment "
                   f"(2 dirs x {NUM_CARDS} X-values x {args.num_episodes} eps)...")
             coord_count, follow_count, n_total = _eval_constant(
-                inner_env, policy, params, args.num_episodes, max_steps, base_seed,
+                ev.env, ev.policy, params, args.num_episodes, ev.max_steps, base_seed,
             )
             constant_per_seed.append((coord_count, follow_count, n_total))
             print(f"\nSeed {seed_idx}  Constant FOLLOW rate "
@@ -446,12 +398,12 @@ def main() -> None:
 
         if do_switch:
             n_pairs = NUM_CARDS * (NUM_CARDS - 1)
-            n_k_slots = max_steps - 2
+            n_k_slots = ev.max_steps - 2
             n_eps_total = 2 * n_pairs * n_k_slots * args.num_episodes
             print(f"\n[Seed {seed_idx}] Running switch experiment "
                   f"({n_eps_total} episodes total)...")
             coord_count, follow_count, n_total = _eval_switch(
-                inner_env, policy, params, args.num_episodes, max_steps, base_seed + 5_000,
+                ev.env, ev.policy, params, args.num_episodes, ev.max_steps, base_seed + 5_000,
             )
             switch_per_seed.append((coord_count, follow_count, n_total))
             print(f"\nSeed {seed_idx}  Switch FOLLOW(Y) rate "
@@ -461,13 +413,6 @@ def main() -> None:
             print(_format_switch(coord_count, n_total))
 
     # --- Aggregate across seeds ---
-    def _aggregate(per_seed, n_axis: int):
-        """Returns (per_seed_rate, mean, sem) for a given metric per seed."""
-        rates = np.stack(per_seed) / np.maximum(np.stack(
-            [t for *_, t in [s for s in per_seed]]
-        ), 1)
-        return rates
-
     constant_follow_rate = constant_coord_rate = None
     switch_follow_rate = switch_coord_rate = None
 
@@ -478,32 +423,31 @@ def main() -> None:
         constant_follow_rate = np.stack(
             [f / np.maximum(t, 1) for _, f, t in constant_per_seed]
         )
-        print(f"\nAggregate Constant FOLLOW rate across {num_seeds} seeds (mean ± SEM):")
+        print(f"\nAggregate Constant FOLLOW rate across {ev.num_seeds} seeds (mean ± SEM):")
         mean_f = constant_follow_rate.mean(axis=0)
-        sem_f = (constant_follow_rate.std(axis=0, ddof=1) / math.sqrt(num_seeds)
-                 if num_seeds > 1 else np.zeros_like(mean_f))
+        sem_f = (constant_follow_rate.std(axis=0, ddof=1) / math.sqrt(ev.num_seeds)
+                 if ev.num_seeds > 1 else np.zeros_like(mean_f))
         for d, name in enumerate(("agent_0->1", "agent_1->0")):
             parts = [f"{mean_f[d, x]:.3f}±{sem_f[d, x]:.3f}" for x in range(NUM_CARDS)]
             print(f"  {name}: " + "  ".join(parts)
                   + f"    mean={mean_f[d].mean():.3f}")
 
     if do_switch:
-        n_k = max_steps - 2
+        n_k = ev.max_steps - 2
         switch_coord_rate = np.stack(
             [c / np.maximum(t, 1) for c, _, t in switch_per_seed]
         )
         switch_follow_rate = np.stack(
             [f / np.maximum(t, 1) for _, f, t in switch_per_seed]
         )
-        print(f"\nAggregate Switch FOLLOW(Y) rate across {num_seeds} seeds (mean ± SEM):")
+        print(f"\nAggregate Switch FOLLOW(Y) rate across {ev.num_seeds} seeds (mean ± SEM):")
         mean_f = switch_follow_rate.mean(axis=0)
-        sem_f = (switch_follow_rate.std(axis=0, ddof=1) / math.sqrt(num_seeds)
-                 if num_seeds > 1 else np.zeros_like(mean_f))
+        sem_f = (switch_follow_rate.std(axis=0, ddof=1) / math.sqrt(ev.num_seeds)
+                 if ev.num_seeds > 1 else np.zeros_like(mean_f))
         for d, name in enumerate(("0->1", "1->0")):
             parts = [f"{mean_f[d, k]:.3f}±{sem_f[d, k]:.3f}" for k in range(n_k)]
             print(f"  {name}: " + "  ".join(parts))
 
-        # "Last accepted switch" = max k where mean FOLLOW rate >= threshold.
         threshold = args.accept_threshold
         ks = np.arange(1, n_k + 1)
         for d, name in enumerate(("0->1", "1->0")):
@@ -515,7 +459,7 @@ def main() -> None:
     if args.output_dir:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        slug = label.replace("/", "_").replace(" ", "_")
+        slug = ev.label.replace("/", "_").replace(" ", "_")
         if do_constant:
             np.savez(
                 out / f"scripted_constant_{slug}.npz",
@@ -525,7 +469,7 @@ def main() -> None:
             )
             print(f"\nSaved {out / f'scripted_constant_{slug}.npz'}")
             _plot_constant(constant_follow_rate, constant_coord_rate,
-                           out / f"constant_follow_{slug}.png", label)
+                           out / f"constant_follow_{slug}.png", ev.label)
             print(f"Saved {out / f'constant_follow_{slug}.png'}")
         if do_switch:
             np.savez(
@@ -536,7 +480,7 @@ def main() -> None:
             )
             print(f"Saved {out / f'scripted_switch_{slug}.npz'}")
             _plot_switch(switch_follow_rate, switch_coord_rate,
-                         out / f"switch_follow_{slug}.png", label,
+                         out / f"switch_follow_{slug}.png", ev.label,
                          threshold=args.accept_threshold)
             print(f"Saved {out / f'switch_follow_{slug}.png'}")
 

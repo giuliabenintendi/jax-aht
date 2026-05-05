@@ -15,30 +15,15 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 from pathlib import Path
 
 import jax
 import numpy as np
-from omegaconf import OmegaConf
 
-from agents.initialize_agents import (
-    initialize_ja_dual_image_agent,
-    initialize_ja_image_agent,
-)
-from common.save_load_utils import load_train_run
-from envs import make_env
 from envs.card_game.rendering import NUM_CARDS
-from envs.log_wrapper import LogWrapper
+from evaluation._card_game_utils import load_card_game_eval
 from evaluation.comm_metrics import compute_sc_slotwise
 from evaluation.vis_episodes import run_episode_with_states
-
-
-def _get_obs_type(alg_config):
-    return alg_config.get(
-        "OBS_TYPE",
-        alg_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"),
-    )
 
 
 def _collect_rollouts(
@@ -79,70 +64,35 @@ def main() -> None:
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
 
-    run_dir = os.path.dirname(args.checkpoint)
-    cfg = OmegaConf.to_container(
-        OmegaConf.load(os.path.join(run_dir, ".hydra", "config.yaml")), resolve=True,
-    )
-    alg_config = cfg["algorithm"]
+    ev = load_card_game_eval(args.checkpoint)
+    if not ev.env_kwargs.get("communication", False):
+        raise SystemExit("Checkpoint was trained without communication; SC is undefined.")
 
-    env_name = alg_config["ENV_NAME"]
-    env_kwargs = dict(alg_config.get("ENV_KWARGS", {}))
-    if alg_config.get("COMMUNICATION", False):
-        env_kwargs["communication"] = True
-    if not env_kwargs.get("communication", False):
-        raise SystemExit(
-            "This checkpoint was trained without communication; SC is undefined."
-        )
-
-    env = make_env(env_name, env_kwargs)
-    inner_env = env
-    env_wrapped = LogWrapper(env)
-
-    obs_type = _get_obs_type(alg_config)
-    use_dual = alg_config.get("USE_DUAL_CRITIC", False)
-    if obs_type in ("image", "fov"):
-        init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
-    else:
-        from agents.initialize_agents import initialize_ja_agent
-        init_fn = initialize_ja_agent
-
-    rng = jax.random.PRNGKey(0)
-    policy, _ = init_fn(alg_config, env_wrapped, rng)
-
-    run_data = load_train_run(args.checkpoint)
-    final_params = run_data["final_params"]
-    num_seeds = jax.tree.leaves(final_params)[0].shape[0]
-    max_steps = int(env_kwargs.get("max_steps", 8))
-
-    scramble = env_kwargs.get("scramble_partner_msg", False)
-    label = cfg.get("label", "(unlabeled)")
     print(
         f"\nCheckpoint: {args.checkpoint}"
-        f"\n  label={label}  comm=on  scramble={scramble}"
-        f"  seeds={num_seeds}  episodes/seed={args.num_episodes}"
-        f"  max_steps={max_steps}  greedy={args.greedy}"
+        f"\n  label={ev.label}  comm=on  best_per_seed=YES  best_idx={ev.best_idx.tolist()}"
+        f"\n  seeds={ev.num_seeds}  episodes/seed={args.num_episodes}"
+        f"  max_steps={ev.max_steps}  greedy={args.greedy}"
     )
 
-    n_messages = NUM_CARDS
-    n_picks = NUM_CARDS
-
     all_sc = []
-    for seed_idx in range(num_seeds):
-        params = jax.tree.map(lambda x: x[seed_idx], final_params)
+    for seed_idx in range(ev.num_seeds):
+        params = jax.tree.map(lambda x: x[seed_idx], ev.params)
         ep_messages, ep_actions = _collect_rollouts(
-            inner_env, policy, params, args.num_episodes, max_steps,
+            ev.env, ev.policy, params, args.num_episodes, ev.max_steps,
             seed_offset=seed_idx, greedy=args.greedy,
         )
-        sc = compute_sc_slotwise(ep_messages, ep_actions, n_messages, n_picks)
+        sc = compute_sc_slotwise(ep_messages, ep_actions, NUM_CARDS, NUM_CARDS)
         all_sc.append(sc)
         print(f"\nSeed {seed_idx}  SC (nats, max={math.log(NUM_CARDS):.3f}):")
         print(_format_sc_grid(sc))
 
-    all_sc_arr = np.stack(all_sc, axis=0)  # (num_seeds, 2, K)
+    all_sc_arr = np.stack(all_sc, axis=0)
     mean_sc = all_sc_arr.mean(axis=0)
-    sem_sc = all_sc_arr.std(axis=0, ddof=1) / math.sqrt(num_seeds) if num_seeds > 1 else np.zeros_like(mean_sc)
+    sem_sc = (all_sc_arr.std(axis=0, ddof=1) / math.sqrt(ev.num_seeds)
+              if ev.num_seeds > 1 else np.zeros_like(mean_sc))
 
-    print(f"\nAggregate across {num_seeds} seeds (mean ± SEM):")
+    print(f"\nAggregate across {ev.num_seeds} seeds (mean ± SEM):")
     K = mean_sc.shape[1]
     for agent_idx in range(2):
         parts = [
@@ -154,7 +104,7 @@ def main() -> None:
     if args.output_dir:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        slug = label.replace("/", "_").replace(" ", "_")
+        slug = ev.label.replace("/", "_").replace(" ", "_")
         np.save(out / f"sc_{slug}.npy", all_sc_arr)
         print(f"\nSaved {out / f'sc_{slug}.npy'}  shape={all_sc_arr.shape}")
 

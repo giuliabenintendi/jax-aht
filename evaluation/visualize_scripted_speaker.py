@@ -52,13 +52,9 @@ import matplotlib.pyplot as plt
 plt.rcParams["figure.dpi"] = 150
 plt.rcParams["savefig.dpi"] = 150
 import numpy as np
-from omegaconf import OmegaConf
 
-from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent
-from common.save_load_utils import load_train_run
-from envs import make_env
 from envs.card_game.rendering import CARD_COLORS, NUM_CARDS
-from envs.log_wrapper import LogWrapper
+from evaluation._card_game_utils import load_card_game_eval
 from evaluation.analyze_attention import _get_per_agent_info, _render_own_frame
 
 
@@ -66,13 +62,6 @@ def _gt_color(value: int):
     """Matplotlib RGB tuple in [0, 1] for a canonical card value."""
     rgb = np.asarray(CARD_COLORS)[value]
     return tuple(float(c) / 255.0 for c in rgb)
-
-
-def _get_obs_type(alg_config):
-    return alg_config.get(
-        "OBS_TYPE",
-        alg_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"),
-    )
 
 
 def _greedy_action(policy, params, obs_dict, agent_id, hstate, avail, rng):
@@ -315,43 +304,17 @@ def main() -> None:
         mode = "constant"
         x_values = [int(x) for x in args.x_values.split(",") if x.strip()]
 
-    run_dir = os.path.dirname(args.checkpoint)
-    cfg = OmegaConf.to_container(
-        OmegaConf.load(os.path.join(run_dir, ".hydra", "config.yaml")),
-        resolve=True,
-    )
-    alg_config = cfg["algorithm"]
-    env_kwargs = dict(alg_config.get("ENV_KWARGS", {}))
-    if alg_config.get("COMMUNICATION", False):
-        env_kwargs["communication"] = True
-    if not env_kwargs.get("communication", False):
+    ev = load_card_game_eval(args.checkpoint)
+    if not ev.env_kwargs.get("communication", False):
         raise SystemExit(
             "Checkpoint trained without communication; scripted-speaker probe undefined."
         )
-    env_kwargs["scramble_partner_msg"] = False
-
-    env = make_env(alg_config["ENV_NAME"], env_kwargs)
-    inner_env = env
-    env_wrapped = LogWrapper(env)
-
-    obs_type = _get_obs_type(alg_config)
-    init_fn = (
-        initialize_ja_image_agent if obs_type in ("image", "fov")
-        else initialize_ja_agent
-    )
-    policy, _ = init_fn(alg_config, env_wrapped, jax.random.PRNGKey(0))
-
-    run_data = load_train_run(args.checkpoint)
-    final_params = run_data["final_params"]
-    num_seeds = jax.tree.leaves(final_params)[0].shape[0]
-    if args.seed_idx >= num_seeds:
+    if args.seed_idx >= ev.num_seeds:
         raise ValueError(
-            f"seed_idx={args.seed_idx} out of range for {num_seeds} seeds"
+            f"seed_idx={args.seed_idx} out of range for {ev.num_seeds} seeds"
         )
-    params = jax.tree.map(lambda x: x[args.seed_idx], final_params)
-
-    max_steps = int(env_kwargs.get("max_steps", 8))
-    K = max_steps - 1  # deliberation slots
+    params = jax.tree.map(lambda x: x[args.seed_idx], ev.params)
+    K = ev.max_steps - 1
     if mode == "switch" and not (1 <= switch_k <= K - 1):
         raise SystemExit(
             f"--switch k={switch_k} out of range; valid range is 1..{K - 1}"
@@ -362,7 +325,7 @@ def main() -> None:
 
     print(f"Visualizing scripted-speaker episodes ({mode} mode)")
     print(f"  checkpoint: {args.checkpoint}")
-    print(f"  seed_idx: {args.seed_idx}/{num_seeds - 1}")
+    print(f"  seed_idx: {args.seed_idx}/{ev.num_seeds - 1}  (best chunk = {ev.best_idx[args.seed_idx]})")
     print(f"  speaker: agent_{args.speaker_idx}, listener: agent_{listener_idx}")
     if mode == "constant":
         print(f"  x_values: {x_values}")
@@ -388,8 +351,8 @@ def main() -> None:
             reset_rng = jax.random.PRNGKey(args.episode_rng_base + ep + seed_offset * 10007)
 
             result = _run_and_collect(
-                inner_env, policy, params, reset_rng,
-                speaker_idx=args.speaker_idx, script=script, max_steps=max_steps,
+                ev.env, ev.policy, params, reset_rng,
+                speaker_idx=args.speaker_idx, script=script, max_steps=ev.max_steps,
             )
 
             gt_speaker_X = int(result["speaker_inv"][X])
@@ -418,7 +381,7 @@ def main() -> None:
                 gt_listener_pick=gt_listener_pick,
                 follow=follow, coord=coord,
                 output_path=ep_dir / "episode.png",
-                max_steps=max_steps,
+                max_steps=ev.max_steps,
             )
 
             with (ep_dir / "summary.txt").open("w") as f:

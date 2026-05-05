@@ -36,30 +36,15 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from omegaconf import OmegaConf
 
-from agents.initialize_agents import (
-    initialize_ja_dual_image_agent,
-    initialize_ja_image_agent,
-)
-from common.save_load_utils import load_train_run
-from envs import make_env
 from envs.card_game.rendering import NUM_CARDS
-from envs.log_wrapper import LogWrapper
+from evaluation._card_game_utils import load_card_game_eval
 from evaluation.comm_metrics import calc_cic
-
-
-def _get_obs_type(alg_config):
-    return alg_config.get(
-        "OBS_TYPE",
-        alg_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"),
-    )
 
 
 def _policy_step(policy, params, obs_dict, agent_id, hstate, avail, rng):
@@ -225,62 +210,27 @@ def main() -> None:
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
 
-    run_dir = os.path.dirname(args.checkpoint)
-    cfg = OmegaConf.to_container(
-        OmegaConf.load(os.path.join(run_dir, ".hydra", "config.yaml")), resolve=True,
-    )
-    alg_config = cfg["algorithm"]
+    ev = load_card_game_eval(args.checkpoint)
+    if not ev.env_kwargs.get("communication", False):
+        raise SystemExit("Checkpoint was trained without communication; CIC is undefined.")
 
-    env_name = alg_config["ENV_NAME"]
-    env_kwargs = dict(alg_config.get("ENV_KWARGS", {}))
-    if alg_config.get("COMMUNICATION", False):
-        env_kwargs["communication"] = True
-    if not env_kwargs.get("communication", False):
-        raise SystemExit(
-            "Checkpoint was trained without communication; CIC is undefined."
-        )
-    # CIC needs full control of the listener's incoming msg; force off any
-    # training-time random scrambling at eval.
-    env_kwargs["scramble_partner_msg"] = False
-
-    env = make_env(env_name, env_kwargs)
-    inner_env = env
-    env_wrapped = LogWrapper(env)
-
-    obs_type = _get_obs_type(alg_config)
-    use_dual = alg_config.get("USE_DUAL_CRITIC", False)
-    if obs_type in ("image", "fov"):
-        init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
-    else:
-        from agents.initialize_agents import initialize_ja_agent
-        init_fn = initialize_ja_agent
-
-    rng = jax.random.PRNGKey(0)
-    policy, _ = init_fn(alg_config, env_wrapped, rng)
-
-    run_data = load_train_run(args.checkpoint)
-    final_params = run_data["final_params"]
-    num_seeds = jax.tree.leaves(final_params)[0].shape[0]
-    max_steps = int(env_kwargs.get("max_steps", 8))
-
-    label = cfg.get("label", "(unlabeled)")
     print(
         f"\nCheckpoint: {args.checkpoint}"
-        f"\n  label={label}  comm=on  scramble_eval=False"
-        f"  seeds={num_seeds}  episodes/seed={args.num_episodes}"
-        f"  max_steps={max_steps}"
+        f"\n  label={ev.label}  comm=on  scramble_eval=False  best_idx={ev.best_idx.tolist()}"
+        f"\n  seeds={ev.num_seeds}  episodes/seed={args.num_episodes}"
+        f"  max_steps={ev.max_steps}"
         f"\n  CIC floor (no influence) = log({NUM_CARDS}) = {math.log(NUM_CARDS):.3f}"
     )
 
-    K = max_steps - 1
-    all_cic = []  # one (2, K) array per seed
-    for seed_idx in range(num_seeds):
-        params = jax.tree.map(lambda x: x[seed_idx], final_params)
+    K = ev.max_steps - 1
+    all_cic = []
+    for seed_idx in range(ev.num_seeds):
+        params = jax.tree.map(lambda x: x[seed_idx], ev.params)
         ep_cics = np.zeros((args.num_episodes, 2, K), dtype=np.float64)
         for ep in range(args.num_episodes):
             reset_rng = jax.random.PRNGKey(7_000 + seed_idx * 10_000 + ep)
             ep_cics[ep] = _compute_cic_one_episode(
-                inner_env, policy, params, reset_rng, max_steps,
+                ev.env, ev.policy, params, reset_rng, ev.max_steps,
             )
             if (ep + 1) % 32 == 0:
                 running = ep_cics[: ep + 1].mean(axis=0)
@@ -294,14 +244,14 @@ def main() -> None:
         print(f"\nSeed {seed_idx}  CIC (nats, floor={math.log(NUM_CARDS):.3f}):")
         print(_format_cic_grid(seed_cic))
 
-    all_cic_arr = np.stack(all_cic, axis=0)  # (num_seeds, 2, K)
+    all_cic_arr = np.stack(all_cic, axis=0)
     mean_cic = all_cic_arr.mean(axis=0)
     sem_cic = (
-        all_cic_arr.std(axis=0, ddof=1) / math.sqrt(num_seeds)
-        if num_seeds > 1 else np.zeros_like(mean_cic)
+        all_cic_arr.std(axis=0, ddof=1) / math.sqrt(ev.num_seeds)
+        if ev.num_seeds > 1 else np.zeros_like(mean_cic)
     )
 
-    print(f"\nAggregate across {num_seeds} seeds (mean ± SEM):")
+    print(f"\nAggregate across {ev.num_seeds} seeds (mean ± SEM):")
     for direction_idx, label_dir in enumerate(("0->1", "1->0")):
         parts = [
             f"{mean_cic[direction_idx, k]:6.3f}±{sem_cic[direction_idx, k]:.3f}"
@@ -312,7 +262,7 @@ def main() -> None:
     if args.output_dir:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        slug = label.replace("/", "_").replace(" ", "_")
+        slug = ev.label.replace("/", "_").replace(" ", "_")
         np.save(out / f"cic_{slug}.npy", all_cic_arr)
         print(f"\nSaved {out / f'cic_{slug}.npy'}  shape={all_cic_arr.shape}")
 
