@@ -9,7 +9,12 @@ import numpy as np
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent, _get_image_dims
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence, augment_obs_for_eval
-from marl.eval_card_game import _log_card_game_attention_grid, _log_card_game_eval_video, _log_card_game_xp_videos
+from marl.eval_card_game import (
+    _log_card_game_attention_grid,
+    _log_card_game_eval_video,
+    _log_card_game_per_agent_obs_video,
+    _log_card_game_xp_videos,
+)
 from marl.eval_lbf import _render_lbf_eval_frames
 
 
@@ -485,6 +490,18 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
                     num_episodes=sp_video_episodes, fps=3,
                 )
+                # Under OP the canonical-scene video misrepresents what each
+                # agent actually sees; for JA_CARD_ATTN runs also log a video
+                # built from the per-agent obs so attention maps land on the
+                # correct (recoloured/shuffled) cards.
+                if ja_card_attn:
+                    _log_card_game_per_agent_obs_video(
+                        inner_env, policy, final_params, max_steps, tag, video_dir, logger,
+                        feed_attn_dims=feed_attn_dims,
+                        ja_card_masks=_card_masks_eval,
+                        filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
+                        num_episodes=sp_video_episodes, fps=3,
+                    )
             else:
                 # Other envs: videos + attention overlays
                 from moviepy import ImageSequenceClip

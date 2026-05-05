@@ -347,3 +347,140 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                                  bitrate='8000k', preset='slow')
             logger.log_video(f"{tag}/xp_video_s{seed_i}_vs_s{seed_j}", video_path, commit=False)
             print(f"[card_game] XP video s{seed_i} vs s{seed_j}: {video_path} ({len(all_video_frames)} frames)")
+
+
+def _gt_to_view_col(state, agent_idx: int, gt_card_id: int, card_perm: np.ndarray):
+    """Map a GT card identity to the agent's view column under the OP wrappers.
+
+    Returns None when the pick is invalid or no position-shuffle wrapper is
+    present (e.g. running on a config without OP, where view = physical).
+    """
+    if gt_card_id is None or gt_card_id < 0:
+        return None
+    phys_cols = np.where(card_perm == int(gt_card_id))[0]
+    if len(phys_cols) == 0:
+        return None
+    phys_col = int(phys_cols[0])
+    s = state
+    while s is not None and not hasattr(s, "per_agent_perm"):
+        s = getattr(s, "env_state", None)
+    if s is None:
+        return phys_col
+    pos_perm = np.asarray(s.per_agent_perm[f"agent_{agent_idx}"])
+    view_cols = np.where(pos_perm == phys_col)[0]
+    return int(view_cols[0]) if len(view_cols) else None
+
+
+def _log_card_game_per_agent_obs_video(
+    inner_env, policy, params, max_steps, tag, video_dir, logger,
+    feed_attn_dims=None, ja_card_masks=None, filter_top1=False,
+    num_episodes=30, fps=3,
+):
+    """Eval video built from each agent's actual observation.
+
+    Under Other-Play each agent sees a different shuffle and recolouring, so
+    overlaying attention on the canonical scene is misleading. This function
+    reshapes the policy's input obs back to an image (it already contains the
+    OP-transformed cards, the ego border, the partner-message dot and the
+    decision indicator) and overlays the agent's own attention map on top.
+
+    The only decoration drawn here is the per-agent picked-card border on the
+    decision step and a timestep label.
+    """
+    from envs.card_game.rendering import (
+        TILE_PIXELS, GRID_ROWS, GRID_COLS, _unwrap_card_game_state,
+    )
+
+    img_h = GRID_ROWS * TILE_PIXELS
+    img_w = GRID_COLS * TILE_PIXELS
+    scale = 20
+    padding = 4
+    all_video_frames: list = []
+
+    for ep in range(num_episodes):
+        ep_rng = jax.random.PRNGKey(100 + ep)
+        ep_states, attn_data, ep_actions, ep_messages, ep_obs = run_episode_with_states(
+            ep_rng, inner_env, params, policy, params, policy, max_steps,
+            collect_attention=True,
+            collect_obs=True,
+            feed_other_attn_dims=feed_attn_dims,
+            ja_card_masks=ja_card_masks,
+        )
+
+        if filter_top1:
+            def _top1_np(attn):
+                a = np.array(attn).squeeze()
+                out = np.zeros_like(a)
+                out.flat[np.argmax(a)] = 1.0
+                return out
+            for agent_key in ("agent_0", "agent_1"):
+                attn_data[agent_key] = [_top1_np(m) for m in attn_data.get(agent_key, [])]
+
+        maps_0 = attn_data.get("agent_0", [])
+        maps_1 = attn_data.get("agent_1", [])
+        if not maps_0 or not maps_1 or not ep_obs:
+            continue
+
+        n_steps = min(len(maps_0), len(maps_1), len(ep_obs))
+        es0 = _unwrap_card_game_state(ep_states[0])
+        card_perm = np.asarray(es0.card_permutation)
+        last_action = ep_actions[-1] if ep_actions else (-1, -1)
+
+        for t in range(n_steps):
+            obs_t = ep_obs[t]
+            base_0 = (
+                np.asarray(obs_t["agent_0"]).reshape(img_h, img_w, 3) * 255
+            ).astype(np.uint8)
+            base_1 = (
+                np.asarray(obs_t["agent_1"]).reshape(img_h, img_w, 3) * 255
+            ).astype(np.uint8)
+            up_0 = np.array(Image.fromarray(base_0).resize(
+                (img_w * scale, img_h * scale), Image.NEAREST,
+            ))
+            up_1 = np.array(Image.fromarray(base_1).resize(
+                (img_w * scale, img_h * scale), Image.NEAREST,
+            ))
+
+            cell_0 = _overlay_attention(up_0, maps_0[t], "Oranges", alpha=0.6).copy()
+            cell_1 = _overlay_attention(up_1, maps_1[t], "RdPu", alpha=0.6).copy()
+
+            is_decision = (t == n_steps - 1)
+            if is_decision:
+                pick_0_view = _gt_to_view_col(
+                    ep_states[t], 0, int(last_action[0]), card_perm,
+                )
+                pick_1_view = _gt_to_view_col(
+                    ep_states[t], 1, int(last_action[1]), card_perm,
+                )
+                if pick_0_view is not None:
+                    _draw_choice_on_cell(cell_0, pick_0_view, 0, scale)
+                if pick_1_view is not None:
+                    _draw_choice_on_cell(cell_1, pick_1_view, 1, scale)
+
+            _draw_timestep_label(cell_0, t, decision=is_decision)
+            _draw_timestep_label(cell_1, t, decision=is_decision)
+
+            cell_h, cell_w = cell_0.shape[:2]
+            frame = np.full(
+                (2 * cell_h + padding, cell_w, 3), 255, dtype=np.uint8,
+            )
+            frame[:cell_h] = cell_0
+            frame[cell_h + padding:] = cell_1
+            all_video_frames.append(frame)
+
+    if not all_video_frames:
+        print("[card_game] No frames for per-agent obs eval video")
+        return
+
+    os.makedirs(video_dir, exist_ok=True)
+    video_path = f"{video_dir}/eval_card_game_per_agent.mp4"
+    clip = ImageSequenceClip(all_video_frames, fps=fps)
+    clip.write_videofile(
+        video_path, fps=fps, codec='libx264', audio=False,
+        bitrate='8000k', preset='slow',
+    )
+    logger.log_video(f"{tag}/eval_video_per_agent", video_path, commit=False)
+    print(
+        f"[card_game] Saved per-agent eval video: {video_path} "
+        f"({len(all_video_frames)} frames, {len(all_video_frames)/fps:.0f}s)"
+    )
