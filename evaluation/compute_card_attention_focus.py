@@ -173,6 +173,77 @@ def _per_step_focus(
     }
 
 
+def _seed_headline(per_step: dict, successes: list[bool], max_steps: int) -> dict:
+    """Per-agent decision-step and deliberation-step pick / partner-msg means.
+
+    Returns a nested dict keyed by agent name with mean values and the
+    success/failure-conditional decision-step means (NaN when a subset is empty).
+    """
+    decision_t = max_steps - 1
+    delib_ts = list(range(max_steps - 1))
+    succ = np.asarray(successes, dtype=bool)
+    out: dict[str, dict] = {}
+    for agent_idx, key in enumerate(("agent_0", "agent_1")):
+        stash = per_step[agent_idx]
+        pick_dec = np.asarray(stash["pick"][decision_t], dtype=np.float64)
+        pick_del = (
+            np.mean(np.asarray([stash["pick"][t] for t in delib_ts]), axis=0)
+            if delib_ts and stash["pick"][delib_ts[0]] else np.array([])
+        )
+        pmsg_del = (
+            np.mean(np.asarray([stash["pmsg"][t] for t in delib_ts]), axis=0)
+            if delib_ts and stash["pmsg"][delib_ts[0]] else np.array([])
+        )
+
+        def _mean(arr, mask=None):
+            if mask is not None:
+                arr = arr[mask] if len(arr) == len(mask) else arr
+            return float(np.mean(arr)) if len(arr) else float("nan")
+
+        out[key] = {
+            "pick_at_decision": _mean(pick_dec),
+            "pick_at_decision_std": (
+                float(np.std(pick_dec)) if len(pick_dec) else float("nan")
+            ),
+            "pick_in_delib": _mean(pick_del),
+            "pmsg_in_delib": _mean(pmsg_del),
+            "pick_at_decision_success": _mean(pick_dec, succ) if succ.any() else float("nan"),
+            "pick_at_decision_failure": (
+                _mean(pick_dec, ~succ) if (~succ).any() else float("nan")
+            ),
+        }
+    return out
+
+
+def _print_seed_summary(
+    seed_idx: int,
+    successes: list[bool],
+    per_step: dict,
+    max_steps: int,
+    baseline_per_card: float,
+):
+    head = _seed_headline(per_step, successes, max_steps)
+    succ_n = int(np.sum(successes))
+    fail_n = len(successes) - succ_n
+    print(f"\n  Headline (seed {seed_idx}, baseline per card = {baseline_per_card:.3f}):")
+    for key, h in head.items():
+        print(f"    {key}:")
+        print(
+            f"      pick_mass @ decision   : {h['pick_at_decision']:.3f} "
+            f"± {h['pick_at_decision_std']:.3f}  "
+            f"(ratio over baseline: {h['pick_at_decision'] / max(baseline_per_card, 1e-9):.1f}x)"
+        )
+        print(f"      pick_mass in delib     : {h['pick_in_delib']:.3f}")
+        print(f"      pmsg_mass in delib     : {h['pmsg_in_delib']:.3f}")
+        if succ_n and fail_n:
+            print(
+                f"      decision pick_mass | success ({succ_n}) "
+                f"vs failure ({fail_n}): "
+                f"{h['pick_at_decision_success']:.3f} vs "
+                f"{h['pick_at_decision_failure']:.3f}"
+            )
+
+
 def _print_seed_table(
     seed_idx: int,
     successes: list[bool],
@@ -242,6 +313,10 @@ def main():
     card_masks, feed_attn_dims, masks_for_policy = _resolve_eval_inputs(
         alg_config, inner_env,
     )
+    # Per-card mass under uniform attention is the same for all 5 cards by
+    # construction (each card occupies an identical 5×5 region inside its
+    # tile), so any single mask's mean is the baseline.
+    baseline_per_card = float(np.mean(card_masks[0]))
 
     run_data = load_train_run(str(ckpt_path))
     final_params = run_data["final_params"]
@@ -279,6 +354,7 @@ def main():
         "success",
     ]
     rows: list[dict] = []
+    all_headlines: list[tuple[int, dict, float]] = []
 
     for seed_idx in seed_indices:
         params = jax.tree.map(lambda x, _i=seed_idx: x[_i], final_params)
@@ -374,6 +450,26 @@ def main():
                     })
 
         _print_seed_table(seed_idx, successes, per_step, max_steps)
+        _print_seed_summary(
+            seed_idx, successes, per_step, max_steps, baseline_per_card,
+        )
+        all_headlines.append(
+            (seed_idx, _seed_headline(per_step, successes, max_steps),
+             float(np.mean(successes)) if successes else float("nan")),
+        )
+
+    if len(all_headlines) > 1:
+        print(f"\n=== cross-seed aggregate (n={len(all_headlines)}) ===")
+        print(f"  baseline per card = {baseline_per_card:.3f}")
+        for key in ("agent_0", "agent_1"):
+            for metric in ("pick_at_decision", "pick_in_delib", "pmsg_in_delib"):
+                vals = np.array([h[key][metric] for _, h, _ in all_headlines])
+                print(
+                    f"  {key:<8} {metric:<18}: "
+                    f"{np.nanmean(vals):.3f} ± {np.nanstd(vals):.3f}"
+                )
+        srs = np.array([s for _, _, s in all_headlines])
+        print(f"  success_rate           : {np.nanmean(srs):.3f} ± {np.nanstd(srs):.3f}")
 
     with csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
