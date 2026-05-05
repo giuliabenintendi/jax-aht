@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Card-level joint attention sweep, layered on top of the working comm+OP setup
-# that produced legendary-midichlorian-1245 (SP=0.84 / XP=0.79 over 12 seeds).
-#
+# Card-level joint attention beta search on a single seed.
 # Card-level JA computes JSD over per-card attention logits in ground-truth color
 # space, which is the correct JA variant under OP recolouring (spatial JSD is
 # meaningless because agents see different recoloured images).
 #
-# Sweeps JA_CARD_JSD_COEF over a small grid; everything else matches the baseline.
-# 12 seeds per cell, 5M timesteps each, sequential.
+# Sweep values are fractions of match_coef=0.1: {1/500, 1/100, 1/50, 1/10}
+#   = {0.0002, 0.001, 0.002, 0.01}
+# Single seed (TRAIN_SEED=42) per cell so we can identify a promising beta cheaply
+# (~30min per cell, 4 cells -> ~2h total). Promote the winner to multi-seed afterwards.
 # Usage: ./run_card_game_ja_card_sweep.sh <gpu>
 
 GPU="${1:?Usage: ./run_card_game_ja_card_sweep.sh <gpu>}"
 TIMESTEPS=5e6
-JA_VALUES="0.01 0.05 0.1 0.2"
+JA_VALUES="0.0002 0.001 0.002 0.01"
 
-COMMON="algorithm.NUM_SEEDS=12 algorithm.TOTAL_TIMESTEPS=$TIMESTEPS \
+COMMON="algorithm.NUM_SEEDS=1 algorithm.TRAIN_SEED=42 algorithm.TOTAL_TIMESTEPS=$TIMESTEPS \
 algorithm.COMMUNICATION=true algorithm.JA_BETA_MAX=0.0 \
 algorithm.JA_CARD_ATTN=true \
 algorithm.GAE_LAMBDA=0.95 algorithm.LR=5e-4 algorithm.ENT_COEF=0.01 algorithm.ANNEAL_LR=false \
