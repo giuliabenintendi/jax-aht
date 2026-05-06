@@ -30,21 +30,85 @@ from evaluation.vis_episodes import run_episode_with_states
 
 
 def _collect_rollouts(
-    inner_env, policy, params, num_episodes: int, max_steps: int,
+    inner_env, policy, params_a, params_b, num_episodes: int, max_steps: int,
     seed_offset: int, greedy: bool,
 ) -> tuple[list, list]:
-    """Run `num_episodes` SP episodes and return `(ep_messages, ep_actions)`."""
+    """Run `num_episodes` episodes pairing agent 0 with `params_a` and agent
+    1 with `params_b` (self-play when params_a is params_b).
+    """
     all_msgs: list[list[tuple[int, int]]] = []
     all_acts: list[list[tuple[int, int]]] = []
     for ep in range(num_episodes):
         rng = jax.random.PRNGKey(7_000 + seed_offset * 10_000 + ep)
         ep_states, ep_actions, ep_messages = run_episode_with_states(
-            rng, inner_env, params, policy, params, policy, max_steps,
+            rng, inner_env, params_a, policy, params_b, policy, max_steps,
             collect_attention=False, greedy=greedy,
         )
         all_msgs.append(ep_messages)
         all_acts.append(ep_actions)
     return all_msgs, all_acts
+
+
+def _plot_sc_pairs_grid(
+    pair_sc: np.ndarray,
+    pairs: list[tuple[int, int]],
+    output_path: Path,
+    label: str,
+) -> None:
+    """Small-multiples: one panel per (agent_0_seed, agent_1_seed) pair.
+
+    For self-play pairs (i == j), the panel matches `sc_per_seed_*` content;
+    for cross-play pairs, the curves show how each agent's own message-pick
+    consistency holds up when paired with a partner from a different seed.
+    """
+    n_pairs, _, K = pair_sc.shape
+    n_cols = min(4, n_pairs)
+    n_rows = math.ceil(n_pairs / n_cols)
+    ks = np.arange(K)
+    ceiling = math.log(NUM_CARDS)
+    colors = ["#fb8500", "#9d4edd"]
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(n_cols * 3.2, n_rows * 2.6),
+        sharex=True, sharey=True,
+    )
+    axes = np.atleast_2d(axes)
+
+    for p, (seed_a, seed_b) in enumerate(pairs):
+        r, c = divmod(p, n_cols)
+        ax = axes[r, c]
+        labels_p = [f"agent 0 (seed {seed_a})", f"agent 1 (seed {seed_b})"]
+        for agent_idx in range(2):
+            ax.plot(
+                ks, pair_sc[p, agent_idx], color=colors[agent_idx],
+                marker="o", markersize=3, linewidth=1.7,
+                label=labels_p[agent_idx] if p == 0 else None,
+            )
+        ax.axhline(ceiling, color="gray", linestyle="--", linewidth=0.8)
+        title = (f"SP: seed {seed_a}" if seed_a == seed_b
+                 else f"XP: a0=seed{seed_a}, a1=seed{seed_b}")
+        ax.set_title(title, fontsize=10)
+        ax.set_ylim(-0.05, ceiling * 1.05)
+        ax.set_xticks(ks)
+        ax.grid(alpha=0.3)
+
+    for p in range(n_pairs, n_rows * n_cols):
+        r, c = divmod(p, n_cols)
+        axes[r, c].axis("off")
+
+    handles, labels_h = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels_h, loc="upper center", ncol=2, fontsize=10,
+               bbox_to_anchor=(0.5, 1.02), frameon=False)
+    fig.supxlabel("deliberation slot k", fontsize=11)
+    fig.supylabel("Speaker Consistency (nats)", fontsize=11)
+    fig.suptitle(
+        f"SC per pair — {label}  (ceiling = log({NUM_CARDS}) = {ceiling:.3f})",
+        fontsize=12, y=1.06,
+    )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def _plot_sc_compare_two_seeds(
@@ -247,6 +311,14 @@ def main() -> None:
             "highlighting role-flip across seeds (proposer vs follower)."
         ),
     )
+    parser.add_argument(
+        "--pairs", default=None,
+        help=(
+            "Cross-play pairs 'i1,j1;i2,j2;...' (e.g. '0,5;5,0;0,11;11,0'). "
+            "For each pair, agent 0 uses seed i's params and agent 1 uses "
+            "seed j's. Produces sc_pairs_<label>.png (small-multiples grid)."
+        ),
+    )
     args = parser.parse_args()
 
     ev = load_card_game_eval(args.checkpoint)
@@ -264,7 +336,7 @@ def main() -> None:
     for seed_idx in range(ev.num_seeds):
         params = jax.tree.map(lambda x: x[seed_idx], ev.params)
         ep_messages, ep_actions = _collect_rollouts(
-            ev.env, ev.policy, params, args.num_episodes, ev.max_steps,
+            ev.env, ev.policy, params, params, args.num_episodes, ev.max_steps,
             seed_offset=seed_idx, greedy=args.greedy,
         )
         sc = compute_sc_slotwise(ep_messages, ep_actions, NUM_CARDS, NUM_CARDS)
@@ -286,6 +358,39 @@ def main() -> None:
         ]
         print(f"  agent{agent_idx}: " + "  ".join(parts))
 
+    pair_sc_arr = None
+    pairs_parsed: list[tuple[int, int]] = []
+    if args.pairs:
+        try:
+            pairs_parsed = [
+                tuple(int(x) for x in p.split(","))  # type: ignore[misc]
+                for p in args.pairs.split(";") if p.strip()
+            ]
+        except ValueError as exc:
+            raise SystemExit(f"--pairs must be 'i,j;i,j;...' of ints: {exc}") from exc
+        for i, j in pairs_parsed:
+            if not (0 <= i < ev.num_seeds and 0 <= j < ev.num_seeds):
+                raise SystemExit(
+                    f"pair ({i},{j}) out of range for {ev.num_seeds} seeds"
+                )
+
+        pair_sc_list = []
+        for seed_a, seed_b in pairs_parsed:
+            params_a = jax.tree.map(lambda x: x[seed_a], ev.params)
+            params_b = jax.tree.map(lambda x: x[seed_b], ev.params)
+            ep_messages, ep_actions = _collect_rollouts(
+                ev.env, ev.policy, params_a, params_b,
+                args.num_episodes, ev.max_steps,
+                seed_offset=seed_a * 100 + seed_b,
+                greedy=args.greedy,
+            )
+            sc = compute_sc_slotwise(ep_messages, ep_actions, NUM_CARDS, NUM_CARDS)
+            pair_sc_list.append(sc)
+            tag = "SP" if seed_a == seed_b else "XP"
+            print(f"\n{tag} pair (a0=seed{seed_a}, a1=seed{seed_b})  SC:")
+            print(_format_sc_grid(sc))
+        pair_sc_arr = np.stack(pair_sc_list, axis=0)
+
     if args.output_dir:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -296,6 +401,17 @@ def main() -> None:
         print(f"Saved {out / f'sc_{slug}.png'}")
         _plot_sc_per_seed_grid(all_sc_arr, out / f"sc_per_seed_{slug}.png", ev.label)
         print(f"Saved {out / f'sc_per_seed_{slug}.png'}")
+        if pair_sc_arr is not None:
+            np.savez(
+                out / f"sc_pairs_{slug}.npz",
+                sc=pair_sc_arr, pairs=np.asarray(pairs_parsed, dtype=np.int32),
+            )
+            print(f"Saved {out / f'sc_pairs_{slug}.npz'}  shape={pair_sc_arr.shape}")
+            _plot_sc_pairs_grid(
+                pair_sc_arr, pairs_parsed,
+                out / f"sc_pairs_{slug}.png", ev.label,
+            )
+            print(f"Saved {out / f'sc_pairs_{slug}.png'}")
         if args.compare_seeds:
             try:
                 seed_a, seed_b = (int(s) for s in args.compare_seeds.split(","))
