@@ -47,6 +47,62 @@ def _collect_rollouts(
     return all_msgs, all_acts
 
 
+def _plot_sc_per_seed_grid(all_sc: np.ndarray, output_path: Path, label: str) -> None:
+    """Small-multiples grid: one subplot per seed, both agents per panel.
+
+    Lets you spot per-seed protocol patterns at a glance:
+      - flat-high curve from k=0  -> agent committed to a fixed-frame strategy (bad under OP)
+      - low-rising curve          -> agent conditions on obs/partner (healthy)
+      - both rising symmetric     -> mutual gradual commitment
+      - both flat-high            -> both fixed-frame (joint failure under OP)
+      - both stuck low            -> undertrained
+    """
+    n_seeds, _, K = all_sc.shape
+    n_cols = 4
+    n_rows = math.ceil(n_seeds / n_cols)
+    ks = np.arange(K)
+    ceiling = math.log(NUM_CARDS)
+    colors = ["#fb8500", "#9d4edd"]
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 3.0, n_rows * 2.4),
+                             sharex=True, sharey=True)
+    axes = np.atleast_2d(axes)
+
+    for s in range(n_seeds):
+        r, c = divmod(s, n_cols)
+        ax = axes[r, c]
+        for agent_idx in range(2):
+            ax.plot(ks, all_sc[s, agent_idx], color=colors[agent_idx],
+                    marker="o", markersize=3, linewidth=1.6,
+                    label=f"agent {agent_idx}" if s == 0 else None)
+        ax.axhline(ceiling, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_title(f"seed {s}", fontsize=10)
+        ax.set_ylim(-0.05, ceiling * 1.05)
+        ax.set_xticks(ks)
+        ax.grid(alpha=0.3)
+
+    # Hide unused panels
+    for s in range(n_seeds, n_rows * n_cols):
+        r, c = divmod(s, n_cols)
+        axes[r, c].axis("off")
+
+    # Single legend for the figure
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=2, fontsize=10,
+               bbox_to_anchor=(0.5, 1.02), frameon=False)
+
+    # Common axis labels
+    fig.supxlabel("deliberation slot k", fontsize=11)
+    fig.supylabel("Speaker Consistency (nats)", fontsize=11)
+    fig.suptitle(
+        f"SC per seed — {label}  (ceiling = log({NUM_CARDS}) = {ceiling:.3f})",
+        fontsize=12, y=1.06,
+    )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _plot_sc(all_sc: np.ndarray, output_path: Path, label: str) -> None:
     """Plot per-agent SC across slots, with per-seed lines and mean ± SEM band.
 
@@ -170,6 +226,8 @@ def main() -> None:
         print(f"\nSaved {out / f'sc_{slug}.npy'}  shape={all_sc_arr.shape}")
         _plot_sc(all_sc_arr, out / f"sc_{slug}.png", ev.label)
         print(f"Saved {out / f'sc_{slug}.png'}")
+        _plot_sc_per_seed_grid(all_sc_arr, out / f"sc_per_seed_{slug}.png", ev.label)
+        print(f"Saved {out / f'sc_per_seed_{slug}.png'}")
 
 
 if __name__ == "__main__":
