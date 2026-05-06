@@ -3,6 +3,8 @@ figures/
 figures/*
 plots/
 plots/*
+checkpoints/
+checkpoints/*
 notebooks/
 notebooks/*
 
