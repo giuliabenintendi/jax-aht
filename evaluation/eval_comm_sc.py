@@ -18,6 +18,9 @@ import math
 from pathlib import Path
 
 import jax
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 
 from envs.card_game.rendering import NUM_CARDS
@@ -42,6 +45,64 @@ def _collect_rollouts(
         all_msgs.append(ep_messages)
         all_acts.append(ep_actions)
     return all_msgs, all_acts
+
+
+def _plot_sc(all_sc: np.ndarray, output_path: Path, label: str) -> None:
+    """Plot per-agent SC across slots, with per-seed lines and mean ± SEM band.
+
+    Reading the figure: a curve that's flat-and-high from k=0 onward marks a
+    "proposer" (committed message from the start). A curve that climbs from
+    near 0 to high values marks a "follower" (commits late, after seeing the
+    proposer). A bimodal pattern across seeds is a population mix.
+
+    Args:
+        all_sc: shape (num_seeds, 2, K) — per-seed SC grid in nats.
+        output_path: PNG output path.
+        label: run label for the title.
+    """
+    n_seeds, n_agents, K = all_sc.shape
+    ks = np.arange(K)
+    colors = ["#fb8500", "#9d4edd"]  # orange (agent 0), magenta-ish (agent 1)
+    names = ["agent 0 (orange triangle)", "agent 1 (magenta triangle)"]
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.5))
+    for agent_idx in range(n_agents):
+        per_seed = all_sc[:, agent_idx, :]
+        mean = per_seed.mean(axis=0)
+        sem = (per_seed.std(axis=0, ddof=1) / math.sqrt(n_seeds)
+               if n_seeds > 1 else np.zeros_like(mean))
+
+        # per-seed thin lines for population spread
+        for s in range(n_seeds):
+            ax.plot(ks, per_seed[s], color=colors[agent_idx], alpha=0.18,
+                    linewidth=0.8)
+        # mean and SEM band
+        ax.plot(ks, mean, color=colors[agent_idx], linewidth=2.4,
+                marker="o", markersize=5, label=f"{names[agent_idx]} mean")
+        ax.fill_between(ks, mean - sem, mean + sem,
+                        color=colors[agent_idx], alpha=0.22,
+                        label=f"{names[agent_idx]} ±SEM")
+
+    ceiling = math.log(NUM_CARDS)
+    ax.axhline(ceiling, color="gray", linestyle="--",
+               label=f"ceiling = log({NUM_CARDS}) = {ceiling:.3f}")
+
+    ax.set_xticks(ks)
+    ax.set_xticklabels([f"k={k}" for k in ks])
+    ax.set_xlabel("deliberation slot k")
+    ax.set_ylabel("Speaker Consistency (nats)")
+    ax.set_ylim(0, ceiling * 1.05)
+    ax.set_title(
+        f"Speaker Consistency — {label}  ({n_seeds} seeds, mean ± SEM)\n"
+        f"flat-high curve = proposer; rising curve = follower",
+        fontsize=11,
+    )
+    ax.legend(loc="lower right", fontsize=8)
+    ax.grid(axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def _format_sc_grid(sc: np.ndarray) -> str:
@@ -107,6 +168,8 @@ def main() -> None:
         slug = ev.label.replace("/", "_").replace(" ", "_")
         np.save(out / f"sc_{slug}.npy", all_sc_arr)
         print(f"\nSaved {out / f'sc_{slug}.npy'}  shape={all_sc_arr.shape}")
+        _plot_sc(all_sc_arr, out / f"sc_{slug}.png", ev.label)
+        print(f"Saved {out / f'sc_{slug}.png'}")
 
 
 if __name__ == "__main__":
