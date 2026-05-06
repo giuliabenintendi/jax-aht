@@ -78,7 +78,10 @@ def main():
     )
 
     if env_name == "card-game":
-        from marl.eval_card_game import _log_card_game_video
+        from marl.eval_card_game import (
+            _log_card_game_eval_video,
+            _log_card_game_per_agent_obs_video,
+        )
         # JA policies append a 4th obs channel (FEED_OTHER_ATTN) and/or a 5-dim
         # translated-partner-attention scalar suffix (JA_CARD_PARTNER_FEED).
         # Compute the matching feed dims/masks so the policy gets the input
@@ -115,7 +118,9 @@ def main():
             params = jax.tree.map(lambda x: x[seed_idx], final_params)
             video_dir = os.path.join(run_dir, "videos", f"seed_{seed_idx}")
             os.makedirs(video_dir, exist_ok=True)
-            _log_card_game_video(
+            # Canonical-frame view (same physical layout for both agents) — good
+            # for "what happened in the world".
+            _log_card_game_eval_video(
                 inner_env, policy, params, max_steps,
                 tag=f"Eval/seed_{seed_idx}",
                 video_dir=video_dir,
@@ -124,7 +129,19 @@ def main():
                 ja_card_masks=ja_card_masks,
                 num_episodes=5, fps=3,
             )
-            print(f"Seed {seed_idx}: video at {video_dir}/eval_card_game.mp4")
+            # Per-agent OP-recoloured/shuffled view — the actual policy input,
+            # with attention overlaid. Partner-message dot is drawn into the
+            # observation by the env itself at delivered timing.
+            _log_card_game_per_agent_obs_video(
+                inner_env, policy, params, max_steps,
+                tag=f"Eval/seed_{seed_idx}",
+                video_dir=video_dir,
+                logger=wandb_logger,
+                feed_attn_dims=feed_attn_dims,
+                ja_card_masks=ja_card_masks,
+                num_episodes=5, fps=3,
+            )
+            print(f"Seed {seed_idx}: videos in {video_dir}")
         wb_run.log({}, commit=True)
         wb_run.finish()
         print(f"Card-game eval videos added to {wb_run.url}")
