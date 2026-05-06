@@ -78,12 +78,15 @@ def _plot_sc_pairs_grid(
     for p, (seed_a, seed_b) in enumerate(pairs):
         r, c = divmod(p, n_cols)
         ax = axes[r, c]
-        labels_p = [f"agent 0 (seed {seed_a})", f"agent 1 (seed {seed_b})"]
+        labels_p = [
+            f"agent 0  (params: seed {seed_a})",
+            f"agent 1  (params: seed {seed_b})",
+        ]
         for agent_idx in range(2):
             ax.plot(
                 ks, pair_sc[p, agent_idx], color=colors[agent_idx],
                 marker="o", markersize=3, linewidth=1.7,
-                label=labels_p[agent_idx] if p == 0 else None,
+                label=labels_p[agent_idx],
             )
         ax.axhline(ceiling, color="gray", linestyle="--", linewidth=0.8)
         title = (f"SP: seed {seed_a}" if seed_a == seed_b
@@ -92,19 +95,19 @@ def _plot_sc_pairs_grid(
         ax.set_ylim(-0.05, ceiling * 1.05)
         ax.set_xticks(ks)
         ax.grid(alpha=0.3)
+        ax.legend(loc="lower right", fontsize=7, framealpha=0.85)
 
     for p in range(n_pairs, n_rows * n_cols):
         r, c = divmod(p, n_cols)
         axes[r, c].axis("off")
 
-    handles, labels_h = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels_h, loc="upper center", ncol=2, fontsize=10,
-               bbox_to_anchor=(0.5, 1.02), frameon=False)
     fig.supxlabel("deliberation slot k", fontsize=11)
     fig.supylabel("Speaker Consistency (nats)", fontsize=11)
     fig.suptitle(
-        f"SC per pair — {label}  (ceiling = log({NUM_CARDS}) = {ceiling:.3f})",
-        fontsize=12, y=1.06,
+        f"SC per pair — {label}  "
+        f"(orange = agent 0 role; magenta = agent 1 role; "
+        f"seed annotated per panel; ceiling = {ceiling:.3f})",
+        fontsize=11, y=1.02,
     )
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
