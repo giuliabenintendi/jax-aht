@@ -54,19 +54,27 @@ def _plot_sc_pairs_grid(
     pairs: list[tuple[int, int]],
     output_path: Path,
     label: str,
+    reference_seed: int,
 ) -> None:
     """Small-multiples: one panel per (agent_0_seed, agent_1_seed) pair.
 
-    For self-play pairs (i == j), the panel matches `sc_per_seed_*` content;
-    for cross-play pairs, the curves show how each agent's own message-pick
-    consistency holds up when paired with a partner from a different seed.
+    Colour code (4 categories, fixed across panels):
+      - bright orange   = agent 0 role,  reference seed
+      - bright magenta  = agent 1 role,  reference seed (matches card-game render)
+      - dark burnt orange = agent 0 role, non-reference seed
+      - purple           = agent 1 role,  non-reference seed
     """
     n_pairs, _, K = pair_sc.shape
     n_cols = min(4, n_pairs)
     n_rows = math.ceil(n_pairs / n_cols)
     ks = np.arange(K)
     ceiling = math.log(NUM_CARDS)
-    colors = ["#fb8500", "#9d4edd"]
+    color_map = {
+        (0, True): "#ff8c00",   # bright orange (matches AGENT_0_COLOR in env)
+        (1, True): "#ff00ff",   # magenta (matches AGENT_1_COLOR in env)
+        (0, False): "#a85a00",  # darker burnt orange
+        (1, False): "#6b00b3",  # purple
+    }
 
     fig, axes = plt.subplots(
         n_rows, n_cols,
@@ -78,36 +86,46 @@ def _plot_sc_pairs_grid(
     for p, (seed_a, seed_b) in enumerate(pairs):
         r, c = divmod(p, n_cols)
         ax = axes[r, c]
-        labels_p = [
-            f"agent 0  (params: seed {seed_a})",
-            f"agent 1  (params: seed {seed_b})",
-        ]
-        for agent_idx in range(2):
+        for agent_idx, seed_in_role in enumerate([seed_a, seed_b]):
+            is_ref = (seed_in_role == reference_seed)
+            color = color_map[(agent_idx, is_ref)]
             ax.plot(
-                ks, pair_sc[p, agent_idx], color=colors[agent_idx],
+                ks, pair_sc[p, agent_idx], color=color,
                 marker="o", markersize=3, linewidth=1.7,
-                label=labels_p[agent_idx],
             )
         ax.axhline(ceiling, color="gray", linestyle="--", linewidth=0.8)
         title = (f"SP: seed {seed_a}" if seed_a == seed_b
-                 else f"XP: a0=seed{seed_a}, a1=seed{seed_b}")
+                 else f"a0=seed{seed_a}, a1=seed{seed_b}")
         ax.set_title(title, fontsize=10)
         ax.set_ylim(-0.05, ceiling * 1.05)
         ax.set_xticks(ks)
         ax.grid(alpha=0.3)
-        ax.legend(loc="lower right", fontsize=7, framealpha=0.85)
 
     for p in range(n_pairs, n_rows * n_cols):
         r, c = divmod(p, n_cols)
         axes[r, c].axis("off")
 
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], color=color_map[(0, True)], lw=2.5,
+               label=f"agent 0 = seed {reference_seed} (ref)"),
+        Line2D([0], [0], color=color_map[(1, True)], lw=2.5,
+               label=f"agent 1 = seed {reference_seed} (ref)"),
+        Line2D([0], [0], color=color_map[(0, False)], lw=2.5,
+               label="agent 0 = other seed"),
+        Line2D([0], [0], color=color_map[(1, False)], lw=2.5,
+               label="agent 1 = other seed"),
+    ]
+    fig.legend(
+        handles=legend_handles, loc="upper center", ncol=4, fontsize=9,
+        bbox_to_anchor=(0.5, 1.04), frameon=False,
+    )
     fig.supxlabel("deliberation slot k", fontsize=11)
     fig.supylabel("Speaker Consistency (nats)", fontsize=11)
     fig.suptitle(
-        f"SC per pair — {label}  "
-        f"(orange = agent 0 role; magenta = agent 1 role; "
-        f"seed annotated per panel; ceiling = {ceiling:.3f})",
-        fontsize=11, y=1.02,
+        f"SC per pair — {label}  (reference seed = {reference_seed}, "
+        f"ceiling = {ceiling:.3f})",
+        fontsize=12, y=1.10,
     )
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -322,6 +340,14 @@ def main() -> None:
             "seed j's. Produces sc_pairs_<label>.png (small-multiples grid)."
         ),
     )
+    parser.add_argument(
+        "--reference-seed", type=int, default=0,
+        help=(
+            "Reference seed used to colour the pairs grid. Bright orange/magenta "
+            "are reserved for that seed in agent 0/1 roles; dark orange/purple "
+            "for any other seed."
+        ),
+    )
     args = parser.parse_args()
 
     ev = load_card_game_eval(args.checkpoint)
@@ -413,6 +439,7 @@ def main() -> None:
             _plot_sc_pairs_grid(
                 pair_sc_arr, pairs_parsed,
                 out / f"sc_pairs_{slug}.png", ev.label,
+                reference_seed=args.reference_seed,
             )
             print(f"Saved {out / f'sc_pairs_{slug}.png'}")
         if args.compare_seeds:
