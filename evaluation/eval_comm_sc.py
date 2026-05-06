@@ -47,6 +47,66 @@ def _collect_rollouts(
     return all_msgs, all_acts
 
 
+def _plot_sc_compare_two_seeds(
+    all_sc: np.ndarray,
+    seed_a: int,
+    seed_b: int,
+    output_path: Path,
+    label: str,
+) -> None:
+    """Side-by-side panel comparing SC curves for two specific seeds.
+
+    Designed for paper / talk figures that highlight role-flip across seeds:
+    e.g. agent 0 as proposer in one seed and agent 0 as follower in another.
+    The visual mirror-image (one curve flat-high, the other low-rising)
+    makes the population-level role asymmetry concrete.
+    """
+    n_seeds, _, K = all_sc.shape
+    if not (0 <= seed_a < n_seeds and 0 <= seed_b < n_seeds):
+        raise ValueError(
+            f"seed indices out of range: got {(seed_a, seed_b)} but only {n_seeds} seeds"
+        )
+    ks = np.arange(K)
+    ceiling = math.log(NUM_CARDS)
+    colors = ["#fb8500", "#9d4edd"]
+
+    def _role_label(seed_idx: int) -> str:
+        agent0_sc0 = float(all_sc[seed_idx, 0, 0])
+        agent1_sc0 = float(all_sc[seed_idx, 1, 0])
+        if agent0_sc0 > agent1_sc0 + 0.5:
+            return "agent 0 = proposer (committed at k=0)"
+        if agent1_sc0 > agent0_sc0 + 0.5:
+            return "agent 0 = follower (commits late)"
+        return "symmetric protocol"
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.5), sharey=True)
+    for i, seed in enumerate([seed_a, seed_b]):
+        ax = axes[i]
+        for agent_idx in range(2):
+            final = float(all_sc[seed, agent_idx, -1])
+            ax.plot(
+                ks, all_sc[seed, agent_idx], color=colors[agent_idx],
+                marker="o", markersize=5, linewidth=2.0,
+                label=f"agent {agent_idx}  (final={final:.2f})",
+            )
+        ax.axhline(ceiling, color="gray", linestyle="--", linewidth=0.8,
+                   label=f"ceiling = {ceiling:.2f}")
+        ax.set_title(f"seed {seed} — {_role_label(seed)}", fontsize=11)
+        ax.set_xticks(ks)
+        ax.set_xticklabels([f"k={k}" for k in ks])
+        ax.set_xlabel("deliberation slot k")
+        ax.set_ylim(-0.05, ceiling * 1.05)
+        ax.grid(alpha=0.3)
+        if i == 0:
+            ax.set_ylabel("Speaker Consistency (nats)")
+        ax.legend(loc="lower right", fontsize=8)
+
+    fig.suptitle(f"SC seed comparison — {label}", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _plot_sc_per_seed_grid(all_sc: np.ndarray, output_path: Path, label: str) -> None:
     """Small-multiples grid: one subplot per seed, both agents per panel.
 
@@ -179,6 +239,14 @@ def main() -> None:
         help="Use argmax actions. Default: sample from policy (matches Lowe et al.).",
     )
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument(
+        "--compare-seeds", default=None,
+        help=(
+            "Two seed indices 'I,J' (e.g. '5,2'). Produces "
+            "sc_compare_<I>_<J>.png with a side-by-side panel. Useful for "
+            "highlighting role-flip across seeds (proposer vs follower)."
+        ),
+    )
     args = parser.parse_args()
 
     ev = load_card_game_eval(args.checkpoint)
@@ -228,6 +296,16 @@ def main() -> None:
         print(f"Saved {out / f'sc_{slug}.png'}")
         _plot_sc_per_seed_grid(all_sc_arr, out / f"sc_per_seed_{slug}.png", ev.label)
         print(f"Saved {out / f'sc_per_seed_{slug}.png'}")
+        if args.compare_seeds:
+            try:
+                seed_a, seed_b = (int(s) for s in args.compare_seeds.split(","))
+            except ValueError as exc:
+                raise SystemExit(
+                    f"--compare-seeds must be 'I,J' (two ints): {exc}"
+                ) from exc
+            cmp_path = out / f"sc_compare_{seed_a}_{seed_b}_{slug}.png"
+            _plot_sc_compare_two_seeds(all_sc_arr, seed_a, seed_b, cmp_path, ev.label)
+            print(f"Saved {cmp_path}")
 
 
 if __name__ == "__main__":
