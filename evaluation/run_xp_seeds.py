@@ -505,6 +505,7 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
     created_run = False
     if wb_run is None:
         layout = task_name.split("/")[-1] if "/" in task_name else task_name
+        extra_tags = [wb_prefix.lower()] if wb_prefix and wb_prefix != "XP" else []
         wb_run = wandb.init(
             project="aht-benchmark",
             entity="g-benintendi-university-of-brescia",
@@ -515,10 +516,10 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
                 f"beta={algo_cfg.get('JA_BETA_MAX', 0)}",
                 f"ent={algo_cfg.get('ENT_COEF', 0.01)}",
                 "xp_eval",
-            ] + (["dual_critic", "jsdgae_on" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "jsdgae_off"]
+            ] + extra_tags + (["dual_critic", "jsdgae_on" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "jsdgae_off"]
                  if algo_cfg.get("USE_DUAL_CRITIC", False) else []),
             group=f"{task_name}/{algo_cfg.get('ALG', '')}",
-            name=f"XP_{_build_xp_name(algo_cfg, layout)}",
+            name=f"{wb_prefix}_{_build_xp_name(algo_cfg, layout)}",
             dir=run_dir,
         )
         created_run = True
@@ -706,8 +707,18 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                       task_name, savedir, wb_run=wb_run, wb_prefix=wb_prefix)
 
 
-def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True):
-    """Standalone XP evaluation from a saved checkpoint."""
+def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True,
+                      use_best: bool = False, drop_op: bool = False,
+                      wb_prefix: str | None = None):
+    """Standalone XP evaluation from a saved checkpoint.
+
+    `use_best` selects `best_params` over `final_params` (per-seed best checkpoint).
+    `drop_op` forces `other_play_*` env_kwargs off so OP wrappers are not applied at eval —
+    useful for probing whether agents trained under OP actually generalize, or just collapsed
+    to a fixed convention in the recoloured/permuted frame. A fresh wandb run is created with
+    `wb_prefix` (default `XP_NO_OP` when `drop_op` else `XP`); the original training run is
+    untouched.
+    """
     greedy_eval = True
     hydra_cfg = _load_hydra_config(checkpoint_path)
     if task_name is not None:
@@ -727,11 +738,22 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     env_kwargs = dict(task_cfg["ENV_KWARGS"])
     if algo_cfg.get("COMMUNICATION", False):
         env_kwargs["communication"] = True
+    if drop_op:
+        env_kwargs["other_play_position_shuffle"] = False
+        env_kwargs["other_play_recolouring"] = False
+        # Keep env-internal shuffle on so SP/XP without OP still varies card layout per episode
+        # (matches what the env would have done in a no-OP training run).
+        env_kwargs["shuffle"] = True
+        print("[xp_seeds] --drop-op: OP wrappers disabled at eval; env shuffle=True")
     env = make_env(task_cfg["ENV_NAME"], env_kwargs)
     env = LogWrapper(env)
 
     run_data = load_train_run(checkpoint_path)
-    all_final_params = run_data["final_params"]
+    params_key = "best_params" if use_best else "final_params"
+    if params_key not in run_data:
+        raise KeyError(f"{params_key!r} not found in checkpoint; keys: {list(run_data.keys())}")
+    all_final_params = run_data[params_key]
+    print(f"[xp_seeds] using {params_key} from checkpoint")
 
     rng = jax.random.PRNGKey(EVAL_SEED)
     rng, init_rng = jax.random.split(rng)
@@ -740,9 +762,22 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     policy, _init_params = init_fn(algo_cfg, env, init_rng)
 
     run_dir = os.path.dirname(checkpoint_path)
+    if wb_prefix is None:
+        wb_prefix = "XP_NO_OP" if drop_op else "XP"
+    # Avoid overwriting the original training run's xp_results/ when re-evaluating with overrides.
+    savedir = run_dir
+    if drop_op or use_best:
+        suffix_parts = []
+        if drop_op:
+            suffix_parts.append("no_op")
+        if use_best:
+            suffix_parts.append("best")
+        savedir = os.path.join(run_dir, "rerun_" + "_".join(suffix_parts))
+        os.makedirs(savedir, exist_ok=True)
+        print(f"[xp_seeds] writing rerun outputs to {savedir}")
     run_xp_from_params(env, policy, all_final_params, label_cfg,
-                       savedir=run_dir, task_name=task_name,
-                       greedy_eval=greedy_eval)
+                       savedir=savedir, task_name=task_name,
+                       greedy_eval=greedy_eval, wb_prefix=wb_prefix)
 
 
 def print_xp_table(xp_metrics, metric_name, seed_names):
@@ -956,11 +991,18 @@ if __name__ == "__main__":
                         help="Path to saved_train_run directory (single multi-seed checkpoint)")
     parser.add_argument("--checkpoints", nargs="+", default=None,
                         help="Paths to multiple 1-seed checkpoints for multi-checkpoint XP")
+    parser.add_argument("--use-best", action="store_true",
+                        help="Use best_params (per-seed best checkpoint) instead of final_params")
+    parser.add_argument("--drop-op", action="store_true",
+                        help="Disable Other-Play wrappers at eval (overrides ENV_KWARGS)")
     args = parser.parse_args()
 
     if args.checkpoints:
+        if args.use_best or args.drop_op:
+            parser.error("--use-best/--drop-op are only supported with --checkpoint (single multi-seed run)")
         run_xp_multi_checkpoint(args.task, args.checkpoints)
     elif args.checkpoint:
-        run_xp_evaluation(args.task, args.checkpoint, greedy_eval=True)
+        run_xp_evaluation(args.task, args.checkpoint, greedy_eval=True,
+                          use_best=args.use_best, drop_op=args.drop_op)
     else:
         parser.error("Either --checkpoint or --checkpoints is required")
