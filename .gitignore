@@ -5,6 +5,8 @@ plots/
 plots/*
 checkpoints/
 checkpoints/*
+wandb/
+wandb/*
 notebooks/
 notebooks/*
 
