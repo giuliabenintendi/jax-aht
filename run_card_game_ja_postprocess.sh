@@ -63,6 +63,12 @@ run_plots () {
       --num-episodes 5 \
       --output-dir "${out_dir_no_attn}" \
       --no-heatmap
+  echo "[$(date +%H:%M)] ACTION DIST ${desc} (${rid}) -> ${out_dir}"
+  ./run_gpu.sh "${GPU}" evaluation.action_distributions \
+      --checkpoint "${ckpt}" \
+      --all-seeds \
+      --num-episodes 50 \
+      --output-dir "${out_dir}"
 }
 
 run_videos () {
