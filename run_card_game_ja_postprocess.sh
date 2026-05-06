@@ -20,9 +20,10 @@ VIDEOS_ONLY="${VIDEOS_ONLY:-0}"
 PLOT_ROOT="/scratch/benintendi/jax-aht/plots/card_game"
 RES_ROOT="/scratch/benintendi/jax-aht/results/card-game/ja_ippo"
 
-# (run_root_subpath, wandb_id, short_desc) for the 6 JA-card-JSD runs.
+# (run_root_subpath, wandb_id, short_desc) for the runs to post-process.
 # run_root = $RES_ROOT/<subpath>; checkpoint = $run_root/saved_train_run.
 RUNS=(
+  "default_label/2026-05-04_23-42-20          lhq6e8wh  baseline_comm_12s_5M"
   "ja_card_jsd_only_0.02/2026-05-05_16-06-20  jdyyp78w  jsd0.02_3s_5M"
   "ja_card_jsd_only_0.05/2026-05-05_17-02-37  tf2d8mo6  jsd0.05_3s_5M"
   "ja_card_jsd_only_0.1/2026-05-05_17-59-08   ps2w3xd4  jsd0.1_3s_5M"
@@ -30,7 +31,7 @@ RUNS=(
   "ja_card_jsd_only_0.5/2026-05-05_19-51-36   9bva9xxt  jsd0.5_3s_5M"
   "ja_card_jsd0.1_12s_8M/2026-05-05_20-40-36  z32brv0i  jsd0.1_12s_8M_BEST"
 )
-BEST_INDEX=5  # zero-based index into RUNS for the best run (sith-admiral-1264)
+BEST_INDEX=6  # zero-based index into RUNS for the best run (sith-admiral-1264)
 
 mkdir -p logs
 LOG="logs/card_game_ja_postprocess_$(date +%Y%m%d_%H%M%S).log"
