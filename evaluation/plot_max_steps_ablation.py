@@ -126,6 +126,11 @@ def main():
         "--x-axis", choices=["train_step", "episodes", "fraction"],
         default="train_step",
     )
+    parser.add_argument(
+        "--band", choices=["sem", "std", "ci95"], default="sem",
+        help="shaded band: SEM (default; mean precision), STD (seed spread), "
+             "or 95% CI (1.96·SEM).",
+    )
     parser.add_argument("--output", default="plots/card_game/max_steps_ablation.png")
     parser.add_argument("--smooth", type=int, default=1,
                         help="moving-average window over the curve (1 = no smoothing)")
@@ -145,33 +150,37 @@ def main():
         print("No runs found. Exiting.")
         return
 
-    fig, ax = plt.subplots(1, 1, figsize=(7, 4.5))
-    cmap = plt.get_cmap("viridis")
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
     sorted_ms = sorted(curves.keys())
+    # Match the overcooked plot palette: tab10's first colours in sweep order.
+    palette = [f"C{i}" for i in range(10)]
     for i, ms in enumerate(sorted_ms):
         info = curves[ms]
         x = _x_transform(info["env_step"], info, ms, args.x_axis)
-        m = info["mean"]
-        s = info["std"]
+        m = np.asarray(info["mean"], dtype=float)
+        std = np.asarray(info["std"], dtype=float)
+        if args.band == "sem":
+            band = std / max(np.sqrt(info["n_seeds"]), 1.0)
+        elif args.band == "ci95":
+            band = 1.96 * std / max(np.sqrt(info["n_seeds"]), 1.0)
+        else:
+            band = std
         if args.smooth > 1:
             kernel = np.ones(args.smooth) / args.smooth
             m = np.convolve(m, kernel, mode="same")
-            s = np.convolve(s, kernel, mode="same")
-        color = cmap(i / max(len(sorted_ms) - 1, 1))
-        ax.plot(x, m, label=f"max_steps={ms} (n={info['n_seeds']})",
-                color=color, linewidth=2)
-        ax.fill_between(x, m - s, m + s, color=color, alpha=0.18)
+            band = np.convolve(band, kernel, mode="same")
+        color = palette[i % len(palette)]
+        ax.plot(x, m, label=f"episode length = {ms}", color=color, linewidth=2.0)
+        ax.fill_between(x, m - band, m + band, color=color, alpha=0.25)
 
     xlabel = {
-        "train_step": "training updates",
-        "episodes": "episodes seen",
-        "fraction": "fraction of training",
+        "train_step": "Training Updates",
+        "episodes": "Episodes",
+        "fraction": "Fraction of Training",
     }[args.x_axis]
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("episode return (mean across seeds)")
-    ax.set_title("Episode-length ablation (rescaled training, fixed NUM_UPDATES)")
-    ax.grid(alpha=0.3)
-    ax.legend(loc="lower right", fontsize=9)
+    ax.set_ylabel("Mean Episode Return")
+    ax.legend(loc="best")
     fig.tight_layout()
 
     out_path = Path(args.output)
