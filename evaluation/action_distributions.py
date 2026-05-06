@@ -6,13 +6,16 @@ tallies — separately for messages (deliberation steps) and picks (decision ste
 
   - view-position: column 0..NUM_CARDS-1 in the agent's own OP-shuffled view.
     Concentration here means the agent has learned a positional convention
-    (always pick column 2, regardless of the cards there).
-  - GT-color: canonical card index 0..NUM_CARDS-1 (the physical card identity).
-    Concentration here means the agent has learned a color convention (always
-    pick the same physical color, regardless of where it lands in its view).
+    (always pick column 2 in my view, regardless of the cards there).
+  - view-color: the appearance color CARD_COLORS[recolouring[gt]] the agent sees
+    for that action — i.e. the colour as it appears in the agent's own
+    obs after OP recolouring. Concentration means the agent picks based on a
+    fixed apparent colour (always pick the orange card I see), not on identity.
 
-Under OP both axes should look near-uniform if the agent is genuinely using the
-observation; concentrated mass on one axis flags a trivial convention.
+Both axes are computed *in the agent's own observation frame*; the canonical
+(GT) view of the world is never used. Under OP, both should look near-uniform
+if the agent is responding to context; concentrated mass on either flags a
+trivial convention.
 
 Usage:
     ./run_gpu.sh <gpu> evaluation.action_distributions \\
@@ -57,6 +60,12 @@ def _per_agent_perm(state, agent_idx: int) -> np.ndarray:
     return np.asarray(state.env_state.per_agent_perm[name])
 
 
+def _per_agent_recolouring(state, agent_idx: int) -> np.ndarray:
+    """recolouring[gt_idx] = appearance index the agent sees for GT card gt_idx."""
+    name = f"agent_{agent_idx}"
+    return np.asarray(state.per_agent_recolouring[name])
+
+
 def _gt_to_view_col(pos_perm: np.ndarray, gt_value: int):
     if gt_value < 0:
         return None
@@ -65,7 +74,7 @@ def _gt_to_view_col(pos_perm: np.ndarray, gt_value: int):
 
 
 def _empty_dist():
-    return {(a, t): {"view_pos": [], "gt_color": []}
+    return {(a, t): {"view_pos": [], "view_color": []}
             for a in (0, 1) for t in ("msg", "pick")}
 
 
@@ -89,12 +98,14 @@ def _collect_one_seed(rng_key, inner_env, params, policy, max_steps,
                 if gt < 0:
                     continue
                 pos_perm = _per_agent_perm(ep_states[t], ai)
-                vc = _gt_to_view_col(pos_perm, gt)
-                if vc is None:
+                vc_pos = _gt_to_view_col(pos_perm, gt)
+                if vc_pos is None:
                     continue
+                recol = _per_agent_recolouring(ep_states[t], ai)
+                vc_color = int(recol[gt])
                 key = (ai, "pick" if is_decision else "msg")
-                out[key]["view_pos"].append(vc)
-                out[key]["gt_color"].append(gt)
+                out[key]["view_pos"].append(vc_pos)
+                out[key]["view_color"].append(vc_color)
     return out
 
 
@@ -110,7 +121,7 @@ def _merge(*dicts):
     for d in dicts:
         for k, v in d.items():
             out[k]["view_pos"].extend(v["view_pos"])
-            out[k]["gt_color"].extend(v["gt_color"])
+            out[k]["view_color"].extend(v["view_color"])
     return out
 
 
@@ -119,12 +130,12 @@ def _plot(out_path: Path, dists, title: str):
     palettes = ["Oranges", "RdPu"]
     rgb_card_colors = np.asarray(CARD_COLORS) / 255.0
     col_titles = [
-        "msg by view-position", "msg by GT-color",
-        "pick by view-position", "pick by GT-color",
+        "msg by view-position", "msg by view-color",
+        "pick by view-position", "pick by view-color",
     ]
     var_for_col = [
-        ("msg", "view_pos"), ("msg", "gt_color"),
-        ("pick", "view_pos"), ("pick", "gt_color"),
+        ("msg", "view_pos"), ("msg", "view_color"),
+        ("pick", "view_pos"), ("pick", "view_color"),
     ]
     for ai in (0, 1):
         for ci, (atype, vtype) in enumerate(var_for_col):
@@ -132,7 +143,7 @@ def _plot(out_path: Path, dists, title: str):
             arr = dists[(ai, atype)][vtype]
             h = _hist_norm(arr)
             xs = np.arange(NUM_CARDS)
-            if vtype == "gt_color":
+            if vtype == "view_color":
                 ax.bar(xs, h, color=rgb_card_colors, edgecolor="black", linewidth=0.4)
             else:
                 cmap = plt.colormaps[palettes[ai]]
@@ -159,7 +170,7 @@ def _write_csv(out_path: Path, seed_indices, all_dists):
         for sidx, d in zip(seed_indices, all_dists):
             for ai in (0, 1):
                 for atype in ("msg", "pick"):
-                    for vtype in ("view_pos", "gt_color"):
+                    for vtype in ("view_pos", "view_color"):
                         arr = np.asarray(d[(ai, atype)][vtype], dtype=int)
                         h = np.bincount(arr, minlength=NUM_CARDS)
                         for k, c in enumerate(h):
