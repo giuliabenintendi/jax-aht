@@ -42,18 +42,27 @@ run_plots () {
   local ckpt="${run_root}/saved_train_run"
   local label_ts="$(basename "$(dirname "${subpath}")")_$(basename "${subpath}")"
   local out_dir="${PLOT_ROOT}/${label_ts}"
+  local out_dir_no_attn="${PLOT_ROOT}/${label_ts}_no_attn"
 
   if [[ ! -d "${ckpt}" ]]; then
     echo "[$(date +%H:%M)] SKIP plots ${desc} (${rid}): no checkpoint at ${ckpt}"
     return
   fi
-  echo "[$(date +%H:%M)] PLOTS ${desc} (${rid}) -> ${out_dir}"
+  echo "[$(date +%H:%M)] PLOTS ${desc} (${rid}) [with heatmap] -> ${out_dir}"
   mkdir -p "${out_dir}"
   ./run_gpu.sh "${GPU}" evaluation.analyze_attention \
       --checkpoint "${ckpt}" \
       --all-seeds \
       --num-episodes 5 \
       --output-dir "${out_dir}"
+  echo "[$(date +%H:%M)] PLOTS ${desc} (${rid}) [no heatmap]  -> ${out_dir_no_attn}"
+  mkdir -p "${out_dir_no_attn}"
+  ./run_gpu.sh "${GPU}" evaluation.analyze_attention \
+      --checkpoint "${ckpt}" \
+      --all-seeds \
+      --num-episodes 5 \
+      --output-dir "${out_dir_no_attn}" \
+      --no-heatmap
 }
 
 run_videos () {

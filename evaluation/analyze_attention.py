@@ -174,8 +174,15 @@ def _render_obs_sequence(ep_states, ep_actions, ep_messages, agent_idx: int,
 
 def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
                               agent_idx: int, agent_key: str, cmap: str,
-                              output_path: Path, max_steps: int):
-    """1 row × T columns: per-step attention + arrow to messaged card or pick bbox."""
+                              output_path: Path, max_steps: int,
+                              draw_heatmap: bool = True):
+    """1 row × T columns: per-step attention + arrow to messaged card or pick bbox.
+
+    When draw_heatmap is False, the heatmap is omitted (and so is the
+    colorbar). Only the card outlines, partner-message dots, own-arrow / pick
+    rectangle remain — useful for reading the message dynamics on a clean
+    background.
+    """
     num_steps = min(len(attn_maps[agent_key]), max_steps)
     if num_steps == 0:
         return
@@ -231,11 +238,12 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
 
     for t in range(num_steps):
         is_decision = (t == num_steps - 1)
-        attn = np.asarray(attn_maps[agent_key][t]).squeeze()
-        axes[t].imshow(
-            attn, cmap=cmap, vmin=0.0, vmax=attn_max,
-            interpolation="nearest", extent=extent,
-        )
+        if draw_heatmap:
+            attn = np.asarray(attn_maps[agent_key][t]).squeeze()
+            axes[t].imshow(
+                attn, cmap=cmap, vmin=0.0, vmax=attn_max,
+                interpolation="nearest", extent=extent,
+            )
         _add_card_outlines(axes[t])
 
         # Overlay action indicator
@@ -320,17 +328,18 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
 
     fig.subplots_adjust(left=0.01, right=0.93, top=0.98, bottom=0.02, wspace=0.05)
 
-    # Colorbar aligned to the actual rendered axis bbox (imshow shrinks the
-    # subplot to preserve aspect, so we need the post-layout position).
-    fig.canvas.draw()
-    axis_bbox = axes[-1].get_position()
-    cbar_ax = fig.add_axes([
-        axis_bbox.x1 + 0.01, axis_bbox.y0, 0.008, axis_bbox.height,
-    ])
-    cbar = fig.colorbar(axes[0].images[0], cax=cbar_ax)
-    cbar.set_ticks([0.0, attn_max])
-    cbar.ax.tick_params(labelsize=6, length=0)
-    cbar.outline.set_linewidth(0.3)
+    if draw_heatmap:
+        # Colorbar aligned to the actual rendered axis bbox (imshow shrinks the
+        # subplot to preserve aspect, so we need the post-layout position).
+        fig.canvas.draw()
+        axis_bbox = axes[-1].get_position()
+        cbar_ax = fig.add_axes([
+            axis_bbox.x1 + 0.01, axis_bbox.y0, 0.008, axis_bbox.height,
+        ])
+        cbar = fig.colorbar(axes[0].images[0], cax=cbar_ax)
+        cbar.set_ticks([0.0, attn_max])
+        cbar.ax.tick_params(labelsize=6, length=0)
+        cbar.outline.set_linewidth(0.3)
 
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
@@ -355,6 +364,9 @@ def main():
     parser.add_argument("--output-dir", default="plots/card_game")
     parser.add_argument("--episode-rng-base", type=int, default=100,
                         help="Base seed for per-episode RNGs: key = base + ep")
+    parser.add_argument("--no-heatmap", action="store_true",
+                        help="Skip the attention heatmap and colorbar in the *_attention.png; "
+                             "keep card outlines, partner-message dots, and own arrow / pick.")
     args = parser.parse_args()
 
     ckpt_path = Path(args.checkpoint).resolve()
@@ -494,6 +506,7 @@ def main():
                     agent_idx, agent_key, cmap,
                     output_path=ep_dir / f"{agent_key}_attention.png",
                     max_steps=max_steps,
+                    draw_heatmap=not args.no_heatmap,
                 )
 
             summary = ep_dir / "summary.txt"
