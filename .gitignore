@@ -1,6 +1,8 @@
 training_state
 figures/
 figures/*
+plots/
+plots/*
 notebooks/
 notebooks/*
 
