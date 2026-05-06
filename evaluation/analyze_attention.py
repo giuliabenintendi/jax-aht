@@ -242,21 +242,41 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
         state = ep_states[t]
         card_perm, pos_perm, _ = _get_per_agent_info(state, agent_idx)
 
-        # Partner's message as DELIVERED to this agent at step t — i.e. what
-        # was in obs[t]'s partner-message channel and therefore what the
-        # attention map actually responded to. That is sent-at-(t-1), which
-        # lives in ep_states[t].messages because ep_states[t] is the pre-step
-        # state for step t. Decision-step messages are held by the env, so the
-        # same indexing works there with no special case.
+        # Partner's message in two timing states:
+        #   - solid: DELIVERED to this agent at step t (in obs[t], hence what
+        #     the attention map actually attended to). That is sent-at-(t-1),
+        #     which lives in ep_states[t].messages.
+        #   - faded: JUST SENT at step t (not yet in this agent's obs; will be
+        #     delivered next step). Sourced from ep_messages[t]. Drawn faded
+        #     and only when it differs from the delivered position.
         card_state = _walk_to_card_state(state)
-        partner_msg_gt = int(card_state.messages[1 - agent_idx])
-        partner_view_col = _view_col_of(card_perm, pos_perm, partner_msg_gt)
-        if partner_view_col is not None:
-            cx = partner_view_col * TP + TP / 2.0
+        partner_msg_delivered_gt = int(card_state.messages[1 - agent_idx])
+        partner_view_col_delivered = _view_col_of(
+            card_perm, pos_perm, partner_msg_delivered_gt,
+        )
+        partner_view_col_concurrent = None
+        if not is_decision and t < len(ep_messages):
+            partner_msg_concurrent_gt = int(ep_messages[t][1 - agent_idx])
+            partner_view_col_concurrent = _view_col_of(
+                card_perm, pos_perm, partner_msg_concurrent_gt,
+            )
+        # Draw faded first so the solid dot occludes it when they overlap.
+        if (
+            partner_view_col_concurrent is not None
+            and partner_view_col_concurrent != partner_view_col_delivered
+        ):
+            cx = partner_view_col_concurrent * TP + TP / 2.0
             cy = 1 * TP + TP / 2.0
             axes[t].add_patch(patches.Circle(
                 (cx, cy), radius=1.2,
-                facecolor=partner_rgb, edgecolor="none",
+                facecolor=partner_rgb, edgecolor="none", alpha=0.35,
+            ))
+        if partner_view_col_delivered is not None:
+            cx = partner_view_col_delivered * TP + TP / 2.0
+            cy = 1 * TP + TP / 2.0
+            axes[t].add_patch(patches.Circle(
+                (cx, cy), radius=1.2,
+                facecolor=partner_rgb, edgecolor="none", alpha=1.0,
             ))
 
         if is_decision:
