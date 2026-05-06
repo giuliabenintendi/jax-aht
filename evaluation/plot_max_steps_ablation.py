@@ -124,7 +124,11 @@ def main():
     )
     parser.add_argument(
         "--x-axis", choices=["train_step", "episodes", "fraction"],
-        default="train_step",
+        default="episodes",
+        help="Episodes (default; numerically equal to train_step × NUM_ENVS, "
+             "but reads on the scale you're used to from Timesteps). "
+             "Use train_step to count PPO updates directly, or fraction to "
+             "normalise every cell to [0,1].",
     )
     parser.add_argument(
         "--band", choices=["sem", "std", "ci95"], default="sem",
