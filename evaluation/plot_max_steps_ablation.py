@@ -26,16 +26,25 @@ import numpy as np
 
 
 def _fetch_curves(api, entity: str, project: str, label_prefix: str):
-    """Return {max_steps: dict(env_step, mean, std, num_envs, total_timesteps)}."""
+    """Return {max_steps: dict(env_step, mean, std, num_envs, total_timesteps)}.
+
+    wandb quirks worked around here:
+      - `$regex` rejects `^anchor` but accepts `prefix.*`, so the filter is
+        written that way.
+      - Paginated `runs()` returns shells with empty configs (and `.load()`
+        doesn't fix it), so each matched run is refetched via `api.run(id)`
+        to get the full algorithm/env config and access history.
+    """
     filters = {
-        "config.label": {"$regex": f"^{label_prefix}"},
+        "config.label": {"$regex": f"{label_prefix}.*"},
         "state": {"$in": ["finished", "running"]},
     }
-    runs = list(api.runs(f"{entity}/{project}", filters=filters))
-    print(f"  found {len(runs)} runs matching label prefix '{label_prefix}'")
+    shells = list(api.runs(f"{entity}/{project}", filters=filters))
+    print(f"  found {len(shells)} runs matching label prefix '{label_prefix}'")
 
     out: dict[int, dict] = {}
-    for r in runs:
+    for shell in shells:
+        r = api.run(f"{entity}/{project}/{shell.id}")
         alg = r.config.get("algorithm", {})
         env_kwargs = alg.get("ENV_KWARGS", {})
         max_steps = int(env_kwargs.get("max_steps", 0))
