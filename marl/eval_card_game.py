@@ -235,11 +235,13 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
 
 def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, video_dir, logger,
                               feed_attn_dims=None, ja_card_masks=None,
-                              filter_top1=False,
+                              filter_top1=False, seed_pairs=None,
                               num_episodes=10, fps=3):
     """Generate cross-play videos: pair seed_i (agent 0) with seed_j (agent 1).
 
     Records a few episodes for each off-diagonal pair and logs as wandb videos.
+    `seed_pairs` is an optional list of (i, j) tuples; if None, every off-diagonal
+    pair is rendered.
     """
     import wandb
     from envs.card_game.rendering import render_card_game, GRID_ROWS, GRID_COLS, TILE_PIXELS
@@ -248,8 +250,12 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
     scale = 20
     padding = 4
 
-    for seed_i in range(num_seeds):
-        for seed_j in range(seed_i + 1, num_seeds):
+    if seed_pairs is None:
+        seed_pairs = [
+            (i, j) for i in range(num_seeds) for j in range(i + 1, num_seeds)
+        ]
+
+    for seed_i, seed_j in seed_pairs:
             params_i = jax.tree.map(lambda x: x[seed_i], all_params)
             params_j = jax.tree.map(lambda x: x[seed_j], all_params)
 

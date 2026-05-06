@@ -67,6 +67,8 @@ run_plots () {
 
 run_videos () {
   local subpath="$1" rid="$2" desc="$3"
+  shift 3
+  local extra_args=("$@")
   local run_root="${RES_ROOT}/${subpath}"
   local ckpt="${run_root}/saved_train_run"
 
@@ -74,10 +76,11 @@ run_videos () {
     echo "[$(date +%H:%M)] SKIP videos ${desc} (${rid}): no checkpoint at ${ckpt}"
     return
   fi
-  echo "[$(date +%H:%M)] VIDEOS ${desc} (${rid}) -> ${run_root}/videos/"
+  echo "[$(date +%H:%M)] VIDEOS ${desc} (${rid}) -> ${run_root}/videos/  extra=${extra_args[*]}"
   ./run_gpu.sh "${GPU}" evaluation.add_eval_videos \
       --checkpoint "${ckpt}" \
-      --run-id "${rid}"
+      --run-id "${rid}" \
+      "${extra_args[@]}"
 }
 
 {
@@ -91,8 +94,12 @@ run_videos () {
   fi
 
   if [[ "${PLOTS_ONLY}" != "1" ]]; then
+    # Best JA run: per-seed self-play videos only.
     read -r subpath rid desc <<< "${RUNS[$BEST_INDEX]}"
     run_videos "${subpath}" "${rid}" "${desc}"
+    # Baseline run (RUNS[0]): per-seed self-play videos + an XP video for seed 0 vs seed 2.
+    read -r subpath rid desc <<< "${RUNS[0]}"
+    run_videos "${subpath}" "${rid}" "${desc}" --xp-pairs 0,2
   fi
 
   echo "[$(date +%H:%M)] post-process done"

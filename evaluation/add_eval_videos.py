@@ -29,7 +29,18 @@ def main():
     parser.add_argument("--run-id", required=True, help="Existing wandb run ID to resume")
     parser.add_argument("--project", default="aht-benchmark")
     parser.add_argument("--entity", default="g-benintendi-university-of-brescia")
+    parser.add_argument("--xp-pairs", nargs="+", default=[],
+                        help='Optional cross-play seed pairs as "i,j" tokens, e.g. '
+                             '`--xp-pairs 0,2 1,3`. Card-game env only. Adds an XP '
+                             'video for each pair on top of the per-seed SP videos.')
+    parser.add_argument("--no-sp-videos", action="store_true",
+                        help="Skip per-seed self-play videos (card-game env only). "
+                             "Useful when --xp-pairs is the only thing you want.")
     args = parser.parse_args()
+    xp_pairs = []
+    for tok in args.xp_pairs:
+        i_str, j_str = tok.split(",")
+        xp_pairs.append((int(i_str), int(j_str)))
 
     # Load config
     run_dir = os.path.dirname(args.checkpoint)
@@ -81,6 +92,7 @@ def main():
         from marl.eval_card_game import (
             _log_card_game_eval_video,
             _log_card_game_per_agent_obs_video,
+            _log_card_game_xp_videos,
         )
         # JA policies append a 4th obs channel (FEED_OTHER_ATTN) and/or a 5-dim
         # translated-partner-attention scalar suffix (JA_CARD_PARTNER_FEED).
@@ -114,34 +126,50 @@ def main():
                 self.run.log({tag: wandb.Video(path, format="mp4")}, commit=commit)
 
         wandb_logger = _WandbVideoLogger(wb_run)
-        for seed_idx in range(num_seeds):
-            params = jax.tree.map(lambda x: x[seed_idx], final_params)
-            video_dir = os.path.join(run_dir, "videos", f"seed_{seed_idx}")
-            os.makedirs(video_dir, exist_ok=True)
-            # Canonical-frame view (same physical layout for both agents) — good
-            # for "what happened in the world".
-            _log_card_game_eval_video(
-                inner_env, policy, params, max_steps,
-                tag=f"Eval/seed_{seed_idx}",
-                video_dir=video_dir,
+        if not args.no_sp_videos:
+            for seed_idx in range(num_seeds):
+                params = jax.tree.map(lambda x: x[seed_idx], final_params)
+                video_dir = os.path.join(run_dir, "videos", f"seed_{seed_idx}")
+                os.makedirs(video_dir, exist_ok=True)
+                # Canonical-frame view (same physical layout for both agents) — good
+                # for "what happened in the world".
+                _log_card_game_eval_video(
+                    inner_env, policy, params, max_steps,
+                    tag=f"Eval/seed_{seed_idx}",
+                    video_dir=video_dir,
+                    logger=wandb_logger,
+                    feed_attn_dims=feed_attn_dims,
+                    ja_card_masks=ja_card_masks,
+                    num_episodes=5, fps=3,
+                )
+                # Per-agent OP-recoloured/shuffled view — the actual policy input,
+                # with attention overlaid. Partner-message dot is drawn into the
+                # observation by the env itself at delivered timing.
+                _log_card_game_per_agent_obs_video(
+                    inner_env, policy, params, max_steps,
+                    tag=f"Eval/seed_{seed_idx}",
+                    video_dir=video_dir,
+                    logger=wandb_logger,
+                    feed_attn_dims=feed_attn_dims,
+                    ja_card_masks=ja_card_masks,
+                    num_episodes=5, fps=3,
+                )
+                print(f"Seed {seed_idx}: SP videos in {video_dir}")
+
+        if xp_pairs:
+            xp_dir = os.path.join(run_dir, "videos", "xp")
+            os.makedirs(xp_dir, exist_ok=True)
+            print(f"XP pairs requested: {xp_pairs} -> {xp_dir}")
+            _log_card_game_xp_videos(
+                inner_env, policy, final_params, max_steps,
+                tag="Eval/xp",
+                video_dir=xp_dir,
                 logger=wandb_logger,
                 feed_attn_dims=feed_attn_dims,
                 ja_card_masks=ja_card_masks,
+                seed_pairs=xp_pairs,
                 num_episodes=5, fps=3,
             )
-            # Per-agent OP-recoloured/shuffled view — the actual policy input,
-            # with attention overlaid. Partner-message dot is drawn into the
-            # observation by the env itself at delivered timing.
-            _log_card_game_per_agent_obs_video(
-                inner_env, policy, params, max_steps,
-                tag=f"Eval/seed_{seed_idx}",
-                video_dir=video_dir,
-                logger=wandb_logger,
-                feed_attn_dims=feed_attn_dims,
-                ja_card_masks=ja_card_masks,
-                num_episodes=5, fps=3,
-            )
-            print(f"Seed {seed_idx}: videos in {video_dir}")
         wb_run.log({}, commit=True)
         wb_run.finish()
         print(f"Card-game eval videos added to {wb_run.url}")
