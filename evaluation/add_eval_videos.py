@@ -37,6 +37,14 @@ def main():
     cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
     alg_config = cfg["algorithm"]
 
+    # Card-game obs only includes the partner-message channel when the env is
+    # built with communication=True; mirror algorithm.COMMUNICATION into
+    # ENV_KWARGS so make_env reproduces the trained obs shape.
+    if alg_config.get("COMMUNICATION", False):
+        env_kwargs = dict(alg_config["ENV_KWARGS"])
+        env_kwargs["communication"] = True
+        alg_config["ENV_KWARGS"] = env_kwargs
+
     env_name = alg_config["ENV_NAME"]
     env = make_env(env_name, alg_config["ENV_KWARGS"])
     env = LogWrapper(env)
@@ -68,6 +76,59 @@ def main():
         id=args.run_id,
         resume="must",
     )
+
+    if env_name == "card-game":
+        from marl.eval_card_game import _log_card_game_video
+        # JA policies append a 4th obs channel (FEED_OTHER_ATTN) and/or a 5-dim
+        # translated-partner-attention scalar suffix (JA_CARD_PARTNER_FEED).
+        # Compute the matching feed dims/masks so the policy gets the input
+        # shape it trained against.
+        feed_attn = alg_config.get("FEED_OTHER_ATTN", False)
+        ja_card_attn = alg_config.get("JA_CARD_ATTN", False)
+        ja_card_partner_feed = ja_card_attn and alg_config.get("JA_CARD_PARTNER_FEED", True)
+        feed_attn_dims = None
+        ja_card_masks = None
+        if feed_attn or ja_card_partner_feed:
+            from agents.ja_image_actor_critic import _compute_resnet_output_dims
+            from agents.ja_utils import build_card_masks
+            img_h = inner_env.grid_height * inner_env.tile_size
+            img_w = inner_env.grid_width * inner_env.tile_size
+            feat_h, feat_w = _compute_resnet_output_dims(
+                img_h, img_w,
+                stride=alg_config.get("CONV_STRIDE", 2),
+                kernel_size=alg_config.get("CONV_KERNEL_SIZE", 3),
+                padding=alg_config.get("CONV_PADDING", "SAME"),
+                num_blocks=alg_config.get("CONV_NUM_BLOCKS", 4),
+            )
+            if feed_attn:
+                feed_attn_dims = (img_h, img_w, feat_h, feat_w)
+            if ja_card_partner_feed:
+                ja_card_masks = build_card_masks(img_h, img_w, feat_h, feat_w)
+
+        class _WandbVideoLogger:
+            def __init__(self, run): self.run = run
+            def log_video(self, tag, path, commit=True):
+                self.run.log({tag: wandb.Video(path, format="mp4")}, commit=commit)
+
+        wandb_logger = _WandbVideoLogger(wb_run)
+        for seed_idx in range(num_seeds):
+            params = jax.tree.map(lambda x: x[seed_idx], final_params)
+            video_dir = os.path.join(run_dir, "videos", f"seed_{seed_idx}")
+            os.makedirs(video_dir, exist_ok=True)
+            _log_card_game_video(
+                inner_env, policy, params, max_steps,
+                tag=f"Eval/seed_{seed_idx}",
+                video_dir=video_dir,
+                logger=wandb_logger,
+                feed_attn_dims=feed_attn_dims,
+                ja_card_masks=ja_card_masks,
+                num_episodes=5, fps=3,
+            )
+            print(f"Seed {seed_idx}: video at {video_dir}/eval_card_game.mp4")
+        wb_run.log({}, commit=True)
+        wb_run.finish()
+        print(f"Card-game eval videos added to {wb_run.url}")
+        return
 
     for seed_idx in range(num_seeds):
         params = jax.tree.map(lambda x: x[seed_idx], final_params)
