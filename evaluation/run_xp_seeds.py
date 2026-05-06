@@ -807,7 +807,8 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
 
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True,
                       use_best: bool = False, drop_op: bool = False,
-                      wb_prefix: str | None = None):
+                      wb_prefix: str | None = None,
+                      xp_video_max_pairs: int | None = None):
     """Standalone XP evaluation from a saved checkpoint.
 
     `use_best` selects `best_params` over `final_params` (per-seed best checkpoint).
@@ -875,6 +876,12 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
         savedir = os.path.join(run_dir, "rerun_" + "_".join(suffix_parts))
         os.makedirs(savedir, exist_ok=True)
         print(f"[xp_seeds] writing rerun outputs to {savedir}")
+    if xp_video_max_pairs is not None:
+        # 0 or negative => render every off-diagonal pair (will be clipped to N*(N-1)/2 by
+        # the slice in run_xp_from_params).
+        effective = xp_video_max_pairs if xp_video_max_pairs > 0 else 10**9
+        label_cfg["XP_VIDEO_MAX_PAIRS"] = effective
+        print(f"[xp_seeds] XP_VIDEO_MAX_PAIRS overridden to {effective}")
     run_xp_from_params(env, policy, all_final_params, label_cfg,
                        savedir=savedir, task_name=task_name,
                        greedy_eval=greedy_eval, wb_prefix=wb_prefix)
@@ -1097,6 +1104,13 @@ if __name__ == "__main__":
                         help="Use best_params (per-seed best checkpoint) instead of final_params")
     parser.add_argument("--drop-op", action="store_true",
                         help="Disable Other-Play wrappers at eval (overrides ENV_KWARGS)")
+    parser.add_argument("--xp-video-max-pairs", type=int, default=None,
+                        help="Override the cap on number of XP video pairs (default 3 from "
+                             "config). Pass 0 (or any non-positive) to render every "
+                             "off-diagonal pair.")
+    parser.add_argument("--xp-video-all-pairs", action="store_true",
+                        help="Convenience flag: render XP videos for every off-diagonal "
+                             "pair. Equivalent to --xp-video-max-pairs 0.")
     args = parser.parse_args()
 
     if args.checkpoints:
@@ -1104,7 +1118,9 @@ if __name__ == "__main__":
             parser.error("--use-best/--drop-op are only supported with --checkpoint (single multi-seed run)")
         run_xp_multi_checkpoint(args.task, args.checkpoints)
     elif args.checkpoint:
+        max_pairs = 0 if args.xp_video_all_pairs else args.xp_video_max_pairs
         run_xp_evaluation(args.task, args.checkpoint, greedy_eval=True,
-                          use_best=args.use_best, drop_op=args.drop_op)
+                          use_best=args.use_best, drop_op=args.drop_op,
+                          xp_video_max_pairs=max_pairs)
     else:
         parser.error("Either --checkpoint or --checkpoints is required")
