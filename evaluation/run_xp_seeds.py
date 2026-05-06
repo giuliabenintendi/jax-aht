@@ -33,7 +33,10 @@ from common.plot_utils import get_metric_names
 from common.save_load_utils import load_train_run
 from common.tree_utils import tree_stack
 from envs import make_env
+from envs.card_game.rendering import NUM_CARDS
 from envs.log_wrapper import LogWrapper
+from evaluation.action_distributions import generate_action_distribution_artifacts
+from marl.eval_card_game import _log_card_game_xp_videos
 
 
 EVAL_SEED = 34957
@@ -53,6 +56,16 @@ def load_task_config(task_name: str) -> dict:
 def load_algo_config() -> dict:
     with open(ALGO_BASE_CONFIG) as f:
         return yaml.safe_load(f)
+
+
+def _get_card_game_position_perm(state, agent_name: str):
+    """Return per-agent OP position perm, or identity when OP shuffle is off."""
+    s = state
+    while s is not None:
+        if hasattr(s, "per_agent_perm"):
+            return s.per_agent_perm[agent_name]
+        s = getattr(s, "env_state", None)
+    return jnp.arange(NUM_CARDS, dtype=jnp.int32)
 
 
 def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
@@ -201,8 +214,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         a1_sq = attn_1.squeeze()
         ca_0 = jnp.einsum("hw,chw->c", a0_sq, ja_card_masks)
         ca_1 = jnp.einsum("hw,chw->c", a1_sq, ja_card_masks)
-        perm_0 = init_env_state.env_state.env_state.per_agent_perm["agent_0"]
-        perm_1 = init_env_state.env_state.env_state.per_agent_perm["agent_1"]
+        perm_0 = _get_card_game_position_perm(init_env_state, "agent_0")
+        perm_1 = _get_card_game_position_perm(init_env_state, "agent_1")
         ph_0 = jnp.zeros(5).at[perm_0].set(ca_0)
         ph_1 = jnp.zeros(5).at[perm_1].set(ca_1)
         prev_pca_0 = ph_1[perm_0]
@@ -292,8 +305,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             if _ja_card:
                 ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
                 ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
-                p0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
-                p1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
+                p0 = _get_card_game_position_perm(env_state, "agent_0")
+                p1 = _get_card_game_position_perm(env_state, "agent_1")
                 ph0 = jnp.zeros(5).at[p0].set(ca0)
                 ph1 = jnp.zeros(5).at[p1].set(ca1)
                 next_pca_0 = ph1[p0]
@@ -497,6 +510,37 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
     return "_".join(parts)
 
 
+def _init_xp_wandb_run(algo_cfg: dict, task_name: str, run_dir: str, wb_prefix: str):
+    """Create a dedicated wandb run for XP-style eval artifacts."""
+    import wandb
+
+    layout = task_name.split("/")[-1] if "/" in task_name else task_name
+    extra_tags = [wb_prefix.lower()] if wb_prefix and wb_prefix != "XP" else []
+    return wandb.init(
+        project="aht-benchmark",
+        entity="g-benintendi-university-of-brescia",
+        config=algo_cfg,
+        tags=[
+            str(algo_cfg.get("ALG", "")),
+            f"{task_name}" if "/" in task_name else layout,
+            f"beta={algo_cfg.get('JA_BETA_MAX', 0)}",
+            f"ent={algo_cfg.get('ENT_COEF', 0.01)}",
+            "xp_eval",
+        ] + extra_tags + (
+            [
+                "dual_critic",
+                "jsdgae_on" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False)
+                else "jsdgae_off",
+            ]
+            if algo_cfg.get("USE_DUAL_CRITIC", False)
+            else []
+        ),
+        group=f"{task_name}/{algo_cfg.get('ALG', '')}",
+        name=f"{wb_prefix}_{_build_xp_name(algo_cfg, layout)}",
+        dir=run_dir,
+    )
+
+
 def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
                       task_name, run_dir, wb_run=None, wb_prefix="XP"):
     """Log XP results to wandb. Creates a new run if `wb_run` is None."""
@@ -504,29 +548,18 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
 
     created_run = False
     if wb_run is None:
-        layout = task_name.split("/")[-1] if "/" in task_name else task_name
-        extra_tags = [wb_prefix.lower()] if wb_prefix and wb_prefix != "XP" else []
-        wb_run = wandb.init(
-            project="aht-benchmark",
-            entity="g-benintendi-university-of-brescia",
-            config=algo_cfg,
-            tags=[
-                str(algo_cfg.get("ALG", "")),
-                f"{task_name}" if "/" in task_name else layout,
-                f"beta={algo_cfg.get('JA_BETA_MAX', 0)}",
-                f"ent={algo_cfg.get('ENT_COEF', 0.01)}",
-                "xp_eval",
-            ] + extra_tags + (["dual_critic", "jsdgae_on" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "jsdgae_off"]
-                 if algo_cfg.get("USE_DUAL_CRITIC", False) else []),
-            group=f"{task_name}/{algo_cfg.get('ALG', '')}",
-            name=f"{wb_prefix}_{_build_xp_name(algo_cfg, layout)}",
-            dir=run_dir,
-        )
+        wb_run = _init_xp_wandb_run(algo_cfg, task_name, run_dir, wb_prefix)
         created_run = True
 
     if score_mean is not None:
-        wb_run.log({"XP/score_matrix": wandb.Image(os.path.join(xp_dir, "xp_score_matrix.png"))}, commit=False)
-    wb_run.log({"XP/jsd_matrix": wandb.Image(os.path.join(xp_dir, "xp_jsd_matrix.png"))}, commit=False)
+        wb_run.log(
+            {f"{wb_prefix}/score_matrix": wandb.Image(os.path.join(xp_dir, "xp_score_matrix.png"))},
+            commit=False,
+        )
+    wb_run.log(
+        {f"{wb_prefix}/jsd_matrix": wandb.Image(os.path.join(xp_dir, "xp_jsd_matrix.png"))},
+        commit=False,
+    )
 
     jsd_ep_means = jsd_matrix.mean(axis=-1)
     sp_jsd = np.diag(jsd_ep_means).mean()
@@ -582,6 +615,10 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     if task_name is None:
         task_name = env_name
     run_label = _build_run_label(algo_cfg, task_name)
+    created_wb_run = False
+    if wb_run is None:
+        wb_run = _init_xp_wandb_run(algo_cfg, task_name, savedir, wb_prefix)
+        created_wb_run = True
 
     print(f"[xp_seeds] task={task_name}, seeds={num_seeds}, episodes={NUM_EVAL_EPISODES}")
 
@@ -703,8 +740,69 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
 
     print(f"[xp_seeds] results saved to {xp_dir} and {central_xp_dir}")
 
+    if env_name == "card-game":
+        action_dist_dir = os.path.join(xp_dir, "action_distributions")
+        ad_num_eps = int(algo_cfg.get("XP_ACTION_DIST_NUM_EPISODES", 50))
+        seed_indices = list(range(num_seeds))
+        print(
+            f"[xp_seeds] logging card-game action distributions "
+            f"(greedy + sampled, {ad_num_eps} eps/seed)"
+        )
+        for greedy_mode, mode_name in ((True, "greedy"), (False, "sampled")):
+            generate_action_distribution_artifacts(
+                inner_env=env._env,
+                stacked_params=stacked_params,
+                policy=policy,
+                max_steps=max_steps,
+                output_dir=os.path.join(action_dist_dir, mode_name),
+                seed_indices=seed_indices,
+                num_episodes=ad_num_eps,
+                feed_attn_dims=feed_attn_dims,
+                ja_card_masks=ja_card_masks,
+                greedy=greedy_mode,
+                wb_run=wb_run,
+                wb_prefix=wb_prefix,
+            )
+
+        max_pairs = int(algo_cfg.get("XP_VIDEO_MAX_PAIRS", 3))
+        xp_video_eps = int(algo_cfg.get("EVAL_VIDEO_XP_NUM_EPISODES", 3))
+        seed_pairs = [
+            (i, j) for i in range(num_seeds) for j in range(i + 1, num_seeds)
+        ][:max_pairs]
+        if seed_pairs:
+            print(
+                f"[xp_seeds] logging card-game XP videos for pairs {seed_pairs} "
+                f"({xp_video_eps} eps/pair)"
+            )
+
+            class _WandbVideoLogger:
+                def __init__(self, run):
+                    self.run = run
+
+                def log_video(self, tag, path, commit=True):
+                    import wandb
+
+                    self.run.log({tag: wandb.Video(path, format="mp4")}, commit=commit)
+
+            xp_video_dir = os.path.join(xp_dir, "videos")
+            os.makedirs(xp_video_dir, exist_ok=True)
+            _log_card_game_xp_videos(
+                env._env, policy, stacked_params, max_steps,
+                f"{wb_prefix}/videos", xp_video_dir, _WandbVideoLogger(wb_run),
+                feed_attn_dims=feed_attn_dims,
+                ja_card_masks=ja_card_masks,
+                filter_top1=bool(algo_cfg.get("FILTER_ATTN_TOP1", False)),
+                seed_pairs=seed_pairs,
+                num_episodes=xp_video_eps,
+                fps=3,
+            )
+
     _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
                       task_name, savedir, wb_run=wb_run, wb_prefix=wb_prefix)
+
+    if created_wb_run:
+        wb_run.finish()
+        print(f"[xp_seeds] wandb run: {wb_run.url}")
 
 
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True,
@@ -738,6 +836,8 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     env_kwargs = dict(task_cfg["ENV_KWARGS"])
     if algo_cfg.get("COMMUNICATION", False):
         env_kwargs["communication"] = True
+    if task_cfg["ENV_NAME"] == "card-game":
+        env_kwargs["scramble_partner_msg"] = False
     if drop_op:
         env_kwargs["other_play_position_shuffle"] = False
         env_kwargs["other_play_recolouring"] = False
@@ -874,6 +974,8 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     eval_env_kwargs = dict(task_cfg["ENV_KWARGS"])
     if algo_cfg.get("COMMUNICATION", False):
         eval_env_kwargs["communication"] = True
+    if task_cfg["ENV_NAME"] == "card-game":
+        eval_env_kwargs["scramble_partner_msg"] = False
     env = make_env(task_cfg["ENV_NAME"], eval_env_kwargs)
     env = LogWrapper(env)
 

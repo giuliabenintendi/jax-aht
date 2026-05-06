@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import os
 from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
+from envs.card_game.rendering import NUM_CARDS
 
 
 def _action_to_ground_truth(env, state, action):
@@ -21,6 +22,16 @@ def _action_to_ground_truth(env, state, action):
             break
 
     return true_action
+
+
+def _get_card_game_position_perm(state, agent_name: str):
+    """Return per-agent OP position perm, or identity when OP shuffle is disabled."""
+    s = state
+    while s is not None:
+        if hasattr(s, "per_agent_perm"):
+            return s.per_agent_perm[agent_name]
+        s = getattr(s, "env_state", None)
+    return jnp.arange(NUM_CARDS, dtype=jnp.int32)
 
 
 def save_video(env, env_name, 
@@ -297,8 +308,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         if _ja_card and collect_attention:
             ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
             ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
-            p0 = env_state.env_state.per_agent_perm["agent_0"]
-            p1 = env_state.env_state.per_agent_perm["agent_1"]
+            p0 = _get_card_game_position_perm(env_state, "agent_0")
+            p1 = _get_card_game_position_perm(env_state, "agent_1")
             ph0 = jnp.zeros(5).at[p0].set(ca0)
             ph1 = jnp.zeros(5).at[p1].set(ca1)
             prev_pca_0 = ph1[p0]
