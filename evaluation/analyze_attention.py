@@ -405,6 +405,20 @@ def main():
     final_params = run_data["final_params"]
     num_seeds = jax.tree.leaves(final_params)[0].shape[0]
 
+    # Per-seed best-checkpoint training-chunk return is precomputed by
+    # _select_best_per_seed_ckpt and saved under "per_ckpt_chunk_return" /
+    # "best_ckpt_idx". Use it to label seed dirs so the on-disk layout makes
+    # per-seed performance scannable at a glance, with no extra rollouts.
+    per_ckpt_returns = run_data.get("per_ckpt_chunk_return")
+    best_ckpt_idx = run_data.get("best_ckpt_idx")
+    best_seed_returns = None
+    if per_ckpt_returns is not None and best_ckpt_idx is not None:
+        per_ckpt_returns_np = np.asarray(per_ckpt_returns)
+        best_idx_np = np.asarray(best_ckpt_idx)
+        best_seed_returns = per_ckpt_returns_np[
+            np.arange(per_ckpt_returns_np.shape[0]), best_idx_np
+        ]
+
     if args.all_seeds:
         seed_indices = list(range(num_seeds))
     else:
@@ -424,7 +438,13 @@ def main():
 
     for seed_idx in seed_indices:
         params = jax.tree.map(lambda x, _i=seed_idx: x[_i], final_params)
-        seed_out = output_dir / f"seed_{seed_idx}" if args.all_seeds else output_dir
+        if args.all_seeds:
+            name = f"seed_{seed_idx}"
+            if best_seed_returns is not None:
+                name += f"_r{float(best_seed_returns[seed_idx]):.3f}"
+            seed_out = output_dir / name
+        else:
+            seed_out = output_dir
         seed_out.mkdir(parents=True, exist_ok=True)
         print(f"\n[seed {seed_idx}] -> {seed_out.resolve()}")
 
