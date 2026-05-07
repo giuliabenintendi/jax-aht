@@ -476,6 +476,51 @@ def render_episode_frames(ep_states, agent_view_size, pixels_per_tile=32):
     return frames
 
 
+def render_overcooked_fov_per_agent_frames(
+    ep_obs, fov_px, scale=4, gap=4, draw_step=True,
+):
+    """Render Overcooked FOV obs as side-by-side per-agent frames with step labels.
+
+    Each agent's flat obs (length fov_px*fov_px*3) is reshaped to image, upscaled,
+    and concatenated horizontally with a small gap. A step label is overlaid at
+    the top-left of each panel — same scheme as the card-game per-agent video.
+
+    Args:
+        ep_obs: list of dicts {"agent_0": np.ndarray, "agent_1": np.ndarray}, each
+            obs flat float32 in [0,1] of length fov_px*fov_px*3 (output of
+            run_episode_with_states with collect_obs=True on an OvercookedFOVWrapper).
+        fov_px: FOV image side length in pixels (fov_size * tile_size).
+        scale: nearest-neighbor upscale factor for the rendered panels.
+        gap: pixels of black padding between the two agent panels.
+        draw_step: overlay step number on each panel.
+
+    Returns:
+        list of (fov_px*scale, 2*fov_px*scale + gap, 3) uint8 frames.
+    """
+    import numpy as np
+    from PIL import Image
+    from marl.eval_utils import _draw_timestep_label
+
+    frames = []
+    for t, obs_t in enumerate(ep_obs):
+        a0 = (np.asarray(obs_t["agent_0"]).reshape(fov_px, fov_px, 3) * 255.0).astype(np.uint8)
+        a1 = (np.asarray(obs_t["agent_1"]).reshape(fov_px, fov_px, 3) * 255.0).astype(np.uint8)
+        if scale != 1:
+            a0 = np.array(Image.fromarray(a0).resize(
+                (fov_px * scale, fov_px * scale), Image.NEAREST))
+            a1 = np.array(Image.fromarray(a1).resize(
+                (fov_px * scale, fov_px * scale), Image.NEAREST))
+        if draw_step:
+            _draw_timestep_label(a0, t)
+            _draw_timestep_label(a1, t)
+        H, W = a0.shape[:2]
+        frame = np.zeros((H, 2 * W + gap, 3), dtype=np.uint8)
+        frame[:, :W] = a0
+        frame[:, W + gap:] = a1
+        frames.append(frame)
+    return frames
+
+
 def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
                            commit=True, frames=None):
     """Log three-panel attention heatmaps to wandb: agent_0 (blue), agent_1 (red), overlap.
