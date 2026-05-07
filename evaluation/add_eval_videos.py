@@ -12,9 +12,7 @@ import jax
 import wandb
 from omegaconf import OmegaConf
 
-from agents.initialize_agents import (
-    initialize_ja_image_agent, initialize_ja_dual_image_agent,
-)
+from agents.initialize_agents import initialize_ja_image_agent
 from common.save_load_utils import load_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
@@ -74,11 +72,9 @@ def main():
     env = make_env(env_name, alg_config["ENV_KWARGS"])
     env = LogWrapper(env)
 
-    # Detect dual critic and init policy
     obs_type = alg_config.get("OBS_TYPE", alg_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
-    use_dual = alg_config.get("USE_DUAL_CRITIC", False)
     if obs_type in ("image", "fov"):
-        init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
+        init_fn = initialize_ja_image_agent
     else:
         from agents.initialize_agents import initialize_ja_agent
         init_fn = initialize_ja_agent

@@ -44,9 +44,6 @@ def _build_run_string(config: dict) -> str:
         parts.append("flamingo_xattn")
     if alg_config.get("QUERY_PARTNER_LSTM", False):
         parts.append("qplstm")
-    if alg_config.get("USE_DUAL_CRITIC", False):
-        jsd_gae = "jsdgae" if alg_config.get("DUAL_CRITIC_ACTOR_JA", False) else "nojsdgae"
-        parts.append(f"dual_{jsd_gae}")
     ent_coef = alg_config.get("ENT_COEF", 0.01)
     parts.append(f"ent{ent_coef}")
     label = config.get("label", "default_label")
@@ -105,12 +102,6 @@ def _build_tags(config) -> list[str]:
         tags.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
     ent_coef = alg_config.get("ENT_COEF", 0.01)
     tags.append(f"ent={ent_coef}")
-    if alg_config.get("USE_DUAL_CRITIC", False):
-        tags.append("dual_critic")
-        if alg_config.get("DUAL_CRITIC_ACTOR_JA", False):
-            tags.append("jsdgae_on")
-        else:
-            tags.append("jsdgae_off")
     if alg_config.get("COMMUNICATION", False):
         tags.append("comm")
     if alg_config.get("FEED_OTHER_ATTN", False):

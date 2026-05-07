@@ -8,11 +8,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from agents.ja_image_actor_critic import JAImageActorCritic, JAImageScannedLSTM, _compute_resnet_output_dims
-from agents.ja_dual_image_actor_critic import JADualImageActorCritic
 from agents.ja_image_actor_critic_agent import JAImageActorCriticPolicy
-from agents.ja_dual_image_actor_critic_agent import JADualImageActorCriticPolicy
 from agents.ja_utils import augment_obs_for_eval
-from agents.initialize_agents import initialize_ja_image_agent, initialize_ja_dual_image_agent
+from agents.initialize_agents import initialize_ja_image_agent
 
 # cramped_room dimensions
 IMG_H, IMG_W = 28, 35
@@ -106,33 +104,6 @@ def test_single_critic_policy_4ch():
     assert attn_map.shape == (1, 2, FEAT_H, FEAT_W)
 
 
-def test_dual_critic_policy_4ch():
-    """JADualImageActorCriticPolicy with num_channels=4 inits and runs."""
-    rng = jax.random.PRNGKey(0)
-    obs_dim = IMG_H * IMG_W * 4
-
-    policy = JADualImageActorCriticPolicy(
-        action_dim=ACTION_DIM, obs_dim=obs_dim,
-        img_height=IMG_H, img_width=IMG_W, num_channels=4,
-        lstm_hidden_dim=64,
-    )
-    params = policy.init_params(rng)
-    hstate = policy.init_hstate(2)
-
-    dummy_obs = jnp.zeros((1, 2, obs_dim))
-    dummy_done = jnp.zeros((1, 2))
-    dummy_avail = jnp.ones((1, 2, ACTION_DIM))
-
-    action, (val_ext, val_int), pi, new_hstate, attn_map = policy.get_action_value_policy(
-        params=params, obs=dummy_obs, done=dummy_done,
-        avail_actions=dummy_avail, hstate=hstate, rng=rng,
-    )
-    assert action.shape == (1, 2)
-    assert val_ext.shape == (1, 2)
-    assert val_int.shape == (1, 2)
-    assert attn_map.shape == (1, 2, FEAT_H, FEAT_W)
-
-
 def test_augment_obs_for_eval():
     """augment_obs_for_eval produces correct shape and channel layout.
 
@@ -215,8 +186,8 @@ def test_swap_and_reset_logic():
 
 
 def test_initialize_agents_feed_other_attn():
-    """initialize_ja_image_agent and initialize_ja_dual_image_agent
-    set num_channels=4 and correct obs_dim when FEED_OTHER_ATTN=true."""
+    """initialize_ja_image_agent sets num_channels=4 and correct obs_dim
+    when FEED_OTHER_ATTN=true."""
     from envs import make_env
     from envs.log_wrapper import LogWrapper
 
@@ -234,17 +205,10 @@ def test_initialize_agents_feed_other_attn():
     env = LogWrapper(env)
     rng = jax.random.PRNGKey(0)
 
-    # Single critic
     policy, params = initialize_ja_image_agent(config, env, rng)
     assert policy.obs_dim == IMG_H * IMG_W * 4
     assert policy.network.num_channels == 4
 
-    # Dual critic
-    policy_dual, params_dual = initialize_ja_dual_image_agent(config, env, rng)
-    assert policy_dual.obs_dim == IMG_H * IMG_W * 4
-    assert policy_dual.network.num_channels == 4
-
-    # Without FEED_OTHER_ATTN
     config["FEED_OTHER_ATTN"] = False
     policy_3ch, _ = initialize_ja_image_agent(config, env, rng)
     assert policy_3ch.obs_dim == IMG_H * IMG_W * 3

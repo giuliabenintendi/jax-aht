@@ -24,10 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-from agents.initialize_agents import (
-    initialize_ja_dual_image_agent,
-    initialize_ja_image_agent,
-)
+from agents.initialize_agents import initialize_ja_image_agent
 from agents.ja_utils import jsd_divergence
 from common.plot_utils import get_metric_names
 from common.save_load_utils import load_train_run
@@ -488,9 +485,6 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
     parts = [layout]
     beta = algo_cfg.get("JA_BETA_MAX", 0)
     parts.append(f"b{beta}")
-    if algo_cfg.get("USE_DUAL_CRITIC", False):
-        jsd_gae = "jsdgae" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False) else "nojsdgae"
-        parts.append(f"dual_{jsd_gae}")
     ent = algo_cfg.get("ENT_COEF", 0.01)
     if ent != 0.01:
         parts.append(f"ent{ent}")
@@ -526,15 +520,7 @@ def _init_xp_wandb_run(algo_cfg: dict, task_name: str, run_dir: str, wb_prefix: 
             f"beta={algo_cfg.get('JA_BETA_MAX', 0)}",
             f"ent={algo_cfg.get('ENT_COEF', 0.01)}",
             "xp_eval",
-        ] + extra_tags + (
-            [
-                "dual_critic",
-                "jsdgae_on" if algo_cfg.get("DUAL_CRITIC_ACTOR_JA", False)
-                else "jsdgae_off",
-            ]
-            if algo_cfg.get("USE_DUAL_CRITIC", False)
-            else []
-        ),
+        ] + extra_tags,
         group=f"{task_name}/{algo_cfg.get('ALG', '')}",
         name=f"{wb_prefix}_{_build_xp_name(algo_cfg, layout)}",
         dir=run_dir,
@@ -858,9 +844,7 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
 
     rng = jax.random.PRNGKey(EVAL_SEED)
     rng, init_rng = jax.random.split(rng)
-    use_dual = algo_cfg.get("USE_DUAL_CRITIC", False)
-    init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
-    policy, _init_params = init_fn(algo_cfg, env, init_rng)
+    policy, _init_params = initialize_ja_image_agent(algo_cfg, env, init_rng)
 
     run_dir = os.path.dirname(checkpoint_path)
     if wb_prefix is None:
@@ -989,9 +973,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     # Initialize policy
     rng = jax.random.PRNGKey(EVAL_SEED)
     rng, init_rng = jax.random.split(rng)
-    use_dual = algo_cfg.get("USE_DUAL_CRITIC", False)
-    init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
-    policy, init_params = init_fn(algo_cfg, env, init_rng)
+    policy, init_params = initialize_ja_image_agent(algo_cfg, env, init_rng)
 
     # Load one seed from each checkpoint
     seed_params = []

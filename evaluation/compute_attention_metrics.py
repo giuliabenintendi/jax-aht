@@ -15,9 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 from omegaconf import OmegaConf
 
-from agents.initialize_agents import (
-    initialize_ja_image_agent, initialize_ja_dual_image_agent, _get_image_dims,
-)
+from agents.initialize_agents import initialize_ja_image_agent, _get_image_dims
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from common.save_load_utils import load_train_run
 from envs import make_env
@@ -49,10 +47,8 @@ def compute_metrics(checkpoint_path: str, num_episodes: int = 64,
     env = make_env(env_name, alg_config["ENV_KWARGS"])
     env = LogWrapper(env)
 
-    use_dual = alg_config.get("USE_DUAL_CRITIC", False)
-    init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
     rng = jax.random.PRNGKey(0)
-    policy, _ = init_fn(alg_config, env, rng)
+    policy, _ = initialize_ja_image_agent(alg_config, env, rng)
 
     # Feature map dims (for object coverage)
     feat_h, feat_w = None, None

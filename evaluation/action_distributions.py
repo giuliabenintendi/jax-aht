@@ -46,7 +46,6 @@ from omegaconf import OmegaConf
 
 from agents.initialize_agents import (
     initialize_ja_agent,
-    initialize_ja_dual_image_agent,
     initialize_ja_image_agent,
 )
 from common.save_load_utils import load_train_run
@@ -519,11 +518,7 @@ def _build_env_and_policy(alg_config_template: dict, drop_op: bool):
     obs_type = alg_config.get("OBS_TYPE",
                               env_kwargs.get("obs_type", "symbolic"))
     if obs_type in ("image", "fov"):
-        init_fn = (
-            initialize_ja_dual_image_agent
-            if alg_config.get("USE_DUAL_CRITIC", False)
-            else initialize_ja_image_agent
-        )
+        init_fn = initialize_ja_image_agent
     else:
         init_fn = initialize_ja_agent
     policy, _ = init_fn(alg_config, env, jax.random.PRNGKey(0))

@@ -117,8 +117,7 @@ def load_card_game_eval(checkpoint_path: str) -> CardGameEval:
     - Reads `<run_dir>/.hydra/config.yaml`.
     - Builds env (with the same OP wrappers as training) plus a LogWrapper-
       wrapped copy used only for policy init.
-    - Initializes the right policy class (JA / JA-image / JA-dual-image)
-      based on `OBS_TYPE` and `USE_DUAL_CRITIC`.
+    - Initializes the right policy class (JA / JA-image) based on `OBS_TYPE`.
     - Loads the saved train run and selects the best per-seed checkpoint by
       mean episodic return. Final params are never used.
     - Forces `scramble_partner_msg` to False at eval time so interventions
@@ -126,7 +125,6 @@ def load_card_game_eval(checkpoint_path: str) -> CardGameEval:
     """
     from agents.initialize_agents import (
         initialize_ja_agent,
-        initialize_ja_dual_image_agent,
         initialize_ja_image_agent,
     )
 
@@ -146,9 +144,8 @@ def load_card_game_eval(checkpoint_path: str) -> CardGameEval:
     env_wrapped = LogWrapper(env)
 
     obs_type = _get_obs_type(alg_config)
-    use_dual = alg_config.get("USE_DUAL_CRITIC", False)
     if obs_type in ("image", "fov"):
-        init_fn = initialize_ja_dual_image_agent if use_dual else initialize_ja_image_agent
+        init_fn = initialize_ja_image_agent
     else:
         init_fn = initialize_ja_agent
 
