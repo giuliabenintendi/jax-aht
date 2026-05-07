@@ -27,7 +27,9 @@ def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_co
     del agent_idx  # unused — agent tiles are no longer rendered
     del card_row   # unused — card row is fixed by CARD_RECT_Y
 
-    thickness = max(2, scale // 8)
+    # Decision-step border is intentionally very thick so the picked card
+    # is unambiguously highlighted in the eval-video frame.
+    thickness = 3 * scale
     if color is None:
         color = [255, 255, 255]
     color_arr = np.asarray(color, dtype=np.uint8)

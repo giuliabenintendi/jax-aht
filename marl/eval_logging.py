@@ -372,11 +372,13 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
         all_attn_data = {"agent_0": [], "agent_1": []}
         all_ep_actions = []
         all_ep_messages = []
+        all_ep_obs = []
         for ep_i in range(num_eval_video_eps):
-            ep_states_i, attn_data_i, ep_actions_i, ep_messages_i = run_episode_with_states(
+            ep_states_i, attn_data_i, ep_actions_i, ep_messages_i, ep_obs_i = run_episode_with_states(
                 jax.random.PRNGKey(42 + seed_idx * 100 + ep_i), inner_env, final_params, policy,
                 final_params, policy, max_steps,
                 collect_attention=True,
+                collect_obs=True,
                 feed_other_attn_dims=feed_attn_dims,
                 ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
             )
@@ -385,10 +387,12 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 all_attn_data[ak].extend(attn_data_i.get(ak, []))
             all_ep_actions.extend(ep_actions_i)
             all_ep_messages.extend(ep_messages_i)
+            all_ep_obs.extend(ep_obs_i)
         ep_states = all_ep_states
         attn_data = all_attn_data
         ep_actions = all_ep_actions
         ep_messages = all_ep_messages
+        ep_obs = all_ep_obs
 
         print(f"[ja_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
 
@@ -404,12 +408,16 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     render_card_game_eval_frames,
                     render_card_game_eval_frames_per_agent,
                 )
-                # Side-by-side A0 | A1 composite per frame for the video.
-                frames = render_card_game_eval_frames(ep_states, scale=32)
+                # Stacked A0 / A1 composite per frame using each agent's
+                # actual obs so the OP-shuffled+recoloured view is shown.
+                frames = render_card_game_eval_frames(
+                    ep_states, scale=32, ep_obs=ep_obs, ep_actions=ep_actions,
+                )
                 # Single-game-width backdrop for the attention grid (its
                 # heatmaps are sized to the original obs, not 2x-wide).
                 attn_backdrop_frames = render_card_game_eval_frames_per_agent(
                     ep_states, agent_idx=0, scale=32,
+                    ep_obs=ep_obs, ep_actions=ep_actions,
                 )
             else:
                 from evaluation.vis_episodes import render_episode_frames
@@ -425,6 +433,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 _log_card_game_attention_grid(
                     attn_backdrop_frames, attn_data, ep_actions, tag, video_dir, logger,
                     ep_messages=ep_messages, card_permutation=_card_perm,
+                    ep_obs=ep_obs, ep_states=ep_states,
                 )
                 _log_card_game_eval_video(
                     inner_env, policy, final_params, max_steps, tag, video_dir, logger,

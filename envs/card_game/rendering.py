@@ -308,6 +308,67 @@ def _draw_card_border_upscaled(img, card_pos, color, thickness, scale):
     return img
 
 
+def _gt_pick_to_view_col(state, agent_idx, gt_pick):
+    """Map a GT-frame pick (colour ID) to the agent's view column. Under OP
+    position shuffle this consults `per_agent_perm`; without OP it falls
+    back to `card_permutation` (so view = physical layout). Returns -1 when
+    there's no valid pick."""
+    import numpy as np
+
+    if gt_pick is None or int(gt_pick) < 0:
+        return -1
+    name = f"agent_{agent_idx}"
+    s = state
+    while s is not None and not hasattr(s, "per_agent_perm"):
+        s = getattr(s, "env_state", None)
+    if s is not None:
+        pos_perm = np.asarray(s.per_agent_perm[name])
+        matches = np.where(pos_perm == int(gt_pick))[0]
+        if len(matches):
+            return int(matches[0])
+    base = state
+    while base is not None and not hasattr(base, "card_permutation"):
+        base = getattr(base, "env_state", None)
+    if base is None:
+        return -1
+    perm = np.asarray(base.card_permutation)
+    matches = np.where(perm == int(gt_pick))[0]
+    return int(matches[0]) if len(matches) else -1
+
+
+def _render_one_agent_frame_from_obs(agent_idx, flat_obs, pick_view_col, scale, border_thickness):
+    """Build a per-agent eval subview from the actual flat obs the policy saw.
+    Under OP this naturally shows the agent's shuffled+recoloured view (the
+    obs already contains the agent's message dot). Adds a colour-coded
+    A0/A1 label and, when `pick_view_col >= 0`, a thick white border at
+    that view column."""
+    import numpy as np
+    from PIL import Image
+
+    h_px = GRID_ROWS * TILE_PIXELS
+    w_px = GRID_COLS * TILE_PIXELS
+    base = (np.asarray(flat_obs).reshape(h_px, w_px, 3) * 255.0).astype(np.uint8)
+
+    own_color = np.array(
+        AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8,
+    )
+    label_pattern = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
+    base = _stamp_label_np(base, label_pattern, 1, 27, own_color)
+
+    sub = np.array(
+        Image.fromarray(base).resize(
+            (w_px * scale, h_px * scale), Image.NEAREST,
+        )
+    )
+
+    if pick_view_col >= 0:
+        white_border = np.array([255, 255, 255], dtype=np.uint8)
+        sub = _draw_card_border_upscaled(
+            sub, pick_view_col, white_border, border_thickness, scale,
+        )
+    return sub
+
+
 def _render_one_agent_frame(inner, agent_idx, scale, border_thickness, _unused=None):
     """Render a single per-agent eval subview at the given upscale factor.
 
@@ -353,38 +414,57 @@ def _render_one_agent_frame(inner, agent_idx, scale, border_thickness, _unused=N
     own_pick = int(np.array(inner.agent_choices)[agent_idx])
     if own_pick >= 0:
         pos = int(np.where(perm_np == own_pick)[0][0])
+        # Decision-step border is white (regardless of agent), so the user can
+        # tell the choice apart from the always-coloured A0/A1 label / dot.
+        white_border = np.array([255, 255, 255], dtype=np.uint8)
         sub = _draw_card_border_upscaled(
-            sub, pos, own_color, border_thickness, scale
+            sub, pos, white_border, border_thickness, scale
         )
     return sub
 
 
-def render_card_game_eval_frames_per_agent(ep_states, agent_idx: int, scale: int = 32):
-    """Per-agent (single-game-width) eval frames. Same content as one half of
-    `render_card_game_eval_frames`'s composite. Useful as the backdrop for
-    attention-overlay grids, which expect frames sized to the original obs."""
+def render_card_game_eval_frames_per_agent(ep_states, agent_idx: int, scale: int = 32,
+                                            ep_obs=None, ep_actions=None):
+    """Per-agent (single-game-width) eval frames. Used as the backdrop for
+    attention-overlay grids. When `ep_obs` is provided, the base is the
+    agent's actual obs (so under OP it shows their shuffled+recoloured view
+    + their message dot)."""
     import numpy as np
 
     if agent_idx not in (0, 1):
         raise ValueError(f"agent_idx must be 0 or 1, got {agent_idx}")
     white = np.array([255, 255, 255], dtype=np.uint8)
-    border_thickness = 2 * scale  # 2 raw obs-pixels thick
-    return [
-        _render_one_agent_frame(
-            _unwrap_card_game_state(state), agent_idx, scale, border_thickness, white
-        )
-        for state in ep_states
-    ]
+    border_thickness = 3 * scale
+    n = len(ep_states)
+    out = []
+    for t, state in enumerate(ep_states):
+        if ep_obs is not None and t < len(ep_obs):
+            view_col = -1
+            if t == n - 1 and ep_actions:
+                state_for_perm = ep_states[t - 1] if t > 0 else state
+                pick_gt = int(ep_actions[-1][agent_idx])
+                view_col = _gt_pick_to_view_col(state_for_perm, agent_idx, pick_gt)
+            sub = _render_one_agent_frame_from_obs(
+                agent_idx, ep_obs[t][f"agent_{agent_idx}"],
+                view_col, scale, border_thickness,
+            )
+        else:
+            sub = _render_one_agent_frame(
+                _unwrap_card_game_state(state), agent_idx,
+                scale, border_thickness, white,
+            )
+        out.append(sub)
+    return out
 
 
-def render_card_game_eval_frames(ep_states, scale: int = 32, gap_raw_px: int = 1):
+def render_card_game_eval_frames(ep_states, scale: int = 32, gap_raw_px: int = 1,
+                                  ep_obs=None, ep_actions=None):
     """Render stacked composite eval frames: A0's view on top, A1's view below.
 
-    Each frame shows two mini card-games separated by a thin black gap. The
-    top mini-game is what A0 saw (cards + timestep + A0's partner-message dot)
-    with a thick white border around A0's chosen card and an "A0" label. The
-    bottom is the symmetric thing for A1. Stacking both subviews in one frame
-    makes "who picked what" readable without flipping between videos.
+    When `ep_obs` is provided, each subview uses the agent's *actual* flat
+    obs as the base — under OP this reflects each agent's shuffled and
+    recoloured view (the obs already contains the per-agent message dot
+    too). Without `ep_obs` we fall back to the canonical-scene render.
 
     Args:
         ep_states: list of WrappedEnvState (from run_episode_with_states).
@@ -392,21 +472,40 @@ def render_card_game_eval_frames(ep_states, scale: int = 32, gap_raw_px: int = 1
         scale: upscale factor (nearest-neighbor) for video quality.
         gap_raw_px: height of the black separator between the two subviews,
             in *raw* px (gets multiplied by scale).
-
-    Returns:
-        list of (2*H_scaled + gap_raw_px*scale, W_scaled, 3) uint8 numpy arrays.
+        ep_obs: optional list of `{"agent_0": flat_obs, "agent_1": flat_obs}`
+            dicts aligned with `ep_states` (one per timestep).
     """
     import numpy as np
 
     white = np.array([255, 255, 255], dtype=np.uint8)
-    border_thickness = 2 * scale  # 2 raw obs-pixels thick
+    border_thickness = 3 * scale  # very thick decision-step indicator (3 raw px)
     gap_px = max(0, gap_raw_px) * scale
 
     frames = []
-    for state in ep_states:
+    n = len(ep_states)
+    for t, state in enumerate(ep_states):
         inner = _unwrap_card_game_state(state)
-        sub_a0 = _render_one_agent_frame(inner, 0, scale, border_thickness, white)
-        sub_a1 = _render_one_agent_frame(inner, 1, scale, border_thickness, white)
+        if ep_obs is not None and t < len(ep_obs):
+            obs_t = ep_obs[t]
+            # Auto-reset wipes agent_choices on the final state, so derive
+            # picks from ep_actions and resolve view cols using a pre-reset
+            # state's per_agent_perm.
+            view_col_0 = view_col_1 = -1
+            if t == n - 1 and ep_actions:
+                state_for_perm = ep_states[t - 1] if t > 0 else state
+                pick_gt_0 = int(ep_actions[-1][0])
+                pick_gt_1 = int(ep_actions[-1][1])
+                view_col_0 = _gt_pick_to_view_col(state_for_perm, 0, pick_gt_0)
+                view_col_1 = _gt_pick_to_view_col(state_for_perm, 1, pick_gt_1)
+            sub_a0 = _render_one_agent_frame_from_obs(
+                0, obs_t["agent_0"], view_col_0, scale, border_thickness,
+            )
+            sub_a1 = _render_one_agent_frame_from_obs(
+                1, obs_t["agent_1"], view_col_1, scale, border_thickness,
+            )
+        else:
+            sub_a0 = _render_one_agent_frame(inner, 0, scale, border_thickness, white)
+            sub_a1 = _render_one_agent_frame(inner, 1, scale, border_thickness, white)
 
         if gap_px > 0:
             w_sub = sub_a0.shape[1]

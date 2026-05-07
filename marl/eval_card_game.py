@@ -14,12 +14,14 @@ from marl.eval_utils import (
 
 
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger,
-                                  ep_messages=None, card_permutation=None):
+                                  ep_messages=None, card_permutation=None,
+                                  ep_obs=None, ep_states=None):
     """Log a 2xT grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
 
-    Each cell shows the scene with the attention heatmap overlaid.
-    The last column shows the agents' card choices as thick colored borders
-    drawn on top of the spot marker.
+    When `ep_obs` is provided, each cell uses the *agent's own* obs as the
+    backdrop — under OP this shows the shuffled+recoloured view that the
+    policy actually saw, so the attention overlay aligns with the agent's
+    perspective. The last column shows white borders around picked cards.
     """
     import wandb
 
@@ -34,64 +36,76 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
         _stamp_label_np,
         _A0_PATTERN_SMALL,
         _A1_PATTERN_SMALL,
+        _gt_pick_to_view_col,
+        GRID_ROWS,
+        GRID_COLS,
+        TILE_PIXELS,
     )
 
-    # `frames` is kept in the signature for backward compat but no longer
-    # used as a backdrop — we render fresh per timestep so the embedded
-    # pixel-art timestep counter updates each cell.
     n_steps = min(len(maps_0), len(maps_1))
     if frames is not None:
         n_steps = min(n_steps, len(frames) - 1)
     scale = 32
+    h_px = GRID_ROWS * TILE_PIXELS
+    w_px = GRID_COLS * TILE_PIXELS
 
-    agent0_color = np.array([255, 140, 0], dtype=np.uint8)    # orange
-    agent1_color = np.array([255, 0, 255], dtype=np.uint8)    # magenta
-
+    agent0_color = np.array([255, 140, 0], dtype=np.uint8)
+    agent1_color = np.array([255, 0, 255], dtype=np.uint8)
     last_action = ep_actions[-1] if ep_actions else (-1, -1)
+    white_border = [255, 255, 255]
 
-    def _draw_choice(cell, choice, agent_idx):
-        col = agent0_color if agent_idx == 0 else agent1_color
-        col_list = col.tolist()
-        if card_permutation is not None:
-            matches = np.where(card_permutation == choice)[0]
-            if len(matches) > 0:
-                _draw_choice_on_cell(
-                    cell, int(matches[0]), agent_idx, scale, color=col_list,
-                )
-        else:
-            _draw_choice_on_cell(
-                cell, choice, agent_idx, scale, color=col_list,
-            )
-
-    row_0 = []  # agent 0 attention (Oranges)
-    row_1 = []  # agent 1 attention (RdPu)
+    row_0 = []
+    row_1 = []
     for t in range(n_steps):
-        base_img = render_card_game_minimal(card_permutation, t + 1)
-        base_np = np.array(base_img)
-        base_up = np.array(Image.fromarray(base_np).resize(
-            (base_np.shape[1] * scale, base_np.shape[0] * scale), Image.NEAREST,
-        ))
+        if ep_obs is not None and t < len(ep_obs):
+            base_0 = (np.asarray(ep_obs[t]["agent_0"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+            base_1 = (np.asarray(ep_obs[t]["agent_1"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+            up_0 = np.array(Image.fromarray(base_0).resize(
+                (w_px * scale, h_px * scale), Image.NEAREST,
+            ))
+            up_1 = np.array(Image.fromarray(base_1).resize(
+                (w_px * scale, h_px * scale), Image.NEAREST,
+            ))
+        else:
+            base_img = render_card_game_minimal(card_permutation, t + 1)
+            base_np = np.array(base_img)
+            up = np.array(Image.fromarray(base_np).resize(
+                (w_px * scale, h_px * scale), Image.NEAREST,
+            ))
+            up_0 = up_1 = up
+            if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
+                # Draw colour-coded message dots on the canonical scene only;
+                # under per-agent obs the obs already contains the dot.
+                _draw_message_on_cell(
+                    up_0, ep_messages[t - 1][1], scale,
+                    color=agent1_color, card_permutation=card_permutation,
+                )
+                _draw_message_on_cell(
+                    up_1, ep_messages[t - 1][0], scale,
+                    color=agent0_color, card_permutation=card_permutation,
+                )
 
-        cell_0 = _overlay_attention(base_up, maps_0[t], "Oranges", alpha=0.6).copy()
-        cell_1 = _overlay_attention(base_up, maps_1[t], "RdPu", alpha=0.6).copy()
-
-        # Messages sent at step t-1 become visible in observation t.
-        if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
-            _draw_message_on_cell(
-                cell_0, ep_messages[t - 1][1], scale,
-                color=agent1_color, card_permutation=card_permutation,
-            )
-            _draw_message_on_cell(
-                cell_1, ep_messages[t - 1][0], scale,
-                color=agent0_color, card_permutation=card_permutation,
-            )
+        cell_0 = _overlay_attention(up_0, maps_0[t], "Oranges", alpha=0.6).copy()
+        cell_1 = _overlay_attention(up_1, maps_1[t], "RdPu", alpha=0.6).copy()
 
         if t == n_steps - 1 and last_action[0] >= 0:
-            _draw_choice(cell_0, last_action[0], 0)
-        if t == n_steps - 1 and last_action[1] >= 0:
-            _draw_choice(cell_1, last_action[1], 1)
+            if ep_obs is not None and ep_states is not None:
+                state_for_perm = ep_states[t - 1] if t > 0 else ep_states[t]
+                view_0 = _gt_pick_to_view_col(state_for_perm, 0, int(last_action[0]))
+                view_1 = _gt_pick_to_view_col(state_for_perm, 1, int(last_action[1]))
+            elif card_permutation is not None:
+                m0 = np.where(card_permutation == int(last_action[0]))[0]
+                m1 = np.where(card_permutation == int(last_action[1]))[0]
+                view_0 = int(m0[0]) if len(m0) else -1
+                view_1 = int(m1[0]) if len(m1) else -1
+            else:
+                view_0 = int(last_action[0])
+                view_1 = int(last_action[1])
+            if view_0 >= 0:
+                _draw_choice_on_cell(cell_0, view_0, 0, scale, color=white_border)
+            if view_1 >= 0:
+                _draw_choice_on_cell(cell_1, view_1, 1, scale, color=white_border)
 
-        # Top-right colour-coded A0 / A1 label on each cell.
         _stamp_label_np(cell_0, _A0_PATTERN_SMALL, 1, 27, agent0_color, scale=scale)
         _stamp_label_np(cell_1, _A1_PATTERN_SMALL, 1, 27, agent1_color, scale=scale)
 
@@ -229,6 +243,10 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
         _stamp_label_np,
         _A0_PATTERN_SMALL,
         _A1_PATTERN_SMALL,
+        _gt_pick_to_view_col,
+        GRID_ROWS,
+        GRID_COLS,
+        TILE_PIXELS,
     )
 
     scale = 20
@@ -236,13 +254,16 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
     all_video_frames = []
     a0_color_np = np.array([255, 140, 0], dtype=np.uint8)
     a1_color_np = np.array([255, 0, 255], dtype=np.uint8)
+    h_px = GRID_ROWS * TILE_PIXELS
+    w_px = GRID_COLS * TILE_PIXELS
 
     for ep in range(num_episodes):
         ep_rng = jax.random.PRNGKey(100 + ep)
-        ep_states, attn_data, ep_actions, ep_messages = run_episode_with_states(
+        ep_states, attn_data, ep_actions, ep_messages, ep_obs = run_episode_with_states(
             ep_rng, inner_env, params, policy,
             params, policy, max_steps,
             collect_attention=True,
+            collect_obs=True,
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
         )
@@ -253,47 +274,32 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             continue
 
         n_steps = min(len(maps_0), len(maps_1))
-        es0 = _unwrap_card_game_state(ep_states[0])
-        card_permutation = np.array(es0.card_permutation)
         last_action = ep_actions[-1] if ep_actions else (-1, -1)
 
         for t in range(n_steps):
-            base_img = render_card_game_minimal(es0.card_permutation, t + 1)
-            base_np = np.array(base_img)
-            base_up = np.array(Image.fromarray(base_np).resize(
-                (base_np.shape[1] * scale, base_np.shape[0] * scale), Image.NEAREST,
+            # Per-agent obs as backdrop (under OP this shows shuffled +
+            # recoloured view + agent's own message dot).
+            base_0 = (np.asarray(ep_obs[t]["agent_0"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+            base_1 = (np.asarray(ep_obs[t]["agent_1"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+            up_0 = np.array(Image.fromarray(base_0).resize(
+                (w_px * scale, h_px * scale), Image.NEAREST,
+            ))
+            up_1 = np.array(Image.fromarray(base_1).resize(
+                (w_px * scale, h_px * scale), Image.NEAREST,
             ))
 
-            cell_0 = _overlay_attention(base_up, maps_0[t], "Oranges", alpha=0.6).copy()
-            cell_1 = _overlay_attention(base_up, maps_1[t], "RdPu", alpha=0.6).copy()
-
-            if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
-                a0_color = [255, 140, 0]    # orange
-                a1_color = [255, 0, 255]    # magenta
-                _draw_message_on_cell(
-                    cell_0, ep_messages[t - 1][1], scale,
-                    color=a1_color, card_permutation=card_permutation,
-                )
-                _draw_message_on_cell(
-                    cell_1, ep_messages[t - 1][0], scale,
-                    color=a0_color, card_permutation=card_permutation,
-                )
+            cell_0 = _overlay_attention(up_0, maps_0[t], "Oranges", alpha=0.6).copy()
+            cell_1 = _overlay_attention(up_1, maps_1[t], "RdPu", alpha=0.6).copy()
 
             if t == n_steps - 1 and last_action[0] >= 0:
-                choice_0 = last_action[0]
-                choice_1 = last_action[1]
-                matches_0 = np.where(card_permutation == choice_0)[0]
-                if len(matches_0) > 0:
-                    _draw_choice_on_cell(
-                        cell_0, int(matches_0[0]), 0, scale,
-                        color=a0_color_np.tolist(),
-                    )
-                matches_1 = np.where(card_permutation == choice_1)[0]
-                if len(matches_1) > 0:
-                    _draw_choice_on_cell(
-                        cell_1, int(matches_1[0]), 1, scale,
-                        color=a1_color_np.tolist(),
-                    )
+                state_for_perm = ep_states[t - 1] if t > 0 else ep_states[t]
+                view_0 = _gt_pick_to_view_col(state_for_perm, 0, int(last_action[0]))
+                view_1 = _gt_pick_to_view_col(state_for_perm, 1, int(last_action[1]))
+                white_border = [255, 255, 255]
+                if view_0 >= 0:
+                    _draw_choice_on_cell(cell_0, view_0, 0, scale, color=white_border)
+                if view_1 >= 0:
+                    _draw_choice_on_cell(cell_1, view_1, 1, scale, color=white_border)
 
             _stamp_label_np(cell_0, _A0_PATTERN_SMALL, 1, 27, a0_color_np, scale=scale)
             _stamp_label_np(cell_1, _A1_PATTERN_SMALL, 1, 27, a1_color_np, scale=scale)
@@ -345,10 +351,11 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
             all_video_frames = []
             for ep in range(num_episodes):
                 ep_rng = jax.random.PRNGKey(5000 + seed_i * 1000 + seed_j * 100 + ep)
-                ep_states, attn_data, ep_actions, ep_messages = run_episode_with_states(
+                ep_states, attn_data, ep_actions, ep_messages, ep_obs = run_episode_with_states(
                     ep_rng, inner_env, params_i, policy,
                     params_j, policy, max_steps,
                     collect_attention=True,
+                    collect_obs=True,
                     feed_other_attn_dims=feed_attn_dims,
                     ja_card_masks=ja_card_masks,
                 )
@@ -360,55 +367,41 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
 
                 n_steps = min(len(maps_0), len(maps_1))
                 from envs.card_game.rendering import (
-                    _unwrap_card_game_state,
-                    render_card_game_minimal,
                     _stamp_label_np,
                     _A0_PATTERN_SMALL,
                     _A1_PATTERN_SMALL,
+                    _gt_pick_to_view_col,
+                    GRID_ROWS,
+                    GRID_COLS,
+                    TILE_PIXELS,
                 )
                 a0_color_np_xp = np.array([255, 140, 0], dtype=np.uint8)
                 a1_color_np_xp = np.array([255, 0, 255], dtype=np.uint8)
-                es0 = _unwrap_card_game_state(ep_states[0])
-                card_permutation = np.array(es0.card_permutation)
                 last_action = ep_actions[-1] if ep_actions else (-1, -1)
+                h_px = GRID_ROWS * TILE_PIXELS
+                w_px = GRID_COLS * TILE_PIXELS
 
                 for t in range(n_steps):
-                    base_img = render_card_game_minimal(es0.card_permutation, t + 1)
-                    base_np = np.array(base_img)
-                    base_up = np.array(Image.fromarray(base_np).resize(
-                        (base_np.shape[1] * scale, base_np.shape[0] * scale), Image.NEAREST,
+                    base_0 = (np.asarray(ep_obs[t]["agent_0"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+                    base_1 = (np.asarray(ep_obs[t]["agent_1"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+                    up_0 = np.array(Image.fromarray(base_0).resize(
+                        (w_px * scale, h_px * scale), Image.NEAREST,
                     ))
-
-                    cell_0 = _overlay_attention(base_up, maps_0[t], "Oranges", alpha=0.6).copy()
-                    cell_1 = _overlay_attention(base_up, maps_1[t], "RdPu", alpha=0.6).copy()
-
-                    if ep_messages and (t - 1) >= 0 and (t - 1) < len(ep_messages):
-                        a0_color = [255, 140, 0]
-                        a1_color = [255, 0, 255]
-                        _draw_message_on_cell(
-                            cell_0, ep_messages[t - 1][1], scale,
-                            color=a1_color, card_permutation=card_permutation,
-                        )
-                        _draw_message_on_cell(
-                            cell_1, ep_messages[t - 1][0], scale,
-                            color=a0_color, card_permutation=card_permutation,
-                        )
+                    up_1 = np.array(Image.fromarray(base_1).resize(
+                        (w_px * scale, h_px * scale), Image.NEAREST,
+                    ))
+                    cell_0 = _overlay_attention(up_0, maps_0[t], "Oranges", alpha=0.6).copy()
+                    cell_1 = _overlay_attention(up_1, maps_1[t], "RdPu", alpha=0.6).copy()
 
                     if t == n_steps - 1 and last_action[0] >= 0:
-                        choice_0 = last_action[0]
-                        choice_1 = last_action[1]
-                        matches_0 = np.where(card_permutation == choice_0)[0]
-                        if len(matches_0) > 0:
-                            _draw_choice_on_cell(
-                                cell_0, int(matches_0[0]), 0, scale,
-                                color=a0_color_np_xp.tolist(),
-                            )
-                        matches_1 = np.where(card_permutation == choice_1)[0]
-                        if len(matches_1) > 0:
-                            _draw_choice_on_cell(
-                                cell_1, int(matches_1[0]), 1, scale,
-                                color=a1_color_np_xp.tolist(),
-                            )
+                        state_for_perm = ep_states[t - 1] if t > 0 else ep_states[t]
+                        view_0 = _gt_pick_to_view_col(state_for_perm, 0, int(last_action[0]))
+                        view_1 = _gt_pick_to_view_col(state_for_perm, 1, int(last_action[1]))
+                        white_border = [255, 255, 255]
+                        if view_0 >= 0:
+                            _draw_choice_on_cell(cell_0, view_0, 0, scale, color=white_border)
+                        if view_1 >= 0:
+                            _draw_choice_on_cell(cell_1, view_1, 1, scale, color=white_border)
 
                     _stamp_label_np(
                         cell_0, _A0_PATTERN_SMALL, 1, 27, a0_color_np_xp, scale=scale,
