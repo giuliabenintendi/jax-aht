@@ -5,6 +5,8 @@ defaults:
 TOTAL_TIMESTEPS: 5e6
 NUM_ENVS: 1024
 NUM_SEEDS: 5
+# Render SP eval video for every seed (clamped to NUM_SEEDS in the loop).
+EVAL_VIDEO_NUM_SEEDS: 100
 LR: 5e-4
 ANNEAL_LR: false
 GAE_LAMBDA: 0.95

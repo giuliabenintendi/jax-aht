@@ -358,7 +358,7 @@ def render_card_game_eval_frames_per_agent(ep_states, agent_idx: int, scale: int
     if agent_idx not in (0, 1):
         raise ValueError(f"agent_idx must be 0 or 1, got {agent_idx}")
     white = np.array([255, 255, 255], dtype=np.uint8)
-    border_thickness = max(6, scale // 2)
+    border_thickness = scale  # 1 raw obs-pixel thick, matches obs-element scale
     return [
         _render_one_agent_frame(
             _unwrap_card_game_state(state), agent_idx, scale, border_thickness, white
@@ -389,7 +389,7 @@ def render_card_game_eval_frames(ep_states, scale: int = 32, gap_raw_px: int = 1
     import numpy as np
 
     white = np.array([255, 255, 255], dtype=np.uint8)
-    border_thickness = max(6, scale // 2)
+    border_thickness = scale  # 1 raw obs-pixel thick, matches obs-element scale
     gap_px = max(0, gap_raw_px) * scale
 
     frames = []
