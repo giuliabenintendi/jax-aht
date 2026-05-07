@@ -47,6 +47,9 @@ def main():
     parser.add_argument("--num-episodes", type=int, default=5,
                         help="Episodes per seed (SP) or per pair (XP). Default 5; bump to "
                              "~30+ to make distributional patterns visible in the rollout.")
+    parser.add_argument("--sp-seeds", nargs="+", type=int, default=None,
+                        help="Only render SP videos for these seed indices "
+                             "(e.g. `--sp-seeds 5`). Default: all seeds.")
     args = parser.parse_args()
     xp_pairs = []
     for tok in args.xp_pairs:
@@ -147,7 +150,8 @@ def main():
 
         wandb_logger = _WandbVideoLogger(wb_run)
         if not args.no_sp_videos:
-            for seed_idx in range(num_seeds):
+            sp_seed_indices = args.sp_seeds if args.sp_seeds is not None else list(range(num_seeds))
+            for seed_idx in sp_seed_indices:
                 params = jax.tree.map(lambda x: x[seed_idx], final_params)
                 video_dir = os.path.join(run_dir, "videos", f"seed_{seed_idx}")
                 os.makedirs(video_dir, exist_ok=True)
