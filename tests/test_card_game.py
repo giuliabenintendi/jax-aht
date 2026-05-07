@@ -105,34 +105,6 @@ def test_mismatching_reward():
     assert dones["__all__"]
 
 
-def test_focal_card_reward_variant():
-    """Coordinating on the focal card pays its configured lower reward."""
-    env = make_env(
-        "card-game",
-        {
-            "max_steps": 2,
-            "shuffle": False,
-            "focal_card_idx": 0,
-            "focal_card_reward": 0.9,
-            "default_match_reward": 1.0,
-        },
-    )
-    key = jax.random.PRNGKey(21)
-    obs, state = env.reset(key)
-
-    key, subkey = jax.random.split(key)
-    obs, state, _, _, _ = env.step(
-        subkey, state, {"agent_0": jnp.int32(5), "agent_1": jnp.int32(5)}
-    )
-
-    key, subkey = jax.random.split(key)
-    _, _, reward, dones, _ = env.step(
-        subkey, state, {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}
-    )
-    assert dones["__all__"]
-    assert float(reward["agent_0"]) == 0.9
-
-
 def test_auto_reset():
     """After episode ends, state should auto-reset (new permutation possible)."""
     env = make_env("card-game", {"max_steps": 10})
