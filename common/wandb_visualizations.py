@@ -56,15 +56,19 @@ def _build_tags(config) -> list[str]:
     """
     alg_config = config["algorithm"]
     env_kwargs = alg_config.get("ENV_KWARGS", {})
+    env_name = str(alg_config.get("ENV_NAME", ""))
     layout = _get_layout_short(config)
     date = datetime.now().strftime("%d%m%Y")
 
     tags = [
         f"alg/{alg_config['ALG']}",
-        f"task/{layout}",
+        f"task/{env_name}",
         f"seed/{alg_config.get('TRAIN_SEED', 0)}",
         f"date/{date}",
     ]
+    # Layout tag only when it adds info beyond the env (e.g. overcooked-v1/cramped_room).
+    if layout and layout != env_name:
+        tags.append(f"layout/{layout}")
     if "ENT_COEF" in alg_config:
         tags.append(f"ent/{alg_config['ENT_COEF']}")
     if "JA_BETA_MAX" in alg_config:
