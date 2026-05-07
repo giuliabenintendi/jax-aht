@@ -269,8 +269,11 @@ _A0_PATTERN_SMALL = (LETTER_A_SMALL, DIGIT_0_SMALL)
 _A1_PATTERN_SMALL = (LETTER_A_SMALL, DIGIT_1_SMALL)
 
 
-def _stamp_label_np(img_np, patterns, y, x, color, spacing=1):
-    """Stamp a sequence of 3x5 pixel-art glyphs left-to-right onto a numpy image."""
+def _stamp_label_np(img_np, patterns, y, x, color, spacing=1, scale=1):
+    """Stamp a sequence of 3x5 pixel-art glyphs left-to-right onto a numpy
+    image. When `scale` > 1, `(y, x)` are raw obs coordinates and each glyph
+    pixel is rendered as a `scale x scale` block — useful for stamping the
+    same labels onto an already-upscaled video frame."""
     import numpy as np
 
     color_np = np.asarray(color, dtype=np.uint8)
@@ -278,8 +281,15 @@ def _stamp_label_np(img_np, patterns, y, x, color, spacing=1):
     for pat in patterns:
         pat_np = np.asarray(pat, dtype=bool)
         h_pat, w_pat = pat_np.shape
-        region = img_np[y:y + h_pat, cx:cx + w_pat]
-        region[pat_np] = color_np
+        if scale == 1:
+            region = img_np[y:y + h_pat, cx:cx + w_pat]
+            region[pat_np] = color_np
+        else:
+            big = np.kron(pat_np, np.ones((scale, scale), dtype=bool))
+            y0 = y * scale
+            x0 = cx * scale
+            region = img_np[y0:y0 + h_pat * scale, x0:x0 + w_pat * scale]
+            region[big] = color_np
         cx += w_pat + spacing
     return img_np
 
@@ -358,7 +368,7 @@ def render_card_game_eval_frames_per_agent(ep_states, agent_idx: int, scale: int
     if agent_idx not in (0, 1):
         raise ValueError(f"agent_idx must be 0 or 1, got {agent_idx}")
     white = np.array([255, 255, 255], dtype=np.uint8)
-    border_thickness = scale  # 1 raw obs-pixel thick, matches obs-element scale
+    border_thickness = 2 * scale  # 2 raw obs-pixels thick
     return [
         _render_one_agent_frame(
             _unwrap_card_game_state(state), agent_idx, scale, border_thickness, white
@@ -389,7 +399,7 @@ def render_card_game_eval_frames(ep_states, scale: int = 32, gap_raw_px: int = 1
     import numpy as np
 
     white = np.array([255, 255, 255], dtype=np.uint8)
-    border_thickness = scale  # 1 raw obs-pixel thick, matches obs-element scale
+    border_thickness = 2 * scale  # 2 raw obs-pixels thick
     gap_px = max(0, gap_raw_px) * scale
 
     frames = []

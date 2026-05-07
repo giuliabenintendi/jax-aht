@@ -29,7 +29,12 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
         print("[card_game] Missing attention maps, skipping grid.")
         return
 
-    from envs.card_game.rendering import render_card_game_minimal
+    from envs.card_game.rendering import (
+        render_card_game_minimal,
+        _stamp_label_np,
+        _A0_PATTERN_SMALL,
+        _A1_PATTERN_SMALL,
+    )
 
     # `frames` is kept in the signature for backward compat but no longer
     # used as a backdrop — we render fresh per timestep so the embedded
@@ -45,12 +50,18 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     last_action = ep_actions[-1] if ep_actions else (-1, -1)
 
     def _draw_choice(cell, choice, agent_idx):
+        col = agent0_color if agent_idx == 0 else agent1_color
+        col_list = col.tolist()
         if card_permutation is not None:
             matches = np.where(card_permutation == choice)[0]
             if len(matches) > 0:
-                _draw_choice_on_cell(cell, int(matches[0]), agent_idx, scale)
+                _draw_choice_on_cell(
+                    cell, int(matches[0]), agent_idx, scale, color=col_list,
+                )
         else:
-            _draw_choice_on_cell(cell, choice, agent_idx, scale)
+            _draw_choice_on_cell(
+                cell, choice, agent_idx, scale, color=col_list,
+            )
 
     row_0 = []  # agent 0 attention (Oranges)
     row_1 = []  # agent 1 attention (RdPu)
@@ -79,6 +90,10 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
             _draw_choice(cell_0, last_action[0], 0)
         if t == n_steps - 1 and last_action[1] >= 0:
             _draw_choice(cell_1, last_action[1], 1)
+
+        # Top-right colour-coded A0 / A1 label on each cell.
+        _stamp_label_np(cell_0, _A0_PATTERN_SMALL, 1, 27, agent0_color, scale=scale)
+        _stamp_label_np(cell_1, _A1_PATTERN_SMALL, 1, 27, agent1_color, scale=scale)
 
         row_0.append(cell_0)
         row_1.append(cell_1)
@@ -199,11 +214,6 @@ def _log_card_game_action_distributions(
                     f"    A{ai} {label:11s}: counts [{counts_str}]  "
                     f"pct [{pct_str}]"
                 )
-                for c in range(NUM_CARDS):
-                    logger.log(
-                        {f"{tag}/action_dist/{phase}/{label}/A{ai}_{c}_pct": float(pct[c])},
-                        commit=False,
-                    )
     print()
 
 
@@ -213,11 +223,19 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                                num_episodes=30, fps=3):
     """Run multiple card game episodes and save a video with attention spots and choices."""
     import wandb
-    from envs.card_game.rendering import render_card_game_minimal, _unwrap_card_game_state
+    from envs.card_game.rendering import (
+        render_card_game_minimal,
+        _unwrap_card_game_state,
+        _stamp_label_np,
+        _A0_PATTERN_SMALL,
+        _A1_PATTERN_SMALL,
+    )
 
     scale = 20
     padding = 4
     all_video_frames = []
+    a0_color_np = np.array([255, 140, 0], dtype=np.uint8)
+    a1_color_np = np.array([255, 0, 255], dtype=np.uint8)
 
     for ep in range(num_episodes):
         ep_rng = jax.random.PRNGKey(100 + ep)
@@ -266,10 +284,19 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                 choice_1 = last_action[1]
                 matches_0 = np.where(card_permutation == choice_0)[0]
                 if len(matches_0) > 0:
-                    _draw_choice_on_cell(cell_0, int(matches_0[0]), 0, scale)
+                    _draw_choice_on_cell(
+                        cell_0, int(matches_0[0]), 0, scale,
+                        color=a0_color_np.tolist(),
+                    )
                 matches_1 = np.where(card_permutation == choice_1)[0]
                 if len(matches_1) > 0:
-                    _draw_choice_on_cell(cell_1, int(matches_1[0]), 1, scale)
+                    _draw_choice_on_cell(
+                        cell_1, int(matches_1[0]), 1, scale,
+                        color=a1_color_np.tolist(),
+                    )
+
+            _stamp_label_np(cell_0, _A0_PATTERN_SMALL, 1, 27, a0_color_np, scale=scale)
+            _stamp_label_np(cell_1, _A1_PATTERN_SMALL, 1, 27, a1_color_np, scale=scale)
 
             cell_h, cell_w = cell_0.shape[:2]
             frame = np.full((2 * cell_h + padding, cell_w, 3), 255, dtype=np.uint8)
@@ -335,7 +362,12 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                 from envs.card_game.rendering import (
                     _unwrap_card_game_state,
                     render_card_game_minimal,
+                    _stamp_label_np,
+                    _A0_PATTERN_SMALL,
+                    _A1_PATTERN_SMALL,
                 )
+                a0_color_np_xp = np.array([255, 140, 0], dtype=np.uint8)
+                a1_color_np_xp = np.array([255, 0, 255], dtype=np.uint8)
                 es0 = _unwrap_card_game_state(ep_states[0])
                 card_permutation = np.array(es0.card_permutation)
                 last_action = ep_actions[-1] if ep_actions else (-1, -1)
@@ -367,10 +399,23 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                         choice_1 = last_action[1]
                         matches_0 = np.where(card_permutation == choice_0)[0]
                         if len(matches_0) > 0:
-                            _draw_choice_on_cell(cell_0, int(matches_0[0]), 0, scale)
+                            _draw_choice_on_cell(
+                                cell_0, int(matches_0[0]), 0, scale,
+                                color=a0_color_np_xp.tolist(),
+                            )
                         matches_1 = np.where(card_permutation == choice_1)[0]
                         if len(matches_1) > 0:
-                            _draw_choice_on_cell(cell_1, int(matches_1[0]), 1, scale)
+                            _draw_choice_on_cell(
+                                cell_1, int(matches_1[0]), 1, scale,
+                                color=a1_color_np_xp.tolist(),
+                            )
+
+                    _stamp_label_np(
+                        cell_0, _A0_PATTERN_SMALL, 1, 27, a0_color_np_xp, scale=scale,
+                    )
+                    _stamp_label_np(
+                        cell_1, _A1_PATTERN_SMALL, 1, 27, a1_color_np_xp, scale=scale,
+                    )
 
                     cell_h, cell_w = cell_0.shape[:2]
                     frame = np.full((2 * cell_h + padding, cell_w, 3), 255, dtype=np.uint8)
