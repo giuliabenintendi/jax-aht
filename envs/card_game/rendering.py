@@ -202,6 +202,12 @@ def render_card_game_minimal(
       Center:   5 vertical rounded-corner card rectangles (5w x 9h)
       Else:     black background
     """
+    # Coerce so callers can pass plain numpy arrays — `jax.lax.scan` would
+    # otherwise fail when indexing a numpy array with a traced loop var.
+    card_permutation = jnp.asarray(card_permutation)
+    if revealed is not None:
+        revealed = jnp.asarray(revealed)
+
     h_px = GRID_ROWS * TILE_PIXELS
     w_px = GRID_COLS * TILE_PIXELS
     img = jnp.zeros((h_px, w_px, 3), dtype=jnp.uint8)
