@@ -309,6 +309,17 @@ def generate_action_distribution_artifacts(
     return all_dists
 
 
+def _entropy_peak(arr) -> tuple[float, float, int]:
+    """Return (entropy, peak, argmax) for a list of int values in [0, NUM_CARDS)."""
+    a = np.asarray(arr, dtype=int)
+    if len(a) == 0:
+        return float("nan"), float("nan"), -1
+    h = np.bincount(a, minlength=NUM_CARDS).astype(float)
+    p = h / h.sum()
+    H = float(-np.sum(np.where(p > 0, p * np.log(p), 0.0)))
+    return H, float(p.max()), int(np.argmax(h))
+
+
 def _print_dist_stats(label: str, dists, sample_note: str = "") -> None:
     """Print peak/argmax/entropy summary per (agent, action_type, value_type).
 
@@ -328,14 +339,64 @@ def _print_dist_stats(label: str, dists, sample_note: str = "") -> None:
                 if len(arr) == 0:
                     cells.append("(n=0)")
                     continue
-                h = np.bincount(arr, minlength=NUM_CARDS).astype(float)
-                p = h / h.sum()
-                peak = float(p.max())
-                argmax_idx = int(np.argmax(h))
-                entropy = float(-np.sum(np.where(p > 0, p * np.log(p), 0.0)))
-                cells.append(f"peak={peak:.2f}@{argmax_idx} H={entropy:.2f}")
+                H, peak, argmax_idx = _entropy_peak(arr)
+                cells.append(f"peak={peak:.2f}@{argmax_idx} H={H:.2f}")
             who = f"agent_{ai} {atype}"
             print(f"    {who:12s}  {cells[0]:>20s}  {cells[1]:>20s}  {cells[2]:>20s}")
+
+
+def _print_per_seed_equivariance_sp(label: str, all_dists, seed_indices) -> None:
+    """Per-seed view_color H by role (SP).
+
+    Under OP-on with an equivariant policy, all four H values should be near
+    log(5) ≈ 1.61. Concentration (low H, peak high) flags role-specific
+    non-equivariance.
+    """
+    import math as _math
+    Hmax = _math.log(NUM_CARDS)
+    print(f"\n--- {label}: per-seed view_color (Hmax=log({NUM_CARDS})={Hmax:.2f}) ---")
+    print(f"  {'seed':>4}  {'msg a0':>16}  {'msg a1':>16}  {'pick a0':>16}  {'pick a1':>16}")
+    for seed_idx, d in zip(seed_indices, all_dists):
+        cells = []
+        for atype, ai in [("msg", 0), ("msg", 1), ("pick", 0), ("pick", 1)]:
+            H, peak, argmax_idx = _entropy_peak(d[(ai, atype)]["view_color"])
+            if argmax_idx < 0:
+                cells.append("(n=0)")
+            else:
+                cells.append(f"H={H:.2f} p={peak:.2f}@{argmax_idx}")
+        print(f"  {seed_idx:>4}  {cells[0]:>16}  {cells[1]:>16}  {cells[2]:>16}  {cells[3]:>16}")
+
+
+def _print_per_seed_equivariance_xp(label: str, pairs, all_dists, num_seeds) -> None:
+    """Per-seed view_color H aggregated by role (XP).
+
+    For each seed k, pool the view_color samples from every pair where k played
+    agent_0 (resp. agent_1) and report H, peak, argmax. Same equivariance test:
+    H ≈ log(5) ≈ 1.61 = equivariant in that role; low H = non-equivariant.
+    """
+    import math as _math
+    Hmax = _math.log(NUM_CARDS)
+    pooled: dict = {
+        (k, atype, role): [] for k in range(num_seeds)
+        for atype in ("msg", "pick") for role in (0, 1)
+    }
+    for (i, j), d in zip(pairs, all_dists):
+        for atype in ("msg", "pick"):
+            pooled[(i, atype, 0)].extend(d[(0, atype)]["view_color"])
+            pooled[(j, atype, 1)].extend(d[(1, atype)]["view_color"])
+
+    print(f"\n--- {label}: per-seed view_color pooled by role (Hmax=log({NUM_CARDS})={Hmax:.2f}) ---")
+    print(f"  {'seed':>4}  {'msg as a0':>20}  {'msg as a1':>20}  {'pick as a0':>20}  {'pick as a1':>20}")
+    for k in range(num_seeds):
+        cells = []
+        for atype, role in [("msg", 0), ("msg", 1), ("pick", 0), ("pick", 1)]:
+            H, peak, argmax_idx = _entropy_peak(pooled[(k, atype, role)])
+            n = len(pooled[(k, atype, role)])
+            if argmax_idx < 0:
+                cells.append("(n=0)")
+            else:
+                cells.append(f"H={H:.2f} p={peak:.2f}@{argmax_idx} n={n}")
+        print(f"  {k:>4}  {cells[0]:>20}  {cells[1]:>20}  {cells[2]:>20}  {cells[3]:>20}")
 
 
 def _build_env_and_policy(alg_config_template: dict, drop_op: bool):
@@ -457,7 +518,10 @@ def _run_mode(args, alg_config_template, final_params, num_seeds, seed_indices,
                                 w.writerow([tag, ai, atype, vtype, k, int(c)])
         sample_note = (f"aggregated over {len(pairs)} pairs × "
                        f"{args.num_episodes} eps; mode={'greedy' if greedy else 'sampled'}")
-        _print_dist_stats(f"{mode_label or eval_label + '+OP_' + op_label}", merged, sample_note)
+        stats_label = f"{mode_label or eval_label + '+OP_' + op_label}"
+        _print_dist_stats(stats_label, merged, sample_note)
+        # Per-seed view_color equivariance check, aggregated by role across partners
+        _print_per_seed_equivariance_xp(stats_label, pairs, all_dists, num_seeds)
         return
 
     all_dists = generate_action_distribution_artifacts(
@@ -476,7 +540,10 @@ def _run_mode(args, alg_config_template, final_params, num_seeds, seed_indices,
     merged = _merge(*all_dists) if len(all_dists) > 1 else all_dists[0]
     sample_note = (f"aggregated over {len(seed_indices)} seeds × "
                    f"{args.num_episodes} eps; mode={'greedy' if greedy else 'sampled'}")
-    _print_dist_stats(f"{mode_label or eval_label + '+OP_' + op_label}", merged, sample_note)
+    stats_label = f"{mode_label or eval_label + '+OP_' + op_label}"
+    _print_dist_stats(stats_label, merged, sample_note)
+    # Per-seed view_color equivariance check
+    _print_per_seed_equivariance_sp(stats_label, all_dists, seed_indices)
 
 
 def main():
