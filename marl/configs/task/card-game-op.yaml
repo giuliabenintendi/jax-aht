@@ -7,6 +7,6 @@ ENV_KWARGS:
   other_play_position_shuffle: true
   other_play_recolouring: true
   match_coef: 0.1
-  stability_coef: 0.0
+  stability_coef: 0.05
   follow_coef: 0.5
 TASK_NAME: card-game-op
