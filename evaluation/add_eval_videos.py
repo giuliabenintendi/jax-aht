@@ -33,9 +33,17 @@ def main():
                         help='Optional cross-play seed pairs as "i,j" tokens, e.g. '
                              '`--xp-pairs 0,2 1,3`. Card-game env only. Adds an XP '
                              'video for each pair on top of the per-seed SP videos.')
+    parser.add_argument("--all-xp-pairs", action="store_true",
+                        help="Render every upper-triangle pair (i<j). Overrides --xp-pairs. "
+                             "Card-game env only.")
+    parser.add_argument("--xp-per-agent", action="store_true",
+                        help="Render XP videos in each agent's OP-recoloured/shuffled "
+                             "view (the actual policy input) instead of the canonical scene.")
     parser.add_argument("--no-sp-videos", action="store_true",
                         help="Skip per-seed self-play videos (card-game env only). "
                              "Useful when --xp-pairs is the only thing you want.")
+    parser.add_argument("--use-best", action="store_true",
+                        help="Use best_params (per-seed best ckpt) instead of final_params.")
     args = parser.parse_args()
     xp_pairs = []
     for tok in args.xp_pairs:
@@ -74,8 +82,16 @@ def main():
 
     # Load params
     run_data = load_train_run(args.checkpoint)
-    final_params = run_data["final_params"]
+    params_key = "best_params" if args.use_best else "final_params"
+    if params_key not in run_data:
+        raise KeyError(f"{params_key!r} not found in checkpoint; keys: {list(run_data.keys())}")
+    final_params = run_data[params_key]
     num_seeds = jax.tree.leaves(final_params)[0].shape[0]
+    print(f"[add_eval_videos] using {params_key} ({num_seeds} seeds)")
+
+    if args.all_xp_pairs:
+        xp_pairs = [(i, j) for i in range(num_seeds) for j in range(i + 1, num_seeds)]
+        print(f"[add_eval_videos] --all-xp-pairs -> {len(xp_pairs)} pair(s)")
 
     inner_env = env._env
     max_steps = int(alg_config.get("ENV_KWARGS", {}).get("max_steps", 400))
@@ -93,6 +109,7 @@ def main():
             _log_card_game_eval_video,
             _log_card_game_per_agent_obs_video,
             _log_card_game_xp_videos,
+            _log_card_game_per_agent_xp_videos,
         )
         # JA policies append a 4th obs channel (FEED_OTHER_ATTN) and/or a 5-dim
         # translated-partner-attention scalar suffix (JA_CARD_PARTNER_FEED).
@@ -157,10 +174,15 @@ def main():
                 print(f"Seed {seed_idx}: SP videos in {video_dir}")
 
         if xp_pairs:
-            xp_dir = os.path.join(run_dir, "videos", "xp")
+            xp_dir = os.path.join(run_dir, "videos", "xp_per_agent" if args.xp_per_agent else "xp")
             os.makedirs(xp_dir, exist_ok=True)
-            print(f"XP pairs requested: {xp_pairs} -> {xp_dir}")
-            _log_card_game_xp_videos(
+            xp_render_fn = (
+                _log_card_game_per_agent_xp_videos if args.xp_per_agent
+                else _log_card_game_xp_videos
+            )
+            print(f"XP pairs requested: {len(xp_pairs)} pair(s) "
+                  f"({'per-agent view' if args.xp_per_agent else 'canonical view'}) -> {xp_dir}")
+            xp_render_fn(
                 inner_env, policy, final_params, max_steps,
                 tag="Eval/xp",
                 video_dir=xp_dir,

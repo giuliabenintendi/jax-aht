@@ -381,6 +381,8 @@ def _log_card_game_per_agent_obs_video(
     inner_env, policy, params, max_steps, tag, video_dir, logger,
     feed_attn_dims=None, ja_card_masks=None, filter_top1=False,
     num_episodes=30, fps=3,
+    params_partner=None, video_filename="eval_card_game_per_agent.mp4",
+    rng_seed_base=100, video_log_key=None,
 ):
     """Eval video built from each agent's actual observation.
 
@@ -392,6 +394,11 @@ def _log_card_game_per_agent_obs_video(
 
     The only decoration drawn here is the per-agent picked-card border on the
     decision step and a timestep label.
+
+    `params_partner` (optional) lets the caller pair `params` (agent 0) with a
+    different partner (agent 1) for cross-play renderings; defaults to `params`
+    for self-play. `video_filename`, `rng_seed_base`, `video_log_key` let the
+    XP-pair caller distinguish per-pair videos and log keys.
     """
     from envs.card_game.rendering import (
         TILE_PIXELS, GRID_ROWS, GRID_COLS, _unwrap_card_game_state,
@@ -403,10 +410,13 @@ def _log_card_game_per_agent_obs_video(
     padding = 4
     all_video_frames: list = []
 
+    if params_partner is None:
+        params_partner = params
+
     for ep in range(num_episodes):
-        ep_rng = jax.random.PRNGKey(100 + ep)
+        ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
         ep_states, attn_data, ep_actions, ep_messages, ep_obs = run_episode_with_states(
-            ep_rng, inner_env, params, policy, params, policy, max_steps,
+            ep_rng, inner_env, params, policy, params_partner, policy, max_steps,
             collect_attention=True,
             collect_obs=True,
             feed_other_attn_dims=feed_attn_dims,
@@ -479,14 +489,49 @@ def _log_card_game_per_agent_obs_video(
         return
 
     os.makedirs(video_dir, exist_ok=True)
-    video_path = f"{video_dir}/eval_card_game_per_agent.mp4"
+    video_path = f"{video_dir}/{video_filename}"
     clip = ImageSequenceClip(all_video_frames, fps=fps)
     clip.write_videofile(
         video_path, fps=fps, codec='libx264', audio=False,
         bitrate='8000k', preset='slow',
     )
-    logger.log_video(f"{tag}/eval_video_per_agent", video_path, commit=False)
+    log_key = video_log_key or f"{tag}/eval_video_per_agent"
+    logger.log_video(log_key, video_path, commit=False)
     print(
         f"[card_game] Saved per-agent eval video: {video_path} "
         f"({len(all_video_frames)} frames, {len(all_video_frames)/fps:.0f}s)"
     )
+
+
+def _log_card_game_per_agent_xp_videos(
+    inner_env, policy, all_params, max_steps, tag, video_dir, logger,
+    feed_attn_dims=None, ja_card_masks=None, filter_top1=False,
+    seed_pairs=None, num_episodes=5, fps=3,
+):
+    """Per-agent obs cross-play videos: one mp4 per (i, j) pair, agent 0 = seed_i.
+
+    Mirrors `_log_card_game_xp_videos` (canonical-frame XP) but uses the
+    per-agent OP-recoloured/shuffled view from `_log_card_game_per_agent_obs_video`
+    so each agent's actual policy input is what's shown.
+    """
+    num_seeds = jax.tree.leaves(all_params)[0].shape[0]
+    if seed_pairs is None:
+        seed_pairs = [
+            (i, j) for i in range(num_seeds) for j in range(i + 1, num_seeds)
+        ]
+    print(f"[card_game] per-agent XP videos: {len(seed_pairs)} pair(s) -> {video_dir}")
+
+    for seed_i, seed_j in seed_pairs:
+        params_i = jax.tree.map(lambda x, _i=seed_i: x[_i], all_params)
+        params_j = jax.tree.map(lambda x, _j=seed_j: x[_j], all_params)
+        _log_card_game_per_agent_obs_video(
+            inner_env, policy, params_i, max_steps,
+            tag=tag, video_dir=video_dir, logger=logger,
+            feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
+            filter_top1=filter_top1,
+            num_episodes=num_episodes, fps=fps,
+            params_partner=params_j,
+            video_filename=f"per_agent_xp_s{seed_i}_vs_s{seed_j}.mp4",
+            rng_seed_base=5000 + seed_i * 1000 + seed_j * 100,
+            video_log_key=f"{tag}/per_agent_xp_s{seed_i}_vs_s{seed_j}",
+        )
