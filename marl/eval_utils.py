@@ -13,11 +13,14 @@ def _draw_box(cell, row, col, tile_h, tile_w, color, thickness):
     cell[y0:y0 + tile_h, x0 + tile_w - thickness:x0 + tile_w] = color
 
 
-def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_col=None):
-    """Draw white borders around the agent tile and its chosen card.
+def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_col=None,
+                         color=None):
+    """Draw borders around the agent tile and its chosen card.
 
     Derives grid dimensions from the frame shape and TILE_PIXELS.
     Works for both static (3x5) and dynamic (6x10) grids.
+    `color` defaults to white; pass an explicit RGB list (e.g. yellow) to flag
+    coordinated picks.
     """
     tile_h = scale * 7
     tile_w = scale * 7
@@ -25,13 +28,14 @@ def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_co
     grid_rows = frame_h // tile_h
     grid_cols = frame_w // tile_w
     thickness = max(2, scale // 8)
-    white = [255, 255, 255]
+    if color is None:
+        color = [255, 255, 255]
 
     col = card_col if card_col is not None else choice_pos
-    _draw_box(cell, card_row, col, tile_h, tile_w, white, thickness)
+    _draw_box(cell, card_row, col, tile_h, tile_w, color, thickness)
     agent_row = 0 if agent_idx == 0 else grid_rows - 1
     agent_col = grid_cols // 2
-    _draw_box(cell, agent_row, agent_col, tile_h, tile_w, white, thickness)
+    _draw_box(cell, agent_row, agent_col, tile_h, tile_w, color, thickness)
 
 
 def _draw_message_on_cell(cell, msg_value, scale, color=None, card_permutation=None):

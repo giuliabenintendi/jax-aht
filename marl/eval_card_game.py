@@ -468,10 +468,18 @@ def _log_card_game_per_agent_obs_video(
                 pick_1_view = _gt_to_view_col(
                     ep_states[t], 1, int(last_action[1]), card_perm,
                 )
+                # Env scores on GT-frame match (card_game.py:268). Highlight
+                # solved episodes in yellow so it's obvious at a glance.
+                solved = (
+                    int(last_action[0]) >= 0
+                    and int(last_action[1]) >= 0
+                    and int(last_action[0]) == int(last_action[1])
+                )
+                box_color = [255, 255, 0] if solved else None
                 if pick_0_view is not None:
-                    _draw_choice_on_cell(cell_0, pick_0_view, 0, scale)
+                    _draw_choice_on_cell(cell_0, pick_0_view, 0, scale, color=box_color)
                 if pick_1_view is not None:
-                    _draw_choice_on_cell(cell_1, pick_1_view, 1, scale)
+                    _draw_choice_on_cell(cell_1, pick_1_view, 1, scale, color=box_color)
 
             _draw_timestep_label(cell_0, t, decision=is_decision)
             _draw_timestep_label(cell_1, t, decision=is_decision)
