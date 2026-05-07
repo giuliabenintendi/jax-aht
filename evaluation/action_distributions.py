@@ -197,16 +197,18 @@ def _merge(*dicts):
 
 
 def _plot(out_path: Path, dists, title: str):
-    fig, axes = plt.subplots(2, 6, figsize=(19, 5.5), sharey=True)
-    palettes = ["Oranges", "RdPu"]
+    """Plot per-agent action distributions: 2 rows (agents) x 4 cols (colour
+    breakdowns only — view-color and gt-color, for msg and pick). Position
+    breakdowns are intentionally omitted."""
+    fig, axes = plt.subplots(2, 4, figsize=(13, 5.5), sharey=True)
     rgb_card_colors = np.asarray(CARD_COLORS) / 255.0
     col_titles = [
-        "msg by view-position", "msg by view-color", "msg by gt-color",
-        "pick by view-position", "pick by view-color", "pick by gt-color",
+        "msg by view-color", "msg by gt-color",
+        "pick by view-color", "pick by gt-color",
     ]
     var_for_col = [
-        ("msg", "view_pos"), ("msg", "view_color"), ("msg", "gt_color"),
-        ("pick", "view_pos"), ("pick", "view_color"), ("pick", "gt_color"),
+        ("msg", "view_color"), ("msg", "gt_color"),
+        ("pick", "view_color"), ("pick", "gt_color"),
     ]
     for ai in (0, 1):
         for ci, (atype, vtype) in enumerate(var_for_col):
@@ -214,11 +216,7 @@ def _plot(out_path: Path, dists, title: str):
             arr = dists[(ai, atype)][vtype]
             h = _hist_norm(arr)
             xs = np.arange(NUM_CARDS)
-            if vtype in ("view_color", "gt_color"):
-                ax.bar(xs, h, color=rgb_card_colors, edgecolor="black", linewidth=0.4)
-            else:
-                cmap = plt.colormaps[palettes[ai]]
-                ax.bar(xs, h, color=cmap(0.7), edgecolor="black", linewidth=0.4)
+            ax.bar(xs, h, color=rgb_card_colors, edgecolor="black", linewidth=0.4)
             ax.set_ylim(0, 1.0)
             ax.set_xticks(xs)
             if ai == 0:

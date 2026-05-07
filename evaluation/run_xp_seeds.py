@@ -719,23 +719,22 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         seed_indices = list(range(num_seeds))
         print(
             f"[xp_seeds] logging card-game action distributions "
-            f"(greedy + sampled, {ad_num_eps} eps/seed)"
+            f"(greedy only, {ad_num_eps} eps/seed)"
         )
-        for greedy_mode, mode_name in ((True, "greedy"), (False, "sampled")):
-            generate_action_distribution_artifacts(
-                inner_env=env._env,
-                stacked_params=stacked_params,
-                policy=policy,
-                max_steps=max_steps,
-                output_dir=os.path.join(action_dist_dir, mode_name),
-                seed_indices=seed_indices,
-                num_episodes=ad_num_eps,
-                feed_attn_dims=feed_attn_dims,
-                ja_card_masks=ja_card_masks,
-                greedy=greedy_mode,
-                wb_run=wb_run,
-                wb_prefix=wb_prefix,
-            )
+        generate_action_distribution_artifacts(
+            inner_env=env._env,
+            stacked_params=stacked_params,
+            policy=policy,
+            max_steps=max_steps,
+            output_dir=os.path.join(action_dist_dir, "greedy"),
+            seed_indices=seed_indices,
+            num_episodes=ad_num_eps,
+            feed_attn_dims=feed_attn_dims,
+            ja_card_masks=ja_card_masks,
+            greedy=True,
+            wb_run=wb_run,
+            wb_prefix=wb_prefix,
+        )
 
         max_pairs = int(algo_cfg.get("XP_VIDEO_MAX_PAIRS", 3))
         xp_video_eps = int(algo_cfg.get("EVAL_VIDEO_XP_NUM_EPISODES", 3))
