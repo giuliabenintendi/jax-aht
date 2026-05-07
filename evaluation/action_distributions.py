@@ -309,68 +309,56 @@ def generate_action_distribution_artifacts(
     return all_dists
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True,
-                        help="Path to saved_train_run directory")
-    parser.add_argument("--seed-idx", type=int, default=0)
-    parser.add_argument("--all-seeds", action="store_true")
-    parser.add_argument("--use-best", action="store_true",
-                        help="Use best_params instead of final_params when available")
-    parser.add_argument("--num-episodes", type=int, default=50)
-    parser.add_argument("--output-dir", default="plots/card_game")
-    parser.add_argument("--episode-rng-base", type=int, default=200)
-    parser.add_argument("--sampled", action="store_true",
-                        help="Sample actions instead of using greedy argmax")
-    parser.add_argument("--drop-op", action="store_true",
-                        help="Force other_play_position_shuffle=False and "
-                             "other_play_recolouring=False at eval. Card-game only. "
-                             "Useful to compare OP-on vs OP-off behavior of the same policy.")
-    parser.add_argument("--xp-mode", action="store_true",
-                        help="Cross-play: collect distributions over (i,j) seed pairs "
-                             "(agent 0 = seed_i, agent 1 = seed_j) instead of self-play. "
-                             "Default: upper-triangle pairs (i<j); override with --xp-pairs.")
-    parser.add_argument("--xp-pairs", nargs="+", default=None,
-                        help='Explicit XP pairs as "i,j" tokens, e.g. `--xp-pairs 0,1 0,5`. '
-                             "Implies --xp-mode.")
-    args = parser.parse_args()
-    if args.xp_pairs:
-        args.xp_mode = True
+def _print_dist_stats(label: str, dists, sample_note: str = "") -> None:
+    """Print peak/argmax/entropy summary per (agent, action_type, value_type).
 
-    ckpt_path = Path(args.checkpoint).resolve()
-    run_dir = ckpt_path.parent if ckpt_path.is_file() else ckpt_path
-    cfg_dir = run_dir
-    config_path = None
-    for _ in range(4):
-        cand = cfg_dir / ".hydra" / "config.yaml"
-        if cand.exists():
-            config_path = cand
-            break
-        cfg_dir = cfg_dir.parent
-    if config_path is None:
-        raise FileNotFoundError(f"No .hydra/config.yaml found near {run_dir}")
-    cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
-    alg_config = cfg["algorithm"]
+    Max entropy for NUM_CARDS=5 is log(5) ≈ 1.61. Peak ≈ 0.20 + H ≈ 1.61 means
+    uniform; peak → 1 + H → 0 means degenerate.
+    """
+    print(f"\n=== {label} ===")
+    if sample_note:
+        print(f"    {sample_note}")
+    header = f"    {'who':12s}  {'view_pos':>20s}  {'view_color':>20s}  {'gt_color':>20s}"
+    print(header)
+    for ai in (0, 1):
+        for atype in ("msg", "pick"):
+            cells = []
+            for vtype in ("view_pos", "view_color", "gt_color"):
+                arr = np.asarray(dists[(ai, atype)][vtype], dtype=int)
+                if len(arr) == 0:
+                    cells.append("(n=0)")
+                    continue
+                h = np.bincount(arr, minlength=NUM_CARDS).astype(float)
+                p = h / h.sum()
+                peak = float(p.max())
+                argmax_idx = int(np.argmax(h))
+                entropy = float(-np.sum(np.where(p > 0, p * np.log(p), 0.0)))
+                cells.append(f"peak={peak:.2f}@{argmax_idx} H={entropy:.2f}")
+            who = f"agent_{ai} {atype}"
+            print(f"    {who:12s}  {cells[0]:>20s}  {cells[1]:>20s}  {cells[2]:>20s}")
 
-    env_kwargs = dict(alg_config["ENV_KWARGS"])
+
+def _build_env_and_policy(alg_config_template: dict, drop_op: bool):
+    """Construct env (with/without OP) and policy for one mode."""
+    alg_config = dict(alg_config_template)
+    env_kwargs = dict(alg_config_template["ENV_KWARGS"])
     if alg_config.get("COMMUNICATION", False):
         env_kwargs["communication"] = True
     if alg_config["ENV_NAME"] == "card-game":
         env_kwargs["scramble_partner_msg"] = False
-    if args.drop_op:
+    if drop_op:
         env_kwargs["other_play_position_shuffle"] = False
         env_kwargs["other_play_recolouring"] = False
         env_kwargs["shuffle"] = True
-        print("[action_distributions] --drop-op: OP wrappers off; env shuffle=True")
     alg_config["ENV_KWARGS"] = env_kwargs
 
     env = make_env(alg_config["ENV_NAME"], alg_config["ENV_KWARGS"])
     env = LogWrapper(env)
     inner_env = env._env
-    max_steps = alg_config["ENV_KWARGS"].get("max_steps", 8)
+    max_steps = env_kwargs.get("max_steps", 8)
 
     obs_type = alg_config.get("OBS_TYPE",
-                              alg_config.get("ENV_KWARGS", {}).get("obs_type", "symbolic"))
+                              env_kwargs.get("obs_type", "symbolic"))
     if obs_type in ("image", "fov"):
         init_fn = (
             initialize_ja_dual_image_agent
@@ -403,24 +391,22 @@ def main():
         if ja_card_partner_feed:
             ja_card_masks = build_card_masks(img_h, img_w, feat_h, feat_w)
 
-    run_data = load_train_run(str(ckpt_path))
-    params_key = "best_params" if args.use_best else "final_params"
-    if params_key not in run_data:
-        raise KeyError(f"{params_key!r} not found in checkpoint; keys: {list(run_data.keys())}")
-    final_params = run_data[params_key]
-    num_seeds = jax.tree.leaves(final_params)[0].shape[0]
-    seed_indices = list(range(num_seeds)) if args.all_seeds else [args.seed_idx]
-    greedy = not args.sampled
+    return inner_env, policy, max_steps, feed_attn_dims, ja_card_masks
 
-    output_dir = Path(args.output_dir)
+
+def _run_mode(args, alg_config_template, final_params, num_seeds, seed_indices,
+              greedy, drop_op, xp_mode, output_dir, mode_label):
+    """Build env+policy for the given (drop_op, xp_mode), run analysis, print stats."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Loaded checkpoint from {ckpt_path}")
-    print(f"  seeds analyzing: {seed_indices}; episodes/seed: {args.num_episodes}; "
-          f"max_steps: {max_steps}")
-    print(f"  params_key: {params_key}; mode: {'greedy' if greedy else 'sampled'}")
-    print(f"  saving to: {output_dir.resolve()}")
+    inner_env, policy, max_steps, feed_attn_dims, ja_card_masks = _build_env_and_policy(
+        alg_config_template, drop_op,
+    )
+    op_label = "off" if drop_op else "on"
+    eval_label = "XP" if xp_mode else "SP"
+    print(f"\n[action_distributions] mode: {eval_label} + OP {op_label}  "
+          f"(out: {output_dir.resolve()})")
 
-    if args.xp_mode:
+    if xp_mode:
         if args.xp_pairs:
             pairs = []
             for tok in args.xp_pairs:
@@ -428,7 +414,7 @@ def main():
                 pairs.append((int(i_str), int(j_str)))
         else:
             pairs = [(i, j) for i in range(num_seeds) for j in range(i + 1, num_seeds)]
-        print(f"  XP mode: {len(pairs)} pair(s); episodes/pair: {args.num_episodes}")
+        print(f"  XP: {len(pairs)} pair(s); episodes/pair: {args.num_episodes}")
         all_dists = []
         for seed_i, seed_j in pairs:
             params_i = jax.tree.map(lambda x, _i=seed_i: x[_i], final_params)
@@ -446,22 +432,16 @@ def main():
                 output_dir / f"action_dist_xp_s{seed_i}_vs_s{seed_j}.png",
                 d,
                 title=f"XP s{seed_i} (agent 0) vs s{seed_j} (agent 1) — "
-                      f"{args.num_episodes} eps, op={'off' if args.drop_op else 'on'}",
+                      f"{args.num_episodes} eps, op={op_label}",
             )
-            n_msg = len(d[(0, "msg")]["view_pos"]) + len(d[(1, "msg")]["view_pos"])
-            n_pick = len(d[(0, "pick")]["view_pos"]) + len(d[(1, "pick")]["view_pos"])
-            print(f"  pair ({seed_i},{seed_j}): msg actions={n_msg}, pick actions={n_pick}")
-
+        merged = _merge(*all_dists) if len(all_dists) > 1 else all_dists[0]
         if len(all_dists) > 1:
-            merged = _merge(*all_dists)
             _plot(
                 output_dir / "action_dist_xp_aggregate.png",
                 merged,
                 title=f"XP aggregate over {len(pairs)} pair(s) × {args.num_episodes} eps "
-                      f"— op={'off' if args.drop_op else 'on'}",
+                      f"— op={op_label}",
             )
-
-        # CSV mirroring the SP shape, with "seed" column = "{i}v{j}".
         csv_path = output_dir / "action_dist_xp_data.csv"
         with csv_path.open("w", newline="") as f:
             w = csv.writer(f)
@@ -475,7 +455,9 @@ def main():
                             h = np.bincount(arr, minlength=NUM_CARDS)
                             for k, c in enumerate(h):
                                 w.writerow([tag, ai, atype, vtype, k, int(c)])
-        print(f"Done. XP figures + CSV in {output_dir.resolve()}/")
+        sample_note = (f"aggregated over {len(pairs)} pairs × "
+                       f"{args.num_episodes} eps; mode={'greedy' if greedy else 'sampled'}")
+        _print_dist_stats(f"{mode_label or eval_label + '+OP_' + op_label}", merged, sample_note)
         return
 
     all_dists = generate_action_distribution_artifacts(
@@ -491,11 +473,95 @@ def main():
         episode_rng_base=args.episode_rng_base,
         greedy=greedy,
     )
-    for seed_idx, d in zip(seed_indices, all_dists):
-        n_msg = len(d[(0, "msg")]["view_pos"]) + len(d[(1, "msg")]["view_pos"])
-        n_pick = len(d[(0, "pick")]["view_pos"]) + len(d[(1, "pick")]["view_pos"])
-        print(f"  seed {seed_idx}: msg actions={n_msg}, pick actions={n_pick}")
-    print(f"Done. Figures + CSV in {output_dir.resolve()}/")
+    merged = _merge(*all_dists) if len(all_dists) > 1 else all_dists[0]
+    sample_note = (f"aggregated over {len(seed_indices)} seeds × "
+                   f"{args.num_episodes} eps; mode={'greedy' if greedy else 'sampled'}")
+    _print_dist_stats(f"{mode_label or eval_label + '+OP_' + op_label}", merged, sample_note)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", required=True,
+                        help="Path to saved_train_run directory")
+    parser.add_argument("--seed-idx", type=int, default=0)
+    parser.add_argument("--all-seeds", action="store_true")
+    parser.add_argument("--use-best", action="store_true",
+                        help="Use best_params instead of final_params when available")
+    parser.add_argument("--num-episodes", type=int, default=50)
+    parser.add_argument("--output-dir", default="plots/card_game")
+    parser.add_argument("--episode-rng-base", type=int, default=200)
+    parser.add_argument("--sampled", action="store_true",
+                        help="Sample actions instead of using greedy argmax")
+    parser.add_argument("--drop-op", action="store_true",
+                        help="Force other_play_position_shuffle=False and "
+                             "other_play_recolouring=False at eval. Card-game only. "
+                             "Useful to compare OP-on vs OP-off behavior of the same policy.")
+    parser.add_argument("--xp-mode", action="store_true",
+                        help="Cross-play: collect distributions over (i,j) seed pairs "
+                             "(agent 0 = seed_i, agent 1 = seed_j) instead of self-play. "
+                             "Default: upper-triangle pairs (i<j); override with --xp-pairs.")
+    parser.add_argument("--xp-pairs", nargs="+", default=None,
+                        help='Explicit XP pairs as "i,j" tokens, e.g. `--xp-pairs 0,1 0,5`. '
+                             "Implies --xp-mode.")
+    parser.add_argument("--all-modes", action="store_true",
+                        help="Run all four modes (SP+OP, SP+no-OP, XP+OP, XP+no-OP) in "
+                             "one go. Outputs go under {output-dir}/{mode}/. Overrides "
+                             "--drop-op and --xp-mode for this invocation. Implies "
+                             "--all-seeds for SP.")
+    args = parser.parse_args()
+    if args.xp_pairs:
+        args.xp_mode = True
+
+    ckpt_path = Path(args.checkpoint).resolve()
+    run_dir = ckpt_path.parent if ckpt_path.is_file() else ckpt_path
+    cfg_dir = run_dir
+    config_path = None
+    for _ in range(4):
+        cand = cfg_dir / ".hydra" / "config.yaml"
+        if cand.exists():
+            config_path = cand
+            break
+        cfg_dir = cfg_dir.parent
+    if config_path is None:
+        raise FileNotFoundError(f"No .hydra/config.yaml found near {run_dir}")
+    cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+    alg_config_template = cfg["algorithm"]
+
+    run_data = load_train_run(str(ckpt_path))
+    params_key = "best_params" if args.use_best else "final_params"
+    if params_key not in run_data:
+        raise KeyError(f"{params_key!r} not found in checkpoint; keys: {list(run_data.keys())}")
+    final_params = run_data[params_key]
+    num_seeds = jax.tree.leaves(final_params)[0].shape[0]
+    if args.all_modes:
+        args.all_seeds = True
+    seed_indices = list(range(num_seeds)) if args.all_seeds else [args.seed_idx]
+    greedy = not args.sampled
+
+    base_output_dir = Path(args.output_dir)
+    print(f"Loaded checkpoint from {ckpt_path}")
+    print(f"  params_key: {params_key}; mode: {'greedy' if greedy else 'sampled'}; "
+          f"episodes: {args.num_episodes}")
+    print(f"  base output: {base_output_dir.resolve()}")
+
+    if args.all_modes:
+        modes = [
+            ("sp_op",    False, False),
+            ("sp_no_op", True,  False),
+            ("xp_op",    False, True),
+            ("xp_no_op", True,  True),
+        ]
+    else:
+        modes = [(None, args.drop_op, args.xp_mode)]
+
+    for mode_label, drop_op, xp_mode in modes:
+        sub_dir = base_output_dir / mode_label if mode_label else base_output_dir
+        _run_mode(
+            args, alg_config_template, final_params, num_seeds, seed_indices,
+            greedy, drop_op, xp_mode, sub_dir, mode_label,
+        )
+
+    print(f"\nDone. Outputs under {base_output_dir.resolve()}/")
 
 
 if __name__ == "__main__":
