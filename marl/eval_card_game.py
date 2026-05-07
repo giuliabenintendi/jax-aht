@@ -106,6 +106,61 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
 
 
+def _log_card_game_action_distributions(
+    inner_env, policy, params, max_steps, tag, logger,
+    feed_attn_dims=None, ja_card_masks=None,
+    num_episodes=30, rng_seed_base=300,
+):
+    """Print + log per-agent action distributions across `num_episodes` SP eps.
+
+    Tallies actions in the GT (canonical) frame separately for messages
+    (deliberation steps) and picks (decision step). Under OP a near-uniform
+    distribution is expected — concentration flags a colour-bias.
+    """
+    from envs.card_game.rendering import NUM_CARDS
+
+    pick_counts = np.zeros((2, NUM_CARDS), dtype=np.int64)
+    msg_counts = np.zeros((2, NUM_CARDS), dtype=np.int64)
+
+    for ep in range(num_episodes):
+        ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
+        _, _, ep_actions, ep_messages = run_episode_with_states(
+            ep_rng, inner_env, params, policy, params, policy, max_steps,
+            collect_attention=False,
+            feed_other_attn_dims=feed_attn_dims,
+            ja_card_masks=ja_card_masks,
+        )
+        for pair in ep_actions:
+            for ai in (0, 1):
+                v = int(pair[ai])
+                if 0 <= v < NUM_CARDS:
+                    pick_counts[ai, v] += 1
+        for pair in ep_messages:
+            for ai in (0, 1):
+                v = int(pair[ai])
+                if 0 <= v < NUM_CARDS:
+                    msg_counts[ai, v] += 1
+
+    print(f"\n=== {tag} action distributions ({num_episodes} SP eps, gt-frame) ===")
+    for kind, counts in (("picks", pick_counts), ("messages", msg_counts)):
+        print(f"  {kind}:")
+        for ai in (0, 1):
+            total = int(counts[ai].sum())
+            if total == 0:
+                print(f"    A{ai}: no {kind}")
+                continue
+            pct = counts[ai] / total * 100.0
+            counts_str = " ".join(f"{c:>5d}" for c in counts[ai])
+            pct_str = " ".join(f"{p:>5.1f}%" for p in pct)
+            print(f"    A{ai}: counts [{counts_str}]  pct [{pct_str}]")
+            for c in range(NUM_CARDS):
+                logger.log(
+                    {f"{tag}/action_dist/{kind}/A{ai}_color_{c}_pct": float(pct[c])},
+                    commit=False,
+                )
+    print()
+
+
 def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
                                feed_attn_dims=None,
                                ja_card_masks=None,
