@@ -25,96 +25,78 @@ def _get_layout_short(config) -> str:
 
 
 def _build_run_string(config: dict) -> str:
-    """Build a concise, searchable run name.
+    """Build a concise, label-driven run name.
 
-    Format: layout_alg_timesteps_bX.X_sN_DDMMYYYY
-    e.g. cramped_room_ja_ippo_5M_b0.5_s42_15032026
+    Format: {layout}_{alg}_[{label}_]{timesteps}_[s{N}_]{DDMMYYYY}
+    Hyperparameters live in tags, not the name. Use the `label` config field to
+    describe the run.
     """
     alg_config = config["algorithm"]
-    alg = alg_config["ALG"]
     layout = _get_layout_short(config)
-    date = datetime.now().strftime("%d%m%Y")
+    parts = [layout, str(alg_config["ALG"])]
 
-    parts = [layout, alg]
+    label = str(config.get("label", "default_label"))
+    if label and label != "default_label":
+        parts.append(label)
     if "TOTAL_TIMESTEPS" in alg_config:
         parts.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
-    if "JA_BETA_MAX" in alg_config:
-        parts.append(f"b{alg_config['JA_BETA_MAX']}")
-    if alg_config.get("QUERY_PARTNER_LSTM", False):
-        parts.append("qplstm")
-    ent_coef = alg_config.get("ENT_COEF", 0.01)
-    parts.append(f"ent{ent_coef}")
-    label = config.get("label", "default_label")
-    if str(label).lower().startswith("sweep"):
-        parts.insert(0, "SWEEP")
-    env_kwargs = alg_config.get("ENV_KWARGS", {})
-    if alg_config.get("COMMUNICATION", False):
-        parts.append("comm")
-        match_coef = env_kwargs.get("match_coef", 0.0)
-        if match_coef > 0:
-            parts.append(f"match{match_coef}")
-    follow_coef = env_kwargs.get("follow_coef", 0.0)
-    if follow_coef > 0:
-        parts.append(f"follow{follow_coef}")
-    if alg_config.get("JA_CARD_ATTN", False):
-        parts.append("ja_card")
-    card_jsd = alg_config.get("JA_CARD_JSD_COEF", 0.0)
-    if card_jsd > 0:
-        parts.append(f"card_jsd{card_jsd}")
-    if alg_config.get("FEED_OTHER_ATTN", False):
-        parts.append("feed_attn")
-    if env_kwargs.get("other_play_position_shuffle") or env_kwargs.get("other_play_recolouring"):
-        parts.append("other_play")
-    if env_kwargs.get("shuffle") is False:
-        parts.append("no_shuffle")
     num_seeds = alg_config.get("NUM_SEEDS", 1)
     if num_seeds > 1:
         parts.append(f"s{num_seeds}")
-    parts.append(date)
+    parts.append(datetime.now().strftime("%d%m%Y"))
     return "_".join(parts)
 
 
 def _build_tags(config) -> list[str]:
-    """Build tags list from config for wandb filtering."""
+    """Build wandb tags using key/value pattern for faceted filtering.
+
+    Categories that always appear (alg/, task/, seed/, date/, ent/, beta/, comm/, op/)
+    let you slice the run table predictably; on-only flags (ja_card/on, feed_attn/on,
+    qplstm/on, follow/{x}, match/{x}, ja_card_jsd/{x}) are added only when active.
+    """
     alg_config = config["algorithm"]
     env_kwargs = alg_config.get("ENV_KWARGS", {})
     layout = _get_layout_short(config)
     date = datetime.now().strftime("%d%m%Y")
+
     tags = [
-        str(alg_config["ALG"]),
-        layout,
-        f"seed={alg_config.get('TRAIN_SEED', 0)}",
-        f"envs={alg_config['NUM_ENVS']}",
-        date,
+        f"alg/{alg_config['ALG']}",
+        f"task/{layout}",
+        f"seed/{alg_config.get('TRAIN_SEED', 0)}",
+        f"date/{date}",
     ]
+    if "ENT_COEF" in alg_config:
+        tags.append(f"ent/{alg_config['ENT_COEF']}")
     if "JA_BETA_MAX" in alg_config:
-        tags.append(f"beta={alg_config['JA_BETA_MAX']}")
-    if "TOTAL_TIMESTEPS" in alg_config:
-        tags.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
-    ent_coef = alg_config.get("ENT_COEF", 0.01)
-    tags.append(f"ent={ent_coef}")
-    if alg_config.get("COMMUNICATION", False):
-        tags.append("comm")
-    if alg_config.get("FEED_OTHER_ATTN", False):
-        tags.append("feed_attn")
-    else:
-        tags.append("no_feed_attn")
-    if alg_config.get("QUERY_PARTNER_LSTM", False):
-        tags.append("query_plstm")
-    if env_kwargs.get("follow_coef", 0.0) > 0:
-        tags.append("follow_bonus")
+        tags.append(f"beta/{alg_config['JA_BETA_MAX']}")
+    tags.append("comm/on" if alg_config.get("COMMUNICATION", False) else "comm/off")
+
+    op_on = bool(
+        env_kwargs.get("other_play_position_shuffle")
+        or env_kwargs.get("other_play_recolouring")
+    )
+    tags.append("op/on" if op_on else "op/off")
+
     if alg_config.get("JA_CARD_ATTN", False):
-        tags.append("ja_card_attn")
-    if alg_config.get("JA_CARD_JSD_COEF", 0.0) > 0:
-        tags.append("card_jsd")
-    if env_kwargs.get("other_play_position_shuffle") or env_kwargs.get("other_play_recolouring"):
-        tags.append("other_play")
-    if env_kwargs.get("shuffle") is False:
-        tags.append("no_shuffle")
-    label = config.get("label", "default_label")
-    if label != "default_label":
-        if str(label).lower().startswith("sweep"):
-            tags.append("SWEEP")
+        tags.append("ja_card/on")
+    card_jsd = alg_config.get("JA_CARD_JSD_COEF", 0.0)
+    if card_jsd > 0:
+        tags.append(f"ja_card_jsd/{card_jsd}")
+    if alg_config.get("FEED_OTHER_ATTN", False):
+        tags.append("feed_attn/on")
+    if alg_config.get("QUERY_PARTNER_LSTM", False):
+        tags.append("qplstm/on")
+
+    follow_coef = env_kwargs.get("follow_coef", 0.0)
+    if follow_coef > 0:
+        tags.append(f"follow/{follow_coef}")
+    match_coef = env_kwargs.get("match_coef", 0.0)
+    if match_coef > 0:
+        tags.append(f"match/{match_coef}")
+
+    label = str(config.get("label", "default_label"))
+    if label.lower().startswith("sweep"):
+        tags.append("sweep")
     return tags
 
 
