@@ -4,7 +4,10 @@ Loads final_params (shape: num_seeds, ...) from a single checkpoint,
 builds the NxN cross-play matrix, and reports SP/XP with proper SEM
 following the pairing scheme from the ZSC literature.
 
-Reports two matrices: game score and JSD between attention maps.
+Reports the cross-play game-score matrix. For non-card-game envs also
+reports a raw-spatial JSD matrix between attention maps; this is skipped
+for card-game runs because Other-Play recolouring/shuffling makes raw
+spatial JSD meaningless across agents.
 
 Usage:
     uv run python -m evaluation.run_xp_seeds \
@@ -499,7 +502,11 @@ def _init_xp_wandb_run(algo_cfg: dict, task_name: str, run_dir: str, wb_prefix: 
 
 def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
                       task_name, run_dir, wb_run=None, wb_prefix="XP"):
-    """Log XP results to wandb. Creates a new run if `wb_run` is None."""
+    """Log XP results to wandb. Creates a new run if `wb_run` is None.
+
+    `jsd_matrix=None` skips all JSD-related logging (used for card-game runs
+    where raw spatial JSD is meaningless under Other-Play).
+    """
     import wandb
 
     created_run = False
@@ -512,19 +519,20 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
             {f"{wb_prefix}/score_matrix": wandb.Image(os.path.join(xp_dir, "xp_score_matrix.png"))},
             commit=False,
         )
-    wb_run.log(
-        {f"{wb_prefix}/jsd_matrix": wandb.Image(os.path.join(xp_dir, "xp_jsd_matrix.png"))},
-        commit=False,
-    )
+    if jsd_matrix is not None:
+        wb_run.log(
+            {f"{wb_prefix}/jsd_matrix": wandb.Image(os.path.join(xp_dir, "xp_jsd_matrix.png"))},
+            commit=False,
+        )
 
-    jsd_ep_means = jsd_matrix.mean(axis=-1)
-    sp_jsd = np.diag(jsd_ep_means).mean()
-    xp_jsd_m, xp_jsd_s = xp_mean_and_sem(jsd_ep_means)
-    wb_run.summary[f"{wb_prefix}/sp_jsd"] = sp_jsd
-    wb_run.summary[f"{wb_prefix}/xp_jsd_mean"] = xp_jsd_m
-    wb_run.summary[f"{wb_prefix}/xp_jsd_sem"] = xp_jsd_s
-    sp_jsd_diag = np.diag(jsd_ep_means)
-    wb_run.summary[f"{wb_prefix}/sp_jsd_sem"] = np.std(sp_jsd_diag) / np.sqrt(len(sp_jsd_diag))
+        jsd_ep_means = jsd_matrix.mean(axis=-1)
+        sp_jsd = np.diag(jsd_ep_means).mean()
+        xp_jsd_m, xp_jsd_s = xp_mean_and_sem(jsd_ep_means)
+        wb_run.summary[f"{wb_prefix}/sp_jsd"] = sp_jsd
+        wb_run.summary[f"{wb_prefix}/xp_jsd_mean"] = xp_jsd_m
+        wb_run.summary[f"{wb_prefix}/xp_jsd_sem"] = xp_jsd_s
+        sp_jsd_diag = np.diag(jsd_ep_means)
+        wb_run.summary[f"{wb_prefix}/sp_jsd_sem"] = np.std(sp_jsd_diag) / np.sqrt(len(sp_jsd_diag))
     if score_mean is not None:
         sp_score_diag = np.diag(score_mean)
         sp_score = sp_score_diag.mean()
@@ -536,7 +544,8 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
         wb_run.summary[f"{wb_prefix}/xp_score_sem"] = xp_score_s
 
     wandb.save(os.path.join(xp_dir, "xp_score_matrix.csv"), base_path=xp_dir)
-    wandb.save(os.path.join(xp_dir, "xp_jsd_matrix.csv"), base_path=xp_dir)
+    if jsd_matrix is not None:
+        wandb.save(os.path.join(xp_dir, "xp_jsd_matrix.csv"), base_path=xp_dir)
 
     if created_run:
         wb_run.finish()
@@ -657,8 +666,11 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     for metric_name in metric_names:
         print_xp_table(xp_metrics, metric_name, seed_names)
 
-    print_jsd_table(jsd_matrix, seed_names)
-    print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds)
+    is_card_game = env_name == "card-game"
+    if not is_card_game:
+        print_jsd_table(jsd_matrix, seed_names)
+    print_sp_vs_xp_summary(xp_metrics, metric_names,
+                           None if is_card_game else jsd_matrix, num_seeds)
 
     # Save heatmaps and CSVs
     beta = algo_cfg.get("JA_BETA_MAX", "unknown")
@@ -683,16 +695,17 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
             save_xp_csv(score_mean, score_std,
                          os.path.join(d, f"{prefix}xp_score_matrix.csv"), label="episode_return")
 
-    jsd_mean = jsd_matrix.mean(axis=-1)
-    jsd_std = jsd_matrix.std(axis=-1)
-    for d in (xp_dir, central_xp_dir):
-        prefix = "" if d == xp_dir else f"{beta_prefix}_"
-        save_xp_heatmap(jsd_mean, jsd_std,
-                         f"XP JSD — {run_label}",
-                         os.path.join(d, f"{prefix}xp_jsd_matrix.png"),
-                         fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
-        save_xp_csv(jsd_mean, jsd_std,
-                     os.path.join(d, f"{prefix}xp_jsd_matrix.csv"), label="jsd")
+    if not is_card_game:
+        jsd_mean = jsd_matrix.mean(axis=-1)
+        jsd_std = jsd_matrix.std(axis=-1)
+        for d in (xp_dir, central_xp_dir):
+            prefix = "" if d == xp_dir else f"{beta_prefix}_"
+            save_xp_heatmap(jsd_mean, jsd_std,
+                             f"XP JSD — {run_label}",
+                             os.path.join(d, f"{prefix}xp_jsd_matrix.png"),
+                             fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
+            save_xp_csv(jsd_mean, jsd_std,
+                         os.path.join(d, f"{prefix}xp_jsd_matrix.csv"), label="jsd")
 
     print(f"[xp_seeds] results saved to {xp_dir} and {central_xp_dir}")
 
@@ -752,8 +765,8 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                 fps=3,
             )
 
-    _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
-                      task_name, savedir, wb_run=wb_run, wb_prefix=wb_prefix)
+    _log_xp_to_wandb(None if is_card_game else jsd_matrix, score_mean, xp_dir,
+                      algo_cfg, task_name, savedir, wb_run=wb_run, wb_prefix=wb_prefix)
 
     if created_wb_run:
         wb_run.finish()
@@ -882,7 +895,10 @@ def print_jsd_table(jsd_matrix, seed_names):
 
 
 def print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds):
-    """Report SP and XP with proper SEM using the seed-pairing scheme."""
+    """Report SP and XP with proper SEM using the seed-pairing scheme.
+
+    `jsd_matrix=None` suppresses the JSD line (card-game runs).
+    """
     print("\n=== Self-Play vs Cross-Play Summary ===")
     m = num_seeds // 2
     print(f"  ({num_seeds} seeds -> {m} independent XP samples)")
@@ -903,13 +919,13 @@ def print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds):
 
         print(f"  {metric_name}:  SP = {sp_mean:.2f} +/- {sp_sem:.2f}  |  XP = {xp_mean:.2f} +/- {xp_sem:.2f}")
 
-    # JSD summary
-    jsd_ep_means = jsd_matrix.mean(axis=-1)  # (N, N)
-    sp_jsd = np.diag(jsd_ep_means)
-    sp_jsd_mean = np.mean(sp_jsd)
-    sp_jsd_sem = np.std(sp_jsd) / np.sqrt(len(sp_jsd))
-    xp_jsd_mean, xp_jsd_sem = xp_mean_and_sem(jsd_ep_means)
-    print(f"  JSD:  SP = {sp_jsd_mean:.4f} +/- {sp_jsd_sem:.4f}  |  XP = {xp_jsd_mean:.4f} +/- {xp_jsd_sem:.4f}")
+    if jsd_matrix is not None:
+        jsd_ep_means = jsd_matrix.mean(axis=-1)  # (N, N)
+        sp_jsd = np.diag(jsd_ep_means)
+        sp_jsd_mean = np.mean(sp_jsd)
+        sp_jsd_sem = np.std(sp_jsd) / np.sqrt(len(sp_jsd))
+        xp_jsd_mean, xp_jsd_sem = xp_mean_and_sem(jsd_ep_means)
+        print(f"  JSD:  SP = {sp_jsd_mean:.4f} +/- {sp_jsd_sem:.4f}  |  XP = {xp_jsd_mean:.4f} +/- {xp_jsd_sem:.4f}")
 
 
 def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
@@ -1036,11 +1052,12 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     xp_mean, xp_sem = xp_mean_and_sem(score_mean)
     print(f"  Score: SP = {sp_mean:.4f} +/- {sp_sem:.4f}  |  XP = {xp_mean:.4f} +/- {xp_sem:.4f}")
 
-    sp_jsd = np.diag(jsd_ep_means)
-    sp_jsd_mean = np.mean(sp_jsd)
-    sp_jsd_sem = np.std(sp_jsd) / np.sqrt(len(sp_jsd))
-    xp_jsd_mean, xp_jsd_sem = xp_mean_and_sem(jsd_ep_means)
-    print(f"  JSD:   SP = {sp_jsd_mean:.4f} +/- {sp_jsd_sem:.4f}  |  XP = {xp_jsd_mean:.4f} +/- {xp_jsd_sem:.4f}")
+    if task_cfg["ENV_NAME"] != "card-game":
+        sp_jsd = np.diag(jsd_ep_means)
+        sp_jsd_mean = np.mean(sp_jsd)
+        sp_jsd_sem = np.std(sp_jsd) / np.sqrt(len(sp_jsd))
+        xp_jsd_mean, xp_jsd_sem = xp_mean_and_sem(jsd_ep_means)
+        print(f"  JSD:   SP = {sp_jsd_mean:.4f} +/- {sp_jsd_sem:.4f}  |  XP = {xp_jsd_mean:.4f} +/- {xp_jsd_sem:.4f}")
 
 
 if __name__ == "__main__":
