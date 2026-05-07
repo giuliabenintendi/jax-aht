@@ -196,6 +196,10 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_pca_1 = ph_0[perm_1]
 
     ep_ts = 1
+    # Placeholder partner-LSTM hiddens (carried through unchanged; not wired
+    # into XP eval). Keep them in the carry so the take_step return shape
+    # matches what scan expects.
+    pe_a0 = pe_c0 = pe_a1 = pe_c1 = jnp.zeros((1,))
     init_carry = (ep_ts, env_state, obs, rng, done, reward, env_act_onehot,
                   hstate_0, hstate_1, dummy_info, jsd_sum, jsd_count,
                   prev_reward_0 if use_prev_io else None,
@@ -291,7 +295,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                     hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next,
                     next_prev_reward_0, next_prev_reward_1, next_prev_action_0, next_prev_action_1,
                     attn_0.squeeze(), attn_1.squeeze(),
-                    oa1, oc1, oa0, oc0,
+                    pe_a0, pe_c0, pe_a1, pe_c1,
                     next_pca_0, next_pca_1)
 
         (ep_ts, env_state, obs, rng, done, reward, act_onehot,
