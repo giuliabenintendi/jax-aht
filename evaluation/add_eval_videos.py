@@ -204,11 +204,7 @@ def main():
         print(f"Card-game eval videos added to {wb_run.url}")
         return
 
-    sp_seed_indices = (
-        args.sp_seeds if args.sp_seeds is not None
-        else list(range(num_seeds))
-    )
-    for seed_idx in sp_seed_indices:
+    for seed_idx in range(num_seeds):
         params = jax.tree.map(lambda x: x[seed_idx], final_params)
 
         ep_states, attn_data, _, _ = run_episode_with_states(
