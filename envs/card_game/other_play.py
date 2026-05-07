@@ -28,8 +28,13 @@ import jax.numpy as jnp
 import chex
 from flax.struct import dataclass
 
-from envs.card_game.action_utils import remap_recoloured_action
 from envs.card_game.rendering import TILE_PIXELS, NUM_CARDS, CARD_COLORS
+
+
+def remap_recoloured_action(action, inv_recolouring):
+    """Map a recoloured-space action back to ground-truth color identity."""
+    action = jnp.asarray(action, dtype=jnp.int32)
+    return inv_recolouring[action]
 
 
 # ---------------------------------------------------------------------------
