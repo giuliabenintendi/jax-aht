@@ -208,28 +208,14 @@ def main():
         args.sp_seeds if args.sp_seeds is not None
         else list(range(num_seeds))
     )
-    is_overcooked_fov = (
-        env_name.startswith("overcooked")
-        and alg_config.get("ENV_KWARGS", {}).get("obs_type") == "fov"
-    )
-
     for seed_idx in sp_seed_indices:
         params = jax.tree.map(lambda x: x[seed_idx], final_params)
 
-        if is_overcooked_fov:
-            ep_states, attn_data, _, _, ep_obs = run_episode_with_states(
-                jax.random.PRNGKey(42 + seed_idx), inner_env, params, policy,
-                params, policy, max_steps,
-                collect_attention=True,
-                collect_obs=True,
-            )
-        else:
-            ep_states, attn_data, _, _ = run_episode_with_states(
-                jax.random.PRNGKey(42 + seed_idx), inner_env, params, policy,
-                params, policy, max_steps,
-                collect_attention=True,
-            )
-            ep_obs = None
+        ep_states, attn_data, _, _ = run_episode_with_states(
+            jax.random.PRNGKey(42 + seed_idx), inner_env, params, policy,
+            params, policy, max_steps,
+            collect_attention=True,
+        )
         print(f"Seed {seed_idx}: {len(ep_states)} frames collected")
 
         video_dir = os.path.join(run_dir, "videos", f"seed_{seed_idx}")
@@ -250,22 +236,6 @@ def main():
                              bitrate='8000k', preset='slow')
         tag = f"Eval/seed_{seed_idx}"
         wb_run.log({f"{tag}/episode_video": wandb.Video(video_path, format="mp4")}, commit=False)
-
-        # Per-agent FOV side-by-side video for overcooked-fov runs.
-        if is_overcooked_fov and ep_obs:
-            from evaluation.vis_episodes import render_overcooked_fov_per_agent_frames
-            fov_frames = render_overcooked_fov_per_agent_frames(
-                ep_obs, fov_px=inner_env.fov_px, scale=4, gap=4,
-            )
-            fov_path = os.path.join(video_dir, "eval_fov_per_agent.mp4")
-            ImageSequenceClip(fov_frames, fps=10).write_videofile(
-                fov_path, fps=10, codec='libx264', audio=False,
-                bitrate='8000k', preset='slow',
-            )
-            wb_run.log(
-                {f"{tag}/fov_per_agent": wandb.Video(fov_path, format="mp4")},
-                commit=False,
-            )
 
         # Attention overlay videos
         attn_video_base = os.path.join(video_dir, "eval_attention.mp4")

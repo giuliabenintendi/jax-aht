@@ -86,7 +86,7 @@ def _draw_timestep_label(cell, timestep, decision=False):
 
     img = Image.fromarray(cell)
     draw = ImageDraw.Draw(img)
-    label = f"t={timestep}"
+    label = f"{timestep}"
     if decision:
         label += " D"
 
