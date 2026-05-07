@@ -101,9 +101,15 @@ def _gt_to_view_col(state, pos_perm: np.ndarray, gt_value: int):
     return int(matches[0]) if len(matches) else None
 
 
+_META_KEYS = ("__match_count__", "__episode_count__")
+
+
 def _empty_dist():
-    return {(a, t): {"view_pos": [], "view_color": [], "gt_color": []}
-            for a in (0, 1) for t in ("msg", "pick")}
+    d = {(a, t): {"view_pos": [], "view_color": [], "gt_color": []}
+         for a in (0, 1) for t in ("msg", "pick")}
+    for k in _META_KEYS:
+        d[k] = 0
+    return d
 
 
 def _state_for_recorded_action(ep_states, t: int, is_decision: bool):
@@ -160,6 +166,14 @@ def _collect_one_seed(rng_key, inner_env, params, policy, max_steps,
                 out[key]["view_pos"].append(vc_pos)
                 out[key]["view_color"].append(vc_color)
                 out[key]["gt_color"].append(int(gt))
+        # Track per-episode GT-frame match (= env's success condition).
+        if n_steps > 0:
+            pick_0 = int(ep_actions[n_steps - 1][0])
+            pick_1 = int(ep_actions[n_steps - 1][1])
+            if pick_0 >= 0 and pick_1 >= 0:
+                out["__episode_count__"] += 1
+                if pick_0 == pick_1:
+                    out["__match_count__"] += 1
     return out
 
 
@@ -174,6 +188,9 @@ def _merge(*dicts):
     out = _empty_dist()
     for d in dicts:
         for k, v in d.items():
+            if k in _META_KEYS:
+                out[k] += v
+                continue
             out[k]["view_pos"].extend(v["view_pos"])
             out[k]["view_color"].extend(v["view_color"])
             out[k]["gt_color"].extend(v["gt_color"])
@@ -367,6 +384,87 @@ def _print_per_seed_equivariance_sp(label: str, all_dists, seed_indices) -> None
         print(f"  {seed_idx:>4}  {cells[0]:>16}  {cells[1]:>16}  {cells[2]:>16}  {cells[3]:>16}")
 
 
+def _vocab_size(arr, threshold: float = 0.05) -> int:
+    """Number of categories with marginal probability > threshold (vocabulary size)."""
+    a = np.asarray(arr, dtype=int)
+    if len(a) == 0:
+        return 0
+    h = np.bincount(a, minlength=NUM_CARDS).astype(float)
+    p = h / h.sum()
+    return int((p > threshold).sum())
+
+
+def _effective_vocab(arr) -> float:
+    """exp(H) — perplexity; equals true vocab size for uniform-on-subset distributions."""
+    H, _, _ = _entropy_peak(arr)
+    return float(np.exp(H)) if not np.isnan(H) else float("nan")
+
+
+def _pearson(xs, ys) -> float:
+    if len(xs) < 2:
+        return float("nan")
+    x = np.asarray(xs, dtype=float)
+    y = np.asarray(ys, dtype=float)
+    sx, sy = x.std(), y.std()
+    if sx == 0 or sy == 0:
+        return float("nan")
+    return float(((x - x.mean()) * (y - y.mean())).mean() / (sx * sy))
+
+
+def _print_vocab_match_table(label: str, all_dists, index_labels, threshold: float = 0.05) -> None:
+    """Per-seed/per-pair vocabulary size + match rate (= GT pick agreement = env score).
+
+    `index_labels` are display strings (e.g. "0", "0v1") aligned with `all_dists`.
+    Reports `vocab` (count of view_color bins above threshold) and `eff_vocab` (exp(H))
+    for each agent's pick distribution, plus the per-row match rate. Closes with
+    Pearson correlations between vocabulary measures and match.
+    """
+    print(f"\n--- {label}: vocab size (p>{threshold}) + match rate ---")
+    header = (f"  {'idx':>6}  {'vocab a0':>8}  {'vocab a1':>8}  "
+              f"{'eff a0':>7}  {'eff a1':>7}  "
+              f"{'match':>8}  {'eps':>6}")
+    print(header)
+    rows = []
+    for idx, d in zip(index_labels, all_dists):
+        a0 = d[(0, "pick")]["view_color"]
+        a1 = d[(1, "pick")]["view_color"]
+        v0, v1 = _vocab_size(a0, threshold), _vocab_size(a1, threshold)
+        e0, e1 = _effective_vocab(a0), _effective_vocab(a1)
+        eps = d.get("__episode_count__", 0)
+        match = (d.get("__match_count__", 0) / eps) if eps > 0 else float("nan")
+        rows.append((str(idx), v0, v1, e0, e1, match, eps))
+        print(f"  {str(idx):>6}  {v0:>8d}  {v1:>8d}  {e0:>7.2f}  {e1:>7.2f}  "
+              f"{match:>8.3f}  {eps:>6d}")
+
+    if len(rows) >= 2:
+        v_sum = [r[1] + r[2] for r in rows]
+        v_min = [min(r[1], r[2]) for r in rows]
+        e_sum = [r[3] + r[4] for r in rows]
+        e_min = [min(r[3], r[4]) for r in rows]
+        m = [r[5] for r in rows]
+        print(f"  Pearson r  match vs (vocab a0 + vocab a1)     = {_pearson(v_sum, m):+.3f}")
+        print(f"  Pearson r  match vs min(vocab a0, vocab a1)  = {_pearson(v_min, m):+.3f}")
+        print(f"  Pearson r  match vs (eff a0 + eff a1)         = {_pearson(e_sum, m):+.3f}")
+        print(f"  Pearson r  match vs min(eff a0, eff a1)      = {_pearson(e_min, m):+.3f}")
+        # Set-theoretic prediction: vocab_a0 + vocab_a1 > NUM_CARDS guarantees
+        # |G_0 ∩ G_1| ≥ 1 (always have a coordinatable GT). This should correlate
+        # with high match.
+        guarantee = [int(r[1] + r[2] > NUM_CARDS) for r in rows]
+        n_guaranteed = sum(guarantee)
+        if 0 < n_guaranteed < len(rows):
+            m_guar = [r[5] for r, g in zip(rows, guarantee) if g]
+            m_unguar = [r[5] for r, g in zip(rows, guarantee) if not g]
+            print(f"  vocab a0 + a1 > {NUM_CARDS} (intersection ≥ 1 guaranteed): "
+                  f"{n_guaranteed}/{len(rows)} rows; "
+                  f"mean match guaranteed = {np.mean(m_guar):.3f}; "
+                  f"not = {np.mean(m_unguar):.3f}")
+        elif n_guaranteed == len(rows):
+            print(f"  vocab a0 + a1 > {NUM_CARDS} on all {len(rows)} rows; "
+                  f"mean match = {np.mean(m):.3f}")
+        else:
+            print(f"  vocab a0 + a1 ≤ {NUM_CARDS} on all rows; intersection not guaranteed")
+
+
 def _print_per_seed_equivariance_xp(label: str, pairs, all_dists, num_seeds) -> None:
     """Per-seed view_color H aggregated by role (XP).
 
@@ -522,6 +620,9 @@ def _run_mode(args, alg_config_template, final_params, num_seeds, seed_indices,
         _print_dist_stats(stats_label, merged, sample_note)
         # Per-seed view_color equivariance check, aggregated by role across partners
         _print_per_seed_equivariance_xp(stats_label, pairs, all_dists, num_seeds)
+        # Vocabulary size vs match-rate correlation per pair
+        pair_labels = [f"{i}v{j}" for (i, j) in pairs]
+        _print_vocab_match_table(stats_label, all_dists, pair_labels)
         return
 
     all_dists = generate_action_distribution_artifacts(
@@ -544,6 +645,8 @@ def _run_mode(args, alg_config_template, final_params, num_seeds, seed_indices,
     _print_dist_stats(stats_label, merged, sample_note)
     # Per-seed view_color equivariance check
     _print_per_seed_equivariance_sp(stats_label, all_dists, seed_indices)
+    # Vocabulary size vs match-rate correlation per seed
+    _print_vocab_match_table(stats_label, all_dists, [str(s) for s in seed_indices])
 
 
 def main():
