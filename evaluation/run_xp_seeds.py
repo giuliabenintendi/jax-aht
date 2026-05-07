@@ -78,28 +78,16 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     """
     from agents.ja_utils import augment_obs_for_eval
 
-    _xattn = getattr(agent_0_policy, 'cross_agent_attn', False)
-    _xnpos = getattr(agent_0_policy, 'xattn_num_positions', 0) if _xattn else 0
-    _xfdim = getattr(agent_0_policy, 'xattn_feat_dim', 0) if _xattn else 0
-
     def _call_attn(policy, params, obs, done, avail, hstate, rng,
                    pe_a=None, pe_c=None, prev_rew=None, prev_act=None):
         """Wrapper returning (act, hstate, attn, own_a, own_c) uniformly."""
-        if _xattn:
-            act, hs, attn, oa, oc = policy.get_action_and_attention(
-                params=params, obs=obs, done=done, avail_actions=avail,
-                hstate=hstate, rng=rng, greedy=greedy_eval,
-                partner_embed_actor=pe_a, partner_embed_critic=pe_c,
-            )
-            return act, hs, attn, oa, oc
-        else:
-            act, hs, attn = policy.get_action_and_attention(
-                params=params, obs=obs, done=done, avail_actions=avail,
-                hstate=hstate, rng=rng, greedy=greedy_eval,
-                prev_reward=prev_rew, prev_action=prev_act,
-            )
-            z = jnp.zeros((1, 1, 1))  # dummy
-            return act, hs, attn, z, z
+        act, hs, attn = policy.get_action_and_attention(
+            params=params, obs=obs, done=done, avail_actions=avail,
+            hstate=hstate, rng=rng, greedy=greedy_eval,
+            prev_reward=prev_rew, prev_action=prev_act,
+        )
+        z = jnp.zeros((1, 1, 1))  # dummy
+        return act, hs, attn, z, z
 
     rng, reset_rng = jax.random.split(rng)
     init_obs, init_env_state = env.reset(reset_rng)
@@ -130,15 +118,6 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
         prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
-    # Initialize partner embeddings for cross-agent attention
-    if _xattn:
-        pe_a0 = jnp.zeros((1, 1, _xnpos, _xfdim))
-        pe_c0 = jnp.zeros((1, 1, _xnpos, _xfdim))
-        pe_a1 = jnp.zeros((1, 1, _xnpos, _xfdim))
-        pe_c1 = jnp.zeros((1, 1, _xnpos, _xfdim))
-    else:
-        pe_a0 = pe_c0 = pe_a1 = pe_c1 = jnp.zeros((1, 1, 1))
-
     avail_actions = env.get_avail_actions(init_env_state)
     avail_actions = jax.lax.stop_gradient(avail_actions)
     avail_actions_0 = avail_actions["agent_0"].astype(jnp.float32)
@@ -156,28 +135,23 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         obs_0 = jnp.concatenate([obs_0, prev_pca_0])
         obs_1 = jnp.concatenate([obs_1, prev_pca_1])
 
-    act_0, hstate_0, attn_0, oa0, oc0 = _call_attn(
+    act_0, hstate_0, attn_0, _, _ = _call_attn(
         agent_0_policy, agent_0_param,
         obs_0.reshape(1, 1, -1), init_done["agent_0"].reshape(1, 1),
         avail_actions_0, init_hstate_0, act0_rng,
-        pe_a=pe_a0, pe_c=pe_c0,
         prev_rew=prev_reward_0 if use_prev_io else None,
         prev_act=prev_action_0 if use_prev_io else None,
     )
     act_0 = act_0.squeeze()
 
-    act_1, hstate_1, attn_1, oa1, oc1 = _call_attn(
+    act_1, hstate_1, attn_1, _, _ = _call_attn(
         agent_1_policy, agent_1_param,
         obs_1.reshape(1, 1, -1), init_done["agent_1"].reshape(1, 1),
         avail_actions_1, init_hstate_1, act1_rng,
-        pe_a=pe_a1, pe_c=pe_c1,
         prev_rew=prev_reward_1 if use_prev_io else None,
         prev_act=prev_action_1 if use_prev_io else None,
     )
     act_1 = act_1.squeeze()
-    # Swap partner embeddings
-    pe_a0, pe_a1 = oa1, oa0
-    pe_c0, pe_c1 = oc1, oc0
 
     # Flatten attention maps to distributions for JSD
     attn_0_flat = attn_0.reshape(-1)
@@ -255,21 +229,19 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 obs_0 = jnp.concatenate([obs_0, prev_pca_0])
                 obs_1 = jnp.concatenate([obs_1, prev_pca_1])
 
-            act_0, hstate_0_next, attn_0, oa0, oc0 = _call_attn(
+            act_0, hstate_0_next, attn_0, _, _ = _call_attn(
                 agent_0_policy, agent_0_param,
                 obs_0.reshape(1, 1, -1), done["agent_0"].reshape(1, 1),
                 avail_actions_0, hstate_0, act0_rng,
-                pe_a=pe_a0, pe_c=pe_c0,
                 prev_rew=prev_reward_0 if use_prev_io else None,
                 prev_act=prev_action_0 if use_prev_io else None,
             )
             act_0 = act_0.squeeze()
 
-            act_1, hstate_1_next, attn_1, oa1, oc1 = _call_attn(
+            act_1, hstate_1_next, attn_1, _, _ = _call_attn(
                 agent_1_policy, agent_1_param,
                 obs_1.reshape(1, 1, -1), done["agent_1"].reshape(1, 1),
                 avail_actions_1, hstate_1, act1_rng,
-                pe_a=pe_a1, pe_c=pe_c1,
                 prev_rew=prev_reward_1 if use_prev_io else None,
                 prev_act=prev_action_1 if use_prev_io else None,
             )
@@ -496,8 +468,6 @@ def _build_xp_name(algo_cfg: dict, layout: str) -> str:
         parts.append("comm")
     if algo_cfg.get("FEED_OTHER_ATTN", False):
         parts.append("feed_attn")
-    if algo_cfg.get("FILTER_ATTN_TOP1", False):
-        parts.append("top1")
     seeds = algo_cfg.get("NUM_SEEDS", 1)
     if seeds > 1:
         parts.append(f"s{seeds}")
@@ -777,7 +747,6 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                 f"{wb_prefix}/videos", xp_video_dir, _WandbVideoLogger(wb_run),
                 feed_attn_dims=feed_attn_dims,
                 ja_card_masks=ja_card_masks,
-                filter_top1=bool(algo_cfg.get("FILTER_ATTN_TOP1", False)),
                 seed_pairs=seed_pairs,
                 num_episodes=xp_video_eps,
                 fps=3,

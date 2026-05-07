@@ -40,13 +40,8 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
     # JA_CARD_PARTNER_FEED gates whether the 5-dim partner attention vector
     # is appended to the obs at eval time (must match training).
     ja_card_partner_feed = ja_card_attn and algorithm_config.get("JA_CARD_PARTNER_FEED", True)
-    cross_agent_attn = algorithm_config.get("CROSS_AGENT_ATTN", False)
-    if cross_agent_attn:
-        _xattn_npos = getattr(policy, 'xattn_num_positions', 0)
-        _xattn_fdim = getattr(policy, 'xattn_feat_dim', 0)
     query_partner_lstm = algorithm_config.get("QUERY_PARTNER_LSTM", False)
     _lstm_dim = algorithm_config.get("LSTM_HIDDEN_DIM", 128)
-    eval_filter_top1 = algorithm_config.get("FILTER_ATTN_TOP1", False)
     if feed_attn or ja_card_attn:
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(
@@ -59,12 +54,6 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
     if ja_card_attn:
         from agents.ja_utils import build_card_masks
         _card_masks_eval = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
-
-    def _apply_top1(attn):
-        """Filter attention to global argmax (single spike)."""
-        flat = attn.reshape(-1)
-        idx = jnp.argmax(flat)
-        return jnp.zeros_like(flat).at[idx].set(1.0).reshape(attn.shape)
 
     mode_name = "greedy"
     greedy = True
@@ -105,11 +94,6 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 prev_partner_card_attn_0 = jnp.zeros(5)
                 prev_partner_card_attn_1 = jnp.zeros(5)
 
-            if cross_agent_attn:
-                pe_actor_0 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
-                pe_actor_1 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
-                pe_critic_0 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
-                pe_critic_1 = jnp.zeros((1, 1, _xattn_npos, _xattn_fdim))
             if query_partner_lstm:
                 plh_a0 = jnp.zeros((1, 1, _lstm_dim))
                 plh_a1 = jnp.zeros((1, 1, _lstm_dim))
@@ -142,61 +126,32 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 rng, rng0, rng1, step_rng = jax.random.split(rng, 4)
                 plh_kw0 = dict(plh_actor=plh_a0, plh_critic=plh_c0) if query_partner_lstm else {}
                 plh_kw1 = dict(plh_actor=plh_a1, plh_critic=plh_c1) if query_partner_lstm else {}
-                if cross_agent_attn:
-                    act_0, hstate_0, attn_0, own_a0, own_c0 = policy.get_action_and_attention(
-                        params=params,
-                        obs=obs_0.reshape(1, 1, -1),
-                        done=done["agent_0"].reshape(1, 1),
-                        avail_actions=avail_actions["agent_0"].astype(jnp.float32),
-                        hstate=hstate_0, rng=rng0, greedy=greedy,
-                        partner_embed_actor=pe_actor_0,
-                        partner_embed_critic=pe_critic_0,
-                        **plh_kw0,
-                    )
-                    act_1, hstate_1, attn_1, own_a1, own_c1 = policy.get_action_and_attention(
-                        params=params,
-                        obs=obs_1.reshape(1, 1, -1),
-                        done=done["agent_1"].reshape(1, 1),
-                        avail_actions=avail_actions["agent_1"].astype(jnp.float32),
-                        hstate=hstate_1, rng=rng1, greedy=greedy,
-                        partner_embed_actor=pe_actor_1,
-                        partner_embed_critic=pe_critic_1,
-                        **plh_kw1,
-                    )
-                    # Swap: each agent gets the other's embedding for next step
-                    pe_actor_0, pe_actor_1 = own_a1, own_a0
-                    pe_critic_0, pe_critic_1 = own_c1, own_c0
-                else:
-                    act_0, hstate_0, attn_0 = policy.get_action_and_attention(
-                        params=params,
-                        obs=obs_0.reshape(1, 1, -1),
-                        done=done["agent_0"].reshape(1, 1),
-                        avail_actions=avail_actions["agent_0"].astype(jnp.float32),
-                        hstate=hstate_0, rng=rng0, greedy=greedy,
-                        prev_reward=prev_reward_0 if use_prev_io else None,
-                        prev_action=prev_action_0 if use_prev_io else None,
-                        **plh_kw0,
-                    )
-                    act_1, hstate_1, attn_1 = policy.get_action_and_attention(
-                        params=params,
-                        obs=obs_1.reshape(1, 1, -1),
-                        done=done["agent_1"].reshape(1, 1),
-                        avail_actions=avail_actions["agent_1"].astype(jnp.float32),
-                        hstate=hstate_1, rng=rng1, greedy=greedy,
-                        prev_reward=prev_reward_1 if use_prev_io else None,
-                        prev_action=prev_action_1 if use_prev_io else None,
-                        **plh_kw1,
-                    )
+                act_0, hstate_0, attn_0 = policy.get_action_and_attention(
+                    params=params,
+                    obs=obs_0.reshape(1, 1, -1),
+                    done=done["agent_0"].reshape(1, 1),
+                    avail_actions=avail_actions["agent_0"].astype(jnp.float32),
+                    hstate=hstate_0, rng=rng0, greedy=greedy,
+                    prev_reward=prev_reward_0 if use_prev_io else None,
+                    prev_action=prev_action_0 if use_prev_io else None,
+                    **plh_kw0,
+                )
+                act_1, hstate_1, attn_1 = policy.get_action_and_attention(
+                    params=params,
+                    obs=obs_1.reshape(1, 1, -1),
+                    done=done["agent_1"].reshape(1, 1),
+                    avail_actions=avail_actions["agent_1"].astype(jnp.float32),
+                    hstate=hstate_1, rng=rng1, greedy=greedy,
+                    prev_reward=prev_reward_1 if use_prev_io else None,
+                    prev_action=prev_action_1 if use_prev_io else None,
+                    **plh_kw1,
+                )
                 if query_partner_lstm:
                     # Swap: each agent gets the other's actor/critic h
                     plh_a0 = hstate_1[:, :, :_lstm_dim]
                     plh_a1 = hstate_0[:, :, :_lstm_dim]
                     plh_c0 = hstate_1[:, :, 2*_lstm_dim:3*_lstm_dim]
                     plh_c1 = hstate_0[:, :, 2*_lstm_dim:3*_lstm_dim]
-
-                if eval_filter_top1:
-                    attn_0 = _apply_top1(attn_0.squeeze())[None, None]
-                    attn_1 = _apply_top1(attn_1.squeeze())[None, None]
 
                 if feed_attn:
                     prev_attn_0 = attn_0.squeeze()
@@ -433,16 +388,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
         attn_data = all_attn_data
         ep_actions = all_ep_actions
         ep_messages = all_ep_messages
-        # Apply top1 filter to collected attention maps (match training behavior)
-        if algorithm_config.get("FILTER_ATTN_TOP1", False):
-            import numpy as _np
-            def _top1_np(attn):
-                a = _np.array(attn).squeeze()
-                out = _np.zeros_like(a)
-                out.flat[_np.argmax(a)] = 1.0
-                return out
-            for agent_key in ("agent_0", "agent_1"):
-                attn_data[agent_key] = [_top1_np(m) for m in attn_data.get(agent_key, [])]
 
         print(f"[ja_ippo] Seed {seed_idx}: eval episode {len(ep_states)} frames collected")
 
@@ -491,7 +436,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     inner_env, policy, final_params, max_steps, tag, video_dir, logger,
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
-                    filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
                     num_episodes=sp_video_episodes, fps=3,
                 )
                 # Under OP the canonical-scene video misrepresents what each
@@ -503,7 +447,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                         inner_env, policy, final_params, max_steps, tag, video_dir, logger,
                         feed_attn_dims=feed_attn_dims,
                         ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
-                        filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
                         num_episodes=sp_video_episodes, fps=3,
                     )
             else:
@@ -629,6 +572,5 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             "Eval/XP", xp_video_dir, logger,
             feed_attn_dims=feed_attn_dims,
             ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
-            filter_top1=algorithm_config.get("FILTER_ATTN_TOP1", False),
             num_episodes=xp_video_episodes, fps=3,
         )

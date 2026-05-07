@@ -40,8 +40,6 @@ def _build_run_string(config: dict) -> str:
         parts.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
     if "JA_BETA_MAX" in alg_config:
         parts.append(f"b{alg_config['JA_BETA_MAX']}")
-    if alg_config.get("CROSS_AGENT_ATTN", False):
-        parts.append("flamingo_xattn")
     if alg_config.get("QUERY_PARTNER_LSTM", False):
         parts.append("qplstm")
     ent_coef = alg_config.get("ENT_COEF", 0.01)
@@ -58,20 +56,13 @@ def _build_run_string(config: dict) -> str:
     follow_coef = env_kwargs.get("follow_coef", 0.0)
     if follow_coef > 0:
         parts.append(f"follow{follow_coef}")
-    attn_msg = alg_config.get("ATTN_MSG_REWARD_COEF", 0.0)
-    if attn_msg > 0:
-        parts.append(f"attn_msg{attn_msg}")
     if alg_config.get("JA_CARD_ATTN", False):
         parts.append("ja_card")
-    if alg_config.get("CARD_CROSS_ATTN", False):
-        parts.append("card_xattn")
     card_jsd = alg_config.get("JA_CARD_JSD_COEF", 0.0)
     if card_jsd > 0:
         parts.append(f"card_jsd{card_jsd}")
     if alg_config.get("FEED_OTHER_ATTN", False):
         parts.append("feed_attn")
-    if alg_config.get("FILTER_ATTN_TOP1", False):
-        parts.append("top1")
     if env_kwargs.get("other_play_position_shuffle") or env_kwargs.get("other_play_recolouring"):
         parts.append("other_play")
     if env_kwargs.get("shuffle") is False:
@@ -108,22 +99,14 @@ def _build_tags(config) -> list[str]:
         tags.append("feed_attn")
     else:
         tags.append("no_feed_attn")
-    if alg_config.get("CROSS_AGENT_ATTN", False):
-        tags.append("cross_attn")
     if alg_config.get("QUERY_PARTNER_LSTM", False):
         tags.append("query_plstm")
-    if alg_config.get("ATTN_MSG_REWARD_COEF", 0.0) > 0:
-        tags.append("attn_msg")
     if env_kwargs.get("follow_coef", 0.0) > 0:
         tags.append("follow_bonus")
     if alg_config.get("JA_CARD_ATTN", False):
         tags.append("ja_card_attn")
-    if alg_config.get("CARD_CROSS_ATTN", False):
-        tags.append("card_cross_attn")
     if alg_config.get("JA_CARD_JSD_COEF", 0.0) > 0:
         tags.append("card_jsd")
-    if alg_config.get("FILTER_ATTN_TOP1", False):
-        tags.append("top1")
     if env_kwargs.get("other_play_position_shuffle") or env_kwargs.get("other_play_recolouring"):
         tags.append("other_play")
     if env_kwargs.get("shuffle") is False:

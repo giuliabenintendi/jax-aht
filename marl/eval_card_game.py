@@ -123,7 +123,6 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
                                feed_attn_dims=None,
                                ja_card_masks=None,
-                               filter_top1=False,
                                num_episodes=30, fps=3):
     """Run multiple card game episodes and save a video with attention spots and choices."""
     import wandb
@@ -143,14 +142,6 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             ja_card_masks=ja_card_masks,
         )
 
-        if filter_top1:
-            def _top1_np(attn):
-                a = np.array(attn).squeeze()
-                out = np.zeros_like(a)
-                out.flat[np.argmax(a)] = 1.0
-                return out
-            for agent_key in ("agent_0", "agent_1"):
-                attn_data[agent_key] = [_top1_np(m) for m in attn_data.get(agent_key, [])]
 
         maps_0 = attn_data.get("agent_0", [])
         maps_1 = attn_data.get("agent_1", [])
@@ -235,7 +226,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
 
 def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, video_dir, logger,
                               feed_attn_dims=None, ja_card_masks=None,
-                              filter_top1=False, seed_pairs=None,
+                              seed_pairs=None,
                               num_episodes=10, fps=3):
     """Generate cross-play videos: pair seed_i (agent 0) with seed_j (agent 1).
 
@@ -269,15 +260,6 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                     feed_other_attn_dims=feed_attn_dims,
                     ja_card_masks=ja_card_masks,
                 )
-
-                if filter_top1:
-                    def _top1_np(attn):
-                        a = np.array(attn).squeeze()
-                        out = np.zeros_like(a)
-                        out.flat[np.argmax(a)] = 1.0
-                        return out
-                    for agent_key in ("agent_0", "agent_1"):
-                        attn_data[agent_key] = [_top1_np(m) for m in attn_data.get(agent_key, [])]
 
                 maps_0 = attn_data.get("agent_0", [])
                 maps_1 = attn_data.get("agent_1", [])
@@ -379,7 +361,7 @@ def _gt_to_view_col(state, agent_idx: int, gt_card_id: int, card_perm: np.ndarra
 
 def _log_card_game_per_agent_obs_video(
     inner_env, policy, params, max_steps, tag, video_dir, logger,
-    feed_attn_dims=None, ja_card_masks=None, filter_top1=False,
+    feed_attn_dims=None, ja_card_masks=None,
     num_episodes=30, fps=3,
     params_partner=None, video_filename="eval_card_game_per_agent.mp4",
     rng_seed_base=100, video_log_key=None,
@@ -422,15 +404,6 @@ def _log_card_game_per_agent_obs_video(
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
         )
-
-        if filter_top1:
-            def _top1_np(attn):
-                a = np.array(attn).squeeze()
-                out = np.zeros_like(a)
-                out.flat[np.argmax(a)] = 1.0
-                return out
-            for agent_key in ("agent_0", "agent_1"):
-                attn_data[agent_key] = [_top1_np(m) for m in attn_data.get(agent_key, [])]
 
         maps_0 = attn_data.get("agent_0", [])
         maps_1 = attn_data.get("agent_1", [])
@@ -513,7 +486,7 @@ def _log_card_game_per_agent_obs_video(
 
 def _log_card_game_per_agent_xp_videos(
     inner_env, policy, all_params, max_steps, tag, video_dir, logger,
-    feed_attn_dims=None, ja_card_masks=None, filter_top1=False,
+    feed_attn_dims=None, ja_card_masks=None,
     seed_pairs=None, num_episodes=5, fps=3,
 ):
     """Per-agent obs cross-play videos: one mp4 per (i, j) pair, agent 0 = seed_i.
@@ -536,7 +509,6 @@ def _log_card_game_per_agent_xp_videos(
             inner_env, policy, params_i, max_steps,
             tag=tag, video_dir=video_dir, logger=logger,
             feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
-            filter_top1=filter_top1,
             num_episodes=num_episodes, fps=fps,
             params_partner=params_j,
             video_filename=f"per_agent_xp_s{seed_i}_vs_s{seed_j}.mp4",

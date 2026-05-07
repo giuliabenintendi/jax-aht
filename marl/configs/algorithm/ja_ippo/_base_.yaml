@@ -52,14 +52,7 @@ CONV_PADDING: SAME
 JA_BETA_MAX: 0.05
 JA_WARMUP_ENV_STEPS: 3500000
 FEED_OTHER_ATTN: false          # feed other agent's previous attention map as 4th image channel
-CROSS_AGENT_ATTN: false         # inter-agent cross-attention on learned embeddings
-FILTER_ATTN_TOP1: false         # keep only global argmax of attention map
 QUERY_PARTNER_LSTM: false       # feed partner's actor LSTM h into spatial attention query
-ATTN_MSG_REWARD_COEF: 0.0      # attention-message consistency reward coefficient
 JA_CARD_ATTN: false             # OP-corrected card-level joint attention
 JA_CARD_PARTNER_FEED: true      # append partner's translated card-attention as 5-dim scalar input (only used when JA_CARD_ATTN); set false to study JSD reward alone, without the input leak
-CARD_CROSS_ATTN: false          # card-level cross-attention with partner-gated own card tokens
-JA_CARD_CONC_COEF: 0.1          # concentration reward: attend to one card
-JA_CARD_ALIGN_COEF: 0.0         # alignment reward: same physical card as partner (superseded by JA_CARD_JSD_COEF)
-JA_CARD_FOLLOW_COEF: 0.5        # follow-through bonus: pick the attended card
 JA_CARD_JSD_COEF: 0.0           # mass-gated card-level JSD alignment reward

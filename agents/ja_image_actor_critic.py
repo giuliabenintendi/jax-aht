@@ -26,160 +26,6 @@ from agents.ja_utils import make_sinusoidal_spatial_basis
 from agents.resnet_encoder import ResNetEncoder
 
 
-class CrossAgentAttention(nn.Module):
-    """Flamingo-style gated cross-attention over partner's spatial features.
-
-    Q from own embedding, K/V from partner's spatial feature map (H*W positions).
-    Multi-head scaled dot-product attention, zero-init gated residual, followed
-    by a gated FFN. Adapted from OpenFlamingo's GatedCrossAttentionBlock.
-
-    The partner_features tensor carries sinusoidal spatial basis, so the
-    weighted-sum output encodes positional information explicitly.
-    """
-    embed_dim: int
-    num_heads: int = 4
-    head_dim: int = 16
-    ff_mult: int = 4
-
-    @nn.compact
-    def __call__(self, own_embed, partner_features):
-        """
-        Args:
-            own_embed: (batch, embed_dim) — agent's post-attention embedding
-            partner_features: (batch, H*W, feat_dim) — partner's spatial features
-        """
-        if partner_features.ndim != 3:
-            raise ValueError(
-                "partner_features must have shape (batch, positions, feat_dim); "
-                f"got ndim={partner_features.ndim} and shape={partner_features.shape}"
-            )
-
-        m, d = self.num_heads, self.head_dim
-        inner_dim = m * d
-        scale = d ** -0.5
-
-        # LayerNorm on query input (Flamingo pattern)
-        x_norm = nn.LayerNorm(name="xattn_ln")(own_embed)
-
-        # Q from own embedding, K/V from partner's spatial features
-        q = nn.Dense(inner_dim, use_bias=False, name="xattn_q")(x_norm)
-        kv = nn.Dense(inner_dim * 2, use_bias=False, name="xattn_kv")(partner_features)
-        k, v = jnp.split(kv, 2, axis=-1)
-
-        # Reshape for multi-head: q (batch, m, d), k/v (batch, HW, m, d)
-        q = q.reshape(-1, m, d)
-        k = k.reshape(-1, k.shape[1], m, d)
-        v = v.reshape(-1, v.shape[1], m, d)
-
-        # Scaled dot-product attention over spatial positions
-        attn_logits = jnp.einsum("bmd,bnmd->bmn", q, k) * scale
-        attn_weights = jax.nn.softmax(attn_logits, axis=-1)  # (batch, m, HW)
-
-        attn_out = jnp.einsum("bmn,bnmd->bmd", attn_weights, v)
-        attn_out = attn_out.reshape(-1, inner_dim)
-        attn_out = nn.Dense(self.embed_dim, use_bias=False, name="xattn_out")(attn_out)
-
-        # Flamingo-style learned residual gate: starts as near-identity.
-        attn_gate = self.param("attn_gate", nn.initializers.zeros, (1,))
-
-        # Gated residual
-        x = own_embed + jnp.tanh(attn_gate) * attn_out
-
-        # Gated FFN (Flamingo pattern)
-        ff_dim = self.embed_dim * self.ff_mult
-        ff_out = nn.LayerNorm(name="ff_ln")(x)
-        ff_out = nn.Dense(ff_dim, use_bias=False, name="ff_up")(ff_out)
-        ff_out = nn.gelu(ff_out)
-        ff_out = nn.Dense(self.embed_dim, use_bias=False, name="ff_down")(ff_out)
-        ff_gate = self.param("ff_gate", nn.initializers.zeros, (1,))
-
-        return x + jnp.tanh(ff_gate) * ff_out
-
-
-class CardCrossAttention(nn.Module):
-    """Cross-attention from agent embedding to own card tokens gated by partner attention.
-
-    Pools the receiver's CNN features over 5 card regions, modulates with the
-    partner's OP-translated card attention via residual gating, then cross-attends
-    from the agent's post-spatial-attention embedding. Flamingo-style zero-init
-    gated residual ensures the module starts as a no-op.
-    """
-    embed_dim: int
-    num_heads: int = 4
-    head_dim: int = 16
-    ff_mult: int = 4
-    img_height: int = 21
-    img_width: int = 35
-    conv_filters: int = 32
-    conv_stride: int = 2
-    conv_kernel_size: int = 3
-    conv_padding: str = "SAME"
-    conv_num_blocks: int = 4
-
-    def setup(self):
-        from agents.ja_utils import build_card_masks
-        feat_h, feat_w = _compute_resnet_output_dims(
-            self.img_height, self.img_width,
-            self.conv_stride, self.conv_kernel_size,
-            self.conv_padding, self.conv_num_blocks,
-        )
-        masks = build_card_masks(self.img_height, self.img_width, feat_h, feat_w)
-        # Normalize so each card mask sums to 1 (weighted average, not sum)
-        mask_sums = masks.sum(axis=(-2, -1), keepdims=True).clip(1e-8)
-        self._norm_masks = masks / mask_sums  # (5, feat_h, feat_w)
-
-    @nn.compact
-    def __call__(self, attended_flat, cnn_features, partner_card_attn):
-        """
-        Args:
-            attended_flat: (batch, embed_dim) — agent's post-spatial-attention embedding
-            cnn_features: (batch, feat_h, feat_w, conv_filters) — raw ResNet output
-            partner_card_attn: (batch, 5) — OP-translated partner attention per card
-        """
-        # Pool CNN features per card (weighted average)
-        own_card_tokens = jnp.einsum(
-            "chw,bhwf->bcf", self._norm_masks, cnn_features)  # (batch, 5, conv_filters)
-
-        # Residual gating: preserves base visual info, partner modulates on top
-        conditioned = own_card_tokens * (1.0 + partner_card_attn[:, :, None])
-
-        # Cross-attention (same Flamingo pattern as CrossAgentAttention)
-        m, d = self.num_heads, self.head_dim
-        inner_dim = m * d
-        scale = d ** -0.5
-
-        x_norm = nn.LayerNorm(name="card_xattn_ln")(attended_flat)
-        q = nn.Dense(inner_dim, use_bias=False, name="card_xattn_q")(x_norm)
-        kv = nn.Dense(inner_dim * 2, use_bias=False, name="card_xattn_kv")(conditioned)
-        k, v = jnp.split(kv, 2, axis=-1)
-
-        q = q.reshape(-1, m, d)            # (batch, m, d)
-        k = k.reshape(-1, 5, m, d)         # (batch, 5, m, d)
-        v = v.reshape(-1, 5, m, d)
-
-        attn_logits = jnp.einsum("bmd,bnmd->bmn", q, k) * scale
-        attn_weights = jax.nn.softmax(attn_logits, axis=-1)  # (batch, m, 5)
-
-        attn_out = jnp.einsum("bmn,bnmd->bmd", attn_weights, v)
-        attn_out = attn_out.reshape(-1, inner_dim)
-        attn_out = nn.Dense(
-            self.embed_dim, use_bias=False, name="card_xattn_out")(attn_out)
-
-        # Gated residual (zero-init → starts as no-op)
-        attn_gate = self.param("card_attn_gate", nn.initializers.zeros, (1,))
-        x = attended_flat + jnp.tanh(attn_gate) * attn_out
-
-        # Gated FFN
-        ff_dim = self.embed_dim * self.ff_mult
-        ff_out = nn.LayerNorm(name="card_ff_ln")(x)
-        ff_out = nn.Dense(ff_dim, use_bias=False, name="card_ff_up")(ff_out)
-        ff_out = nn.gelu(ff_out)
-        ff_out = nn.Dense(self.embed_dim, use_bias=False, name="card_ff_down")(ff_out)
-        ff_gate = self.param("card_ff_gate", nn.initializers.zeros, (1,))
-
-        return x + jnp.tanh(ff_gate) * ff_out
-
-
 def _compute_resnet_output_dims(h, w, stride, kernel_size, padding, num_blocks):
     """Compute spatial dims after ResNet encoder (initial conv + first block downsample)."""
     for _ in range(1 + min(1, num_blocks)):
@@ -210,9 +56,7 @@ class JAImageScannedLSTM(nn.Module):
     message_dim: int = 0  # >0 enables communication (partner message one-hot appended to obs)
     scalar_dim: int = 0   # >0 appends extra scalar features after any message suffix
     scalar_embed_dim: int = 5
-    cross_agent_attn: bool = False
     query_partner_lstm: bool = False
-    card_cross_attn: bool = False
 
     def setup(self):
         self.feat_h, self.feat_w = _compute_resnet_output_dims(
@@ -235,12 +79,7 @@ class JAImageScannedLSTM(nn.Module):
     @nn.compact
     def __call__(self, carry, x):
         lstm_h, lstm_c = carry
-        # Unpack scan input based on enabled flags
-        if self.cross_agent_attn and self.query_partner_lstm:
-            obs_flat, dones, partner_embed, partner_lstm_h = x
-        elif self.cross_agent_attn:
-            obs_flat, dones, partner_embed = x
-        elif self.query_partner_lstm:
+        if self.query_partner_lstm:
             obs_flat, dones, partner_lstm_h = x
         else:
             obs_flat, dones = x
@@ -311,17 +150,6 @@ class JAImageScannedLSTM(nn.Module):
 
         attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
 
-        # Save own spatial features before cross-attention (for partner to use next step)
-        own_spatial = features_with_pos.reshape(batch_size, fh * fw, -1)
-
-        if self.cross_agent_attn:
-            attended_flat = CrossAgentAttention(
-                embed_dim=m * cm,
-                num_heads=m,
-                head_dim=cm,
-                name="cross_agent_attn",
-            )(attended_flat, jax.lax.stop_gradient(partner_embed))
-
         suffix_parts = []
         suffix_start = self._img_flat_dim
 
@@ -331,34 +159,7 @@ class JAImageScannedLSTM(nn.Module):
             suffix_parts.append(msg_input)
             suffix_start += self.message_dim
 
-        if self.card_cross_attn and self.scalar_dim >= 5:
-            # Last 5 dims are partner card attention — process via cross-attention
-            card_attn_start = suffix_start + self.scalar_dim - 5
-            partner_card_attn = obs_flat[:, card_attn_start:card_attn_start + 5]
-            attended_flat = CardCrossAttention(
-                embed_dim=m * cm,
-                num_heads=m,
-                head_dim=cm,
-                img_height=self.img_height,
-                img_width=self.img_width,
-                conv_filters=self.conv_filters,
-                conv_stride=self.conv_stride,
-                conv_kernel_size=self.conv_kernel_size,
-                conv_padding=self.conv_padding,
-                conv_num_blocks=self.conv_num_blocks,
-                name="card_cross_attn",
-            )(attended_flat, features, partner_card_attn)
-            # Embed remaining scalars (if any) via the original Dense path
-            remaining_scalar_dim = self.scalar_dim - 5
-            if remaining_scalar_dim > 0:
-                remaining_scalar = obs_flat[:, suffix_start:suffix_start + remaining_scalar_dim]
-                scalar_embed = nn.Dense(
-                    self.scalar_embed_dim,
-                    kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                    name="scalar_embed",
-                )(remaining_scalar)
-                suffix_parts.append(scalar_embed)
-        elif self.scalar_dim > 0:
+        if self.scalar_dim > 0:
             scalar_input = obs_flat[:, suffix_start:suffix_start + self.scalar_dim]
             scalar_embed = nn.Dense(
                 self.scalar_embed_dim,
@@ -390,8 +191,6 @@ class JAImageScannedLSTM(nn.Module):
         )((lstm_h, lstm_c), lstm_input)
         new_h, new_c = new_carry
 
-        if self.cross_agent_attn:
-            return (new_h, new_c), (lstm_out, attn_map, jax.lax.stop_gradient(own_spatial))
         return (new_h, new_c), (lstm_out, attn_map)
 
     @staticmethod
@@ -421,18 +220,11 @@ class JAImageActorCritic(nn.Module):
     message_dim: int = 0  # >0 enables communication (partner message input via obs)
     scalar_dim: int = 0
     scalar_embed_dim: int = 5
-    cross_agent_attn: bool = False
     query_partner_lstm: bool = False
-    card_cross_attn: bool = False
 
     @nn.compact
     def __call__(self, hidden, x):
-        # Unpack network input based on enabled flags
-        if self.cross_agent_attn and self.query_partner_lstm:
-            obs, dones, avail_actions, partner_embed_actor, partner_embed_critic, plh_actor, plh_critic = x
-        elif self.cross_agent_attn:
-            obs, dones, avail_actions, partner_embed_actor, partner_embed_critic = x
-        elif self.query_partner_lstm:
+        if self.query_partner_lstm:
             obs, dones, avail_actions, plh_actor, plh_critic = x
         else:
             obs, dones, avail_actions = x
@@ -456,30 +248,20 @@ class JAImageActorCritic(nn.Module):
             message_dim=self.message_dim,
             scalar_dim=self.scalar_dim,
             scalar_embed_dim=self.scalar_embed_dim,
-            cross_agent_attn=self.cross_agent_attn,
             query_partner_lstm=self.query_partner_lstm,
-            card_cross_attn=self.card_cross_attn,
         )
 
-        # Build scan input tuples
-        def _scan_input(partner_embed=None, partner_lstm_h=None):
+        def _scan_input(partner_lstm_h=None):
             parts = [obs, dones]
-            if self.cross_agent_attn:
-                parts.append(partner_embed)
             if self.query_partner_lstm:
                 parts.append(partner_lstm_h)
             return tuple(parts)
 
         # Actor path — partner's actor h feeds the actor query
         _plh_a = plh_actor if self.query_partner_lstm else None
-        if self.cross_agent_attn:
-            actor_lstm_state, (actor_embed, attn_map, actor_own_embed) = JAImageScannedLSTM(
-                **rnn_kwargs, name="actor_lstm",
-            )(actor_lstm_state, _scan_input(partner_embed_actor, _plh_a))
-        else:
-            actor_lstm_state, (actor_embed, attn_map) = JAImageScannedLSTM(
-                **rnn_kwargs, name="actor_lstm",
-            )(actor_lstm_state, _scan_input(partner_lstm_h=_plh_a))
+        actor_lstm_state, (actor_embed, attn_map) = JAImageScannedLSTM(
+            **rnn_kwargs, name="actor_lstm",
+        )(actor_lstm_state, _scan_input(partner_lstm_h=_plh_a))
 
         actor_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
@@ -501,14 +283,9 @@ class JAImageActorCritic(nn.Module):
 
         # Critic path — partner's critic h feeds the critic query
         _plh_c = plh_critic if self.query_partner_lstm else None
-        if self.cross_agent_attn:
-            critic_lstm_state, (critic_embed, _, critic_own_embed) = JAImageScannedLSTM(
-                **rnn_kwargs, name="critic_lstm",
-            )(critic_lstm_state, _scan_input(partner_embed_critic, _plh_c))
-        else:
-            critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
-                **rnn_kwargs, name="critic_lstm",
-            )(critic_lstm_state, _scan_input(partner_lstm_h=_plh_c))
+        critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(
+            **rnn_kwargs, name="critic_lstm",
+        )(critic_lstm_state, _scan_input(partner_lstm_h=_plh_c))
 
         critic_out = nn.Dense(
             self.fc_hidden_dim, kernel_init=orthogonal(np.sqrt(2)),
@@ -526,6 +303,4 @@ class JAImageActorCritic(nn.Module):
         )(critic_out)
 
         new_hidden = (actor_lstm_state, critic_lstm_state)
-        if self.cross_agent_attn:
-            return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map, actor_own_embed, critic_own_embed
         return new_hidden, pi, jnp.squeeze(value, axis=-1), attn_map
