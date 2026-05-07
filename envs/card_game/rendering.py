@@ -292,10 +292,23 @@ def _draw_card_border_upscaled(img, card_pos, color, thickness, scale):
     return img
 
 
-def _render_one_agent_frame(inner, agent_idx, scale, border_thickness, white):
-    """Render a single per-agent eval subview at the given upscale factor."""
+def _render_one_agent_frame(inner, agent_idx, scale, border_thickness, _unused=None):
+    """Render a single per-agent eval subview at the given upscale factor.
+
+    Eval-only colour scheme (obs stays white): A0 = orange, A1 = magenta.
+    The label, the partner-message dot (drawn in the *partner's* colour, so
+    A0 sees A1's magenta dot and vice versa), and the own-pick border are
+    all colour-coded so a viewer can tell who did what at a glance.
+    """
     import numpy as np
     from PIL import Image
+
+    own_color = np.array(
+        AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8,
+    )
+    partner_color = np.array(
+        AGENT_1_COLOR if agent_idx == 0 else AGENT_0_COLOR, dtype=np.uint8,
+    )
 
     img = render_card_game_minimal(
         inner.card_permutation, inner.step_count + 1
@@ -310,10 +323,10 @@ def _render_one_agent_frame(inner, agent_idx, scale, border_thickness, white):
         card_x_origin = 1 + msg_pos * (CARD_RECT_W + 2)
         dot_y = int(CARD_RECT_Y) + (CARD_RECT_H - dot_size) // 2
         dot_x = card_x_origin + (CARD_RECT_W - dot_size) // 2
-        img_np[dot_y:dot_y + dot_size, dot_x:dot_x + dot_size] = white
+        img_np[dot_y:dot_y + dot_size, dot_x:dot_x + dot_size] = partner_color
 
     label_pattern = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
-    img_np = _stamp_label_np(img_np, label_pattern, 1, 27, white)
+    img_np = _stamp_label_np(img_np, label_pattern, 1, 27, own_color)
 
     h, w = img_np.shape[:2]
     pil_img = Image.fromarray(img_np).resize(
@@ -321,12 +334,11 @@ def _render_one_agent_frame(inner, agent_idx, scale, border_thickness, white):
     )
     sub = np.array(pil_img)
 
-    # Border highlights only this agent's own pick.
     own_pick = int(np.array(inner.agent_choices)[agent_idx])
     if own_pick >= 0:
         pos = int(np.where(perm_np == own_pick)[0][0])
         sub = _draw_card_border_upscaled(
-            sub, pos, white, border_thickness, scale
+            sub, pos, own_color, border_thickness, scale
         )
     return sub
 
