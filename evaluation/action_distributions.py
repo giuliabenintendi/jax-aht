@@ -299,6 +299,10 @@ def main():
     parser.add_argument("--episode-rng-base", type=int, default=200)
     parser.add_argument("--sampled", action="store_true",
                         help="Sample actions instead of using greedy argmax")
+    parser.add_argument("--drop-op", action="store_true",
+                        help="Force other_play_position_shuffle=False and "
+                             "other_play_recolouring=False at eval. Card-game only. "
+                             "Useful to compare OP-on vs OP-off behavior of the same policy.")
     args = parser.parse_args()
 
     ckpt_path = Path(args.checkpoint).resolve()
@@ -321,6 +325,11 @@ def main():
         env_kwargs["communication"] = True
     if alg_config["ENV_NAME"] == "card-game":
         env_kwargs["scramble_partner_msg"] = False
+    if args.drop_op:
+        env_kwargs["other_play_position_shuffle"] = False
+        env_kwargs["other_play_recolouring"] = False
+        env_kwargs["shuffle"] = True
+        print("[action_distributions] --drop-op: OP wrappers off; env shuffle=True")
     alg_config["ENV_KWARGS"] = env_kwargs
 
     env = make_env(alg_config["ENV_NAME"], alg_config["ENV_KWARGS"])
