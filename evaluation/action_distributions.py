@@ -306,16 +306,8 @@ def generate_action_distribution_artifacts(
                 },
                 commit=False,
             )
-        agg_path = output_dir / "action_dist_aggregate.png"
-        if agg_path.exists():
-            wb_run.log(
-                {
-                    f"{wb_prefix}/action_dist/{mode}/aggregate": wandb.Image(
-                        str(agg_path)
-                    )
-                },
-                commit=False,
-            )
+        # Per-seed plots only — the aggregate plot was found redundant and is
+        # no longer logged to wandb.
         for path in output_dir.glob("action_dist_*.png"):
             wandb.save(str(path), base_path=str(output_dir))
         wandb.save(str(csv_path), base_path=str(output_dir))
