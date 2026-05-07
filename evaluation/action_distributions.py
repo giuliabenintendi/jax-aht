@@ -106,14 +106,36 @@ def _empty_dist():
             for a in (0, 1) for t in ("msg", "pick")}
 
 
+def _state_for_recorded_action(ep_states, t: int, is_decision: bool):
+    """Return the wrapper state matching the action recorded at step ``t``.
+
+    ``run_episode_with_states`` appends ``ep_states`` after ``env.step``. On the
+    terminal decision step, the OP wrappers auto-reset and resample the next
+    episode's position/recolouring transforms. The final pick therefore must be
+    interpreted using the previous state's transforms, which are still current
+    at decision time.
+    """
+    if is_decision and t > 0:
+        return ep_states[t - 1]
+    return ep_states[t]
+
+
 def _collect_one_seed(rng_key, inner_env, params, policy, max_steps,
                       num_episodes, feed_attn_dims, ja_card_masks,
-                      greedy=True):
+                      greedy=True, params_partner=None):
+    """Collect action-distribution samples.
+
+    `params_partner` (optional) lets the caller pair `params` (agent 0) with a
+    different partner (agent 1) for cross-play collection; defaults to `params`
+    for self-play.
+    """
+    if params_partner is None:
+        params_partner = params
     out = _empty_dist()
     rngs = jax.random.split(rng_key, num_episodes)
     for ep in range(num_episodes):
         ep_states, _, ep_actions, ep_messages = run_episode_with_states(
-            rngs[ep], inner_env, params, policy, params, policy, max_steps,
+            rngs[ep], inner_env, params, policy, params_partner, policy, max_steps,
             collect_attention=True,  # required by run_episode_with_states API
             greedy=greedy,
             feed_other_attn_dims=feed_attn_dims,
@@ -122,16 +144,17 @@ def _collect_one_seed(rng_key, inner_env, params, policy, max_steps,
         n_steps = min(len(ep_messages), len(ep_actions))
         for t in range(n_steps):
             is_decision = (t == n_steps - 1)
+            action_state = _state_for_recorded_action(ep_states, t, is_decision)
             for ai in (0, 1):
                 gt = (int(ep_actions[t][ai]) if is_decision
                       else int(ep_messages[t][ai]))
                 if gt < 0:
                     continue
-                pos_perm = _per_agent_perm(ep_states[t], ai)
-                vc_pos = _gt_to_view_col(ep_states[t], pos_perm, gt)
+                pos_perm = _per_agent_perm(action_state, ai)
+                vc_pos = _gt_to_view_col(action_state, pos_perm, gt)
                 if vc_pos is None:
                     continue
-                recol = _per_agent_recolouring(ep_states[t], ai)
+                recol = _per_agent_recolouring(action_state, ai)
                 vc_color = int(recol[gt])
                 key = (ai, "pick" if is_decision else "msg")
                 out[key]["view_pos"].append(vc_pos)
@@ -303,7 +326,16 @@ def main():
                         help="Force other_play_position_shuffle=False and "
                              "other_play_recolouring=False at eval. Card-game only. "
                              "Useful to compare OP-on vs OP-off behavior of the same policy.")
+    parser.add_argument("--xp-mode", action="store_true",
+                        help="Cross-play: collect distributions over (i,j) seed pairs "
+                             "(agent 0 = seed_i, agent 1 = seed_j) instead of self-play. "
+                             "Default: upper-triangle pairs (i<j); override with --xp-pairs.")
+    parser.add_argument("--xp-pairs", nargs="+", default=None,
+                        help='Explicit XP pairs as "i,j" tokens, e.g. `--xp-pairs 0,1 0,5`. '
+                             "Implies --xp-mode.")
     args = parser.parse_args()
+    if args.xp_pairs:
+        args.xp_mode = True
 
     ckpt_path = Path(args.checkpoint).resolve()
     run_dir = ckpt_path.parent if ckpt_path.is_file() else ckpt_path
@@ -387,6 +419,64 @@ def main():
           f"max_steps: {max_steps}")
     print(f"  params_key: {params_key}; mode: {'greedy' if greedy else 'sampled'}")
     print(f"  saving to: {output_dir.resolve()}")
+
+    if args.xp_mode:
+        if args.xp_pairs:
+            pairs = []
+            for tok in args.xp_pairs:
+                i_str, j_str = tok.split(",")
+                pairs.append((int(i_str), int(j_str)))
+        else:
+            pairs = [(i, j) for i in range(num_seeds) for j in range(i + 1, num_seeds)]
+        print(f"  XP mode: {len(pairs)} pair(s); episodes/pair: {args.num_episodes}")
+        all_dists = []
+        for seed_i, seed_j in pairs:
+            params_i = jax.tree.map(lambda x, _i=seed_i: x[_i], final_params)
+            params_j = jax.tree.map(lambda x, _j=seed_j: x[_j], final_params)
+            rng_key = jax.random.PRNGKey(
+                args.episode_rng_base + seed_i * 1000 + seed_j * 100,
+            )
+            d = _collect_one_seed(
+                rng_key, inner_env, params_i, policy, max_steps,
+                args.num_episodes, feed_attn_dims, ja_card_masks,
+                greedy=greedy, params_partner=params_j,
+            )
+            all_dists.append(d)
+            _plot(
+                output_dir / f"action_dist_xp_s{seed_i}_vs_s{seed_j}.png",
+                d,
+                title=f"XP s{seed_i} (agent 0) vs s{seed_j} (agent 1) — "
+                      f"{args.num_episodes} eps, op={'off' if args.drop_op else 'on'}",
+            )
+            n_msg = len(d[(0, "msg")]["view_pos"]) + len(d[(1, "msg")]["view_pos"])
+            n_pick = len(d[(0, "pick")]["view_pos"]) + len(d[(1, "pick")]["view_pos"])
+            print(f"  pair ({seed_i},{seed_j}): msg actions={n_msg}, pick actions={n_pick}")
+
+        if len(all_dists) > 1:
+            merged = _merge(*all_dists)
+            _plot(
+                output_dir / "action_dist_xp_aggregate.png",
+                merged,
+                title=f"XP aggregate over {len(pairs)} pair(s) × {args.num_episodes} eps "
+                      f"— op={'off' if args.drop_op else 'on'}",
+            )
+
+        # CSV mirroring the SP shape, with "seed" column = "{i}v{j}".
+        csv_path = output_dir / "action_dist_xp_data.csv"
+        with csv_path.open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["pair", "agent", "action_type", "value_type", "value", "count"])
+            for (i, j), d in zip(pairs, all_dists):
+                tag = f"{i}v{j}"
+                for ai in (0, 1):
+                    for atype in ("msg", "pick"):
+                        for vtype in ("view_pos", "view_color", "gt_color"):
+                            arr = np.asarray(d[(ai, atype)][vtype], dtype=int)
+                            h = np.bincount(arr, minlength=NUM_CARDS)
+                            for k, c in enumerate(h):
+                                w.writerow([tag, ai, atype, vtype, k, int(c)])
+        print(f"Done. XP figures + CSV in {output_dir.resolve()}/")
+        return
 
     all_dists = generate_action_distribution_artifacts(
         inner_env=inner_env,
