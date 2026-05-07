@@ -380,6 +380,8 @@ def log_eval_video(algorithm_config, env, out, logger):
         frames = _render_lbf_eval_frames(inner_env, ep_states)
     elif env_name == "card-game":
         from envs.card_game.rendering import render_card_game_eval_frames
+        # Side-by-side A0 | A1 composite per frame: each side shows that
+        # agent's own view + own pick highlighted.
         frames = render_card_game_eval_frames(ep_states, scale=32)
     else:
         from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer

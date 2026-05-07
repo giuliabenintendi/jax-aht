@@ -399,8 +399,17 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
                 frames = _render_lbf_eval_frames(inner_env, ep_states)
             elif env_name == "card-game":
-                from envs.card_game.rendering import render_card_game_eval_frames
+                from envs.card_game.rendering import (
+                    render_card_game_eval_frames,
+                    render_card_game_eval_frames_per_agent,
+                )
+                # Side-by-side A0 | A1 composite per frame for the video.
                 frames = render_card_game_eval_frames(ep_states, scale=32)
+                # Single-game-width backdrop for the attention grid (its
+                # heatmaps are sized to the original obs, not 2x-wide).
+                attn_backdrop_frames = render_card_game_eval_frames_per_agent(
+                    ep_states, agent_idx=0, scale=32,
+                )
             else:
                 from evaluation.vis_episodes import render_episode_frames
                 frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
@@ -413,7 +422,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 es0 = _unwrap_card_game_state(ep_states[0])
                 _card_perm = _np.array(es0.card_permutation)
                 _log_card_game_attention_grid(
-                    frames, attn_data, ep_actions, tag, video_dir, logger,
+                    attn_backdrop_frames, attn_data, ep_actions, tag, video_dir, logger,
                     ep_messages=ep_messages, card_permutation=_card_perm,
                 )
                 _log_card_game_eval_video(

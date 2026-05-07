@@ -16,10 +16,6 @@ step and as a pick on the decision step (intent-expression layout).
 The `communication` flag now toggles only whether the partner's last
 emitted card is rendered into each agent's obs as a coloured dot — the
 action layout is unified either way.
-
-Optional diagnostic payoff asymmetry:
-  one designated focal color pays `focal_card_reward` when coordinated on,
-  while every other coordinated color pays `default_match_reward`.
 """
 from functools import partial
 from typing import Dict, Tuple, Optional
@@ -32,22 +28,16 @@ from jaxmarl.environments import spaces as jaxmarl_spaces
 
 from envs.base_env import BaseEnv, WrappedEnvState
 from envs.card_game.rendering import (
-    render_card_game,
+    render_card_game_minimal,
     TILE_PIXELS,
     GRID_ROWS,
     GRID_COLS,
     NUM_CARDS,
-    AGENT_0_COLOR,
-    AGENT_1_COLOR,
+    CARD_RECT_W,
+    CARD_RECT_H,
+    CARD_RECT_Y,
+    WHITE_COLOR,
 )
-
-_EGO_HIGHLIGHT_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)
-
-# Fixed agent grid positions
-_AGENT_POSITIONS = jnp.array([
-    [0, 2],  # agent 0: top center
-    [2, 2],  # agent 1: bottom center
-], dtype=jnp.int32)
 
 
 @dataclass
@@ -57,22 +47,6 @@ class CardGameState:
     agent_choices: chex.Array     # (2,) chosen positions, -1 until decision step
     messages: chex.Array          # (2,) last message per agent, int32
     target_color: chex.Array      # scalar int32, odd-card color for diagnostic mode; -1 otherwise
-
-
-def _draw_border(img, row, col, tile_size, color):
-    """Draw a 1-pixel border around the tile at grid position (row, col)."""
-    y = jnp.int32(row) * tile_size
-    x = jnp.int32(col) * tile_size
-
-    top_row = jnp.broadcast_to(color, (1, tile_size, 3))
-    img = jax.lax.dynamic_update_slice(img, top_row, (y, x, 0))
-    img = jax.lax.dynamic_update_slice(img, top_row, (y + tile_size - 1, x, 0))
-
-    left_col = jnp.broadcast_to(color, (tile_size, 1, 3))
-    img = jax.lax.dynamic_update_slice(img, left_col, (y, x, 0))
-    img = jax.lax.dynamic_update_slice(img, left_col, (y, x + tile_size - 1, 0))
-
-    return img
 
 
 class CardGameEnv(BaseEnv):
@@ -88,9 +62,6 @@ class CardGameEnv(BaseEnv):
                  stability_coef: float = 0.0,
                  follow_coef: float = 0.0,
                  odd_one_out_task: bool = False,
-                 focal_card_idx: int = -1,
-                 focal_card_reward: float = 1.0,
-                 default_match_reward: float = 1.0,
                  scramble_partner_msg: bool = False,
                  **kwargs):
         self.max_steps = max_steps
@@ -100,9 +71,6 @@ class CardGameEnv(BaseEnv):
         self.stability_coef = stability_coef
         self.follow_coef = follow_coef
         self.odd_one_out_task = odd_one_out_task
-        self.focal_card_idx = int(focal_card_idx)
-        self.focal_card_reward = float(focal_card_reward)
-        self.default_match_reward = float(default_match_reward)
         # When True, the partner-message dot rendered into each agent's obs is
         # drawn at a uniformly random card color instead of the color the
         # partner actually sent. env_state.messages is left untouched, so the
@@ -137,26 +105,27 @@ class CardGameEnv(BaseEnv):
     ) -> Dict[str, jnp.ndarray]:
         """Render image observation for each agent.
 
-        Each agent sees: ego border (white) + a colored dot (partner color)
-        at the center of the card tile the partner messaged about.
+        Each agent sees: 5 colored card rectangles + a 2-digit timestep counter
+        in the top-left (1-indexed: reset shows 01, decision step shows
+        max_steps). When `communication=True`, a 2x2 white dot is drawn at the
+        centre of the card the partner last messaged about. The dot is white
+        for both agents — there is no per-agent identification.
 
         `key` is used only when `self.scramble_partner_msg` is True, to
         independently resample each agent's perceived partner message. When
         the flag is False the key is unused.
         """
-        img = render_card_game(env_state.card_permutation)
+        # Display step + 1 so a max_steps=8 episode shows 01..08 instead of 00..07.
+        img = render_card_game_minimal(
+            env_state.card_permutation, env_state.step_count + 1
+        )
 
         obs = {}
-        partner_colors = [AGENT_1_COLOR, AGENT_0_COLOR]  # agent i sees partner's color
-        is_decision = (env_state.step_count + 1) >= self.max_steps
-        white = jnp.array([255, 255, 255], dtype=jnp.uint8)
-        # Per-agent subkeys for message scrambling; safe to split even when unused.
         agent_keys = jax.random.split(key, self.num_agents)
+        dot_size = 2
+        dot_y = CARD_RECT_Y + (CARD_RECT_H - dot_size) // 2
         for i in range(self.num_agents):
-            row, col = _AGENT_POSITIONS[i]
-            agent_img = _draw_border(
-                img, row, col, self.tile_size, _EGO_HIGHLIGHT_COLOR
-            )
+            agent_img = img
             if self.communication:
                 real_msg = env_state.messages[1 - i]
                 # has_msg is driven by the *real* message so step 0 (no message
@@ -173,22 +142,18 @@ class CardGameEnv(BaseEnv):
                 # card_permutation[pos] = color, so we need pos where color == msg
                 # Use argmin on |perm - msg| to find the position (exact match = 0)
                 msg_pos = jnp.argmin(jnp.abs(env_state.card_permutation - partner_msg))
-                # Draw 2×2 dot at center of messaged card tile
-                card_row = 1
-                dot_size = 2
-                dot_y = card_row * self.tile_size + (self.tile_size - dot_size) // 2
-                dot_x = msg_pos * self.tile_size + (self.tile_size - dot_size) // 2
-                color_dot = jnp.broadcast_to(partner_colors[i], (dot_size, dot_size, 3))
+                card_x_origin = 1 + msg_pos * (CARD_RECT_W + 2)
+                dot_x = card_x_origin + (CARD_RECT_W - dot_size) // 2
+                white_dot = jnp.broadcast_to(
+                    WHITE_COLOR, (dot_size, dot_size, 3)
+                )
                 agent_img = jax.lax.cond(
                     has_msg,
                     lambda img: jax.lax.dynamic_update_slice(
-                        img, color_dot, (dot_y, dot_x, 0)),
+                        img, white_dot, (dot_y, dot_x, 0)),
                     lambda img: img,
                     agent_img,
                 )
-            # Draw white 4x4 square at top-left when decision time
-            decision_img = agent_img.at[0:4, 0:4, :].set(white[None, None, :])
-            agent_img = jnp.where(is_decision, decision_img, agent_img)
             flat = agent_img.flatten().astype(jnp.float32) / 255.0
             obs[self.agents[i]] = flat
         return obs
@@ -256,14 +221,6 @@ class CardGameEnv(BaseEnv):
         valid = (pick_0 >= 0) & (pick_1 >= 0)
         if self.odd_one_out_task:
             success = valid & jnp.equal(pick_0, target_color) & jnp.equal(pick_1, target_color)
-        elif self.focal_card_idx >= 0:
-            success = valid & jnp.equal(pick_0, pick_1)
-            coord_reward = jnp.where(
-                jnp.equal(pick_0, jnp.int32(self.focal_card_idx)),
-                self.focal_card_reward,
-                self.default_match_reward,
-            )
-            return jnp.where(is_decision & success, coord_reward, 0.0)
         else:
             success = valid & jnp.equal(pick_0, pick_1)
         return jnp.where(is_decision & success, 1.0, 0.0)
