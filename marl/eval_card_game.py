@@ -141,7 +141,7 @@ def _log_card_game_action_distributions(
 
     for ep in range(num_episodes):
         ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
-        ep_states, _, ep_actions, ep_messages = run_episode_with_states(
+        ep_states, ep_actions, ep_messages = run_episode_with_states(
             ep_rng, inner_env, params, policy, params, policy, max_steps,
             collect_attention=False,
             feed_other_attn_dims=feed_attn_dims,
