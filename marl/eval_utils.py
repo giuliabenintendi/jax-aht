@@ -15,35 +15,21 @@ def _draw_box(cell, row, col, tile_h, tile_w, color, thickness):
 
 def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_col=None,
                          color=None):
-    """Draw a thick border that hugs the chosen card's 5w x 7h rectangle in
-    the minimal cards-only layout (no agent-tile border anymore: agents are
-    no longer drawn). `agent_idx` and `card_row` are kept in the signature
-    for call-site compatibility but `card_row` is unused under the new
-    layout."""
-    from envs.card_game.rendering import (
-        CARD_RECT_W, CARD_RECT_H, CARD_RECT_Y,
-    )
+    """Draw a thick border around the chosen card's rectangle. Delegates to
+    `_draw_card_border_upscaled` which uses 2 raw px inside the card edge
+    plus 1 raw px outset into the gap, so the visible band is ~3 raw px
+    thick without overwriting the card centre."""
+    from envs.card_game.rendering import _draw_card_border_upscaled
 
     del agent_idx  # unused — agent tiles are no longer rendered
     del card_row   # unused — card row is fixed by CARD_RECT_Y
 
-    # Decision-step border is intentionally very thick so the picked card
-    # is unambiguously highlighted in the eval-video frame.
-    thickness = 3 * scale
     if color is None:
         color = [255, 255, 255]
     color_arr = np.asarray(color, dtype=np.uint8)
 
     col = card_col if card_col is not None else choice_pos
-    x0 = (1 + col * (CARD_RECT_W + 2)) * scale
-    y0 = int(CARD_RECT_Y) * scale
-    w = CARD_RECT_W * scale
-    h = CARD_RECT_H * scale
-
-    cell[y0:y0 + thickness, x0:x0 + w] = color_arr
-    cell[y0 + h - thickness:y0 + h, x0:x0 + w] = color_arr
-    cell[y0:y0 + h, x0:x0 + thickness] = color_arr
-    cell[y0:y0 + h, x0 + w - thickness:x0 + w] = color_arr
+    _draw_card_border_upscaled(cell, col, color_arr, 2 * scale, scale)
 
 
 def _draw_message_on_cell(cell, msg_value, scale, color=None, card_permutation=None):

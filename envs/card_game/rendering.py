@@ -294,17 +294,29 @@ def _stamp_label_np(img_np, patterns, y, x, color, spacing=1, scale=1):
     return img_np
 
 
-def _draw_card_border_upscaled(img, card_pos, color, thickness, scale):
-    """Draw a border that hugs the card's exact rectangle (no margin), drawn on
-    top of the upscaled card pixels. Same physical size as the card itself."""
-    x0 = (1 + card_pos * (CARD_RECT_W + 2)) * scale
-    y0 = int(CARD_RECT_Y) * scale
+def _draw_card_border_upscaled(img, card_pos, color, thickness, scale, outset_raw=1):
+    """Draw a thick border around the card's rectangle.
+
+    The border occupies a `thickness`-px strip on each edge of the card, then
+    extends a further `outset_raw` raw obs-pixels outward into the surrounding
+    black gap. This lets us render a *visually* very thick border without
+    overwriting the inside of the card (cards are only 5 raw px wide, so an
+    inside-only border quickly fills the whole card).
+    """
+    H, W = img.shape[:2]
+    x0_card = (1 + card_pos * (CARD_RECT_W + 2)) * scale
+    y0_card = int(CARD_RECT_Y) * scale
     w = CARD_RECT_W * scale
     h = CARD_RECT_H * scale
-    img[y0:y0 + thickness, x0:x0 + w] = color
-    img[y0 + h - thickness:y0 + h, x0:x0 + w] = color
-    img[y0:y0 + h, x0:x0 + thickness] = color
-    img[y0:y0 + h, x0 + w - thickness:x0 + w] = color
+    out = max(0, outset_raw) * scale
+    x0 = max(0, x0_card - out)
+    y0 = max(0, y0_card - out)
+    x1 = min(W, x0_card + w + out)
+    y1 = min(H, y0_card + h + out)
+    img[y0:y0 + thickness, x0:x1] = color
+    img[y1 - thickness:y1, x0:x1] = color
+    img[y0:y1, x0:x0 + thickness] = color
+    img[y0:y1, x1 - thickness:x1] = color
     return img
 
 
@@ -478,7 +490,7 @@ def render_card_game_eval_frames(ep_states, scale: int = 32, gap_raw_px: int = 1
     import numpy as np
 
     white = np.array([255, 255, 255], dtype=np.uint8)
-    border_thickness = 3 * scale  # very thick decision-step indicator (3 raw px)
+    border_thickness = 2 * scale  # 2 raw px inside the card, plus 1 raw px outset
     gap_px = max(0, gap_raw_px) * scale
 
     frames = []
