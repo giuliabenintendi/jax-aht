@@ -96,7 +96,6 @@ def main():
         step_count=jnp.int32(0),
         agent_choices=jnp.array([-1, -1], dtype=jnp.int32),
         messages=jnp.array(prev_msgs, dtype=jnp.int32),
-        target_color=jnp.int32(-1),
     ))
     for aidx in (0, 1):
         Image.fromarray(upscale(make_obs(aidx, 0, prev_msgs[1 - aidx]))).save(
@@ -110,7 +109,6 @@ def main():
             step_count=jnp.int32(t),
             agent_choices=jnp.array([-1, -1], dtype=jnp.int32),
             messages=jnp.array(msgs, dtype=jnp.int32),
-            target_color=jnp.int32(-1),
         ))
         for aidx in (0, 1):
             Image.fromarray(upscale(make_obs(aidx, t, msgs[1 - aidx]))).save(
@@ -126,7 +124,6 @@ def main():
         step_count=last.step_count,
         agent_choices=jnp.array(DECISION, dtype=jnp.int32),
         messages=last.messages,
-        target_color=last.target_color,
     )
 
     frames = render_card_game_eval_frames(states, scale=SCALE)

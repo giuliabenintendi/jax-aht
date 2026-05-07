@@ -34,7 +34,7 @@ class LeverStyleCardGameEnv(CardGameEnv):
         self.focal_reward = float(focal_reward)
         self.symmetric_reward = float(symmetric_reward)
 
-    def _base_reward(self, pick_0, pick_1, is_decision, target_color):
+    def _base_reward(self, pick_0, pick_1, is_decision):
         valid_match = (pick_0 >= 0) & (pick_1 >= 0) & jnp.equal(pick_0, pick_1)
         coord_reward = jnp.where(
             jnp.equal(pick_0, self.focal_color),

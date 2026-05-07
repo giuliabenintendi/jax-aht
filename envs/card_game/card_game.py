@@ -46,7 +46,6 @@ class CardGameState:
     step_count: chex.Array        # scalar int32
     agent_choices: chex.Array     # (2,) chosen positions, -1 until decision step
     messages: chex.Array          # (2,) last message per agent, int32
-    target_color: chex.Array      # scalar int32, odd-card color for diagnostic mode; -1 otherwise
 
 
 class CardGameEnv(BaseEnv):
@@ -61,7 +60,6 @@ class CardGameEnv(BaseEnv):
                  match_coef: float = 0.0,
                  stability_coef: float = 0.0,
                  follow_coef: float = 0.0,
-                 odd_one_out_task: bool = False,
                  scramble_partner_msg: bool = False,
                  **kwargs):
         self.max_steps = max_steps
@@ -70,7 +68,6 @@ class CardGameEnv(BaseEnv):
         self.match_coef = match_coef
         self.stability_coef = stability_coef
         self.follow_coef = follow_coef
-        self.odd_one_out_task = odd_one_out_task
         # When True, the partner-message dot rendered into each agent's obs is
         # drawn at a uniformly random card color instead of the color the
         # partner actually sent. env_state.messages is left untouched, so the
@@ -161,30 +158,12 @@ class CardGameEnv(BaseEnv):
     @partial(jax.jit, static_argnums=(0,))
     def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], WrappedEnvState]:
         key, key_obs = jax.random.split(key)
-        if self.odd_one_out_task:
-            key_colors, key_shuffle = jax.random.split(key)
-            color_order = jax.random.permutation(key_colors, self.num_cards)
-            odd_color = color_order[0]
-            majority_color = color_order[1]
-            cards = jnp.array(
-                [odd_color, majority_color, majority_color, majority_color, majority_color],
-                dtype=jnp.int32,
-            )
-            if self.shuffle:
-                shuffle_idx = jax.random.permutation(key_shuffle, self.num_cards)
-                perm = cards[shuffle_idx]
-            else:
-                perm = cards
-            target_color = odd_color
-        else:
-            perm = jax.random.permutation(key, self.num_cards) if self.shuffle else jnp.arange(self.num_cards)
-            target_color = jnp.int32(-1)
+        perm = jax.random.permutation(key, self.num_cards) if self.shuffle else jnp.arange(self.num_cards)
         env_state = CardGameState(
             card_permutation=perm,
             step_count=jnp.int32(0),
             agent_choices=jnp.full(2, -1, dtype=jnp.int32),
             messages=jnp.full(2, -1, dtype=jnp.int32),
-            target_color=target_color,
         )
         obs = self._make_obs(env_state, key_obs)
         return obs, WrappedEnvState(
@@ -212,17 +191,14 @@ class CardGameEnv(BaseEnv):
         )
         return pick_0, pick_1, new_messages
 
-    def _base_reward(self, pick_0, pick_1, is_decision, target_color):
-        """+1 on decision step for coordination (or odd-one-out) success, 0 otherwise.
+    def _base_reward(self, pick_0, pick_1, is_decision):
+        """+1 on decision step for coordination success, 0 otherwise.
 
         Requires both picks to be valid (>= 0): a non-pick action (e.g. a message
         leaking through a broken mask) must not satisfy `-1 == -1` and score.
         """
         valid = (pick_0 >= 0) & (pick_1 >= 0)
-        if self.odd_one_out_task:
-            success = valid & jnp.equal(pick_0, target_color) & jnp.equal(pick_1, target_color)
-        else:
-            success = valid & jnp.equal(pick_0, pick_1)
+        success = valid & jnp.equal(pick_0, pick_1)
         return jnp.where(is_decision & success, 1.0, 0.0)
 
     def _comm_shaping(self, prev_messages, new_messages, picks, is_decision):
@@ -300,7 +276,7 @@ class CardGameEnv(BaseEnv):
             is_decision,
         )
 
-        reward_val = self._base_reward(pick_0, pick_1, is_decision, env_state.target_color)
+        reward_val = self._base_reward(pick_0, pick_1, is_decision)
         reward = {agent: reward_val for agent in self.agents}
         dones = {agent: done for agent in self.agents}
         dones["__all__"] = done
@@ -338,7 +314,6 @@ class CardGameEnv(BaseEnv):
             "comm_reward_stable": stable_arr,
             "comm_reward_follow": follow_arr,
             "step_count": jnp.broadcast_to(new_step, (self.num_agents,)),
-            "target_color": jnp.broadcast_to(env_state.target_color, (self.num_agents,)),
         }
 
         # Auto-reset on episode end
