@@ -454,12 +454,21 @@ def make_train_loop(config, env):
                     phys_0 = jnp.zeros((num_envs, 5)).at[batch_idx, perm_0].set(card_pos_attn_0)
                     phys_1 = jnp.zeros((num_envs, 5)).at[batch_idx, perm_1].set(card_pos_attn_1)
 
-                    # Mass-gated card attention divergence penalty (L2 on normalized card distributions)
+                    m_0 = card_pos_attn_0.sum(axis=-1)  # (num_envs,)
+                    m_1 = card_pos_attn_1.sum(axis=-1)
+                    q_phys_0 = phys_0 / (m_0[:, None] + _eps)
+                    q_phys_1 = phys_1 / (m_1[:, None] + _eps)
+
+                    # Card-level JSD in OP-corrected (canonical) card space — analogous to
+                    # the raw spatial JA/jsd metric but the only fair comparison under OP.
+                    # Reshape to (num_envs, 1, 5) so jsd_divergence sums over the last 2 dims.
+                    card_jsd_per_env = jsd_divergence(
+                        q_phys_0[:, None, :], q_phys_1[:, None, :]
+                    )  # (num_envs,)
+                    card_jsd_step_mean = card_jsd_per_env.mean()
+
+                    # Mass-gated L2 reward (separate from the JSD metric above)
                     if ja_card_jsd_coef > 0:
-                        m_0 = card_pos_attn_0.sum(axis=-1)  # (num_envs,)
-                        m_1 = card_pos_attn_1.sum(axis=-1)
-                        q_phys_0 = phys_0 / (m_0[:, None] + _eps)
-                        q_phys_1 = phys_1 / (m_1[:, None] + _eps)
                         l2_div = jnp.sum((q_phys_0 - q_phys_1) ** 2, axis=-1)
                         r_card_jsd_env = -ja_card_jsd_coef * jnp.minimum(m_0, m_1) * l2_div
                         r_card_jsd_valid = step_count_batch[:num_envs] > 1
@@ -481,6 +490,7 @@ def make_train_loop(config, env):
                         new_done_batch_ja[:, None], 0.0, new_partner_card_attn)
                 else:
                     ja_card_reward = jnp.zeros(num_actors)
+                    card_jsd_step_mean = jnp.float32(0.0)
 
                 plh_a_stored = prev_plh_actor if query_partner_lstm else jnp.zeros((num_actors,))
                 plh_c_stored = prev_plh_critic if query_partner_lstm else jnp.zeros((num_actors,))
@@ -521,11 +531,11 @@ def make_train_loop(config, env):
                     runner_state = runner_state + (new_plh_a, new_plh_c)
                 return runner_state, (transition, intrinsic, comm_reward_batch,
                                      comm_match_batch, comm_stable_batch, comm_follow_batch,
-                                     ja_card_reward)
+                                     ja_card_reward, card_jsd_step_mean)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
                            comm_match_batch, comm_stable_batch, comm_follow_batch,
-                           ja_card_reward_batch) = jax.lax.scan(
+                           ja_card_reward_batch, card_jsd_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -646,6 +656,7 @@ def make_train_loop(config, env):
             metric["comm_follow_bonus_agent1_mean"] = scaled_comm_follow[:, num_envs:].mean()
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
+            metric["card_jsd_mean"] = card_jsd_batch.mean()
 
             if feed_other_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
@@ -721,6 +732,7 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
         ("ja_beta",              "JA/beta"),
         ("comm_scale",           "Comm/scale"),
         ("jsd_mean",             "JA/jsd"),
+        ("card_jsd_mean",        "JA/card_jsd"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
@@ -1032,6 +1044,7 @@ def log_metrics(config, out, logger):
         ("ja_beta",              "JA/beta"),
         ("comm_scale",           "Comm/scale"),
         ("jsd_mean",             "JA/jsd"),
+        ("card_jsd_mean",        "JA/card_jsd"),
         ("raw_env_reward_mean",  "Reward/env_raw"),
         ("combined_reward_mean", "Reward/combined_raw"),
         ("comm_reward_mean",                     "Reward/comm"),
