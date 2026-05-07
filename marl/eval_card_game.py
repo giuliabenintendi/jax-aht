@@ -37,6 +37,7 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
         _A0_PATTERN_SMALL,
         _A1_PATTERN_SMALL,
         _gt_pick_to_view_col,
+        _recolour_message_dot,
         GRID_ROWS,
         GRID_COLS,
         TILE_PIXELS,
@@ -60,6 +61,9 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
         if ep_obs is not None and t < len(ep_obs):
             base_0 = (np.asarray(ep_obs[t]["agent_0"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
             base_1 = (np.asarray(ep_obs[t]["agent_1"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+            if ep_states is not None and t < len(ep_states):
+                _recolour_message_dot(base_0, ep_states[t], 0)
+                _recolour_message_dot(base_1, ep_states[t], 1)
             up_0 = np.array(Image.fromarray(base_0).resize(
                 (w_px * scale, h_px * scale), Image.NEAREST,
             ))
@@ -244,6 +248,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
         _A0_PATTERN_SMALL,
         _A1_PATTERN_SMALL,
         _gt_pick_to_view_col,
+        _recolour_message_dot,
         GRID_ROWS,
         GRID_COLS,
         TILE_PIXELS,
@@ -281,6 +286,8 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             # recoloured view + agent's own message dot).
             base_0 = (np.asarray(ep_obs[t]["agent_0"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
             base_1 = (np.asarray(ep_obs[t]["agent_1"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+            _recolour_message_dot(base_0, ep_states[t], 0)
+            _recolour_message_dot(base_1, ep_states[t], 1)
             up_0 = np.array(Image.fromarray(base_0).resize(
                 (w_px * scale, h_px * scale), Image.NEAREST,
             ))
@@ -371,6 +378,7 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                     _A0_PATTERN_SMALL,
                     _A1_PATTERN_SMALL,
                     _gt_pick_to_view_col,
+                    _recolour_message_dot,
                     GRID_ROWS,
                     GRID_COLS,
                     TILE_PIXELS,
@@ -384,6 +392,8 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                 for t in range(n_steps):
                     base_0 = (np.asarray(ep_obs[t]["agent_0"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
                     base_1 = (np.asarray(ep_obs[t]["agent_1"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+                    _recolour_message_dot(base_0, ep_states[t], 0)
+                    _recolour_message_dot(base_1, ep_states[t], 1)
                     up_0 = np.array(Image.fromarray(base_0).resize(
                         (w_px * scale, h_px * scale), Image.NEAREST,
                     ))

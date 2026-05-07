@@ -348,18 +348,48 @@ def _gt_pick_to_view_col(state, agent_idx, gt_pick):
     return int(matches[0]) if len(matches) else -1
 
 
-def _render_one_agent_frame_from_obs(agent_idx, flat_obs, pick_view_col, scale, border_thickness):
+def _recolour_message_dot(base, state, agent_idx):
+    """Mutates `base` (raw 21x35 RGB uint8) in place: replaces the white
+    partner-message dot with the partner's video colour (A0=orange, A1=magenta).
+    Eval-only — observations themselves keep the white dot.
+    """
+    import numpy as np
+
+    inner = _unwrap_card_game_state(state)
+    partner_msg_gt = int(np.asarray(inner.messages)[1 - agent_idx])
+    if partner_msg_gt < 0:
+        return base
+    view_col = _gt_pick_to_view_col(state, agent_idx, partner_msg_gt)
+    if view_col < 0:
+        return base
+    partner_color = np.array(
+        AGENT_0_COLOR if (1 - agent_idx) == 0 else AGENT_1_COLOR, dtype=np.uint8,
+    )
+    dot_size = 2
+    card_x = 1 + view_col * (CARD_RECT_W + 2)
+    dot_y = int(CARD_RECT_Y) + (CARD_RECT_H - dot_size) // 2
+    dot_x = card_x + (CARD_RECT_W - dot_size) // 2
+    base[dot_y:dot_y + dot_size, dot_x:dot_x + dot_size] = partner_color
+    return base
+
+
+def _render_one_agent_frame_from_obs(agent_idx, flat_obs, pick_view_col, scale,
+                                      border_thickness, state=None):
     """Build a per-agent eval subview from the actual flat obs the policy saw.
     Under OP this naturally shows the agent's shuffled+recoloured view (the
     obs already contains the agent's message dot). Adds a colour-coded
     A0/A1 label and, when `pick_view_col >= 0`, a thick white border at
-    that view column."""
+    that view column. When `state` is passed, the white message dot in the
+    obs is recoloured to the partner's video colour."""
     import numpy as np
     from PIL import Image
 
     h_px = GRID_ROWS * TILE_PIXELS
     w_px = GRID_COLS * TILE_PIXELS
     base = (np.asarray(flat_obs).reshape(h_px, w_px, 3) * 255.0).astype(np.uint8)
+
+    if state is not None:
+        base = _recolour_message_dot(base, state, agent_idx)
 
     own_color = np.array(
         AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8,
@@ -459,6 +489,7 @@ def render_card_game_eval_frames_per_agent(ep_states, agent_idx: int, scale: int
             sub = _render_one_agent_frame_from_obs(
                 agent_idx, ep_obs[t][f"agent_{agent_idx}"],
                 view_col, scale, border_thickness,
+                state=state,
             )
         else:
             sub = _render_one_agent_frame(
@@ -511,9 +542,11 @@ def render_card_game_eval_frames(ep_states, scale: int = 32, gap_raw_px: int = 1
                 view_col_1 = _gt_pick_to_view_col(state_for_perm, 1, pick_gt_1)
             sub_a0 = _render_one_agent_frame_from_obs(
                 0, obs_t["agent_0"], view_col_0, scale, border_thickness,
+                state=state,
             )
             sub_a1 = _render_one_agent_frame_from_obs(
                 1, obs_t["agent_1"], view_col_1, scale, border_thickness,
+                state=state,
             )
         else:
             sub_a0 = _render_one_agent_frame(inner, 0, scale, border_thickness, white)
