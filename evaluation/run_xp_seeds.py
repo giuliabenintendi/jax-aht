@@ -803,11 +803,17 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
             wb_prefix=wb_prefix,
         )
 
-        max_pairs = int(algo_cfg.get("XP_VIDEO_MAX_PAIRS", 3))
+        # XP videos are off by default (heavy on disk + wandb). Enable per-run
+        # with algorithm.EVAL_VIDEO_LOG_XP=true; XP_VIDEO_MAX_PAIRS defaults
+        # to 3 when XP videos are enabled.
+        log_xp_videos = bool(algo_cfg.get("EVAL_VIDEO_LOG_XP", False))
+        max_pairs = int(algo_cfg.get("XP_VIDEO_MAX_PAIRS", 3 if log_xp_videos else 0))
         xp_video_eps = int(algo_cfg.get("EVAL_VIDEO_XP_NUM_EPISODES", 3))
-        seed_pairs = [
-            (i, j) for i in range(num_seeds) for j in range(i + 1, num_seeds)
-        ][:max_pairs]
+        seed_pairs = (
+            [(i, j) for i in range(num_seeds) for j in range(i + 1, num_seeds)][:max_pairs]
+            if log_xp_videos and max_pairs > 0
+            else []
+        )
         if seed_pairs:
             print(
                 f"[xp_seeds] logging card-game XP videos for pairs {seed_pairs} "
