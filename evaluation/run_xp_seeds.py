@@ -183,6 +183,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_attn_0 = attn_0.squeeze()
         prev_attn_1 = attn_1.squeeze()
 
+    card_jsd_sum = jnp.float32(0.0)
+    card_jsd_count = jnp.float32(0.0)
     if _ja_card:
         a0_sq = attn_0.squeeze()
         a1_sq = attn_1.squeeze()
@@ -194,6 +196,13 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         ph_1 = jnp.zeros(5).at[perm_1].set(ca_1)
         prev_pca_0 = ph_1[perm_0]
         prev_pca_1 = ph_0[perm_1]
+        # OP-corrected card-level JSD for the initial obs.
+        _m0 = ca_0.sum()
+        _m1 = ca_1.sum()
+        _q0 = ph_0 / (_m0 + 1e-8)
+        _q1 = ph_1 / (_m1 + 1e-8)
+        card_jsd_sum = jsd_divergence(_q0[None, :], _q1[None, :])
+        card_jsd_count = jnp.float32(1.0)
 
     ep_ts = 1
     # Placeholder partner-LSTM hiddens (carried through unchanged; not wired
@@ -209,7 +218,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                   attn_0.squeeze(), attn_1.squeeze(),
                   pe_a0, pe_c0, pe_a1, pe_c1,
                   prev_pca_0 if _ja_card else jnp.zeros(5),
-                  prev_pca_1 if _ja_card else jnp.zeros(5))
+                  prev_pca_1 if _ja_card else jnp.zeros(5),
+                  card_jsd_sum, card_jsd_count)
 
     def scan_step(carry, _):
         def take_step(carry_step):
@@ -218,7 +228,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
              prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
              prev_a0, prev_a1,
              pe_a0, pe_c0, pe_a1, pe_c1,
-             prev_pca_0, prev_pca_1) = carry_step
+             prev_pca_0, prev_pca_1,
+             card_jsd_sum, card_jsd_count) = carry_step
 
             avail_actions = env.get_avail_actions(env_state)
             avail_actions = jax.lax.stop_gradient(avail_actions)
@@ -277,7 +288,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 next_prev_reward_0 = next_prev_reward_1 = None
                 next_prev_action_0 = next_prev_action_1 = None
 
-            # Update JA card partner attention
+            # Update JA card partner attention + accumulate card-level JSD.
             if _ja_card:
                 ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
                 ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
@@ -287,23 +298,34 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 ph1 = jnp.zeros(5).at[p1].set(ca1)
                 next_pca_0 = ph1[p0]
                 next_pca_1 = ph0[p1]
+                m0 = ca0.sum()
+                m1 = ca1.sum()
+                q0 = ph0 / (m0 + 1e-8)
+                q1 = ph1 / (m1 + 1e-8)
+                step_card_jsd = jsd_divergence(q0[None, :], q1[None, :])
+                card_jsd_sum_next = card_jsd_sum + step_card_jsd
+                card_jsd_count_next = card_jsd_count + 1.0
             else:
                 next_pca_0 = jnp.zeros(5)
                 next_pca_1 = jnp.zeros(5)
+                card_jsd_sum_next = card_jsd_sum
+                card_jsd_count_next = card_jsd_count
 
             return (ep_ts + 1, env_state_next, obs_next, rng, done_next, reward, env_act_onehot,
                     hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next,
                     next_prev_reward_0, next_prev_reward_1, next_prev_action_0, next_prev_action_1,
                     attn_0.squeeze(), attn_1.squeeze(),
                     pe_a0, pe_c0, pe_a1, pe_c1,
-                    next_pca_0, next_pca_1)
+                    next_pca_0, next_pca_1,
+                    card_jsd_sum_next, card_jsd_count_next)
 
         (ep_ts, env_state, obs, rng, done, reward, act_onehot,
          hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
          prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
          prev_a0, prev_a1,
          pe_a0, pe_c0, pe_a1, pe_c1,
-         prev_pca_0, prev_pca_1) = carry
+         prev_pca_0, prev_pca_1,
+         card_jsd_sum, card_jsd_count) = carry
         new_carry = jax.lax.cond(
             done["__all__"],
             lambda curr_carry: curr_carry,
@@ -313,11 +335,10 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         return new_carry, None
 
     final_carry, _ = jax.lax.scan(scan_step, init_carry, None, length=max_episode_steps)
-    # Carry layout: (ep_ts, env_state, obs, rng, done, reward, act_onehot,
-    #   hstate_0, hstate_1, last_info, jsd_sum, jsd_count, ...)
-    info = final_carry[9]       # last_info
-    mean_jsd = final_carry[10] / final_carry[11]  # jsd_sum / jsd_count
-    return info, mean_jsd
+    info = final_carry[9]
+    mean_jsd = final_carry[10] / final_carry[11]
+    mean_card_jsd = final_carry[24] / (final_carry[25] + 1e-8)
+    return info, mean_jsd, mean_card_jsd
 
 
 def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
@@ -337,8 +358,8 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
             greedy_eval=greedy_eval,
         )
     )
-    all_info, all_jsd = vmap_fn(ep_rngs)
-    return all_info, all_jsd  # all_jsd shape: (num_eps,)
+    all_info, all_jsd, all_card_jsd = vmap_fn(ep_rngs)
+    return all_info, all_jsd, all_card_jsd  # both jsd arrays shape: (num_eps,)
 
 
 def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
@@ -505,7 +526,8 @@ def _init_xp_wandb_run(algo_cfg: dict, task_name: str, run_dir: str, wb_prefix: 
 
 
 def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
-                      task_name, run_dir, wb_run=None, wb_prefix="XP"):
+                      task_name, run_dir, wb_run=None, wb_prefix="XP",
+                      card_jsd_matrix=None):
     """Log XP results to wandb. Creates a new run if `wb_run` is None.
 
     `jsd_matrix=None` skips all JSD-related logging (used for card-game runs
@@ -550,6 +572,23 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
     wandb.save(os.path.join(xp_dir, "xp_score_matrix.csv"), base_path=xp_dir)
     if jsd_matrix is not None:
         wandb.save(os.path.join(xp_dir, "xp_jsd_matrix.csv"), base_path=xp_dir)
+
+    if card_jsd_matrix is not None:
+        card_jsd_png = os.path.join(xp_dir, "xp_card_jsd_matrix.png")
+        if os.path.exists(card_jsd_png):
+            wb_run.log(
+                {f"{wb_prefix}/card_jsd_matrix": wandb.Image(card_jsd_png)},
+                commit=False,
+            )
+            card_jsd_ep = card_jsd_matrix.mean(axis=-1)
+            sp_card = np.diag(card_jsd_ep).mean()
+            xp_card_m, xp_card_s = xp_mean_and_sem(card_jsd_ep)
+            wb_run.summary[f"{wb_prefix}/sp_card_jsd"] = float(sp_card)
+            wb_run.summary[f"{wb_prefix}/xp_card_jsd_mean"] = float(xp_card_m)
+            wb_run.summary[f"{wb_prefix}/xp_card_jsd_sem"] = float(xp_card_s)
+        card_jsd_csv = os.path.join(xp_dir, "xp_card_jsd_matrix.csv")
+        if os.path.exists(card_jsd_csv):
+            wandb.save(card_jsd_csv, base_path=xp_dir)
 
     if created_run:
         wb_run.finish()
@@ -626,7 +665,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         print(f"[xp_seeds] feed_other_attn enabled: img=({_img_h},{_img_w}), feat=({_feat_h},{_feat_w})")
 
     ja_card_masks = None
-    if algo_cfg.get("JA_CARD_ATTN", False):
+    if algo_cfg.get("JA_CARD_ATTN", False) or algo_cfg.get("JA_CARD_METRIC", False):
         from agents.initialize_agents import _get_image_dims
         from agents.ja_image_actor_critic import _compute_resnet_output_dims
         from agents.ja_utils import build_card_masks
@@ -647,18 +686,25 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
 
     all_row_metrics = []
     jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
+    card_jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
     start_time = time.time()
     for i in range(num_seeds):
         print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
-        row_metrics, row_jsds = row_fn(outer_rngs[i], seed_params[i])
+        row_metrics, row_jsds, row_card_jsds = row_fn(outer_rngs[i], seed_params[i])
         jsd_matrix[i] = np.array(row_jsds)
+        card_jsd_matrix[i] = np.array(row_card_jsds)
         all_row_metrics.append(row_metrics)
 
         for j in range(num_seeds):
             ret = np.array(row_metrics["returned_episode_returns"][j]).mean()
             jsd_mean = float(row_jsds[j].mean())
+            cjsd_mean = float(row_card_jsds[j].mean())
             label = "SP" if i == j else "XP"
-            print(f"  [{label}] {i}x{j}: return={ret:.2f} jsd={jsd_mean:.4f}", end="")
+            print(
+                f"  [{label}] {i}x{j}: return={ret:.2f} "
+                f"jsd={jsd_mean:.4f} card_jsd={cjsd_mean:.4f}",
+                end="",
+            )
         print()
 
     xp_metrics = tree_stack(all_row_metrics)
@@ -710,6 +756,27 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                              fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
             save_xp_csv(jsd_mean, jsd_std,
                          os.path.join(d, f"{prefix}xp_jsd_matrix.csv"), label="jsd")
+
+    # OP-corrected card-level JSD matrix (card-game only; meaningful when
+    # JA_CARD_METRIC or JA_CARD_ATTN was on at training time).
+    have_card_jsd = is_card_game and ja_card_masks is not None
+    card_jsd_mean = card_jsd_std = None
+    if have_card_jsd:
+        card_jsd_mean = card_jsd_matrix.mean(axis=-1)
+        card_jsd_std = card_jsd_matrix.std(axis=-1)
+        for d in (xp_dir, central_xp_dir):
+            prefix = "" if d == xp_dir else f"{beta_prefix}_"
+            save_xp_heatmap(
+                card_jsd_mean, card_jsd_std,
+                f"XP Card JSD — {run_label}",
+                os.path.join(d, f"{prefix}xp_card_jsd_matrix.png"),
+                fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693,
+            )
+            save_xp_csv(
+                card_jsd_mean, card_jsd_std,
+                os.path.join(d, f"{prefix}xp_card_jsd_matrix.csv"),
+                label="card_jsd",
+            )
 
     print(f"[xp_seeds] results saved to {xp_dir} and {central_xp_dir}")
 
@@ -768,8 +835,11 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                 fps=3,
             )
 
-    _log_xp_to_wandb(None if is_card_game else jsd_matrix, score_mean, xp_dir,
-                      algo_cfg, task_name, savedir, wb_run=wb_run, wb_prefix=wb_prefix)
+    _log_xp_to_wandb(
+        None if is_card_game else jsd_matrix, score_mean, xp_dir,
+        algo_cfg, task_name, savedir, wb_run=wb_run, wb_prefix=wb_prefix,
+        card_jsd_matrix=card_jsd_matrix if have_card_jsd else None,
+    )
 
     if created_wb_run:
         wb_run.finish()
@@ -1002,7 +1072,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
         print(f"[xp_seeds] feed_other_attn enabled")
 
     ja_card_masks = None
-    if algo_cfg.get("JA_CARD_ATTN", False):
+    if algo_cfg.get("JA_CARD_ATTN", False) or algo_cfg.get("JA_CARD_METRIC", False):
         from agents.initialize_agents import _get_image_dims
         from agents.ja_image_actor_critic import _compute_resnet_output_dims
         from agents.ja_utils import build_card_masks
@@ -1026,7 +1096,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     start_time = time.time()
     for i in range(num_seeds):
         print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
-        row_metrics, row_jsds = row_fn(outer_rngs[i], seed_params[i])
+        row_metrics, row_jsds, _row_card_jsds = row_fn(outer_rngs[i], seed_params[i])
         jsd_matrix[i] = np.array(row_jsds)
         all_row_metrics.append(row_metrics)
         for j in range(num_seeds):
