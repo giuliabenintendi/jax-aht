@@ -13,3 +13,6 @@ FEED_OTHER_ATTN: false
 COMMUNICATION: true
 COMM_WARMUP_ENV_STEPS: 0
 COMM_REWARD_START_SCALE: 0.0
+# Compute card-level JSD as a diagnostic metric without using it as reward
+# or partner-feed input. JA_CARD_ATTN remains false (no shaping reward).
+JA_CARD_METRIC: true

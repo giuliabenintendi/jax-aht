@@ -126,12 +126,20 @@ def make_train_loop(config, env):
     # channel and rendered dot already provide.
     ja_card_partner_feed = ja_card_attn and config.get("JA_CARD_PARTNER_FEED", True)
     ja_card_jsd_coef = config.get("JA_CARD_JSD_COEF", 0.0)
+    # When True, compute the OP-corrected card-level JSD as a diagnostic metric
+    # without feeding partner attention back into the obs and without applying
+    # any shaping reward. Same OP requirements as JA_CARD_ATTN.
+    # JA_CARD_ATTN implies this.
+    ja_card_metric = ja_card_attn or config.get("JA_CARD_METRIC", False)
     if ja_card_attn and feed_other_attn:
         raise ValueError("JA_CARD_ATTN is mutually exclusive with FEED_OTHER_ATTN")
-    if ja_card_attn:
+    if ja_card_metric:
         env_kwargs = config.get("ENV_KWARGS", {})
         if not (env_kwargs.get("other_play_position_shuffle") and env_kwargs.get("other_play_recolouring")):
-            raise ValueError("JA_CARD_ATTN requires both other_play_position_shuffle and other_play_recolouring")
+            raise ValueError(
+                "JA_CARD_ATTN/JA_CARD_METRIC require both "
+                "other_play_position_shuffle and other_play_recolouring"
+            )
 
     # Precompute image and feature-map dimensions (only needed for image obs)
     obs_type = _get_obs_type(config)
@@ -149,8 +157,9 @@ def make_train_loop(config, env):
 
     _env_max_steps = int(config.get("ENV_KWARGS", {}).get("max_steps", 8))
 
-    # Precompute card tile masks (used by JA card attention)
-    _need_card_masks = ja_card_attn and feat_h > 0
+    # Precompute card tile masks (used by JA card attention and the diagnostic-
+    # only JA_CARD_METRIC path).
+    _need_card_masks = ja_card_metric and feat_h > 0
     if _need_card_masks:
         _card_masks = _build_card_masks(img_h, img_w, feat_h, feat_w)
     else:
@@ -439,36 +448,35 @@ def make_train_loop(config, env):
 
                 intrinsic = ja_beta * r_ja_batch
 
-                # OP-corrected card-level joint attention reward (mass-gated JSD)
-                if ja_card_attn:
+                # OP-corrected card-level joint attention. Under JA_CARD_METRIC we
+                # always compute the JSD as a diagnostic; only JA_CARD_ATTN +
+                # JA_CARD_JSD_COEF>0 turns it into an actual shaping reward, and
+                # only JA_CARD_ATTN feeds the partner's translated card-attention
+                # back into the next obs.
+                if ja_card_metric:
                     attn = attn_map.squeeze(0)  # (num_actors, feat_h, feat_w)
-                    card_pos_attn = jnp.einsum("ahw,chw->ac", attn, _card_masks)  # (num_actors, 5)
-                    card_pos_attn_0 = card_pos_attn[:num_envs]   # (num_envs, 5)
-                    card_pos_attn_1 = card_pos_attn[num_envs:]   # (num_envs, 5)
+                    card_pos_attn = jnp.einsum("ahw,chw->ac", attn, _card_masks)
+                    card_pos_attn_0 = card_pos_attn[:num_envs]
+                    card_pos_attn_1 = card_pos_attn[num_envs:]
 
-                    # Map to physical card space via OP permutations
                     _eps = 1e-8
-                    perm_0 = env_state.env_state.env_state.per_agent_perm["agent_0"]  # (num_envs, 5)
-                    perm_1 = env_state.env_state.env_state.per_agent_perm["agent_1"]  # (num_envs, 5)
+                    perm_0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
+                    perm_1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
                     batch_idx = jnp.arange(num_envs)[:, None]
                     phys_0 = jnp.zeros((num_envs, 5)).at[batch_idx, perm_0].set(card_pos_attn_0)
                     phys_1 = jnp.zeros((num_envs, 5)).at[batch_idx, perm_1].set(card_pos_attn_1)
 
-                    m_0 = card_pos_attn_0.sum(axis=-1)  # (num_envs,)
+                    m_0 = card_pos_attn_0.sum(axis=-1)
                     m_1 = card_pos_attn_1.sum(axis=-1)
                     q_phys_0 = phys_0 / (m_0[:, None] + _eps)
                     q_phys_1 = phys_1 / (m_1[:, None] + _eps)
 
-                    # Card-level JSD in OP-corrected (canonical) card space — analogous to
-                    # the raw spatial JA/jsd metric but the only fair comparison under OP.
-                    # Reshape to (num_envs, 1, 5) so jsd_divergence sums over the last 2 dims.
                     card_jsd_per_env = jsd_divergence(
                         q_phys_0[:, None, :], q_phys_1[:, None, :]
-                    )  # (num_envs,)
+                    )
                     card_jsd_step_mean = card_jsd_per_env.mean()
 
-                    # Mass-gated L2 reward (separate from the JSD metric above)
-                    if ja_card_jsd_coef > 0:
+                    if ja_card_attn and ja_card_jsd_coef > 0:
                         l2_div = jnp.sum((q_phys_0 - q_phys_1) ** 2, axis=-1)
                         r_card_jsd_env = -ja_card_jsd_coef * jnp.minimum(m_0, m_1) * l2_div
                         r_card_jsd_valid = step_count_batch[:num_envs] > 1
@@ -476,18 +484,16 @@ def make_train_loop(config, env):
                         r_card_jsd = jnp.concatenate([r_card_jsd_env, r_card_jsd_env])
                     else:
                         r_card_jsd = jnp.zeros(num_actors)
-
                     ja_card_reward = jax.lax.stop_gradient(r_card_jsd)
 
-                    # Translate partner attention to receiver's frame for next step obs
-                    translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
-                    translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
-                    new_partner_card_attn = jnp.concatenate(
-                        [translated_for_0, translated_for_1], axis=0)  # (num_actors, 5)
-                    # Reset on episode boundaries
-                    new_done_batch_ja = batchify(new_done, env.agents, num_actors).squeeze()
-                    new_partner_card_attn = jnp.where(
-                        new_done_batch_ja[:, None], 0.0, new_partner_card_attn)
+                    if ja_card_attn:
+                        translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
+                        translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
+                        new_partner_card_attn = jnp.concatenate(
+                            [translated_for_0, translated_for_1], axis=0)
+                        new_done_batch_ja = batchify(new_done, env.agents, num_actors).squeeze()
+                        new_partner_card_attn = jnp.where(
+                            new_done_batch_ja[:, None], 0.0, new_partner_card_attn)
                 else:
                     ja_card_reward = jnp.zeros(num_actors)
                     card_jsd_step_mean = jnp.float32(0.0)
