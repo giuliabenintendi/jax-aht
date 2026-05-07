@@ -44,6 +44,9 @@ def main():
                              "Useful when --xp-pairs is the only thing you want.")
     parser.add_argument("--use-best", action="store_true",
                         help="Use best_params (per-seed best ckpt) instead of final_params.")
+    parser.add_argument("--num-episodes", type=int, default=5,
+                        help="Episodes per seed (SP) or per pair (XP). Default 5; bump to "
+                             "~30+ to make distributional patterns visible in the rollout.")
     args = parser.parse_args()
     xp_pairs = []
     for tok in args.xp_pairs:
@@ -157,7 +160,7 @@ def main():
                     logger=wandb_logger,
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=ja_card_masks,
-                    num_episodes=5, fps=3,
+                    num_episodes=args.num_episodes, fps=3,
                 )
                 # Per-agent OP-recoloured/shuffled view — the actual policy input,
                 # with attention overlaid. Partner-message dot is drawn into the
@@ -169,7 +172,7 @@ def main():
                     logger=wandb_logger,
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=ja_card_masks,
-                    num_episodes=5, fps=3,
+                    num_episodes=args.num_episodes, fps=3,
                 )
                 print(f"Seed {seed_idx}: SP videos in {video_dir}")
 
@@ -190,7 +193,7 @@ def main():
                 feed_attn_dims=feed_attn_dims,
                 ja_card_masks=ja_card_masks,
                 seed_pairs=xp_pairs,
-                num_episodes=5, fps=3,
+                num_episodes=args.num_episodes, fps=3,
             )
         wb_run.log({}, commit=True)
         wb_run.finish()
