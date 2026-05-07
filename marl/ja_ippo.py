@@ -975,7 +975,12 @@ def run_ja_ippo(config, logger):
 
 
 def log_xp_eval(algorithm_config, env, out):
-    """Run greedy cross-play evaluation when NUM_SEEDS > 1."""
+    """Run greedy cross-play evaluation when NUM_SEEDS > 1.
+
+    For OP-trained card-game runs also runs a second XP eval with the OP
+    wrappers disabled (`XP_NO_OP`), so we can compare against an XP under the
+    same OP regime as training.
+    """
     import wandb
     from evaluation.run_xp_seeds import run_xp_from_params
 
@@ -986,8 +991,7 @@ def log_xp_eval(algorithm_config, env, out):
 
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
 
-    # Greedy XP
-    print("[xp_eval] Running greedy XP...")
+    print("[xp_eval] Running greedy XP (training OP regime)...")
     run_xp_from_params(
         env, policy, out["final_params"], algorithm_config,
         savedir=savedir,
@@ -995,6 +999,38 @@ def log_xp_eval(algorithm_config, env, out):
         wb_run=wandb.run,
         greedy_eval=True,
         wb_prefix="XP",
+    )
+
+    # Second pass with OP disabled, only meaningful if training was using OP.
+    train_kwargs = algorithm_config.get("ENV_KWARGS", {})
+    op_was_on = bool(
+        train_kwargs.get("other_play_position_shuffle", False)
+        or train_kwargs.get("other_play_recolouring", False)
+    )
+    if not op_was_on:
+        return
+
+    no_op_kwargs = dict(train_kwargs)
+    no_op_kwargs["other_play_position_shuffle"] = False
+    no_op_kwargs["other_play_recolouring"] = False
+    # Keep env-internal shuffle on so layouts still vary per episode.
+    no_op_kwargs["shuffle"] = True
+    if algorithm_config.get("COMMUNICATION", False):
+        no_op_kwargs["communication"] = True
+    if algorithm_config.get("ENV_NAME") == "card-game":
+        no_op_kwargs["scramble_partner_msg"] = False
+
+    no_op_env = LogWrapper(make_env(algorithm_config["ENV_NAME"], no_op_kwargs))
+    no_op_savedir = os.path.join(savedir, "xp_no_op")
+    os.makedirs(no_op_savedir, exist_ok=True)
+    print("[xp_eval] Running greedy XP without OP wrappers...")
+    run_xp_from_params(
+        no_op_env, policy, out["final_params"], algorithm_config,
+        savedir=no_op_savedir,
+        task_name=algorithm_config.get("ENV_NAME"),
+        wb_run=wandb.run,
+        greedy_eval=True,
+        wb_prefix="XP_NO_OP",
     )
 
 
