@@ -111,53 +111,99 @@ def _log_card_game_action_distributions(
     feed_attn_dims=None, ja_card_masks=None,
     num_episodes=30, rng_seed_base=300,
 ):
-    """Print + log per-agent action distributions across `num_episodes` SP eps.
+    """Print + log per-agent action distributions in EACH AGENT'S OWN VIEW
+    frame across `num_episodes` SP eps.
 
-    Tallies actions in the GT (canonical) frame separately for messages
-    (deliberation steps) and picks (decision step). Under OP a near-uniform
-    distribution is expected — concentration flags a colour-bias.
+    For each pick (decision step) and each message (deliberation step), the
+    agent's GT-frame action is mapped to two view-frame bins:
+      - view_pos:   column 0..NUM_CARDS-1 in the agent's OP-shuffled view
+      - view_color: appearance colour idx after the agent's OP recolouring
+
+    Concentration in either bin = the agent has converged on a positional or
+    colour convention. With OP off both view-frame and gt-frame coincide.
     """
     from envs.card_game.rendering import NUM_CARDS
 
-    pick_counts = np.zeros((2, NUM_CARDS), dtype=np.int64)
-    msg_counts = np.zeros((2, NUM_CARDS), dtype=np.int64)
+    def _walk(state, attr):
+        s = state
+        while s is not None:
+            if hasattr(s, attr):
+                return s
+            s = getattr(s, "env_state", None)
+        return None
+
+    counts = {
+        ("picks", "view_pos"): np.zeros((2, NUM_CARDS), dtype=np.int64),
+        ("picks", "view_color"): np.zeros((2, NUM_CARDS), dtype=np.int64),
+        ("messages", "view_pos"): np.zeros((2, NUM_CARDS), dtype=np.int64),
+        ("messages", "view_color"): np.zeros((2, NUM_CARDS), dtype=np.int64),
+    }
 
     for ep in range(num_episodes):
         ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
-        _, _, ep_actions, ep_messages = run_episode_with_states(
+        ep_states, _, ep_actions, ep_messages = run_episode_with_states(
             ep_rng, inner_env, params, policy, params, policy, max_steps,
             collect_attention=False,
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
         )
-        for pair in ep_actions:
+        n_steps = min(len(ep_messages), len(ep_actions))
+        for t in range(n_steps):
+            is_decision = (t == n_steps - 1)
+            # On the decision step the env auto-resets, so use the prior
+            # state's (still-current) per-agent transforms.
+            action_state = ep_states[t - 1] if (is_decision and t > 0) else ep_states[t]
+            base_state = _walk(action_state, "card_permutation")
+            card_perm = (
+                np.asarray(base_state.card_permutation) if base_state is not None
+                else np.arange(NUM_CARDS, dtype=np.int32)
+            )
+            perm_state = _walk(action_state, "per_agent_perm")
+            recol_state = _walk(action_state, "per_agent_recolouring")
             for ai in (0, 1):
-                v = int(pair[ai])
-                if 0 <= v < NUM_CARDS:
-                    pick_counts[ai, v] += 1
-        for pair in ep_messages:
-            for ai in (0, 1):
-                v = int(pair[ai])
-                if 0 <= v < NUM_CARDS:
-                    msg_counts[ai, v] += 1
+                gt = int(ep_actions[t][ai]) if is_decision else int(ep_messages[t][ai])
+                if gt < 0:
+                    continue
+                if perm_state is not None:
+                    pp = np.asarray(perm_state.per_agent_perm[f"agent_{ai}"])
+                    matches = np.where(pp == gt)[0]
+                else:
+                    matches = np.where(card_perm == gt)[0]
+                if len(matches) == 0:
+                    continue
+                view_pos = int(matches[0])
+                if recol_state is not None:
+                    recol = np.asarray(
+                        recol_state.per_agent_recolouring[f"agent_{ai}"]
+                    )
+                    view_color = int(recol[gt])
+                else:
+                    view_color = gt
+                phase = "picks" if is_decision else "messages"
+                counts[(phase, "view_pos")][ai, view_pos] += 1
+                counts[(phase, "view_color")][ai, view_color] += 1
 
-    print(f"\n=== {tag} action distributions ({num_episodes} SP eps, gt-frame) ===")
-    for kind, counts in (("picks", pick_counts), ("messages", msg_counts)):
-        print(f"  {kind}:")
+    print(f"\n=== {tag} action distributions ({num_episodes} SP eps, view-frame) ===")
+    for phase in ("picks", "messages"):
+        print(f"  {phase}:")
         for ai in (0, 1):
-            total = int(counts[ai].sum())
-            if total == 0:
-                print(f"    A{ai}: no {kind}")
-                continue
-            pct = counts[ai] / total * 100.0
-            counts_str = " ".join(f"{c:>5d}" for c in counts[ai])
-            pct_str = " ".join(f"{p:>5.1f}%" for p in pct)
-            print(f"    A{ai}: counts [{counts_str}]  pct [{pct_str}]")
-            for c in range(NUM_CARDS):
-                logger.log(
-                    {f"{tag}/action_dist/{kind}/A{ai}_color_{c}_pct": float(pct[c])},
-                    commit=False,
+            for label in ("view_pos", "view_color"):
+                arr = counts[(phase, label)][ai]
+                total = int(arr.sum())
+                if total == 0:
+                    continue
+                pct = arr / total * 100.0
+                counts_str = " ".join(f"{c:>5d}" for c in arr)
+                pct_str = " ".join(f"{p:>5.1f}%" for p in pct)
+                print(
+                    f"    A{ai} {label:11s}: counts [{counts_str}]  "
+                    f"pct [{pct_str}]"
                 )
+                for c in range(NUM_CARDS):
+                    logger.log(
+                        {f"{tag}/action_dist/{phase}/{label}/A{ai}_{c}_pct": float(pct[c])},
+                        commit=False,
+                    )
     print()
 
 
