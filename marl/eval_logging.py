@@ -12,6 +12,7 @@ from agents.ja_utils import jsd_divergence, augment_obs_for_eval
 from marl.eval_card_game import (
     _log_card_game_action_distributions,
     _log_card_game_attention_grid,
+    _log_card_game_coordination_dynamics,
     _log_card_game_eval_video,
     _log_card_game_per_agent_obs_video,
     _log_card_game_xp_videos,
@@ -446,6 +447,12 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                     num_episodes=30,
+                )
+                _log_card_game_coordination_dynamics(
+                    inner_env, policy, final_params, max_steps, tag, video_dir, logger,
+                    feed_attn_dims=feed_attn_dims,
+                    ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
+                    num_episodes=50,
                 )
                 # Under OP the canonical-scene video misrepresents what each
                 # agent actually sees; for JA_CARD_ATTN runs also log a video

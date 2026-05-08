@@ -139,6 +139,103 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
 
 
+def _log_card_game_coordination_dynamics(
+    inner_env, policy, params, max_steps, tag, video_dir, logger,
+    feed_attn_dims=None, ja_card_masks=None,
+    num_episodes=50, rng_seed_base=400,
+):
+    """Per-episode "lock-in step" histogram across `num_episodes` SP eps.
+
+    For each successful episode (= matching decision picks), find the latest
+    step from which both agents' messages already equalled the eventual pick
+    *and* stayed equal until decision. Earlier values mean the protocol
+    converged fast (proposer-follower); values close to max_steps mean late
+    convergence (negotiation / oscillation). Failed episodes are tallied
+    separately.
+    """
+    import os
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    lock_in_steps = []
+    failed = 0
+    n_delib = max_steps - 1
+
+    for ep in range(num_episodes):
+        ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
+        _, ep_actions, ep_messages = run_episode_with_states(
+            ep_rng, inner_env, params, policy, params, policy, max_steps,
+            collect_attention=False,
+            feed_other_attn_dims=feed_attn_dims,
+            ja_card_masks=ja_card_masks,
+        )
+        if not ep_actions:
+            continue
+        pick_0 = int(ep_actions[-1][0])
+        pick_1 = int(ep_actions[-1][1])
+        if pick_0 < 0 or pick_1 < 0 or pick_0 != pick_1:
+            failed += 1
+            continue
+        target = pick_0
+        deliberation = ep_messages[:n_delib]
+        # Walk backwards from the last deliberation step, count consecutive
+        # steps where both messages == target.
+        lock_in = n_delib + 1   # 1-indexed: "decision step itself"
+        for t in range(n_delib - 1, -1, -1):
+            if (int(deliberation[t][0]) == target and
+                int(deliberation[t][1]) == target):
+                lock_in = t + 1
+            else:
+                break
+        lock_in_steps.append(lock_in)
+
+    n_success = len(lock_in_steps)
+    print(f"\n=== {tag} coordination dynamics ({num_episodes} SP eps) ===")
+    print(f"  successful: {n_success}/{num_episodes}")
+    print(f"  failed:     {failed}/{num_episodes}")
+    if not lock_in_steps:
+        return
+    arr = np.array(lock_in_steps)
+    print(
+        f"  lock-in step (1-indexed): "
+        f"mean={arr.mean():.2f}  median={int(np.median(arr))}  "
+        f"min={int(arr.min())}  max={int(arr.max())}"
+    )
+    # Per-step counts.
+    counts = np.bincount(arr, minlength=max_steps + 2)[1:max_steps + 2]
+    print("  per-step lock-in distribution:")
+    for s, c in enumerate(counts, start=1):
+        if c == 0:
+            continue
+        marker = " (decision)" if s == max_steps else ""
+        print(f"    step {s}: {c:>4d}  ({100*c/n_success:>5.1f}%){marker}")
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    bins = np.arange(0.5, max_steps + 1.5)
+    ax.hist(arr, bins=bins, edgecolor="black", color="#5b8def")
+    ax.set_xlabel("step at which messages first locked in to the decision")
+    ax.set_ylabel("episode count")
+    ax.set_title(
+        f"{tag} — coordination lock-in step ({n_success}/{num_episodes} eps)"
+    )
+    ax.set_xticks(np.arange(1, max_steps + 1))
+    plt.tight_layout()
+    os.makedirs(video_dir, exist_ok=True)
+    png_path = os.path.join(video_dir, "coordination_lock_in.png")
+    plt.savefig(png_path)
+    plt.close(fig)
+    try:
+        import wandb
+        logger.log(
+            {f"{tag}/coordination_lock_in": wandb.Image(png_path)},
+            commit=False,
+        )
+    except Exception:
+        pass
+
+
 def _log_card_game_action_distributions(
     inner_env, policy, params, max_steps, tag, logger,
     feed_attn_dims=None, ja_card_masks=None,
