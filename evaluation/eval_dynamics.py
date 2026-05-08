@@ -24,10 +24,7 @@ from agents.initialize_agents import (
 from common.save_load_utils import load_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
-from marl.eval_card_game import (
-    _log_card_game_coordination_dynamics,
-    _log_card_game_role_dynamics,
-)
+from marl.eval_card_game import _log_card_game_dynamics
 from omegaconf import OmegaConf
 
 
@@ -67,7 +64,15 @@ def main():
     stacked_params = run_data[params_key]
     num_seeds = jax.tree.leaves(stacked_params)[0].shape[0]
 
-    env = make_env(algo_cfg["ENV_NAME"], algo_cfg["ENV_KWARGS"])
+    # Apply training-time runtime overrides to env_kwargs (mirroring
+    # `run_ja_ippo`): COMMUNICATION enables the env's comm channel, and
+    # for card-game we disable scramble_partner_msg at eval time.
+    env_kwargs = dict(algo_cfg["ENV_KWARGS"])
+    if algo_cfg.get("COMMUNICATION", False):
+        env_kwargs["communication"] = True
+    if algo_cfg.get("ENV_NAME") == "card-game":
+        env_kwargs.setdefault("scramble_partner_msg", False)
+    env = make_env(algo_cfg["ENV_NAME"], env_kwargs)
     env = LogWrapper(env)
 
     obs_type = _get_obs_type(algo_cfg)
@@ -87,12 +92,7 @@ def main():
         seed_dir = out_root / f"seed_{s}"
         seed_dir.mkdir(parents=True, exist_ok=True)
         tag = f"Eval/seed_{s}"
-        _log_card_game_coordination_dynamics(
-            env._env, policy, seed_params, max_steps,
-            tag, str(seed_dir), logger,
-            num_episodes=args.num_episodes,
-        )
-        _log_card_game_role_dynamics(
+        _log_card_game_dynamics(
             env._env, policy, seed_params, max_steps,
             tag, str(seed_dir), logger,
             num_episodes=args.num_episodes,

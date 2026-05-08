@@ -139,66 +139,91 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
 
 
-def _classify_role_pattern(ep_messages, n_delib):
-    """Classify a single episode by who first adopts the partner's previous
-    message and whether that role is kept.
+_PATTERN_LABELS = (
+    "fast_follow_a0",     # only A0 ever follows; A1 is stable proposer (pattern 1)
+    "fast_follow_a1",     # only A1 ever follows; A0 is stable proposer (pattern 1)
+    "reciprocal_yield",   # both follow, total ≤ 2 follow events (pattern 3)
+    "oscillation",        # both follow, total ≥ 3 follow events (pattern 2)
+    "instant_align",      # no follow event; messages aligned from step 1 by chance
+    "failed",             # decision picks didn't match
+)
+_PATTERN_COLORS = {
+    "fast_follow_a0":   "#ff8c00",
+    "fast_follow_a1":   "#ff00ff",
+    "reciprocal_yield": "#5b8def",
+    "oscillation":      "#cc4040",
+    "instant_align":    "#3aa84d",
+    "failed":           "#888888",
+}
 
-    Returns one of:
-      "a0_follower"  — only A0 ever follows; A1 is the stable proposer.
-      "a1_follower"  — only A1 ever follows; A0 is the stable proposer.
-      "role_swap"    — both agents follow at some point (negotiation).
-      "no_follow"    — no agent ever adopts the partner's previous message
-                       (either aligned from start or never aligned at all).
-    Also returns (first_follower_step_1indexed_or_None, n_a0_follows, n_a1_follows).
+
+def _classify_episode_pattern(ep_messages, ep_actions, n_delib):
+    """Returns (pattern_label, lock_in_step_1indexed_or_None,
+    n_a0_follows, n_a1_follows). lock_in_step is None for failed eps.
+
+    Robust to empty ep_messages (no-comm runs): such episodes can only land
+    in 'instant_align' (success without follow events) or 'failed'.
     """
-    if n_delib < 2:
-        return "no_follow", None, 0, 0
+    if not ep_actions:
+        return "failed", None, 0, 0
+    pick_0 = int(ep_actions[-1][0])
+    pick_1 = int(ep_actions[-1][1])
+    if pick_0 < 0 or pick_1 < 0 or pick_0 != pick_1:
+        return "failed", None, 0, 0
+    target = pick_0
+
+    deliberation = ep_messages[:n_delib] if ep_messages else []
+    n_avail = len(deliberation)
+    lock_in = n_delib + 1
+    for t in range(n_avail - 1, -1, -1):
+        if int(deliberation[t][0]) == target and int(deliberation[t][1]) == target:
+            lock_in = t + 1
+        else:
+            break
+
     a0_follows = 0
     a1_follows = 0
-    first_follower = None
-    first_step = None
-    for t in range(1, n_delib):
-        prev_0 = int(ep_messages[t - 1][0])
-        prev_1 = int(ep_messages[t - 1][1])
-        curr_0 = int(ep_messages[t][0])
-        curr_1 = int(ep_messages[t][1])
-        # When both partners messaged the same colour last step there's
-        # nothing to "follow" — skip that step from the role accounting.
-        if prev_0 == prev_1 or prev_0 < 0 or prev_1 < 0:
+    for t in range(1, n_avail):
+        prev_0 = int(deliberation[t - 1][0])
+        prev_1 = int(deliberation[t - 1][1])
+        curr_0 = int(deliberation[t][0])
+        curr_1 = int(deliberation[t][1])
+        if prev_0 < 0 or prev_1 < 0 or prev_0 == prev_1:
             continue
-        a0_followed = (curr_0 == prev_1)
-        a1_followed = (curr_1 == prev_0)
-        if a0_followed:
+        if curr_0 == prev_1 and curr_0 != prev_0:
             a0_follows += 1
-            if first_follower is None:
-                first_follower = 0
-                first_step = t + 1
-        if a1_followed:
+        if curr_1 == prev_0 and curr_1 != prev_1:
             a1_follows += 1
-            if first_follower is None:
-                first_follower = 1
-                first_step = t + 1
-    if first_follower is None:
-        return "no_follow", None, 0, 0
+    total = a0_follows + a1_follows
+
+    if total == 0:
+        return "instant_align", lock_in, 0, 0
     if a0_follows > 0 and a1_follows == 0:
-        regime = "a0_follower"
-    elif a1_follows > 0 and a0_follows == 0:
-        regime = "a1_follower"
-    else:
-        regime = "role_swap"
-    return regime, first_step, a0_follows, a1_follows
+        return "fast_follow_a0", lock_in, a0_follows, 0
+    if a1_follows > 0 and a0_follows == 0:
+        return "fast_follow_a1", lock_in, 0, a1_follows
+    if total <= 2:
+        return "reciprocal_yield", lock_in, a0_follows, a1_follows
+    return "oscillation", lock_in, a0_follows, a1_follows
 
 
-def _log_card_game_role_dynamics(
+def _log_card_game_dynamics(
     inner_env, policy, params, max_steps, tag, video_dir, logger,
     feed_attn_dims=None, ja_card_masks=None,
-    num_episodes=50, rng_seed_base=500,
+    num_episodes=100, rng_seed_base=400,
 ):
-    """Per-episode role-pattern (proposer / follower) distribution across SP eps.
+    """Combined coordination + role-pattern diagnostic.
 
-    For each episode, classifies the deliberation dynamics into one of:
-      a0_follower / a1_follower / role_swap / no_follow.
-    Saves a bar chart and prints aggregate counts.
+    For each SP episode, classifies the deliberation dynamics into one of:
+        fast_follow_a0   — A1 stable proposer, A0 follows once (pattern 1)
+        fast_follow_a1   — A0 stable proposer, A1 follows once (pattern 1)
+        reciprocal_yield — both follow ≤ 2 times total (pattern 3)
+        oscillation      — both follow ≥ 3 times total (pattern 2)
+        instant_align    — no follow events, success
+        failed           — decision picks didn't match
+
+    Saves a stacked histogram of lock-in step × pattern, prints a
+    per-pattern summary, and logs to wandb.
     """
     import os
     import numpy as np
@@ -206,11 +231,9 @@ def _log_card_game_role_dynamics(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    counts = {"a0_follower": 0, "a1_follower": 0, "role_swap": 0, "no_follow": 0}
-    first_step_by_regime = {k: [] for k in counts}
     n_delib = max_steps - 1
+    rows = []   # list of (pattern, lock_in, a0_follows, a1_follows)
 
-    success = fail = 0
     for ep in range(num_episodes):
         ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
         _, ep_actions, ep_messages = run_episode_with_states(
@@ -219,157 +242,74 @@ def _log_card_game_role_dynamics(
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
         )
-        if not ep_actions:
-            continue
-        pick_0 = int(ep_actions[-1][0])
-        pick_1 = int(ep_actions[-1][1])
-        if pick_0 < 0 or pick_1 < 0 or pick_0 != pick_1:
-            fail += 1
-            continue
-        success += 1
-        regime, first_step, _, _ = _classify_role_pattern(ep_messages, n_delib)
-        counts[regime] += 1
-        if first_step is not None:
-            first_step_by_regime[regime].append(first_step)
+        rows.append(_classify_episode_pattern(ep_messages, ep_actions, n_delib))
 
-    print(f"\n=== {tag} role dynamics ({num_episodes} SP eps) ===")
-    print(f"  success/fail: {success}/{fail}")
-    for regime in ("a0_follower", "a1_follower", "role_swap", "no_follow"):
-        n = counts[regime]
-        if n == 0:
-            print(f"  {regime:>14s}: {n}")
+    counts = {p: 0 for p in _PATTERN_LABELS}
+    lockins = {p: [] for p in _PATTERN_LABELS}
+    follows = {p: [] for p in _PATTERN_LABELS}
+    for pattern, lock_in, n0, n1 in rows:
+        counts[pattern] += 1
+        if lock_in is not None:
+            lockins[pattern].append(lock_in)
+        follows[pattern].append(n0 + n1)
+
+    success = sum(counts[p] for p in _PATTERN_LABELS if p != "failed")
+    print(f"\n=== {tag} dynamics ({num_episodes} SP eps) ===")
+    print(f"  successful: {success}/{num_episodes}    failed: {counts['failed']}")
+    header = (f"  {'pattern':>16s}  {'count':>5s}  "
+              f"{'mean step':>9s}  {'median':>6s}  {'mean follows':>12s}")
+    print(header)
+    for p in _PATTERN_LABELS:
+        c = counts[p]
+        if c == 0:
+            print(f"  {p:>16s}  {c:>5d}")
             continue
-        steps = first_step_by_regime[regime]
-        if steps:
-            steps_arr = np.array(steps)
-            print(
-                f"  {regime:>14s}: {n}  first-follow step "
-                f"mean={steps_arr.mean():.2f} median={int(np.median(steps_arr))}"
-            )
+        if lockins[p]:
+            arr = np.array(lockins[p])
+            mean_s, med_s = float(arr.mean()), int(np.median(arr))
         else:
-            print(f"  {regime:>14s}: {n}")
+            mean_s = med_s = "-"
+        mean_f = float(np.mean(follows[p])) if follows[p] else 0.0
+        print(
+            f"  {p:>16s}  {c:>5d}  "
+            f"{mean_s if isinstance(mean_s, str) else f'{mean_s:>9.2f}'}  "
+            f"{med_s if isinstance(med_s, str) else f'{med_s:>6d}'}  "
+            f"{mean_f:>12.2f}"
+        )
 
+    # Stacked histogram: x = lock-in step, color = pattern.
     if success == 0:
         return
-    fig, ax = plt.subplots(figsize=(7, 4))
-    regimes = ["a0_follower", "a1_follower", "role_swap", "no_follow"]
-    palette = ["#ff8c00", "#ff00ff", "#5b8def", "#888888"]
-    values = [counts[r] for r in regimes]
-    ax.bar(regimes, values, color=palette, edgecolor="black")
-    for i, v in enumerate(values):
-        if v > 0:
-            ax.text(i, v, str(v), ha="center", va="bottom", fontsize=9)
-    ax.set_ylabel("episode count")
-    ax.set_title(
-        f"{tag} — role pattern over {success} successful eps "
-        f"(plus {fail} failed)"
-    )
-    plt.tight_layout()
-    os.makedirs(video_dir, exist_ok=True)
-    png_path = os.path.join(video_dir, "role_dynamics.png")
-    plt.savefig(png_path)
-    plt.close(fig)
-    try:
-        import wandb
-        logger.log(
-            {f"{tag}/role_dynamics": wandb.Image(png_path)},
-            commit=False,
+    bins = np.arange(1, max_steps + 2)  # steps 1..max_steps
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    bottoms = np.zeros(len(bins) - 1, dtype=int)
+    for p in _PATTERN_LABELS:
+        if p == "failed" or counts[p] == 0:
+            continue
+        h, _ = np.histogram(np.array(lockins[p]), bins=bins)
+        ax.bar(
+            bins[:-1], h, bottom=bottoms, width=0.85,
+            color=_PATTERN_COLORS[p], edgecolor="black", linewidth=0.4,
+            label=f"{p} ({counts[p]})",
         )
-    except Exception:
-        pass
-
-
-def _log_card_game_coordination_dynamics(
-    inner_env, policy, params, max_steps, tag, video_dir, logger,
-    feed_attn_dims=None, ja_card_masks=None,
-    num_episodes=50, rng_seed_base=400,
-):
-    """Per-episode "lock-in step" histogram across `num_episodes` SP eps.
-
-    For each successful episode (= matching decision picks), find the latest
-    step from which both agents' messages already equalled the eventual pick
-    *and* stayed equal until decision. Earlier values mean the protocol
-    converged fast (proposer-follower); values close to max_steps mean late
-    convergence (negotiation / oscillation). Failed episodes are tallied
-    separately.
-    """
-    import os
-    import numpy as np
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    lock_in_steps = []
-    failed = 0
-    n_delib = max_steps - 1
-
-    for ep in range(num_episodes):
-        ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
-        _, ep_actions, ep_messages = run_episode_with_states(
-            ep_rng, inner_env, params, policy, params, policy, max_steps,
-            collect_attention=False,
-            feed_other_attn_dims=feed_attn_dims,
-            ja_card_masks=ja_card_masks,
-        )
-        if not ep_actions:
-            continue
-        pick_0 = int(ep_actions[-1][0])
-        pick_1 = int(ep_actions[-1][1])
-        if pick_0 < 0 or pick_1 < 0 or pick_0 != pick_1:
-            failed += 1
-            continue
-        target = pick_0
-        deliberation = ep_messages[:n_delib]
-        # Walk backwards from the last deliberation step, count consecutive
-        # steps where both messages == target.
-        lock_in = n_delib + 1   # 1-indexed: "decision step itself"
-        for t in range(n_delib - 1, -1, -1):
-            if (int(deliberation[t][0]) == target and
-                int(deliberation[t][1]) == target):
-                lock_in = t + 1
-            else:
-                break
-        lock_in_steps.append(lock_in)
-
-    n_success = len(lock_in_steps)
-    print(f"\n=== {tag} coordination dynamics ({num_episodes} SP eps) ===")
-    print(f"  successful: {n_success}/{num_episodes}")
-    print(f"  failed:     {failed}/{num_episodes}")
-    if not lock_in_steps:
-        return
-    arr = np.array(lock_in_steps)
-    print(
-        f"  lock-in step (1-indexed): "
-        f"mean={arr.mean():.2f}  median={int(np.median(arr))}  "
-        f"min={int(arr.min())}  max={int(arr.max())}"
-    )
-    # Per-step counts.
-    counts = np.bincount(arr, minlength=max_steps + 2)[1:max_steps + 2]
-    print("  per-step lock-in distribution:")
-    for s, c in enumerate(counts, start=1):
-        if c == 0:
-            continue
-        marker = " (decision)" if s == max_steps else ""
-        print(f"    step {s}: {c:>4d}  ({100*c/n_success:>5.1f}%){marker}")
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-    bins = np.arange(0.5, max_steps + 1.5)
-    ax.hist(arr, bins=bins, edgecolor="black", color="#5b8def")
-    ax.set_xlabel("step at which messages first locked in to the decision")
+        bottoms = bottoms + h
+    ax.set_xlabel("steps to lock in (1-indexed; max = decision step)")
     ax.set_ylabel("episode count")
-    ax.set_title(
-        f"{tag} — coordination lock-in step ({n_success}/{num_episodes} eps)"
-    )
     ax.set_xticks(np.arange(1, max_steps + 1))
+    ax.set_title(
+        f"{tag} — coordination dynamics: lock-in step by pattern  "
+        f"(success {success}/{num_episodes}, fail {counts['failed']})"
+    )
+    ax.legend(loc="upper right", fontsize=9)
     plt.tight_layout()
     os.makedirs(video_dir, exist_ok=True)
-    png_path = os.path.join(video_dir, "coordination_lock_in.png")
+    png_path = os.path.join(video_dir, "dynamics.png")
     plt.savefig(png_path)
     plt.close(fig)
     try:
         import wandb
         logger.log(
-            {f"{tag}/coordination_lock_in": wandb.Image(png_path)},
+            {f"{tag}/dynamics": wandb.Image(png_path)},
             commit=False,
         )
     except Exception:
