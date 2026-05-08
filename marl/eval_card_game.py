@@ -53,7 +53,11 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     agent0_color = np.array([255, 140, 0], dtype=np.uint8)
     agent1_color = np.array([255, 0, 255], dtype=np.uint8)
     last_action = ep_actions[-1] if ep_actions else (-1, -1)
-    white_border = [255, 255, 255]
+    won = (
+        int(last_action[0]) >= 0 and int(last_action[1]) >= 0
+        and int(last_action[0]) == int(last_action[1])
+    )
+    decision_border = [255, 255, 0] if won else [255, 255, 255]
 
     row_0 = []
     row_1 = []
@@ -106,9 +110,9 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
                 view_0 = int(last_action[0])
                 view_1 = int(last_action[1])
             if view_0 >= 0:
-                _draw_choice_on_cell(cell_0, view_0, 0, scale, color=white_border)
+                _draw_choice_on_cell(cell_0, view_0, 0, scale, color=decision_border)
             if view_1 >= 0:
-                _draw_choice_on_cell(cell_1, view_1, 1, scale, color=white_border)
+                _draw_choice_on_cell(cell_1, view_1, 1, scale, color=decision_border)
 
         _stamp_label_np(cell_0, _A0_PATTERN_SMALL, 1, 27, agent0_color, scale=scale)
         _stamp_label_np(cell_1, _A1_PATTERN_SMALL, 1, 27, agent1_color, scale=scale)
@@ -302,11 +306,12 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                 state_for_perm = ep_states[t - 1] if t > 0 else ep_states[t]
                 view_0 = _gt_pick_to_view_col(state_for_perm, 0, int(last_action[0]))
                 view_1 = _gt_pick_to_view_col(state_for_perm, 1, int(last_action[1]))
-                white_border = [255, 255, 255]
+                won = int(last_action[0]) == int(last_action[1])
+                decision_border = [255, 255, 0] if won else [255, 255, 255]
                 if view_0 >= 0:
-                    _draw_choice_on_cell(cell_0, view_0, 0, scale, color=white_border)
+                    _draw_choice_on_cell(cell_0, view_0, 0, scale, color=decision_border)
                 if view_1 >= 0:
-                    _draw_choice_on_cell(cell_1, view_1, 1, scale, color=white_border)
+                    _draw_choice_on_cell(cell_1, view_1, 1, scale, color=decision_border)
 
             _stamp_label_np(cell_0, _A0_PATTERN_SMALL, 1, 27, a0_color_np, scale=scale)
             _stamp_label_np(cell_1, _A1_PATTERN_SMALL, 1, 27, a1_color_np, scale=scale)
@@ -407,11 +412,12 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                         state_for_perm = ep_states[t - 1] if t > 0 else ep_states[t]
                         view_0 = _gt_pick_to_view_col(state_for_perm, 0, int(last_action[0]))
                         view_1 = _gt_pick_to_view_col(state_for_perm, 1, int(last_action[1]))
-                        white_border = [255, 255, 255]
+                        won = int(last_action[0]) == int(last_action[1])
+                        decision_border = [255, 255, 0] if won else [255, 255, 255]
                         if view_0 >= 0:
-                            _draw_choice_on_cell(cell_0, view_0, 0, scale, color=white_border)
+                            _draw_choice_on_cell(cell_0, view_0, 0, scale, color=decision_border)
                         if view_1 >= 0:
-                            _draw_choice_on_cell(cell_1, view_1, 1, scale, color=white_border)
+                            _draw_choice_on_cell(cell_1, view_1, 1, scale, color=decision_border)
 
                     _stamp_label_np(
                         cell_0, _A0_PATTERN_SMALL, 1, 27, a0_color_np_xp, scale=scale,

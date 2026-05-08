@@ -374,13 +374,15 @@ def _recolour_message_dot(base, state, agent_idx):
 
 
 def _render_one_agent_frame_from_obs(agent_idx, flat_obs, pick_view_col, scale,
-                                      border_thickness, state=None):
+                                      border_thickness, state=None,
+                                      border_color=None):
     """Build a per-agent eval subview from the actual flat obs the policy saw.
     Under OP this naturally shows the agent's shuffled+recoloured view (the
     obs already contains the agent's message dot). Adds a colour-coded
-    A0/A1 label and, when `pick_view_col >= 0`, a thick white border at
-    that view column. When `state` is passed, the white message dot in the
-    obs is recoloured to the partner's video colour."""
+    A0/A1 label and, when `pick_view_col >= 0`, a thick border at that
+    view column — yellow if `border_color` is yellow (i.e. coordination
+    success), white otherwise. When `state` is passed, the white message
+    dot in the obs is recoloured to the partner's video colour."""
     import numpy as np
     from PIL import Image
 
@@ -404,9 +406,11 @@ def _render_one_agent_frame_from_obs(agent_idx, flat_obs, pick_view_col, scale,
     )
 
     if pick_view_col >= 0:
-        white_border = np.array([255, 255, 255], dtype=np.uint8)
+        if border_color is None:
+            border_color = np.array([255, 255, 255], dtype=np.uint8)
         sub = _draw_card_border_upscaled(
-            sub, pick_view_col, white_border, border_thickness, scale,
+            sub, pick_view_col, np.asarray(border_color, dtype=np.uint8),
+            border_thickness, scale,
         )
     return sub
 
@@ -453,14 +457,17 @@ def _render_one_agent_frame(inner, agent_idx, scale, border_thickness, _unused=N
     )
     sub = np.array(pil_img)
 
-    own_pick = int(np.array(inner.agent_choices)[agent_idx])
+    choices = np.array(inner.agent_choices)
+    own_pick = int(choices[agent_idx])
+    other_pick = int(choices[1 - agent_idx])
     if own_pick >= 0:
         pos = int(np.where(perm_np == own_pick)[0][0])
-        # Decision-step border is white (regardless of agent), so the user can
-        # tell the choice apart from the always-coloured A0/A1 label / dot.
-        white_border = np.array([255, 255, 255], dtype=np.uint8)
+        won = other_pick >= 0 and own_pick == other_pick
+        border = np.array(
+            [255, 255, 0] if won else [255, 255, 255], dtype=np.uint8,
+        )
         sub = _draw_card_border_upscaled(
-            sub, pos, white_border, border_thickness, scale
+            sub, pos, border, border_thickness, scale,
         )
     return sub
 
@@ -479,17 +486,24 @@ def render_card_game_eval_frames_per_agent(ep_states, agent_idx: int, scale: int
     border_thickness = 3 * scale
     n = len(ep_states)
     out = []
+    yellow = np.array([255, 255, 0], dtype=np.uint8)
+    white_b = np.array([255, 255, 255], dtype=np.uint8)
     for t, state in enumerate(ep_states):
         if ep_obs is not None and t < len(ep_obs):
             view_col = -1
+            border_color = white_b
             if t == n - 1 and ep_actions:
                 state_for_perm = ep_states[t - 1] if t > 0 else state
                 pick_gt = int(ep_actions[-1][agent_idx])
                 view_col = _gt_pick_to_view_col(state_for_perm, agent_idx, pick_gt)
+                pick_gt_0 = int(ep_actions[-1][0])
+                pick_gt_1 = int(ep_actions[-1][1])
+                won = pick_gt_0 >= 0 and pick_gt_1 >= 0 and pick_gt_0 == pick_gt_1
+                border_color = yellow if won else white_b
             sub = _render_one_agent_frame_from_obs(
                 agent_idx, ep_obs[t][f"agent_{agent_idx}"],
                 view_col, scale, border_thickness,
-                state=state,
+                state=state, border_color=border_color,
             )
         else:
             sub = _render_one_agent_frame(
@@ -526,27 +540,29 @@ def render_card_game_eval_frames(ep_states, scale: int = 32, gap_raw_px: int = 1
 
     frames = []
     n = len(ep_states)
+    yellow = np.array([255, 255, 0], dtype=np.uint8)
+    white_b = np.array([255, 255, 255], dtype=np.uint8)
     for t, state in enumerate(ep_states):
         inner = _unwrap_card_game_state(state)
         if ep_obs is not None and t < len(ep_obs):
             obs_t = ep_obs[t]
-            # Auto-reset wipes agent_choices on the final state, so derive
-            # picks from ep_actions and resolve view cols using a pre-reset
-            # state's per_agent_perm.
             view_col_0 = view_col_1 = -1
+            border_color = white_b
             if t == n - 1 and ep_actions:
                 state_for_perm = ep_states[t - 1] if t > 0 else state
                 pick_gt_0 = int(ep_actions[-1][0])
                 pick_gt_1 = int(ep_actions[-1][1])
                 view_col_0 = _gt_pick_to_view_col(state_for_perm, 0, pick_gt_0)
                 view_col_1 = _gt_pick_to_view_col(state_for_perm, 1, pick_gt_1)
+                won = pick_gt_0 >= 0 and pick_gt_1 >= 0 and pick_gt_0 == pick_gt_1
+                border_color = yellow if won else white_b
             sub_a0 = _render_one_agent_frame_from_obs(
                 0, obs_t["agent_0"], view_col_0, scale, border_thickness,
-                state=state,
+                state=state, border_color=border_color,
             )
             sub_a1 = _render_one_agent_frame_from_obs(
                 1, obs_t["agent_1"], view_col_1, scale, border_thickness,
-                state=state,
+                state=state, border_color=border_color,
             )
         else:
             sub_a0 = _render_one_agent_frame(inner, 0, scale, border_thickness, white)
