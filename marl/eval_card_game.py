@@ -491,6 +491,8 @@ def _log_card_game_per_agent_obs_video(
     """
     from envs.card_game.rendering import (
         TILE_PIXELS, GRID_ROWS, GRID_COLS, _unwrap_card_game_state,
+        _stamp_label_np, _A0_PATTERN_SMALL, _A1_PATTERN_SMALL,
+        _recolour_message_dot,
     )
 
     img_h = GRID_ROWS * TILE_PIXELS
@@ -498,6 +500,8 @@ def _log_card_game_per_agent_obs_video(
     scale = 20
     padding = 4
     all_video_frames: list = []
+    a0_color_np = np.array([255, 140, 0], dtype=np.uint8)
+    a1_color_np = np.array([255, 0, 255], dtype=np.uint8)
 
     if params_partner is None:
         params_partner = params
@@ -530,6 +534,8 @@ def _log_card_game_per_agent_obs_video(
             base_1 = (
                 np.asarray(obs_t["agent_1"]).reshape(img_h, img_w, 3) * 255
             ).astype(np.uint8)
+            _recolour_message_dot(base_0, ep_states[t], 0)
+            _recolour_message_dot(base_1, ep_states[t], 1)
             up_0 = np.array(Image.fromarray(base_0).resize(
                 (img_w * scale, img_h * scale), Image.NEAREST,
             ))
@@ -555,11 +561,14 @@ def _log_card_game_per_agent_obs_video(
                     and int(last_action[1]) >= 0
                     and int(last_action[0]) == int(last_action[1])
                 )
-                box_color = [255, 255, 0] if solved else None
+                box_color = [255, 255, 0] if solved else [255, 255, 255]
                 if pick_0_view is not None:
                     _draw_choice_on_cell(cell_0, pick_0_view, 0, scale, color=box_color)
                 if pick_1_view is not None:
                     _draw_choice_on_cell(cell_1, pick_1_view, 1, scale, color=box_color)
+
+            _stamp_label_np(cell_0, _A0_PATTERN_SMALL, 1, 27, a0_color_np, scale=scale)
+            _stamp_label_np(cell_1, _A1_PATTERN_SMALL, 1, 27, a1_color_np, scale=scale)
 
             cell_h, cell_w = cell_0.shape[:2]
             frame = np.full(
