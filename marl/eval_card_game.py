@@ -222,14 +222,12 @@ def _log_card_game_dynamics(
         instant_align    — no follow events, success
         failed           — decision picks didn't match
 
-    Saves a stacked histogram of lock-in step × pattern, prints a
-    per-pattern summary, and logs to wandb.
+    Prints a per-pattern summary table; no PNG, no wandb image.
+    `video_dir` is unused (kept in the signature for caller compatibility).
     """
-    import os
     import numpy as np
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+
+    del video_dir  # no figure is saved
 
     n_delib = max_steps - 1
     rows = []   # list of (pattern, lock_in, a0_follows, a1_follows)
@@ -277,43 +275,20 @@ def _log_card_game_dynamics(
             f"{mean_f:>12.2f}"
         )
 
-    # Stacked histogram: x = lock-in step, color = pattern.
+    # Per-step lock-in counts per pattern (text-only).
     if success == 0:
         return
-    bins = np.arange(1, max_steps + 2)  # steps 1..max_steps
-    fig, ax = plt.subplots(figsize=(9, 4.5))
-    bottoms = np.zeros(len(bins) - 1, dtype=int)
-    for p in _PATTERN_LABELS:
-        if p == "failed" or counts[p] == 0:
-            continue
-        h, _ = np.histogram(np.array(lockins[p]), bins=bins)
-        ax.bar(
-            bins[:-1], h, bottom=bottoms, width=0.85,
-            color=_PATTERN_COLORS[p], edgecolor="black", linewidth=0.4,
-            label=f"{p} ({counts[p]})",
-        )
-        bottoms = bottoms + h
-    ax.set_xlabel("steps to lock in (1-indexed; max = decision step)")
-    ax.set_ylabel("episode count")
-    ax.set_xticks(np.arange(1, max_steps + 1))
-    ax.set_title(
-        f"{tag} — coordination dynamics: lock-in step by pattern  "
-        f"(success {success}/{num_episodes}, fail {counts['failed']})"
-    )
-    ax.legend(loc="upper right", fontsize=9)
-    plt.tight_layout()
-    os.makedirs(video_dir, exist_ok=True)
-    png_path = os.path.join(video_dir, "dynamics.png")
-    plt.savefig(png_path)
-    plt.close(fig)
-    try:
-        import wandb
-        logger.log(
-            {f"{tag}/dynamics": wandb.Image(png_path)},
-            commit=False,
-        )
-    except Exception:
-        pass
+    print("  per-step lock-in counts:")
+    header = "    step  " + "  ".join(f"{p[:6]:>6s}" for p in _PATTERN_LABELS if p != "failed")
+    print(header)
+    for s in range(1, max_steps + 1):
+        row = [f"    {s:>4d}  "]
+        for p in _PATTERN_LABELS:
+            if p == "failed":
+                continue
+            n = sum(1 for v in lockins[p] if v == s)
+            row.append(f"{n:>6d}")
+        print("  ".join(row))
 
 
 def _log_card_game_action_distributions(
