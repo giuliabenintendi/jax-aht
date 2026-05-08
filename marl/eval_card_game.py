@@ -139,6 +139,146 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
 
 
+def _classify_role_pattern(ep_messages, n_delib):
+    """Classify a single episode by who first adopts the partner's previous
+    message and whether that role is kept.
+
+    Returns one of:
+      "a0_follower"  — only A0 ever follows; A1 is the stable proposer.
+      "a1_follower"  — only A1 ever follows; A0 is the stable proposer.
+      "role_swap"    — both agents follow at some point (negotiation).
+      "no_follow"    — no agent ever adopts the partner's previous message
+                       (either aligned from start or never aligned at all).
+    Also returns (first_follower_step_1indexed_or_None, n_a0_follows, n_a1_follows).
+    """
+    if n_delib < 2:
+        return "no_follow", None, 0, 0
+    a0_follows = 0
+    a1_follows = 0
+    first_follower = None
+    first_step = None
+    for t in range(1, n_delib):
+        prev_0 = int(ep_messages[t - 1][0])
+        prev_1 = int(ep_messages[t - 1][1])
+        curr_0 = int(ep_messages[t][0])
+        curr_1 = int(ep_messages[t][1])
+        # When both partners messaged the same colour last step there's
+        # nothing to "follow" — skip that step from the role accounting.
+        if prev_0 == prev_1 or prev_0 < 0 or prev_1 < 0:
+            continue
+        a0_followed = (curr_0 == prev_1)
+        a1_followed = (curr_1 == prev_0)
+        if a0_followed:
+            a0_follows += 1
+            if first_follower is None:
+                first_follower = 0
+                first_step = t + 1
+        if a1_followed:
+            a1_follows += 1
+            if first_follower is None:
+                first_follower = 1
+                first_step = t + 1
+    if first_follower is None:
+        return "no_follow", None, 0, 0
+    if a0_follows > 0 and a1_follows == 0:
+        regime = "a0_follower"
+    elif a1_follows > 0 and a0_follows == 0:
+        regime = "a1_follower"
+    else:
+        regime = "role_swap"
+    return regime, first_step, a0_follows, a1_follows
+
+
+def _log_card_game_role_dynamics(
+    inner_env, policy, params, max_steps, tag, video_dir, logger,
+    feed_attn_dims=None, ja_card_masks=None,
+    num_episodes=50, rng_seed_base=500,
+):
+    """Per-episode role-pattern (proposer / follower) distribution across SP eps.
+
+    For each episode, classifies the deliberation dynamics into one of:
+      a0_follower / a1_follower / role_swap / no_follow.
+    Saves a bar chart and prints aggregate counts.
+    """
+    import os
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    counts = {"a0_follower": 0, "a1_follower": 0, "role_swap": 0, "no_follow": 0}
+    first_step_by_regime = {k: [] for k in counts}
+    n_delib = max_steps - 1
+
+    success = fail = 0
+    for ep in range(num_episodes):
+        ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
+        _, ep_actions, ep_messages = run_episode_with_states(
+            ep_rng, inner_env, params, policy, params, policy, max_steps,
+            collect_attention=False,
+            feed_other_attn_dims=feed_attn_dims,
+            ja_card_masks=ja_card_masks,
+        )
+        if not ep_actions:
+            continue
+        pick_0 = int(ep_actions[-1][0])
+        pick_1 = int(ep_actions[-1][1])
+        if pick_0 < 0 or pick_1 < 0 or pick_0 != pick_1:
+            fail += 1
+            continue
+        success += 1
+        regime, first_step, _, _ = _classify_role_pattern(ep_messages, n_delib)
+        counts[regime] += 1
+        if first_step is not None:
+            first_step_by_regime[regime].append(first_step)
+
+    print(f"\n=== {tag} role dynamics ({num_episodes} SP eps) ===")
+    print(f"  success/fail: {success}/{fail}")
+    for regime in ("a0_follower", "a1_follower", "role_swap", "no_follow"):
+        n = counts[regime]
+        if n == 0:
+            print(f"  {regime:>14s}: {n}")
+            continue
+        steps = first_step_by_regime[regime]
+        if steps:
+            steps_arr = np.array(steps)
+            print(
+                f"  {regime:>14s}: {n}  first-follow step "
+                f"mean={steps_arr.mean():.2f} median={int(np.median(steps_arr))}"
+            )
+        else:
+            print(f"  {regime:>14s}: {n}")
+
+    if success == 0:
+        return
+    fig, ax = plt.subplots(figsize=(7, 4))
+    regimes = ["a0_follower", "a1_follower", "role_swap", "no_follow"]
+    palette = ["#ff8c00", "#ff00ff", "#5b8def", "#888888"]
+    values = [counts[r] for r in regimes]
+    ax.bar(regimes, values, color=palette, edgecolor="black")
+    for i, v in enumerate(values):
+        if v > 0:
+            ax.text(i, v, str(v), ha="center", va="bottom", fontsize=9)
+    ax.set_ylabel("episode count")
+    ax.set_title(
+        f"{tag} — role pattern over {success} successful eps "
+        f"(plus {fail} failed)"
+    )
+    plt.tight_layout()
+    os.makedirs(video_dir, exist_ok=True)
+    png_path = os.path.join(video_dir, "role_dynamics.png")
+    plt.savefig(png_path)
+    plt.close(fig)
+    try:
+        import wandb
+        logger.log(
+            {f"{tag}/role_dynamics": wandb.Image(png_path)},
+            commit=False,
+        )
+    except Exception:
+        pass
+
+
 def _log_card_game_coordination_dynamics(
     inner_env, policy, params, max_steps, tag, video_dir, logger,
     feed_attn_dims=None, ja_card_masks=None,
