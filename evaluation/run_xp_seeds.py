@@ -940,7 +940,8 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True,
                       use_best: bool = False, drop_op: bool = False,
                       wb_prefix: str | None = None,
-                      xp_video_max_pairs: int | None = None):
+                      xp_video_max_pairs: int | None = None,
+                      no_xp_videos: bool = False):
     """Standalone XP evaluation from a saved checkpoint.
 
     `use_best` selects `best_params` over `final_params` (per-seed best checkpoint).
@@ -1006,6 +1007,9 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
         savedir = os.path.join(run_dir, "rerun_" + "_".join(suffix_parts))
         os.makedirs(savedir, exist_ok=True)
         print(f"[xp_seeds] writing rerun outputs to {savedir}")
+    if no_xp_videos:
+        label_cfg["EVAL_VIDEO_LOG_XP"] = False
+        print("[xp_seeds] --no-xp-videos: XP video rendering disabled")
     if xp_video_max_pairs is not None:
         # 0 or negative => render every off-diagonal pair (will be clipped to N*(N-1)/2 by
         # the slice in run_xp_from_params).
@@ -1243,6 +1247,9 @@ if __name__ == "__main__":
     parser.add_argument("--xp-video-all-pairs", action="store_true",
                         help="Convenience flag: render XP videos for every off-diagonal "
                              "pair. Equivalent to --xp-video-max-pairs 0.")
+    parser.add_argument("--no-xp-videos", action="store_true",
+                        help="Skip XP video rendering entirely (overrides "
+                             "EVAL_VIDEO_LOG_XP from the saved Hydra config).")
     args = parser.parse_args()
 
     if args.checkpoints:
@@ -1253,6 +1260,7 @@ if __name__ == "__main__":
         max_pairs = 0 if args.xp_video_all_pairs else args.xp_video_max_pairs
         run_xp_evaluation(args.task, args.checkpoint, greedy_eval=True,
                           use_best=args.use_best, drop_op=args.drop_op,
-                          xp_video_max_pairs=max_pairs)
+                          xp_video_max_pairs=max_pairs,
+                          no_xp_videos=args.no_xp_videos)
     else:
         parser.error("Either --checkpoint or --checkpoints is required")
