@@ -195,17 +195,6 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     first_match = (inv_0[act_0] == inv_1[act_1]).astype(jnp.float32)
     match_per_step = jnp.zeros(max_episode_steps, dtype=jnp.float32).at[0].set(first_match)
 
-    # Per-agent agent-frame deliberation vocab presence: 5-bit boolean array
-    # per agent, marking which raw policy-output tokens appeared in any
-    # deliberation message. Returned per-episode so the main loop can pool
-    # (OR) across episodes to get the agent's full repertoire when paired
-    # with a given partner — matching how action_distributions counts vocab.
-    # Agent-frame (NOT GT-frame), so a collapsed agent that always emits the
-    # same agent-frame token reads as vocab=1 even though OP recolouring
-    # spreads its emissions across all 5 GT tokens.
-    tokens_present_a0 = jnp.zeros(NUM_CARDS, dtype=jnp.bool_).at[act_0].set(True)
-    tokens_present_a1 = jnp.zeros(NUM_CARDS, dtype=jnp.bool_).at[act_1].set(True)
-
     both_actions = [act_0, act_1]
     env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
     env_act_onehot = {k: jax.nn.one_hot(both_actions[i], action_sizes[k])
@@ -259,7 +248,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                   prev_pca_0 if _ja_card else jnp.zeros(5),
                   prev_pca_1 if _ja_card else jnp.zeros(5),
                   card_jsd_sum, card_jsd_count,
-                  match_per_step, tokens_present_a0, tokens_present_a1)
+                  match_per_step)
 
     def scan_step(carry, _):
         def take_step(carry_step):
@@ -270,7 +259,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
              pe_a0, pe_c0, pe_a1, pe_c1,
              prev_pca_0, prev_pca_1,
              card_jsd_sum, card_jsd_count,
-             match_per_step, tokens_present_a0, tokens_present_a1) = carry_step
+             match_per_step) = carry_step
 
             avail_actions = env.get_avail_actions(env_state)
             avail_actions = jax.lax.stop_gradient(avail_actions)
@@ -358,24 +347,6 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             gt_a1_step = inv_1_step[act_1]
             step_match = (gt_a0_step == gt_a1_step).astype(jnp.float32)
             match_per_step_next = match_per_step.at[ep_ts].set(step_match)
-            # Vocab: only count this step if it's a deliberation message
-            # (every step except the very last one, which is the decision pick).
-            # Tokens are tracked in AGENT-FRAME (raw act_*), not GT, so a
-            # collapsed agent that always emits the same agent-frame token
-            # reads as vocab=1 even under OP recolouring.
-            is_deliberation = ep_ts < (max_episode_steps - 1)
-            new_tokens_a0 = jnp.zeros(NUM_CARDS, dtype=jnp.bool_).at[act_0].set(True)
-            new_tokens_a1 = jnp.zeros(NUM_CARDS, dtype=jnp.bool_).at[act_1].set(True)
-            tokens_present_a0_next = jnp.where(
-                is_deliberation,
-                tokens_present_a0 | new_tokens_a0,
-                tokens_present_a0,
-            )
-            tokens_present_a1_next = jnp.where(
-                is_deliberation,
-                tokens_present_a1 | new_tokens_a1,
-                tokens_present_a1,
-            )
 
             return (ep_ts + 1, env_state_next, obs_next, rng, done_next, reward, env_act_onehot,
                     hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next,
@@ -384,7 +355,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                     pe_a0, pe_c0, pe_a1, pe_c1,
                     next_pca_0, next_pca_1,
                     card_jsd_sum_next, card_jsd_count_next,
-                    match_per_step_next, tokens_present_a0_next, tokens_present_a1_next)
+                    match_per_step_next)
 
         (ep_ts, env_state, obs, rng, done, reward, act_onehot,
          hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
@@ -393,7 +364,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
          pe_a0, pe_c0, pe_a1, pe_c1,
          prev_pca_0, prev_pca_1,
          card_jsd_sum, card_jsd_count,
-         match_per_step, tokens_present_a0, tokens_present_a1) = carry
+         match_per_step) = carry
         new_carry = jax.lax.cond(
             done["__all__"],
             lambda curr_carry: curr_carry,
@@ -407,11 +378,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     mean_jsd = final_carry[10] / final_carry[11]
     mean_card_jsd = final_carry[24] / (final_carry[25] + 1e-8)
     match_per_step_out = final_carry[26]  # shape (max_episode_steps,)
-    # Return the per-episode 5-bit presence arrays (NOT a per-episode count).
-    # The main loop ORs them across episodes and sums to get pooled vocab.
-    tokens_a0_out = final_carry[27]  # shape (NUM_CARDS,) bool
-    tokens_a1_out = final_carry[28]  # shape (NUM_CARDS,) bool
-    return info, mean_jsd, mean_card_jsd, match_per_step_out, tokens_a0_out, tokens_a1_out
+    return info, mean_jsd, mean_card_jsd, match_per_step_out
 
 
 def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
@@ -431,10 +398,9 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
             greedy_eval=greedy_eval,
         )
     )
-    all_info, all_jsd, all_card_jsd, all_match, all_tokens_a0, all_tokens_a1 = vmap_fn(ep_rngs)
-    # all_jsd, all_card_jsd: (num_eps,); all_match: (num_eps, max_episode_steps);
-    # all_tokens_*: (num_eps, NUM_CARDS) bool — agent-frame presence per episode.
-    return all_info, all_jsd, all_card_jsd, all_match, all_tokens_a0, all_tokens_a1
+    all_info, all_jsd, all_card_jsd, all_match = vmap_fn(ep_rngs)
+    # all_jsd, all_card_jsd: (num_eps,); all_match: (num_eps, max_episode_steps).
+    return all_info, all_jsd, all_card_jsd, all_match
 
 
 def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
@@ -602,8 +568,7 @@ def _init_xp_wandb_run(algo_cfg: dict, task_name: str, run_dir: str, wb_prefix: 
 
 def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
                       task_name, run_dir, wb_run=None, wb_prefix="XP",
-                      card_jsd_matrix=None, match_per_step_matrix=None,
-                      vocab_a0_mean=None, vocab_a1_mean=None):
+                      card_jsd_matrix=None, match_per_step_matrix=None):
     """Log XP results to wandb. Creates a new run if `wb_run` is None.
 
     `jsd_matrix=None` skips all JSD-related logging (used for card-game runs
@@ -684,26 +649,6 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
                 wb_run.summary[f"{wb_prefix}/xp_step_match_t{t}_sem"] = float(xp_s_t)
             if os.path.exists(csv_path):
                 wandb.save(csv_path, base_path=xp_dir)
-
-    for vocab_ep, role_name in (
-        (vocab_a0_mean, "a0"), (vocab_a1_mean, "a1"),
-    ):
-        if vocab_ep is None:
-            continue
-        vocab_png = os.path.join(xp_dir, f"xp_vocab_{role_name}_matrix.png")
-        if os.path.exists(vocab_png):
-            wb_run.log(
-                {f"{wb_prefix}/vocab_{role_name}_matrix": wandb.Image(vocab_png)},
-                commit=False,
-            )
-            sp_vocab = float(np.diag(vocab_ep).mean())
-            xp_v_m, xp_v_s = xp_mean_and_sem(vocab_ep)
-            wb_run.summary[f"{wb_prefix}/sp_vocab_{role_name}"] = sp_vocab
-            wb_run.summary[f"{wb_prefix}/xp_vocab_{role_name}_mean"] = float(xp_v_m)
-            wb_run.summary[f"{wb_prefix}/xp_vocab_{role_name}_sem"] = float(xp_v_s)
-        vocab_csv = os.path.join(xp_dir, f"xp_vocab_{role_name}_matrix.csv")
-        if os.path.exists(vocab_csv):
-            wandb.save(vocab_csv, base_path=xp_dir)
 
     if created_run:
         wb_run.finish()
@@ -811,27 +756,16 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES, max_steps), dtype=np.float32)
         if track_step_match else None
     )
-    # Per-episode 5-bit token presence per agent. Pooled (OR'd) across
-    # episodes after the loop to get the agent's full repertoire per pair.
-    tokens_a0_presence = (
-        np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES, NUM_CARDS), dtype=bool)
-        if track_step_match else None
-    )
-    tokens_a1_presence = (
-        np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES, NUM_CARDS), dtype=bool)
-        if track_step_match else None
-    )
     start_time = time.time()
     for i in range(num_seeds):
         print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
-        (row_metrics, row_jsds, row_card_jsds, row_match_per_step,
-         row_tokens_a0, row_tokens_a1) = row_fn(outer_rngs[i], seed_params[i])
+        row_metrics, row_jsds, row_card_jsds, row_match_per_step = row_fn(
+            outer_rngs[i], seed_params[i],
+        )
         jsd_matrix[i] = np.array(row_jsds)
         card_jsd_matrix[i] = np.array(row_card_jsds)
         if track_step_match:
             match_per_step_matrix[i] = np.array(row_match_per_step)
-            tokens_a0_presence[i] = np.array(row_tokens_a0)
-            tokens_a1_presence[i] = np.array(row_tokens_a1)
         all_row_metrics.append(row_metrics)
 
         for j in range(num_seeds):
@@ -938,37 +872,6 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                 csv_path, label=f"step_match_t{t}",
             )
 
-    # Per-agent agent-frame deliberation vocab (card-game only): cell (i, j)
-    # of vocab_a0 = pooled vocab of seed_i (as A0) across episodes paired
-    # with seed_j (as A1) — i.e. number of distinct agent-frame tokens that
-    # seed_i ever emits in this pairing. Integer in [1, NUM_CARDS]. Matches
-    # what action_distributions reports per seed but resolved per partner.
-    vocab_a0_mean = vocab_a1_mean = None
-    if tokens_a0_presence is not None:
-        # Pool across episodes (OR) → (num_seeds, num_seeds, NUM_CARDS) bool.
-        vocab_a0_mean = tokens_a0_presence.any(axis=2).sum(axis=-1).astype(np.float32)
-    if tokens_a1_presence is not None:
-        vocab_a1_mean = tokens_a1_presence.any(axis=2).sum(axis=-1).astype(np.float32)
-    for vocab_mean, role_name in (
-        (vocab_a0_mean, "a0"), (vocab_a1_mean, "a1"),
-    ):
-        if vocab_mean is None:
-            continue
-        vocab_std = np.zeros_like(vocab_mean)
-        title_role = "A0" if role_name == "a0" else "A1"
-        save_xp_heatmap(
-            vocab_mean, vocab_std,
-            f"XP {title_role} agent-frame vocab (pooled) — {run_label}",
-            os.path.join(xp_dir, f"xp_vocab_{role_name}_matrix.png"),
-            fmt=".0f", cmap="YlGnBu",
-            vmin=1.0, vmax=float(NUM_CARDS),
-        )
-        save_xp_csv(
-            vocab_mean, vocab_std,
-            os.path.join(xp_dir, f"xp_vocab_{role_name}_matrix.csv"),
-            label=f"vocab_{role_name}",
-        )
-
     print(f"[xp_seeds] results saved to {xp_dir}")
 
     if env_name == "card-game":
@@ -1037,8 +940,6 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         algo_cfg, task_name, savedir, wb_run=wb_run, wb_prefix=wb_prefix,
         card_jsd_matrix=card_jsd_matrix if have_card_jsd else None,
         match_per_step_matrix=match_per_step_matrix,
-        vocab_a0_mean=vocab_a0_mean,
-        vocab_a1_mean=vocab_a1_mean,
     )
 
     if created_wb_run:
@@ -1300,8 +1201,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     start_time = time.time()
     for i in range(num_seeds):
         print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
-        (row_metrics, row_jsds, _row_card_jsds, _row_matches,
-         _row_tokens_a0, _row_tokens_a1) = row_fn(outer_rngs[i], seed_params[i])
+        row_metrics, row_jsds, _row_card_jsds, _row_matches = row_fn(outer_rngs[i], seed_params[i])
         jsd_matrix[i] = np.array(row_jsds)
         all_row_metrics.append(row_metrics)
         for j in range(num_seeds):
