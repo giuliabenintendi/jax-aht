@@ -197,35 +197,28 @@ def _merge(*dicts):
 
 
 def _plot(out_path: Path, dists, title: str):
-    """Plot per-agent action distributions: 2 rows (agents) x 4 cols (colour
-    breakdowns only — view-color and gt-color, for msg and pick). Position
-    breakdowns are intentionally omitted."""
-    fig, axes = plt.subplots(2, 4, figsize=(13, 5.5), sharey=True)
+    """Plot per-agent action distributions side-by-side: A0 | A1, single row.
+    Each panel shows the combined msg + pick distribution in view-color
+    (agent-frame). GT-frame and position breakdowns are intentionally
+    omitted; msg and pick are merged into one distribution per agent."""
+    fig, axes = plt.subplots(1, 2, figsize=(8, 3.5), sharey=True)
     rgb_card_colors = np.asarray(CARD_COLORS) / 255.0
-    col_titles = [
-        "msg by view-color", "msg by gt-color",
-        "pick by view-color", "pick by gt-color",
-    ]
-    var_for_col = [
-        ("msg", "view_color"), ("msg", "gt_color"),
-        ("pick", "view_color"), ("pick", "gt_color"),
-    ]
+    xs = np.arange(NUM_CARDS)
     for ai in (0, 1):
-        for ci, (atype, vtype) in enumerate(var_for_col):
-            ax = axes[ai, ci]
-            arr = dists[(ai, atype)][vtype]
-            h = _hist_norm(arr)
-            xs = np.arange(NUM_CARDS)
-            ax.bar(xs, h, color=rgb_card_colors, edgecolor="black", linewidth=0.4)
-            ax.set_ylim(0, 1.0)
-            ax.set_xticks(xs)
-            if ai == 0:
-                ax.set_title(col_titles[ci], fontsize=10)
-            if ci == 0:
-                ax.set_ylabel(f"agent_{ai}\nfraction", fontsize=10)
-            ax.text(0.98, 0.97, f"n={len(arr)}",
-                    transform=ax.transAxes, ha="right", va="top", fontsize=8)
-            ax.axhline(1.0 / NUM_CARDS, color="gray", linewidth=0.5, linestyle="--")
+        ax = axes[ai]
+        msg_arr = list(dists[(ai, "msg")]["view_color"])
+        pick_arr = list(dists[(ai, "pick")]["view_color"])
+        combined = msg_arr + pick_arr
+        h = _hist_norm(combined)
+        ax.bar(xs, h, color=rgb_card_colors, edgecolor="black", linewidth=0.4)
+        ax.set_ylim(0, 1.0)
+        ax.set_xticks(xs)
+        ax.set_title(f"agent_{ai}", fontsize=10)
+        if ai == 0:
+            ax.set_ylabel("fraction", fontsize=10)
+        ax.text(0.98, 0.97, f"n={len(combined)}",
+                transform=ax.transAxes, ha="right", va="top", fontsize=8)
+        ax.axhline(1.0 / NUM_CARDS, color="gray", linewidth=0.5, linestyle="--")
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, bbox_inches="tight")
