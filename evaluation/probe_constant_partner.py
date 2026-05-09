@@ -201,28 +201,30 @@ def main():
         static_argnums=(),
     )
 
-    matrix_mean = np.zeros((NUM_CARDS, num_seeds), dtype=np.float32)
-    matrix_std = np.zeros((NUM_CARDS, num_seeds), dtype=np.float32)
+    # Matrix layout: rows = focal seed, cols = card identity the scripted
+    # partner consistently signals. Cell = mean decision-success over eps.
+    matrix_mean = np.zeros((num_seeds, NUM_CARDS), dtype=np.float32)
+    matrix_std = np.zeros((num_seeds, NUM_CARDS), dtype=np.float32)
     base_rng = jax.random.PRNGKey(0)
     for s in range(num_seeds):
         seed_params = jax.tree.map(lambda x: x[s], stacked_params)
-        for t in range(NUM_CARDS):
-            cell_rng = jax.random.fold_in(base_rng, s * NUM_CARDS + t)
-            rewards = cell_fn(cell_rng, seed_params, jnp.int32(t))
+        for c in range(NUM_CARDS):
+            cell_rng = jax.random.fold_in(base_rng, s * NUM_CARDS + c)
+            rewards = cell_fn(cell_rng, seed_params, jnp.int32(c))
             rewards_np = np.asarray(rewards)
-            matrix_mean[t, s] = float(rewards_np.mean())
-            matrix_std[t, s] = float(rewards_np.std())
-            print(f"  seed {s:>2d} | T={t}: mean reward = {matrix_mean[t, s]:.3f} "
-                  f"(± {matrix_std[t, s]:.3f})")
+            matrix_mean[s, c] = float(rewards_np.mean())
+            matrix_std[s, c] = float(rewards_np.std())
+            print(f"  seed {s:>2d} | card={c}: mean reward = {matrix_mean[s, c]:.3f} "
+                  f"(± {matrix_std[s, c]:.3f})")
 
     png_path = out_dir / "probe_constant_partner_matrix.png"
     csv_path = out_dir / "probe_constant_partner_matrix.csv"
     _save_matrix_png(
-        matrix_mean, matrix_std, NUM_CARDS, num_seeds,
-        title="Decision-success vs constant-T partner (no OP, shuffle on)",
+        matrix_mean, matrix_std, num_seeds, NUM_CARDS,
+        title="Decision-success vs constant-card partner (no OP, shuffle on)",
         filepath=str(png_path),
     )
-    _save_matrix_csv(matrix_mean, matrix_std, num_seeds, str(csv_path))
+    _save_matrix_csv(matrix_mean, matrix_std, NUM_CARDS, str(csv_path))
     print(f"\nDone. Matrix saved to {png_path}")
 
 
@@ -238,10 +240,10 @@ def _save_matrix_png(matrix_mean, matrix_std, n_rows: int, n_cols: int,
             ax.text(j, i, text, ha="center", va="center", fontsize=8, color=color)
     ax.set_xticks(range(n_cols))
     ax.set_yticks(range(n_rows))
-    ax.set_xticklabels([f"seed_{j}" for j in range(n_cols)], fontsize=9, rotation=0)
-    ax.set_yticklabels([f"T={i}" for i in range(n_rows)], fontsize=9)
-    ax.set_xlabel("Focal seed (A0)")
-    ax.set_ylabel("Scripted partner emits T")
+    ax.set_xticklabels([f"card_{j}" for j in range(n_cols)], fontsize=9, rotation=0)
+    ax.set_yticklabels([f"seed_{i}" for i in range(n_rows)], fontsize=9)
+    ax.set_xlabel("Scripted partner constantly emits card")
+    ax.set_ylabel("Focal seed (A0)")
     ax.set_title(title, fontsize=11)
     fig.colorbar(im, ax=ax, shrink=0.8)
     fig.tight_layout()
@@ -253,14 +255,14 @@ def _save_matrix_png(matrix_mean, matrix_std, n_rows: int, n_cols: int,
 def _save_matrix_csv(matrix_mean, matrix_std, n_cols: int, filepath: str):
     with open(filepath, "w", newline="") as f:
         w = csv.writer(f)
-        header = ["T \\ seed"] + [f"seed_{j}" for j in range(n_cols)]
-        w.writerow([h + "_mean" for h in header[:1]] + header[1:])
+        header = ["seed \\ card"] + [f"card_{j}" for j in range(n_cols)]
+        w.writerow([header[0] + "_mean"] + header[1:])
         for i in range(matrix_mean.shape[0]):
-            w.writerow([f"T={i}"] + [f"{matrix_mean[i, j]:.4f}" for j in range(n_cols)])
+            w.writerow([f"seed_{i}"] + [f"{matrix_mean[i, j]:.4f}" for j in range(n_cols)])
         w.writerow([])
-        w.writerow([h + "_std" for h in header[:1]] + header[1:])
+        w.writerow([header[0] + "_std"] + header[1:])
         for i in range(matrix_std.shape[0]):
-            w.writerow([f"T={i}"] + [f"{matrix_std[i, j]:.4f}" for j in range(n_cols)])
+            w.writerow([f"seed_{i}"] + [f"{matrix_std[i, j]:.4f}" for j in range(n_cols)])
     print(f"[probe] CSV saved: {filepath}")
 
 
