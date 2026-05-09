@@ -136,6 +136,99 @@ def _run_probe_cell(rng, env, focal_params, focal_policy, scripted_token,
     return vmap_fn(rngs)
 
 
+def _sample_from_mask(rng, allowed_mask):
+    """Sample an action uniformly from indices where allowed_mask is True."""
+    probs = allowed_mask.astype(jnp.float32)
+    probs = probs / probs.sum()
+    return jax.random.choice(rng, NUM_CARDS, p=probs).astype(jnp.int32)
+
+
+def _run_probe_masked_episode(rng, env, focal_params, focal_policy,
+                               allowed_mask, max_episode_steps, action_sizes):
+    """One probe episode where the scripted partner samples uniformly from
+    `allowed_mask` (a (NUM_CARDS,) bool array) at every step. Returns the
+    binary decision-success indicator from the env."""
+    rng, reset_rng = jax.random.split(rng)
+    init_obs, init_env_state = env.reset(reset_rng)
+    init_done = {k: jnp.zeros((1,), dtype=bool) for k in env.agents + ["__all__"]}
+
+    hstate_0 = focal_policy.init_hstate(1, aux_info={"agent_id": 0})
+
+    avail_actions = env.get_avail_actions(init_env_state)
+    avail_actions = jax.lax.stop_gradient(avail_actions)
+    avail_0 = avail_actions["agent_0"].astype(jnp.float32)
+
+    rng, act0_rng, sample_rng, step_rng = jax.random.split(rng, 4)
+    act_0, hstate_0 = focal_policy.get_action(
+        params=focal_params,
+        obs=init_obs["agent_0"].reshape(1, 1, -1),
+        done=init_done["agent_0"].reshape(1, 1),
+        avail_actions=avail_0,
+        hstate=hstate_0,
+        rng=act0_rng,
+        greedy=True,
+    )
+    act_0 = act_0.squeeze()
+    act_1 = _sample_from_mask(sample_rng, allowed_mask)
+    env_act = {"agent_0": act_0, "agent_1": act_1}
+    obs, env_state, reward, done, info = env.step(step_rng, init_env_state, env_act)
+
+    def scan_step(carry, _):
+        ep_ts, env_state, obs, hstate_0, done, last_info, rng = carry
+
+        def take_step(c):
+            ep_ts, env_state, obs, hstate_0, done, last_info, rng = c
+            avail = env.get_avail_actions(env_state)
+            avail = jax.lax.stop_gradient(avail)
+            avail_0 = avail["agent_0"].astype(jnp.float32)
+
+            rng, act0_rng, sample_rng, step_rng = jax.random.split(rng, 4)
+            act_0, hstate_0_next = focal_policy.get_action(
+                params=focal_params,
+                obs=obs["agent_0"].reshape(1, 1, -1),
+                done=done["agent_0"].reshape(1, 1),
+                avail_actions=avail_0,
+                hstate=hstate_0,
+                rng=act0_rng,
+                greedy=True,
+            )
+            act_0 = act_0.squeeze()
+            act_1 = _sample_from_mask(sample_rng, allowed_mask)
+            env_act = {"agent_0": act_0, "agent_1": act_1}
+            obs_next, env_state_next, _r, done_next, info_next = env.step(
+                step_rng, env_state, env_act,
+            )
+            return (ep_ts + 1, env_state_next, obs_next, hstate_0_next,
+                    done_next, info_next, rng)
+
+        new_carry = jax.lax.cond(
+            carry[4]["__all__"],
+            lambda c: c,
+            take_step,
+            operand=carry,
+        )
+        return new_carry, None
+
+    init_carry = (1, env_state, obs, hstate_0, done, info, rng)
+    final_carry, _ = jax.lax.scan(
+        scan_step, init_carry, None, length=max_episode_steps,
+    )
+    final_info = final_carry[5]
+    return final_info["base_return"][0]
+
+
+def _run_probe_masked_cell(rng, env, focal_params, focal_policy, allowed_mask,
+                            max_episode_steps, num_eps, action_sizes):
+    rngs = jax.random.split(rng, num_eps)
+    vmap_fn = jax.vmap(
+        lambda r: _run_probe_masked_episode(
+            r, env, focal_params, focal_policy, allowed_mask,
+            max_episode_steps, action_sizes,
+        )
+    )
+    return vmap_fn(rngs)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
@@ -143,6 +236,11 @@ def main():
     parser.add_argument("--output-dir", default=None,
                         help="Defaults to <run_dir>/probe_constant_partner/")
     parser.add_argument("--use-best", action="store_true")
+    parser.add_argument("--vocab-threshold", type=float, default=0.5,
+                        help="Reward threshold for inclusion in a seed's vocabulary "
+                             "(used to derive the non-vocab mask for the masked-partner pass).")
+    parser.add_argument("--skip-masked", action="store_true",
+                        help="Skip the masked-partner pass; only run the constant-partner matrix.")
     args = parser.parse_args()
 
     ckpt_path = Path(args.checkpoint).resolve()
@@ -224,7 +322,52 @@ def main():
         filepath=str(png_path),
     )
     _save_matrix_csv(matrix_mean, matrix_std, num_seeds, str(csv_path))
-    print(f"\nDone. Matrix saved to {png_path}")
+    print(f"\nMatrix saved to {png_path}")
+
+    if args.skip_masked:
+        return
+
+    # Masked-partner pass: per seed, partner samples each step uniformly from
+    # cards NOT in the seed's vocabulary (vocab = cards where the constant-T
+    # cell exceeded --vocab-threshold). Tests how the seed responds when
+    # forced to coordinate on cards it can't pick at decision step.
+    print(f"\n[probe] masked-partner pass (vocab threshold={args.vocab_threshold})")
+    in_vocab = matrix_mean > args.vocab_threshold  # (NUM_CARDS, num_seeds)
+    masked_cell_fn = jax.jit(
+        lambda rng_c, p, mask: _run_probe_masked_cell(
+            rng_c, inner_env, p, policy, mask,
+            max_steps, args.num_episodes, action_sizes,
+        ),
+        static_argnums=(),
+    )
+
+    masked_mean = np.full(num_seeds, np.nan, dtype=np.float32)
+    masked_std = np.full(num_seeds, np.nan, dtype=np.float32)
+    masked_vocab_size = np.zeros(num_seeds, dtype=np.int32)
+    for s in range(num_seeds):
+        seed_vocab = in_vocab[:, s]
+        non_vocab_count = int((~seed_vocab).sum())
+        masked_vocab_size[s] = int(seed_vocab.sum())
+        if non_vocab_count == 0:
+            print(f"  seed {s:>2d}: full vocab (no non-vocab cards) → skipping")
+            continue
+        allowed = jnp.asarray(~seed_vocab, dtype=jnp.bool_)
+        seed_params = jax.tree.map(lambda x: x[s], stacked_params)
+        cell_rng = jax.random.fold_in(base_rng, num_seeds * NUM_CARDS + s)
+        rewards = masked_cell_fn(cell_rng, seed_params, allowed)
+        rewards_np = np.asarray(rewards)
+        masked_mean[s] = float(rewards_np.mean())
+        masked_std[s] = float(rewards_np.std())
+        non_vocab_cards = [int(c) for c in range(NUM_CARDS) if not seed_vocab[c]]
+        print(f"  seed {s:>2d} | vocab={[int(c) for c in range(NUM_CARDS) if seed_vocab[c]]} "
+              f"| partner samples from {non_vocab_cards}: "
+              f"reward = {masked_mean[s]:.3f} (± {masked_std[s]:.3f})")
+
+    masked_png = out_dir / "probe_masked_partner.png"
+    masked_csv = out_dir / "probe_masked_partner.csv"
+    _save_masked_png(masked_mean, masked_std, masked_vocab_size, str(masked_png))
+    _save_masked_csv(masked_mean, masked_std, masked_vocab_size, str(masked_csv))
+    print(f"\nMasked-partner result saved to {masked_png}")
 
 
 def _save_matrix_png(matrix_mean, matrix_std, n_rows: int, n_cols: int,
@@ -262,6 +405,50 @@ def _save_matrix_csv(matrix_mean, matrix_std, n_cols: int, filepath: str):
         for i in range(matrix_std.shape[0]):
             w.writerow([f"card_{i}"] + [f"{matrix_std[i, j]:.4f}" for j in range(n_cols)])
     print(f"[probe] CSV saved: {filepath}")
+
+
+def _save_masked_png(reward_mean, reward_std, vocab_size, filepath: str):
+    n = reward_mean.shape[0]
+    fig, ax = plt.subplots(figsize=(1.5 + n * 0.6, 3.5))
+    xs = np.arange(n)
+    valid = ~np.isnan(reward_mean)
+    bars = ax.bar(xs, np.where(valid, reward_mean, 0.0),
+                   yerr=np.where(valid, reward_std, 0.0),
+                   color="steelblue", edgecolor="black", linewidth=0.5,
+                   capsize=2)
+    for i, (m, v) in enumerate(zip(reward_mean, vocab_size)):
+        if np.isnan(m):
+            ax.text(i, 0.02, "full\nvocab", ha="center", va="bottom",
+                    fontsize=7, color="gray")
+        else:
+            ax.text(i, max(m, 0) + 0.02, f"{m:.2f}", ha="center", va="bottom",
+                    fontsize=8)
+            ax.text(i, -0.06, f"|V|={v}", ha="center", va="top",
+                    fontsize=7, color="gray")
+    ax.set_xticks(xs)
+    ax.set_xticklabels([f"s{i}" for i in range(n)], fontsize=9)
+    ax.set_ylabel("Mean decision-success reward")
+    ax.set_xlabel("Seed")
+    ax.set_ylim(-0.1, 1.1)
+    ax.axhline(0, color="black", linewidth=0.5)
+    fig.tight_layout()
+    fig.savefig(filepath, dpi=150)
+    plt.close(fig)
+    print(f"[probe] masked bar chart saved: {filepath}")
+
+
+def _save_masked_csv(reward_mean, reward_std, vocab_size, filepath: str):
+    with open(filepath, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["seed", "vocab_size", "reward_mean", "reward_std"])
+        for i in range(reward_mean.shape[0]):
+            w.writerow([
+                f"seed_{i}",
+                int(vocab_size[i]),
+                f"{reward_mean[i]:.4f}" if not np.isnan(reward_mean[i]) else "NA",
+                f"{reward_std[i]:.4f}" if not np.isnan(reward_std[i]) else "NA",
+            ])
+    print(f"[probe] masked CSV saved: {filepath}")
 
 
 if __name__ == "__main__":
