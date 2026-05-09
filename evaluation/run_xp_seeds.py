@@ -397,7 +397,8 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
         )
     )
     all_info, all_jsd, all_card_jsd, all_match = vmap_fn(ep_rngs)
-    return all_info, all_jsd, all_card_jsd, all_match  # arrays shape: (num_eps,)
+    # all_jsd and all_card_jsd: (num_eps,); all_match: (num_eps, max_episode_steps).
+    return all_info, all_jsd, all_card_jsd, all_match
 
 
 def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
@@ -744,11 +745,14 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     all_row_metrics = []
     jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
     card_jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
-    # Per-step token match: shape (num_seeds, num_seeds, num_eps, max_steps).
-    # Aggregated to one (i, j) matrix per step, with step max_steps-1 being
-    # the decision pick (= same signal as the score matrix).
-    match_per_step_matrix = np.zeros(
-        (num_seeds, num_seeds, NUM_EVAL_EPISODES, max_steps), dtype=np.float32,
+    # Per-step token match is card-game-specific (each scan step is a message
+    # or the decision pick); for primitive-action envs the metric is not
+    # meaningful and would explode (e.g. Overcooked max_steps=400 → 400
+    # heatmaps). Allocate only for card-game.
+    track_step_match = (env_name == "card-game")
+    match_per_step_matrix = (
+        np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES, max_steps), dtype=np.float32)
+        if track_step_match else None
     )
     start_time = time.time()
     for i in range(num_seeds):
@@ -756,7 +760,8 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         row_metrics, row_jsds, row_card_jsds, row_match_per_step = row_fn(outer_rngs[i], seed_params[i])
         jsd_matrix[i] = np.array(row_jsds)
         card_jsd_matrix[i] = np.array(row_card_jsds)
-        match_per_step_matrix[i] = np.array(row_match_per_step)
+        if track_step_match:
+            match_per_step_matrix[i] = np.array(row_match_per_step)
         all_row_metrics.append(row_metrics)
 
         for j in range(num_seeds):
@@ -852,32 +857,30 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     # decision pick — that matrix should agree with the score matrix.
     # Earlier steps (0..max_steps-2) are deliberation messages and reveal
     # how quickly each pair converges on a shared protocol.
-    n_steps = match_per_step_matrix.shape[-1]
-    match_mean_steps = match_per_step_matrix.mean(axis=2)  # (S, S, max_steps)
-    match_std_steps = match_per_step_matrix.std(axis=2)    # (S, S, max_steps)
-    match_paths = []
-    for t in range(n_steps):
-        is_decision = (t == n_steps - 1)
-        title = (
-            f"XP Decision pick-match (step {t}) — {run_label}"
-            if is_decision
-            else f"XP Message-match step {t} — {run_label}"
-        )
-        for d in (xp_dir, central_xp_dir):
-            prefix = "" if d == xp_dir else f"{beta_prefix}_"
-            png_path = os.path.join(d, f"{prefix}xp_step_match_t{t}.png")
-            csv_path = os.path.join(d, f"{prefix}xp_step_match_t{t}.csv")
-            save_xp_heatmap(
-                match_mean_steps[:, :, t], match_std_steps[:, :, t],
-                title, png_path,
-                fmt=".3f", cmap="YlOrRd", vmin=0.0, vmax=1.0,
+    if match_per_step_matrix is not None:
+        n_steps = match_per_step_matrix.shape[-1]
+        match_mean_steps = match_per_step_matrix.mean(axis=2)  # (S, S, max_steps)
+        match_std_steps = match_per_step_matrix.std(axis=2)    # (S, S, max_steps)
+        for t in range(n_steps):
+            is_decision = (t == n_steps - 1)
+            title = (
+                f"XP Decision pick-match (step {t}) — {run_label}"
+                if is_decision
+                else f"XP Message-match step {t} — {run_label}"
             )
-            save_xp_csv(
-                match_mean_steps[:, :, t], match_std_steps[:, :, t],
-                csv_path, label=f"step_match_t{t}",
-            )
-            if d == xp_dir:
-                match_paths.append(png_path)
+            for d in (xp_dir, central_xp_dir):
+                prefix = "" if d == xp_dir else f"{beta_prefix}_"
+                png_path = os.path.join(d, f"{prefix}xp_step_match_t{t}.png")
+                csv_path = os.path.join(d, f"{prefix}xp_step_match_t{t}.csv")
+                save_xp_heatmap(
+                    match_mean_steps[:, :, t], match_std_steps[:, :, t],
+                    title, png_path,
+                    fmt=".3f", cmap="YlOrRd", vmin=0.0, vmax=1.0,
+                )
+                save_xp_csv(
+                    match_mean_steps[:, :, t], match_std_steps[:, :, t],
+                    csv_path, label=f"step_match_t{t}",
+                )
 
     print(f"[xp_seeds] results saved to {xp_dir} and {central_xp_dir}")
 
