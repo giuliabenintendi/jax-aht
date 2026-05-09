@@ -68,6 +68,22 @@ def _get_card_game_position_perm(state, agent_name: str):
     return jnp.arange(NUM_CARDS, dtype=jnp.int32)
 
 
+def _get_card_game_inv_recolouring(state, agent_name: str):
+    """Return per-agent OP inverse-recolouring perm, or identity when off.
+
+    Used to map an agent's raw policy action (in its recoloured colour
+    space) back to GT colour space before comparing with the partner's
+    action. This matches what `CardGameRecolouringWrapper._invert_actions`
+    does to actions before they reach the inner env.
+    """
+    s = state
+    while s is not None:
+        if hasattr(s, "per_agent_inv_recolouring"):
+            return s.per_agent_inv_recolouring[agent_name]
+        s = getattr(s, "env_state", None)
+    return jnp.arange(NUM_CARDS, dtype=jnp.int32)
+
+
 def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 agent_1_param, agent_1_policy,
                                 max_episode_steps, action_sizes,
@@ -167,6 +183,17 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     jsd_sum = step_jsd
     jsd_count = jnp.array(1.0)
 
+    # Per-step token-match accumulator: counts steps where the two agents'
+    # actions agree in GT colour space (deliberation messages + decision
+    # pick). Under CardGameRecolouringWrapper each agent emits in its own
+    # recoloured space, so we apply the per-agent inverse-recolouring before
+    # comparison — same transform the wrapper does to actions before reaching
+    # the inner env. Mean over the episode gives the step-match rate in [0, 1].
+    inv_0 = _get_card_game_inv_recolouring(init_env_state, "agent_0")
+    inv_1 = _get_card_game_inv_recolouring(init_env_state, "agent_1")
+    match_sum = (inv_0[act_0] == inv_1[act_1]).astype(jnp.float32)
+    match_count = jnp.float32(1.0)
+
     both_actions = [act_0, act_1]
     env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
     env_act_onehot = {k: jax.nn.one_hot(both_actions[i], action_sizes[k])
@@ -219,7 +246,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                   pe_a0, pe_c0, pe_a1, pe_c1,
                   prev_pca_0 if _ja_card else jnp.zeros(5),
                   prev_pca_1 if _ja_card else jnp.zeros(5),
-                  card_jsd_sum, card_jsd_count)
+                  card_jsd_sum, card_jsd_count,
+                  match_sum, match_count)
 
     def scan_step(carry, _):
         def take_step(carry_step):
@@ -229,7 +257,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
              prev_a0, prev_a1,
              pe_a0, pe_c0, pe_a1, pe_c1,
              prev_pca_0, prev_pca_1,
-             card_jsd_sum, card_jsd_count) = carry_step
+             card_jsd_sum, card_jsd_count,
+             match_sum, match_count) = carry_step
 
             avail_actions = env.get_avail_actions(env_state)
             avail_actions = jax.lax.stop_gradient(avail_actions)
@@ -311,13 +340,21 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 card_jsd_sum_next = card_jsd_sum
                 card_jsd_count_next = card_jsd_count
 
+            inv_0_step = _get_card_game_inv_recolouring(env_state, "agent_0")
+            inv_1_step = _get_card_game_inv_recolouring(env_state, "agent_1")
+            match_sum_next = match_sum + (
+                inv_0_step[act_0] == inv_1_step[act_1]
+            ).astype(jnp.float32)
+            match_count_next = match_count + 1.0
+
             return (ep_ts + 1, env_state_next, obs_next, rng, done_next, reward, env_act_onehot,
                     hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next,
                     next_prev_reward_0, next_prev_reward_1, next_prev_action_0, next_prev_action_1,
                     attn_0.squeeze(), attn_1.squeeze(),
                     pe_a0, pe_c0, pe_a1, pe_c1,
                     next_pca_0, next_pca_1,
-                    card_jsd_sum_next, card_jsd_count_next)
+                    card_jsd_sum_next, card_jsd_count_next,
+                    match_sum_next, match_count_next)
 
         (ep_ts, env_state, obs, rng, done, reward, act_onehot,
          hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
@@ -325,7 +362,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
          prev_a0, prev_a1,
          pe_a0, pe_c0, pe_a1, pe_c1,
          prev_pca_0, prev_pca_1,
-         card_jsd_sum, card_jsd_count) = carry
+         card_jsd_sum, card_jsd_count,
+         match_sum, match_count) = carry
         new_carry = jax.lax.cond(
             done["__all__"],
             lambda curr_carry: curr_carry,
@@ -338,7 +376,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     info = final_carry[9]
     mean_jsd = final_carry[10] / final_carry[11]
     mean_card_jsd = final_carry[24] / (final_carry[25] + 1e-8)
-    return info, mean_jsd, mean_card_jsd
+    mean_match = final_carry[26] / (final_carry[27] + 1e-8)
+    return info, mean_jsd, mean_card_jsd, mean_match
 
 
 def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
@@ -358,8 +397,8 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
             greedy_eval=greedy_eval,
         )
     )
-    all_info, all_jsd, all_card_jsd = vmap_fn(ep_rngs)
-    return all_info, all_jsd, all_card_jsd  # both jsd arrays shape: (num_eps,)
+    all_info, all_jsd, all_card_jsd, all_match = vmap_fn(ep_rngs)
+    return all_info, all_jsd, all_card_jsd, all_match  # arrays shape: (num_eps,)
 
 
 def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
@@ -527,7 +566,7 @@ def _init_xp_wandb_run(algo_cfg: dict, task_name: str, run_dir: str, wb_prefix: 
 
 def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
                       task_name, run_dir, wb_run=None, wb_prefix="XP",
-                      card_jsd_matrix=None):
+                      card_jsd_matrix=None, match_matrix=None):
     """Log XP results to wandb. Creates a new run if `wb_run` is None.
 
     `jsd_matrix=None` skips all JSD-related logging (used for card-game runs
@@ -589,6 +628,23 @@ def _log_xp_to_wandb(jsd_matrix, score_mean, xp_dir, algo_cfg,
         card_jsd_csv = os.path.join(xp_dir, "xp_card_jsd_matrix.csv")
         if os.path.exists(card_jsd_csv):
             wandb.save(card_jsd_csv, base_path=xp_dir)
+
+    if match_matrix is not None:
+        match_png = os.path.join(xp_dir, "xp_step_match_matrix.png")
+        if os.path.exists(match_png):
+            wb_run.log(
+                {f"{wb_prefix}/step_match_matrix": wandb.Image(match_png)},
+                commit=False,
+            )
+            match_ep = match_matrix.mean(axis=-1)
+            sp_match = np.diag(match_ep).mean()
+            xp_match_m, xp_match_s = xp_mean_and_sem(match_ep)
+            wb_run.summary[f"{wb_prefix}/sp_step_match"] = float(sp_match)
+            wb_run.summary[f"{wb_prefix}/xp_step_match_mean"] = float(xp_match_m)
+            wb_run.summary[f"{wb_prefix}/xp_step_match_sem"] = float(xp_match_s)
+        match_csv = os.path.join(xp_dir, "xp_step_match_matrix.csv")
+        if os.path.exists(match_csv):
+            wandb.save(match_csv, base_path=xp_dir)
 
     if created_run:
         wb_run.finish()
@@ -687,22 +743,26 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     all_row_metrics = []
     jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
     card_jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
+    match_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
     start_time = time.time()
     for i in range(num_seeds):
         print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
-        row_metrics, row_jsds, row_card_jsds = row_fn(outer_rngs[i], seed_params[i])
+        row_metrics, row_jsds, row_card_jsds, row_matches = row_fn(outer_rngs[i], seed_params[i])
         jsd_matrix[i] = np.array(row_jsds)
         card_jsd_matrix[i] = np.array(row_card_jsds)
+        match_matrix[i] = np.array(row_matches)
         all_row_metrics.append(row_metrics)
 
         for j in range(num_seeds):
             ret = np.array(row_metrics["returned_episode_returns"][j]).mean()
             jsd_mean = float(row_jsds[j].mean())
             cjsd_mean = float(row_card_jsds[j].mean())
+            match_mean = float(row_matches[j].mean())
             label = "SP" if i == j else "XP"
             print(
                 f"  [{label}] {i}x{j}: return={ret:.2f} "
-                f"jsd={jsd_mean:.4f} card_jsd={cjsd_mean:.4f}",
+                f"jsd={jsd_mean:.4f} card_jsd={cjsd_mean:.4f} "
+                f"step_match={match_mean:.3f}",
                 end="",
             )
         print()
@@ -737,11 +797,16 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         score_data = np.array(xp_metrics["base_return"]).mean(axis=-1)
         score_mean = score_data.mean(axis=-1)
         score_std = score_data.std(axis=-1)
+        # base_return is the binary decision-success indicator, so the cell
+        # value is a success rate in [0, 1]. Pin the colour scale so cells
+        # that fall in a narrow range (e.g. all ~0.2) don't get rainbow-stretched.
+        score_vmin, score_vmax = (0.0, 1.0) if is_card_game else (None, None)
         for d in (xp_dir, central_xp_dir):
             prefix = "" if d == xp_dir else f"{beta_prefix}_"
             save_xp_heatmap(score_mean, score_std,
                              f"XP Episode Return — {run_label}",
-                             os.path.join(d, f"{prefix}xp_score_matrix.png"))
+                             os.path.join(d, f"{prefix}xp_score_matrix.png"),
+                             vmin=score_vmin, vmax=score_vmax)
             save_xp_csv(score_mean, score_std,
                          os.path.join(d, f"{prefix}xp_score_matrix.csv"), label="episode_return")
 
@@ -777,6 +842,25 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                 os.path.join(d, f"{prefix}xp_card_jsd_matrix.csv"),
                 label="card_jsd",
             )
+
+    # Step-match matrix: per-step rate of act_0 == act_1 across the whole
+    # episode (deliberation messages + decision pick), in [0, 1]. Captures
+    # coordination *during* deliberation, not just the final decision.
+    match_mean = match_matrix.mean(axis=-1)
+    match_std = match_matrix.std(axis=-1)
+    for d in (xp_dir, central_xp_dir):
+        prefix = "" if d == xp_dir else f"{beta_prefix}_"
+        save_xp_heatmap(
+            match_mean, match_std,
+            f"XP Step-match rate — {run_label}",
+            os.path.join(d, f"{prefix}xp_step_match_matrix.png"),
+            fmt=".3f", cmap="YlOrRd", vmin=0.0, vmax=1.0,
+        )
+        save_xp_csv(
+            match_mean, match_std,
+            os.path.join(d, f"{prefix}xp_step_match_matrix.csv"),
+            label="step_match",
+        )
 
     print(f"[xp_seeds] results saved to {xp_dir} and {central_xp_dir}")
 
@@ -845,6 +929,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         None if is_card_game else jsd_matrix, score_mean, xp_dir,
         algo_cfg, task_name, savedir, wb_run=wb_run, wb_prefix=wb_prefix,
         card_jsd_matrix=card_jsd_matrix if have_card_jsd else None,
+        match_matrix=match_matrix,
     )
 
     if created_wb_run:
@@ -1102,7 +1187,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     start_time = time.time()
     for i in range(num_seeds):
         print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
-        row_metrics, row_jsds, _row_card_jsds = row_fn(outer_rngs[i], seed_params[i])
+        row_metrics, row_jsds, _row_card_jsds, _row_matches = row_fn(outer_rngs[i], seed_params[i])
         jsd_matrix[i] = np.array(row_jsds)
         all_row_metrics.append(row_metrics)
         for j in range(num_seeds):
