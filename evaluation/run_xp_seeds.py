@@ -861,14 +861,8 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                            None if is_card_game else jsd_matrix, num_seeds)
 
     # Save heatmaps and CSVs
-    beta = algo_cfg.get("JA_BETA_MAX", "unknown")
-    beta_prefix = f"BETA{beta}"
-
     xp_dir = os.path.join(savedir, "xp_results")
     os.makedirs(xp_dir, exist_ok=True)
-
-    central_xp_dir = os.path.join(savedir, "..", "xp_results")
-    os.makedirs(central_xp_dir, exist_ok=True)
 
     score_mean = score_std = None
     if "base_return" in xp_metrics:
@@ -879,26 +873,22 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         # value is a success rate in [0, 1]. Pin the colour scale so cells
         # that fall in a narrow range (e.g. all ~0.2) don't get rainbow-stretched.
         score_vmin, score_vmax = (0.0, 1.0) if is_card_game else (None, None)
-        for d in (xp_dir, central_xp_dir):
-            prefix = "" if d == xp_dir else f"{beta_prefix}_"
-            save_xp_heatmap(score_mean, score_std,
-                             f"XP Episode Return — {run_label}",
-                             os.path.join(d, f"{prefix}xp_score_matrix.png"),
-                             vmin=score_vmin, vmax=score_vmax)
-            save_xp_csv(score_mean, score_std,
-                         os.path.join(d, f"{prefix}xp_score_matrix.csv"), label="episode_return")
+        save_xp_heatmap(score_mean, score_std,
+                         f"XP Episode Return — {run_label}",
+                         os.path.join(xp_dir, "xp_score_matrix.png"),
+                         vmin=score_vmin, vmax=score_vmax)
+        save_xp_csv(score_mean, score_std,
+                     os.path.join(xp_dir, "xp_score_matrix.csv"), label="episode_return")
 
     if not is_card_game:
         jsd_mean = jsd_matrix.mean(axis=-1)
         jsd_std = jsd_matrix.std(axis=-1)
-        for d in (xp_dir, central_xp_dir):
-            prefix = "" if d == xp_dir else f"{beta_prefix}_"
-            save_xp_heatmap(jsd_mean, jsd_std,
-                             f"XP JSD — {run_label}",
-                             os.path.join(d, f"{prefix}xp_jsd_matrix.png"),
-                             fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
-            save_xp_csv(jsd_mean, jsd_std,
-                         os.path.join(d, f"{prefix}xp_jsd_matrix.csv"), label="jsd")
+        save_xp_heatmap(jsd_mean, jsd_std,
+                         f"XP JSD — {run_label}",
+                         os.path.join(xp_dir, "xp_jsd_matrix.png"),
+                         fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
+        save_xp_csv(jsd_mean, jsd_std,
+                     os.path.join(xp_dir, "xp_jsd_matrix.csv"), label="jsd")
 
     # OP-corrected card-level JSD matrix (card-game only; meaningful when
     # JA_CARD_METRIC or JA_CARD_ATTN was on at training time).
@@ -907,19 +897,17 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     if have_card_jsd:
         card_jsd_mean = card_jsd_matrix.mean(axis=-1)
         card_jsd_std = card_jsd_matrix.std(axis=-1)
-        for d in (xp_dir, central_xp_dir):
-            prefix = "" if d == xp_dir else f"{beta_prefix}_"
-            save_xp_heatmap(
-                card_jsd_mean, card_jsd_std,
-                f"XP Card JSD — {run_label}",
-                os.path.join(d, f"{prefix}xp_card_jsd_matrix.png"),
-                fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693,
-            )
-            save_xp_csv(
-                card_jsd_mean, card_jsd_std,
-                os.path.join(d, f"{prefix}xp_card_jsd_matrix.csv"),
-                label="card_jsd",
-            )
+        save_xp_heatmap(
+            card_jsd_mean, card_jsd_std,
+            f"XP Card JSD — {run_label}",
+            os.path.join(xp_dir, "xp_card_jsd_matrix.png"),
+            fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693,
+        )
+        save_xp_csv(
+            card_jsd_mean, card_jsd_std,
+            os.path.join(xp_dir, "xp_card_jsd_matrix.csv"),
+            label="card_jsd",
+        )
 
     # Per-step token-match matrices: one (i, j) heatmap per scan step,
     # showing GT-frame agreement at that step. Step max_steps-1 is the
@@ -937,19 +925,17 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                 if is_decision
                 else f"XP Message-match step {t} — {run_label}"
             )
-            for d in (xp_dir, central_xp_dir):
-                prefix = "" if d == xp_dir else f"{beta_prefix}_"
-                png_path = os.path.join(d, f"{prefix}xp_step_match_t{t}.png")
-                csv_path = os.path.join(d, f"{prefix}xp_step_match_t{t}.csv")
-                save_xp_heatmap(
-                    match_mean_steps[:, :, t], match_std_steps[:, :, t],
-                    title, png_path,
-                    fmt=".3f", cmap="YlOrRd", vmin=0.0, vmax=1.0,
-                )
-                save_xp_csv(
-                    match_mean_steps[:, :, t], match_std_steps[:, :, t],
-                    csv_path, label=f"step_match_t{t}",
-                )
+            png_path = os.path.join(xp_dir, f"xp_step_match_t{t}.png")
+            csv_path = os.path.join(xp_dir, f"xp_step_match_t{t}.csv")
+            save_xp_heatmap(
+                match_mean_steps[:, :, t], match_std_steps[:, :, t],
+                title, png_path,
+                fmt=".3f", cmap="YlOrRd", vmin=0.0, vmax=1.0,
+            )
+            save_xp_csv(
+                match_mean_steps[:, :, t], match_std_steps[:, :, t],
+                csv_path, label=f"step_match_t{t}",
+            )
 
     # Per-agent per-episode GT-frame deliberation vocab (card-game only):
     # cell (i, j) of vocab_a0 = mean over episodes of |distinct GT tokens
@@ -966,22 +952,20 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         vocab_mean = matrix.mean(axis=-1)
         vocab_std = matrix.std(axis=-1)
         title_role = "A0" if role_name == "a0" else "A1"
-        for d in (xp_dir, central_xp_dir):
-            prefix = "" if d == xp_dir else f"{beta_prefix}_"
-            save_xp_heatmap(
-                vocab_mean, vocab_std,
-                f"XP {title_role} deliberation vocab — {run_label}",
-                os.path.join(d, f"{prefix}xp_vocab_{role_name}_matrix.png"),
-                fmt=".2f", cmap="YlGnBu",
-                vmin=1.0, vmax=float(NUM_CARDS),
-            )
-            save_xp_csv(
-                vocab_mean, vocab_std,
-                os.path.join(d, f"{prefix}xp_vocab_{role_name}_matrix.csv"),
-                label=f"vocab_{role_name}",
-            )
+        save_xp_heatmap(
+            vocab_mean, vocab_std,
+            f"XP {title_role} deliberation vocab — {run_label}",
+            os.path.join(xp_dir, f"xp_vocab_{role_name}_matrix.png"),
+            fmt=".2f", cmap="YlGnBu",
+            vmin=1.0, vmax=float(NUM_CARDS),
+        )
+        save_xp_csv(
+            vocab_mean, vocab_std,
+            os.path.join(xp_dir, f"xp_vocab_{role_name}_matrix.csv"),
+            label=f"vocab_{role_name}",
+        )
 
-    print(f"[xp_seeds] results saved to {xp_dir} and {central_xp_dir}")
+    print(f"[xp_seeds] results saved to {xp_dir}")
 
     if env_name == "card-game":
         action_dist_dir = os.path.join(xp_dir, "action_distributions")
