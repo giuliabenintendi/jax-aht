@@ -259,49 +259,44 @@ def make_train_loop(config, env):
                     init_hstate, traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(params, traj_batch, gae, targets):
-                        loss_plh = dict(plh_actor=traj_batch.plh_actor, plh_critic=traj_batch.plh_critic) if query_partner_lstm else {}
-                        _, value, pi, _, _ = policy.get_action_value_policy(
-                            params=params,
-                            obs=traj_batch.obs,
-                            done=traj_batch.done,
-                            avail_actions=traj_batch.avail_actions,
-                            hstate=init_hstate,
-                            rng=jax.random.PRNGKey(0),
-                            **loss_plh,
+                        # Build network inputs (shared by policy + aux pass).
+                        inputs_apply = (
+                            traj_batch.obs,
+                            traj_batch.done,
+                            traj_batch.avail_actions,
                         )
-                        log_prob = pi.log_prob(traj_batch.action)
-                        entropy = pi.entropy().mean()
-
-                        # Auxiliary partner-argmax-prediction loss.
-                        # Extracted via a second forward pass with mutable
-                        # intermediates so we don't have to change the policy
-                        # wrapper API. The sown tensor has shape
-                        # (seq_len, batch, action_dim).
-                        if ja_aux_partner_argmax_active:
-                            inputs_apply = (
-                                traj_batch.obs,
-                                traj_batch.done,
-                                traj_batch.avail_actions,
+                        if query_partner_lstm:
+                            inputs_apply = inputs_apply + (
+                                traj_batch.plh_actor.reshape(1, num_actors, -1),
+                                traj_batch.plh_critic.reshape(1, num_actors, -1),
                             )
-                            if query_partner_lstm:
-                                inputs_apply = inputs_apply + (
-                                    traj_batch.plh_actor.reshape(1, num_actors, -1),
-                                    traj_batch.plh_critic.reshape(1, num_actors, -1),
-                                )
-                            _, mutated = policy.network.apply(
-                                params,
-                                policy._unpack_hstate(init_hstate),
-                                inputs_apply,
+                        hidden = policy._unpack_hstate(init_hstate)
+
+                        # Single forward pass. When the aux loss is active we
+                        # request `mutable=['intermediates']` so the sown
+                        # partner-argmax logits are returned alongside the
+                        # normal policy outputs.
+                        if ja_aux_partner_argmax_active:
+                            (_, pi, value, _), mutated = policy.network.apply(
+                                params, hidden, inputs_apply,
                                 mutable=["intermediates"],
                             )
                             partner_logits = mutated["intermediates"]["partner_argmax_logits"][0]
-                            partner_logits_flat = partner_logits.reshape(-1, partner_logits.shape[-1])
+                            partner_logits_flat = partner_logits.reshape(
+                                -1, partner_logits.shape[-1]
+                            )
                             partner_target_flat = traj_batch.partner_argmax.reshape(-1)
                             aux_loss = optax.softmax_cross_entropy_with_integer_labels(
                                 partner_logits_flat, partner_target_flat
                             ).mean()
                         else:
+                            _, pi, value, _ = policy.network.apply(
+                                params, hidden, inputs_apply,
+                            )
                             aux_loss = jnp.float32(0.0)
+
+                        log_prob = pi.log_prob(traj_batch.action)
+                        entropy = pi.entropy().mean()
 
                         value_pred_clipped = traj_batch.value + (
                             value - traj_batch.value
