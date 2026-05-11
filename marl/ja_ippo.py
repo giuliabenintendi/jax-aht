@@ -336,7 +336,8 @@ def make_train_loop(config, env):
 
         def _swap_and_reset_attn(attn_map, done_batch):
             """Swap attention maps between agents, reset to uniform on done."""
-            attn = attn_map.squeeze(0)  # (num_actors, feat_h, feat_w)
+            # attn_map is now (1, num_actors, feat_h, feat_w, num_heads); collapse heads for feed_other_attn.
+            attn = attn_map.squeeze(0).mean(axis=-1)  # (num_actors, feat_h, feat_w)
             attn_0 = attn[:num_envs]
             attn_1 = attn[num_envs:]
             # Each agent gets the other's attention
@@ -454,7 +455,8 @@ def make_train_loop(config, env):
                 # only JA_CARD_ATTN feeds the partner's translated card-attention
                 # back into the next obs.
                 if ja_card_metric:
-                    attn = attn_map.squeeze(0)  # (num_actors, feat_h, feat_w)
+                    # attn_map is (1, num_actors, feat_h, feat_w, num_heads); mean over heads for card-level diagnostic.
+                    attn = attn_map.squeeze(0).mean(axis=-1)  # (num_actors, feat_h, feat_w)
                     card_pos_attn = jnp.einsum("ahw,chw->ac", attn, _card_masks)
                     card_pos_attn_0 = card_pos_attn[:num_envs]
                     card_pos_attn_1 = card_pos_attn[num_envs:]

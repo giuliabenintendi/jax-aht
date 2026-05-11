@@ -148,7 +148,9 @@ class JAImageScannedLSTM(nn.Module):
         attended = jnp.einsum("bnm,bnmc->bmc", attn_weights, values)
         attended_flat = attended.reshape(batch_size, m * cm)
 
-        attn_map = attn_weights.mean(axis=-1).reshape(batch_size, fh, fw)
+        # attn_map keeps the per-head axis. Shape: (batch, fh, fw, num_heads).
+        # Consumers that want the head-averaged 2D map should `.mean(axis=-1)`.
+        attn_map = attn_weights.reshape(batch_size, fh, fw, m)
 
         suffix_parts = []
         suffix_start = self._img_flat_dim

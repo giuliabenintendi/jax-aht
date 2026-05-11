@@ -38,7 +38,8 @@ def test_scanned_lstm_num_channels_3():
     (new_h, new_c), (lstm_out, attn_map) = lstm.apply(params, carry, (dummy_obs, dummy_done))
 
     assert lstm_out.shape == (1, batch_size, 64)
-    assert attn_map.shape == (1, batch_size, FEAT_H, FEAT_W)
+    assert attn_map.shape[:4] == (1, batch_size, FEAT_H, FEAT_W)
+    assert attn_map.ndim == 5
 
 
 def test_scanned_lstm_num_channels_4():
@@ -56,7 +57,8 @@ def test_scanned_lstm_num_channels_4():
     (new_h, new_c), (lstm_out, attn_map) = lstm.apply(params, carry, (dummy_obs, dummy_done))
 
     assert lstm_out.shape == (1, batch_size, 64)
-    assert attn_map.shape == (1, batch_size, FEAT_H, FEAT_W)
+    assert attn_map.shape[:4] == (1, batch_size, FEAT_H, FEAT_W)
+    assert attn_map.ndim == 5
 
 
 def test_scanned_lstm_with_scalar_suffix():
@@ -76,7 +78,8 @@ def test_scanned_lstm_with_scalar_suffix():
     (_, _), (lstm_out, attn_map) = lstm.apply(params, carry, (dummy_obs, dummy_done))
 
     assert lstm_out.shape == (1, batch_size, 64)
-    assert attn_map.shape == (1, batch_size, FEAT_H, FEAT_W)
+    assert attn_map.shape[:4] == (1, batch_size, FEAT_H, FEAT_W)
+    assert attn_map.ndim == 5
 
 
 def test_single_critic_policy_4ch():
@@ -101,7 +104,8 @@ def test_single_critic_policy_4ch():
         avail_actions=dummy_avail, hstate=hstate, rng=rng,
     )
     assert action.shape == (1, 2)
-    assert attn_map.shape == (1, 2, FEAT_H, FEAT_W)
+    assert attn_map.shape[:4] == (1, 2, FEAT_H, FEAT_W)
+    assert attn_map.ndim == 5
 
 
 def test_augment_obs_for_eval():
@@ -253,7 +257,8 @@ def test_visualize_4th_channel():
         done=jnp.zeros((1, 1)), avail_actions=jnp.ones((1, 1, ACTION_DIM)),
         hstate=hstate, rng=act_rng,
     )
-    attn = np.array(attn_map.squeeze())  # (feat_h, feat_w)
+    # attn_map is now (1, 1, feat_h, feat_w, num_heads); collapse heads first.
+    attn = np.array(attn_map.mean(axis=-1).squeeze())  # (feat_h, feat_w)
     attn_jnp = jnp.array(attn)
 
     # Upsample to pixel resolution (same as what the training loop does)

@@ -130,7 +130,9 @@ def test_ja_image_forward_pass():
     import math
     expected_ah = math.ceil(img_h / 4)
     expected_aw = math.ceil(img_w / 4)
-    assert attn_map.shape == (seq_len, batch_size, expected_ah, expected_aw)
+    # attn_map now includes the heads axis as its last dim.
+    assert attn_map.shape[:4] == (seq_len, batch_size, expected_ah, expected_aw)
+    assert attn_map.ndim == 5
 
 
 def test_ja_image_train_loop():

@@ -98,6 +98,60 @@ def _entropy(p: np.ndarray, eps: float = 1e-12) -> float:
     return float(-(p * np.log(p)).sum())
 
 
+def _save_per_head_strip(
+    per_head_seq: np.ndarray,
+    out_path: Path,
+    title: str,
+    img_h: int = 21,
+    img_w: int = 35,
+) -> None:
+    """One row per attention head; T columns of bilinear-upsampled heatmaps.
+
+    Args:
+        per_head_seq: (T, fh, fw, num_heads) per-step per-head attention.
+        out_path: PNG path.
+        title: figure suptitle.
+    """
+    T, fh, fw, H = per_head_seq.shape
+    fig, axes = plt.subplots(H, T, figsize=(1.6 * T, 1.3 * H + 0.4))
+    if H == 1:
+        axes = axes[None, :]
+    if T == 1:
+        axes = axes[:, None]
+
+    vmax = float(per_head_seq.max())
+
+    card_pixel_y_lo = 7
+    card_pixel_y_hi = 14
+
+    for h_idx in range(H):
+        for t in range(T):
+            attn = per_head_seq[t, :, :, h_idx]
+            attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
+            ax = axes[h_idx, t]
+            ax.imshow(np.asarray(attn_up), cmap="hot", vmin=0.0, vmax=vmax)
+            ax.axhline(y=card_pixel_y_lo - 0.5, color="cyan", lw=0.4, alpha=0.7)
+            ax.axhline(y=card_pixel_y_hi - 0.5, color="cyan", lw=0.4, alpha=0.7)
+            flat = attn.flatten()
+            idx = int(flat.argmax())
+            ar, ac = divmod(idx, fw)
+            cy = ar * (img_h / fh) + (img_h / fh) / 2
+            cx = ac * (img_w / fw) + (img_w / fw) / 2
+            ax.text(cx, cy, f"{flat.max():.2f}", ha="center", va="center",
+                    color="cyan", fontsize=6, fontweight="bold")
+            if t == 0:
+                ax.set_ylabel(f"head {h_idx}", fontsize=8)
+            if h_idx == 0:
+                ax.set_title(f"t={t}", fontsize=8)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+    fig.suptitle(title + "  (per-head attention, cyan = card-row boundaries)", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _propagate_card_attention(
     attn_2d_seq: np.ndarray,
     card_row_lo: int,
@@ -274,6 +328,7 @@ def main() -> None:
 
             attn_seq = []
             entropies = []
+            attn_per_head_seq = []  # (T, fh, fw, num_heads) if available
 
             with open(csv_path, "w", newline="") as f:
                 w = csv.writer(f)
@@ -281,9 +336,15 @@ def main() -> None:
 
                 num_steps = len(attn_maps[agent_key])
                 for t in range(num_steps):
-                    attn_2d = np.asarray(attn_maps[agent_key][t]).squeeze()
-                    if attn_2d.ndim != 2:
-                        attn_2d = attn_2d.reshape(6, 9)
+                    raw = np.asarray(attn_maps[agent_key][t]).squeeze()
+                    # raw may be (fh, fw) (old) or (fh, fw, num_heads) (new)
+                    if raw.ndim == 3:
+                        attn_per_head_seq.append(raw)
+                        attn_2d = raw.mean(axis=-1)
+                    elif raw.ndim == 2:
+                        attn_2d = raw
+                    else:
+                        attn_2d = raw.reshape(6, 9)
                     flat = attn_2d.flatten()
                     flat_sum = float(flat.sum())
                     ent = _entropy(flat / max(flat_sum, 1e-12))
@@ -322,6 +383,20 @@ def main() -> None:
                 title=f"seed {args.seed_idx} ep {ep} {agent_key}",
             )
             print(f"[saved {png_path}]")
+
+            if attn_per_head_seq:
+                per_head_seq_np = np.stack(attn_per_head_seq, axis=0)
+                if per_head_seq_np.shape[0] != T_attn:
+                    per_head_seq_np = per_head_seq_np[:T_attn]
+                per_head_path = out_dir / (
+                    f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}_per_head.png"
+                )
+                _save_per_head_strip(
+                    per_head_seq_np,
+                    per_head_path,
+                    title=f"seed {args.seed_idx} ep {ep} {agent_key}",
+                )
+                print(f"[saved {per_head_path}]")
 
 
 if __name__ == "__main__":
