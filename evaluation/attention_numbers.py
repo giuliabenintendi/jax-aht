@@ -53,14 +53,13 @@ def main() -> None:
     parser.add_argument("--seed-idx", type=int, default=0)
     parser.add_argument("--num-episodes", type=int, default=2)
     parser.add_argument("--episode-rng-base", type=int, default=200)
-    parser.add_argument("--use-best", action="store_true")
     parser.add_argument("--output-dir", default=None,
                         help="Defaults to <run_dir>/attention_numbers/")
     parser.add_argument("--sampled", action="store_true",
                         help="Sampled actions (default greedy)")
     args = parser.parse_args()
 
-    ev = load_card_game_eval(args.checkpoint, use_best=args.use_best)
+    ev = load_card_game_eval(args.checkpoint)
     greedy = not args.sampled
 
     run_dir = Path(args.checkpoint).resolve().parent
