@@ -57,3 +57,7 @@ QUERY_PARTNER_LSTM: false       # feed partner's actor LSTM h into spatial atten
 JA_CARD_ATTN: false             # OP-corrected card-level joint attention
 JA_CARD_PARTNER_FEED: true      # append partner's translated card-attention as 5-dim scalar input (only used when JA_CARD_ATTN); set false to study JSD reward alone, without the input leak
 JA_CARD_JSD_COEF: 0.0           # mass-gated card-level JSD alignment reward
+
+# Three-part JA attention shaping (parallel to comm shaping)
+JA_ATTN_MATCH_COEF: 0.0         # per-step continuous match: coef * (1 - JSD/log 2) during deliberation
+JA_ATTN_FOLLOW_COEF: 0.0        # per-agent at decision: coef * (argmax_match & pick==own_argmax)
