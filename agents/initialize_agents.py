@@ -134,11 +134,14 @@ def initialize_ja_image_agent(config, env, rng):
     num_channels = 4 if config.get("FEED_OTHER_ATTN", False) else 3
     # Communication message is rendered visually (partner border), not as one-hot suffix
     message_dim = 0
-    # JA_CARD_ATTN appends a 5-dim translated partner attention vector to the
-    # obs. Only when JA_CARD_PARTNER_FEED (default true) so the JSD reward
-    # can be studied without the partner-attention input leak.
+    # JA_CARD_ATTN appends a translated partner-attention vector to the obs.
+    # Default: 5-dim head-averaged canonical card attention.
+    # JA_PARTNER_FEED_PER_HEAD=True: 5 * NUM_HEADS-dim per-head canonical attention.
     if config.get("JA_CARD_ATTN", False) and config.get("JA_CARD_PARTNER_FEED", True):
-        num_scalars += 5
+        if config.get("JA_PARTNER_FEED_PER_HEAD", False):
+            num_scalars += 5 * config.get("JA_NUM_HEADS", 4)
+        else:
+            num_scalars += 5
     obs_dim = img_h * img_w * num_channels + num_scalars
 
     policy = JAImageActorCriticPolicy(

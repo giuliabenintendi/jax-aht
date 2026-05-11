@@ -126,6 +126,9 @@ def make_train_loop(config, env):
     # fires but the policy receives no partner info beyond what the message
     # channel and rendered dot already provide.
     ja_card_partner_feed = ja_card_attn and config.get("JA_CARD_PARTNER_FEED", True)
+    ja_partner_feed_per_head = config.get("JA_PARTNER_FEED_PER_HEAD", False)
+    ja_num_heads = config.get("JA_NUM_HEADS", 4)
+    partner_feed_dim = 5 * ja_num_heads if ja_partner_feed_per_head else 5
     ja_card_jsd_coef = config.get("JA_CARD_JSD_COEF", 0.0)
     # Two-part JA attention shaping (parallel to comm shaping):
     #   match: per-step continuous similarity between agents' canonical-frame
@@ -231,7 +234,7 @@ def make_train_loop(config, env):
             init_other_attn = jnp.ones((num_actors, feat_h, feat_w)) / (feat_h * feat_w)
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng, init_other_attn)
         elif ja_card_partner_feed:
-            init_partner_card_attn = jnp.zeros((num_actors, 5))
+            init_partner_card_attn = jnp.zeros((num_actors, partner_feed_dim))
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng,
                             init_partner_card_attn)
         else:
@@ -546,8 +549,29 @@ def make_train_loop(config, env):
                     ja_card_reward = jax.lax.stop_gradient(r_card_jsd)
 
                     if ja_card_attn:
-                        translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
-                        translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
+                        if ja_partner_feed_per_head:
+                            # Per-head: recompute card_pos_attn without head-mean.
+                            attn_per_head = attn_map.squeeze(0)  # (num_actors, fh, fw, num_heads)
+                            card_pos_per_head = jnp.einsum(
+                                "ahwk,chw->ack", attn_per_head, _card_masks,
+                            )  # (num_actors, 5, num_heads)
+                            cpa0 = card_pos_per_head[:num_envs]
+                            cpa1 = card_pos_per_head[num_envs:]
+                            # Scatter to canonical frame per head (vmap over head axis).
+                            def _scatter_per_head(card_pos_one_head, perm):
+                                return jnp.zeros((num_envs, 5)).at[batch_idx, perm].set(card_pos_one_head)
+                            phys_0_ph = jax.vmap(_scatter_per_head, in_axes=(-1, None), out_axes=-1)(cpa0, perm_0)
+                            phys_1_ph = jax.vmap(_scatter_per_head, in_axes=(-1, None), out_axes=-1)(cpa1, perm_1)
+                            # Translate to ego view: ego_X[k, h] = phys_partner[perm_ego[k], h]
+                            translated_for_0 = jnp.take_along_axis(
+                                phys_1_ph, perm_0[..., None], axis=1,
+                            ).reshape(num_envs, -1)  # (num_envs, 5*num_heads)
+                            translated_for_1 = jnp.take_along_axis(
+                                phys_0_ph, perm_1[..., None], axis=1,
+                            ).reshape(num_envs, -1)
+                        else:
+                            translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
+                            translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
                         new_partner_card_attn = jnp.concatenate(
                             [translated_for_0, translated_for_1], axis=0)
                         new_done_batch_ja = batchify(new_done, env.agents, num_actors).squeeze()
