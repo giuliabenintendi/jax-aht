@@ -736,9 +736,9 @@ def make_train_loop(config, env):
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
             metric["card_jsd_mean"] = card_jsd_batch.mean()
-            metric["ja_attn_shaping_mean"] = r_attn_shaping_batch[:, :num_envs].mean()
-            metric["ja_attn_shaping_agent0_mean"] = r_attn_shaping_batch[:, :num_envs].mean()
-            metric["ja_attn_shaping_agent1_mean"] = r_attn_shaping_batch[:, num_envs:].mean()
+            # Average across both agents — under parameter sharing they converge
+            # to the same value in expectation, so a single number suffices.
+            metric["ja_attn_shaping_mean"] = r_attn_shaping_batch.mean()
 
             if feed_other_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
@@ -816,8 +816,6 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
         ("jsd_mean",             "JA/jsd"),
         ("card_jsd_mean",        "JA/card_jsd"),
         ("ja_attn_shaping_mean",         "JA/attn_shaping"),
-        ("ja_attn_shaping_agent0_mean",  "JA/attn_shaping_a0"),
-        ("ja_attn_shaping_agent1_mean",  "JA/attn_shaping_a1"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
@@ -1169,8 +1167,6 @@ def log_metrics(config, out, logger):
         ("jsd_mean",             "JA/jsd"),
         ("card_jsd_mean",        "JA/card_jsd"),
         ("ja_attn_shaping_mean",         "JA/attn_shaping"),
-        ("ja_attn_shaping_agent0_mean",  "JA/attn_shaping_a0"),
-        ("ja_attn_shaping_agent1_mean",  "JA/attn_shaping_a1"),
         ("raw_env_reward_mean",  "Reward/env_raw"),
         ("combined_reward_mean", "Reward/combined_raw"),
         ("comm_reward_mean",                     "Reward/comm"),
