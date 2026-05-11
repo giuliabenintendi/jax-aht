@@ -455,9 +455,14 @@ def make_train_loop(config, env):
 
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
 
+                # attn_map is (1, num_actors, fh, fw, num_heads); average heads
+                # before computing the spatial-JSD intrinsic reward.
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
-                r_ja = -jsd_divergence(attn_0.squeeze(0), attn_1.squeeze(0))
+                r_ja = -jsd_divergence(
+                    attn_0.squeeze(0).mean(axis=-1),
+                    attn_1.squeeze(0).mean(axis=-1),
+                )
                 r_ja = jax.lax.stop_gradient(r_ja)
 
                 reward_batch = batchify(reward, env.agents, num_actors).squeeze()
