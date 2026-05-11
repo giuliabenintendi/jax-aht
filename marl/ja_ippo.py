@@ -559,12 +559,20 @@ def make_train_loop(config, env):
                     follow_val_0 = jnp.where(follow_ok_0, ja_attn_follow_coef, 0.0)
                     follow_val_1 = jnp.where(follow_ok_1, ja_attn_follow_coef, 0.0)
 
-                    r_attn_0 = match_val_env + follow_val_0
-                    r_attn_1 = match_val_env + follow_val_1
-                    r_attn_shaping = jnp.concatenate([r_attn_0, r_attn_1])
+                    r_attn_match_per_actor = jnp.concatenate(
+                        [match_val_env, match_val_env]
+                    )
+                    r_attn_follow_per_actor = jnp.concatenate(
+                        [follow_val_0, follow_val_1]
+                    )
+                    r_attn_shaping = r_attn_match_per_actor + r_attn_follow_per_actor
                 else:
                     r_attn_shaping = jnp.zeros(num_actors)
+                    r_attn_match_per_actor = jnp.zeros(num_actors)
+                    r_attn_follow_per_actor = jnp.zeros(num_actors)
                 r_attn_shaping = jax.lax.stop_gradient(r_attn_shaping)
+                r_attn_match_per_actor = jax.lax.stop_gradient(r_attn_match_per_actor)
+                r_attn_follow_per_actor = jax.lax.stop_gradient(r_attn_follow_per_actor)
 
                 plh_a_stored = prev_plh_actor if query_partner_lstm else jnp.zeros((num_actors,))
                 plh_c_stored = prev_plh_critic if query_partner_lstm else jnp.zeros((num_actors,))
@@ -606,12 +614,14 @@ def make_train_loop(config, env):
                 return runner_state, (transition, intrinsic, comm_reward_batch,
                                      comm_match_batch, comm_stable_batch, comm_follow_batch,
                                      ja_card_reward, card_jsd_step_mean,
-                                     r_attn_shaping)
+                                     r_attn_shaping,
+                                     r_attn_match_per_actor, r_attn_follow_per_actor)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
                            comm_match_batch, comm_stable_batch, comm_follow_batch,
                            ja_card_reward_batch, card_jsd_batch,
-                           r_attn_shaping_batch) = jax.lax.scan(
+                           r_attn_shaping_batch,
+                           r_attn_match_batch, r_attn_follow_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -739,6 +749,8 @@ def make_train_loop(config, env):
             # Average across both agents — under parameter sharing they converge
             # to the same value in expectation, so a single number suffices.
             metric["ja_attn_shaping_mean"] = r_attn_shaping_batch.mean()
+            metric["ja_attn_match_mean"] = r_attn_match_batch.mean()
+            metric["ja_attn_follow_mean"] = r_attn_follow_batch.mean()
 
             if feed_other_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
@@ -816,6 +828,8 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
         ("jsd_mean",             "JA/jsd"),
         ("card_jsd_mean",        "JA/card_jsd"),
         ("ja_attn_shaping_mean",         "JA/attn_shaping"),
+        ("ja_attn_match_mean",           "JA/attn_match"),
+        ("ja_attn_follow_mean",          "JA/attn_follow"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
