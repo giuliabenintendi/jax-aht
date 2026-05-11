@@ -127,14 +127,13 @@ def make_train_loop(config, env):
     ja_card_partner_feed = ja_card_attn and config.get("JA_CARD_PARTNER_FEED", True)
     ja_card_jsd_coef = config.get("JA_CARD_JSD_COEF", 0.0)
     # Three-part JA attention shaping (parallel to comm shaping):
-    #   match: +coef when both agents' canonical-frame attention argmaxes agree
-    #          on the same card AND both have enough card-mass (on-cards gate).
-    #   follow: +coef per agent at the decision step when the agent's pick (in GT
-    #           frame) equals its own canonical-frame attention argmax.
+    #   match: +coef when both agents' canonical-frame attention argmaxes
+    #          agree on the same card.
+    #   follow: +coef per agent at the decision step when the agent's pick
+    #           (in GT frame) equals its own canonical-frame attention argmax.
     # Both terms reuse phys_0 / phys_1 computed in the JA_CARD_METRIC path.
     ja_attn_match_coef = config.get("JA_ATTN_MATCH_COEF", 0.0)
     ja_attn_follow_coef = config.get("JA_ATTN_FOLLOW_COEF", 0.0)
-    ja_attn_on_cards_threshold = config.get("JA_ATTN_ON_CARDS_THRESHOLD", 0.5)
     ja_attn_shaping_active = ja_attn_match_coef > 0 or ja_attn_follow_coef > 0
     # When True, compute the OP-corrected card-level JSD as a diagnostic metric
     # without feeding partner attention back into the obs and without applying
@@ -518,9 +517,7 @@ def make_train_loop(config, env):
                 if ja_card_metric and ja_attn_shaping_active:
                     argmax_0 = phys_0.argmax(axis=-1)
                     argmax_1 = phys_1.argmax(axis=-1)
-                    on_cards_0 = phys_0.sum(axis=-1) >= ja_attn_on_cards_threshold
-                    on_cards_1 = phys_1.sum(axis=-1) >= ja_attn_on_cards_threshold
-                    attn_match = on_cards_0 & on_cards_1 & (argmax_0 == argmax_1)
+                    attn_match = argmax_0 == argmax_1
 
                     is_decision_env = step_count_batch[:num_envs] == (_env_max_steps - 1)
 
