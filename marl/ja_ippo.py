@@ -132,9 +132,10 @@ def make_train_loop(config, env):
     #          MATCH_COEF * (1 - JSD(phys_0_norm, phys_1_norm) / log(2)), so
     #          it sits in [0, MATCH_COEF]: full reward when distributions are
     #          identical, zero when fully disjoint.
-    #   follow: +coef per agent at the decision step when the agent's pick
-    #           (in GT frame) equals its own canonical-frame attention argmax
-    #           ("the most attended card").
+    #   follow: +coef per agent at the decision step when BOTH agents' attention
+    #           argmaxes agree on the same card AND that agent's pick equals
+    #           that shared argmax. Mirrors comm follow which requires
+    #           prev_match (shared message) before crediting per-agent pick.
     # Both terms reuse phys_0 / phys_1 computed in the JA_CARD_METRIC path.
     ja_attn_match_coef = config.get("JA_ATTN_MATCH_COEF", 0.0)
     ja_attn_follow_coef = config.get("JA_ATTN_FOLLOW_COEF", 0.0)
@@ -544,8 +545,12 @@ def make_train_loop(config, env):
                     pick_0_gt = inv_recol_0[env_idx, pick_0_view]
                     pick_1_gt = inv_recol_1[env_idx, pick_1_view]
 
-                    follow_ok_0 = is_decision_env & (pick_0_gt == argmax_0)
-                    follow_ok_1 = is_decision_env & (pick_1_gt == argmax_1)
+                    # Follow mirrors the comm shaping: require shared attention
+                    # at the decision step (both agents' argmaxes equal),
+                    # then reward each agent for picking that shared card.
+                    attn_match_argmax = argmax_0 == argmax_1
+                    follow_ok_0 = is_decision_env & attn_match_argmax & (pick_0_gt == argmax_0)
+                    follow_ok_1 = is_decision_env & attn_match_argmax & (pick_1_gt == argmax_1)
                     follow_val_0 = jnp.where(follow_ok_0, ja_attn_follow_coef, 0.0)
                     follow_val_1 = jnp.where(follow_ok_1, ja_attn_follow_coef, 0.0)
 
