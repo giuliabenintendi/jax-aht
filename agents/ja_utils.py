@@ -153,16 +153,23 @@ def build_card_masks(img_h, img_w, feat_h, feat_w):
     Each entry is the fraction of the feature cell's area overlapping with
     the card's colored rectangle. Used by attn-msg reward, JA card attention,
     and card cross-attention pooling.
+
+    The colored rectangle spans CARD_RECT_W x CARD_RECT_H pixels starting at
+    (CARD_RECT_Y, 1 + i * TILE_PIXELS) for card i. We mirror that exactly
+    here so the mask matches the actual rendered region.
     """
-    from envs.card_game.rendering import TILE_PIXELS, NUM_CARDS
+    from envs.card_game.rendering import (
+        TILE_PIXELS, NUM_CARDS, CARD_RECT_W, CARD_RECT_H, CARD_RECT_Y,
+    )
     import numpy as _np
     scale_h = img_h / feat_h
     scale_w = img_w / feat_w
     masks = _np.zeros((NUM_CARDS, feat_h, feat_w), dtype=_np.float32)
     for ci in range(NUM_CARDS):
-        card_py_lo, card_py_hi = TILE_PIXELS + 1, TILE_PIXELS + 6
-        card_px_lo = ci * TILE_PIXELS + 1
-        card_px_hi = ci * TILE_PIXELS + 6
+        card_py_lo = CARD_RECT_Y
+        card_py_hi = CARD_RECT_Y + CARD_RECT_H
+        card_px_lo = 1 + ci * TILE_PIXELS
+        card_px_hi = 1 + ci * TILE_PIXELS + CARD_RECT_W
         for fr in range(feat_h):
             for fc in range(feat_w):
                 cell_area = scale_h * scale_w
