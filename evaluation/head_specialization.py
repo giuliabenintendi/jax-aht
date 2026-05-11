@@ -93,11 +93,17 @@ def _analyze_episode(
         inv_recol = np.asarray(state_t.per_agent_inv_recolouring[agent_key])
         pos_perm_inv = np.argsort(pos_perm)
 
-        # Own action at this step → view-slot
-        action_t = int(ep_actions[t][agent_idx])
-        if action_t >= 0:
-            action_gt = int(inv_recol[action_t])
-            own_view_slot = int(pos_perm_inv[action_gt])
+        # Own emitted action at this step → view-slot. ep_actions stores picks
+        # (-1 on deliberation), ep_messages stores messages (-1 at decision).
+        # Take whichever is non-negative for this step.
+        is_decision_t = (t == max_steps - 1)
+        if is_decision_t:
+            own_raw = int(ep_actions[t][agent_idx])
+        else:
+            own_raw = int(ep_messages[t][agent_idx]) if len(ep_messages) > t else -1
+        if own_raw >= 0:
+            own_gt = int(inv_recol[own_raw])
+            own_view_slot = int(pos_perm_inv[own_gt])
         else:
             own_view_slot = -1
 

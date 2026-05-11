@@ -523,13 +523,22 @@ def main() -> None:
                     inv_recol = np.asarray(state_t.per_agent_inv_recolouring[agent_key])
                     pos_perm_inv = np.argsort(pos_perm)
 
-                    action_t = int(ep_actions[t][agent_idx_int])
+                    # ep_actions has picks (-1 on deliberation); ep_messages
+                    # has messages (-1 at decision). Use whichever applies.
+                    is_decision_t = (t == T_attn - 1)
+                    if is_decision_t:
+                        action_t = int(ep_actions[t][agent_idx_int])
+                    else:
+                        action_t = (
+                            int(ep_messages[t][agent_idx_int])
+                            if len(ep_messages) > t else -1
+                        )
                     if action_t >= 0:
                         action_gt = int(inv_recol[action_t])
                         action_view_slots.append(int(pos_perm_inv[action_gt]))
                     else:
                         action_view_slots.append(-1)
-                    is_decision_seq.append(t == T_attn - 1)
+                    is_decision_seq.append(is_decision_t)
 
                     # Partner's last-emitted GT message (env_state.messages is GT frame).
                     # Walk through wrappers to find the inner CardGameState.
