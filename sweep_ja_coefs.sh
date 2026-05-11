@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Sweep JA attention shaping coefs across 4 magnitudes (10x, 50x, 75x, 100x
-# lower than the original 0.1 / 0.5 that Goodhart-farmed the match signal).
+# Sweep JA attention shaping coefs across 3 magnitudes (10x, 50x, 100x lower
+# than the original 0.1 / 0.5 that Goodhart-farmed the match signal).
 #
 # Each cell: 6 seeds, 10M steps, gaze-only (no comm channel, no comm shaping,
 # OP wrappers on, JA attention shaping the only intrinsic signal).
 #
 # Cells run in parallel across GPU 5 and GPU 6:
-#   GPU 5: 10x then 75x   (two cells, sequential)
-#   GPU 6: 50x then 100x  (two cells, sequential)
+#   GPU 5: 10x then 100x  (two cells, sequential)
+#   GPU 6: 50x            (one cell)
 #
-# Total wall time: ~2x the per-cell duration (both chains have 2 cells).
+# Total wall time: ~2x the per-cell duration (GPU 5 chain is the longer one).
 # Logs: sweep_gpu5.log, sweep_gpu6.log.
 #
 # Usage:
@@ -43,22 +43,21 @@ run_cell() {
   return ${rc}
 }
 
-# GPU 5 chain: 10x lower, then 75x lower
+# GPU 5 chain: 10x lower, then 100x lower
 (
-  run_cell 5 0.01    0.05    "10x_lower"
-  run_cell 5 0.00133 0.00667 "75x_lower"
+  run_cell 5 0.01  0.05  "10x_lower"
+  run_cell 5 0.001 0.005 "100x_lower"
 ) > sweep_gpu5.log 2>&1 &
 PID_5=$!
 
-# GPU 6 chain: 50x lower, then 100x lower
+# GPU 6 chain: 50x lower
 (
   run_cell 6 0.002 0.01  "50x_lower"
-  run_cell 6 0.001 0.005 "100x_lower"
 ) > sweep_gpu6.log 2>&1 &
 PID_6=$!
 
-echo "GPU 5 chain PID: ${PID_5} (cells: 10x_lower then 75x_lower)"
-echo "GPU 6 chain PID: ${PID_6} (cells: 50x_lower then 100x_lower)"
+echo "GPU 5 chain PID: ${PID_5} (cells: 10x_lower then 100x_lower)"
+echo "GPU 6 chain PID: ${PID_6} (cell: 50x_lower)"
 echo "Tail logs:"
 echo "  tail -f sweep_gpu5.log"
 echo "  tail -f sweep_gpu6.log"
