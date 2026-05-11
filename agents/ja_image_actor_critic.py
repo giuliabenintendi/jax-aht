@@ -283,6 +283,17 @@ class JAImageActorCritic(nn.Module):
         action_logits = mask_action_logits(action_logits, avail_actions)
         pi = distrax.Categorical(logits=action_logits)
 
+        # Auxiliary head: from the actor pre-head features, predict partner's
+        # most-attended canonical-frame card (argmax of phys_partner). Output
+        # is `action_dim`-way logits since the target is in [0, NUM_CARDS).
+        # Sown via `self.sow` so existing return signatures are unchanged;
+        # the PPO loss extracts these via apply(..., mutable=['intermediates']).
+        partner_argmax_logits = nn.Dense(
+            self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
+            name="aux_partner_argmax_head",
+        )(actor_out)
+        self.sow("intermediates", "partner_argmax_logits", partner_argmax_logits)
+
         # Critic path — partner's critic h feeds the critic query
         _plh_c = plh_critic if self.query_partner_lstm else None
         critic_lstm_state, (critic_embed, _) = JAImageScannedLSTM(

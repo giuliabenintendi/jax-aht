@@ -46,6 +46,7 @@ class JATransition(NamedTuple):
     ja_reward: jnp.ndarray       # (NUM_ACTORS,) -- raw JA intrinsic reward (unscaled)
     plh_actor: jnp.ndarray             # (NUM_ACTORS, lstm_dim) or scalar 0 when disabled
     plh_critic: jnp.ndarray            # (NUM_ACTORS, lstm_dim) or scalar 0 when disabled
+    partner_argmax: jnp.ndarray        # (NUM_ACTORS,) int — partner's canonical-frame attention argmax this step
 
 
 class RewardNormState(NamedTuple):
@@ -140,12 +141,19 @@ def make_train_loop(config, env):
     ja_attn_match_coef = config.get("JA_ATTN_MATCH_COEF", 0.0)
     ja_attn_follow_coef = config.get("JA_ATTN_FOLLOW_COEF", 0.0)
     ja_attn_shaping_active = ja_attn_match_coef > 0 or ja_attn_follow_coef > 0
+    # LIAM-style auxiliary loss: predict partner's most-attended canonical-frame
+    # card from the actor's pre-head features. Cross-entropy. Forces the
+    # network to encode partner-related info from the (canonical-frame)
+    # partner-attention pathway (JA_CARD_PARTNER_FEED).
+    ja_aux_partner_argmax_coef = config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0)
+    ja_aux_partner_argmax_active = ja_aux_partner_argmax_coef > 0
     # When True, compute the OP-corrected card-level JSD as a diagnostic metric
     # without feeding partner attention back into the obs and without applying
     # any shaping reward. Same OP requirements as JA_CARD_ATTN.
     # JA_CARD_ATTN implies this. So does JA_ATTN_*_COEF being positive.
     ja_card_metric = (
         ja_card_attn or config.get("JA_CARD_METRIC", False) or ja_attn_shaping_active
+        or ja_aux_partner_argmax_active
     )
     if ja_card_attn and feed_other_attn:
         raise ValueError("JA_CARD_ATTN is mutually exclusive with FEED_OTHER_ATTN")
@@ -264,6 +272,37 @@ def make_train_loop(config, env):
                         log_prob = pi.log_prob(traj_batch.action)
                         entropy = pi.entropy().mean()
 
+                        # Auxiliary partner-argmax-prediction loss.
+                        # Extracted via a second forward pass with mutable
+                        # intermediates so we don't have to change the policy
+                        # wrapper API. The sown tensor has shape
+                        # (seq_len, batch, action_dim).
+                        if ja_aux_partner_argmax_active:
+                            inputs_apply = (
+                                traj_batch.obs,
+                                traj_batch.done,
+                                traj_batch.avail_actions,
+                            )
+                            if query_partner_lstm:
+                                inputs_apply = inputs_apply + (
+                                    traj_batch.plh_actor.reshape(1, num_actors, -1),
+                                    traj_batch.plh_critic.reshape(1, num_actors, -1),
+                                )
+                            _, mutated = policy.network.apply(
+                                params,
+                                policy._unpack_hstate(init_hstate),
+                                inputs_apply,
+                                mutable=["intermediates"],
+                            )
+                            partner_logits = mutated["intermediates"]["partner_argmax_logits"][0]
+                            partner_logits_flat = partner_logits.reshape(-1, partner_logits.shape[-1])
+                            partner_target_flat = traj_batch.partner_argmax.reshape(-1)
+                            aux_loss = optax.softmax_cross_entropy_with_integer_labels(
+                                partner_logits_flat, partner_target_flat
+                            ).mean()
+                        else:
+                            aux_loss = jnp.float32(0.0)
+
                         value_pred_clipped = traj_batch.value + (
                             value - traj_batch.value
                         ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
@@ -303,12 +342,14 @@ def make_train_loop(config, env):
                             loss_actor
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
+                            + ja_aux_partner_argmax_coef * aux_loss
                         )
                         # PPO diagnostics
                         approx_kl = ((ratio - 1) - jnp.log(ratio)).mean()
                         clip_frac = (jnp.abs(ratio - 1.0) > config["CLIP_EPS"]).mean()
                         return total_loss, (value_loss, loss_actor, entropy,
-                                            approx_kl, clip_frac, ratio.mean(), ratio.std())
+                                            approx_kl, clip_frac, ratio.mean(), ratio.std(),
+                                            aux_loss)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
@@ -521,6 +562,18 @@ def make_train_loop(config, env):
                     ja_card_reward = jnp.zeros(num_actors)
                     card_jsd_step_mean = jnp.float32(0.0)
 
+                # Partner's most-attended canonical card per agent
+                # (target for the LIAM-style aux loss).
+                if ja_card_metric:
+                    partner_argmax_0 = phys_1.argmax(axis=-1)  # agent_0 predicts agent_1's argmax
+                    partner_argmax_1 = phys_0.argmax(axis=-1)  # vice versa
+                    partner_argmax_per_actor = jnp.concatenate(
+                        [partner_argmax_0, partner_argmax_1]
+                    ).astype(jnp.int32)
+                else:
+                    partner_argmax_per_actor = jnp.zeros(num_actors, dtype=jnp.int32)
+                partner_argmax_per_actor = jax.lax.stop_gradient(partner_argmax_per_actor)
+
                 # Three-part JA attention shaping (match + follow). Reuses
                 # phys_0 / phys_1 from the JA_CARD_METRIC path; only fires when
                 # at least one coef is positive.
@@ -589,6 +642,7 @@ def make_train_loop(config, env):
                     ja_reward=r_ja_batch,
                     plh_actor=plh_a_stored,
                     plh_critic=plh_c_stored,
+                    partner_argmax=partner_argmax_per_actor,
                 )
 
                 if feed_other_attn:
@@ -711,7 +765,8 @@ def make_train_loop(config, env):
                 train_state, traj_batch, advantages, targets, ppo_rng)
 
             (total_loss, (value_loss, policy_loss, entropy,
-                         approx_kl, clip_frac, ratio_mean, ratio_std)), grad_norm = loss_info
+                         approx_kl, clip_frac, ratio_mean, ratio_std,
+                         aux_partner_argmax_loss)), grad_norm = loss_info
 
             jsd_values = -traj_batch.ja_reward[:, :num_envs]
 
@@ -751,6 +806,7 @@ def make_train_loop(config, env):
             metric["ja_attn_shaping_mean"] = r_attn_shaping_batch.mean()
             metric["ja_attn_match_mean"] = r_attn_match_batch.mean()
             metric["ja_attn_follow_mean"] = r_attn_follow_batch.mean()
+            metric["aux_partner_argmax_loss"] = aux_partner_argmax_loss[0].mean()
 
             if feed_other_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
@@ -830,6 +886,7 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
         ("ja_attn_shaping_mean",         "JA/attn_shaping"),
         ("ja_attn_match_mean",           "JA/attn_match"),
         ("ja_attn_follow_mean",          "JA/attn_follow"),
+        ("aux_partner_argmax_loss",      "JA/aux_partner_argmax_loss"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
