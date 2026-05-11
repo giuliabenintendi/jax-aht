@@ -33,6 +33,7 @@ import matplotlib.pyplot as plt
 from envs.card_game.rendering import (
     CARD_COLORS, NUM_CARDS, TILE_PIXELS, render_card_game_minimal,
 )
+from agents.ja_utils import build_card_masks
 from evaluation._card_game_utils import load_card_game_eval
 from evaluation.vis_episodes import run_episode_with_states
 
@@ -307,6 +308,10 @@ def main() -> None:
     out_dir = Path(args.output_dir) if args.output_dir else (run_dir / "attention_numbers")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Pre-build card masks for view-slot pooling (used in alignment diagnostics).
+    # 21x35 image, 6x9 feature grid match the JA image agent's downsampling.
+    _card_masks_np = np.asarray(build_card_masks(21, 35, 6, 9))
+
     print(f"Checkpoint: {args.checkpoint}")
     print(f"  label={ev.label}  seeds={ev.num_seeds}  seed_idx={args.seed_idx}")
     print(f"  max_steps={ev.max_steps}  greedy={greedy}")
@@ -367,6 +372,33 @@ def main() -> None:
                             print(f"  head {h_idx}  sum={head_sum:.4f}  entropy={head_ent:.3f}  "
                                   f"argmax=(r={har}, c={hac})  max_val={head_flat.max():.4f}")
                             print("  " + _format_attn_grid(head_attn).replace("\n", "\n  "))
+
+                        # Action ↔ attention alignment per head (view-slot frame)
+                        state_t = ep_states[t]
+                        pos_perm = np.asarray(state_t.env_state.per_agent_perm[agent_key])
+                        inv_recol = np.asarray(state_t.per_agent_inv_recolouring[agent_key])
+                        # action this step (the discrete int the agent emitted)
+                        action_t = int(ep_actions[t][int(agent_key.split("_")[1])])
+                        if action_t >= 0:
+                            action_gt = int(inv_recol[action_t])
+                            pos_perm_inv = np.argsort(pos_perm)
+                            action_view_slot = int(pos_perm_inv[action_gt])
+                        else:
+                            action_view_slot = -1
+                        print(f"  action(view_color)={action_t}  GT_card={action_gt if action_t>=0 else '-'}  "
+                              f"view_slot={action_view_slot if action_view_slot>=0 else '-'}")
+                        for h_idx in range(num_heads):
+                            head_attn = raw[..., h_idx]
+                            card_pool = np.einsum(
+                                "hw,chw->c", head_attn, _card_masks_np,
+                            )
+                            slot = int(card_pool.argmax())
+                            mass = float(card_pool[slot])
+                            on_action = (slot == action_view_slot) and action_view_slot >= 0
+                            mark = "✓" if on_action else "✗"
+                            pool_str = "  ".join(f"s{s}:{card_pool[s]:.3f}" for s in range(NUM_CARDS))
+                            print(f"  head {h_idx}  view_slot_pool: {pool_str}  "
+                                  f"argmax_slot={slot} ({mass:.3f})  on_action {mark}")
 
                     attn_seq.append(attn_2d)
                     entropies.append(ent)
