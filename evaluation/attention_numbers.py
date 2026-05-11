@@ -26,6 +26,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from evaluation._card_game_utils import load_card_game_eval
 from evaluation.vis_episodes import run_episode_with_states
 
@@ -45,6 +49,69 @@ def _format_attn_grid(attn_2d: np.ndarray, decimals: int = 3) -> str:
 def _entropy(p: np.ndarray, eps: float = 1e-12) -> float:
     p = np.clip(p, eps, 1.0)
     return float(-(p * np.log(p)).sum())
+
+
+def _save_attn_strip(
+    attn_2d_seq: np.ndarray,
+    entropies: list,
+    out_path: Path,
+    title: str,
+    img_h: int = 21,
+    img_w: int = 35,
+) -> None:
+    """Save a 1xT strip of per-step attention heatmaps.
+
+    Each panel shows the (fh, fw) attention map bilinearly upsampled to
+    (img_h, img_w). The card row in pixel space (y=7..13) is marked with
+    horizontal lines so you can see which cells fall on cards vs background.
+
+    Args:
+        attn_2d_seq: (T, fh, fw) attention maps.
+        entropies: list of per-step entropy values (nats).
+        out_path: PNG path.
+        title: figure suptitle.
+        img_h, img_w: target heatmap pixel size (the obs resolution).
+    """
+    T, fh, fw = attn_2d_seq.shape
+    fig, axes = plt.subplots(1, T, figsize=(1.7 * T, 2.0))
+    if T == 1:
+        axes = [axes]
+
+    vmax = float(attn_2d_seq.max())
+
+    for t in range(T):
+        attn = attn_2d_seq[t]
+        attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
+        ax = axes[t]
+        im = ax.imshow(np.asarray(attn_up), cmap="hot", vmin=0.0, vmax=vmax)
+
+        # Mark card row (pixel y=7..13). Two yellow horizontal lines.
+        ax.axhline(y=7 - 0.5, color="yellow", lw=0.6, alpha=0.9)
+        ax.axhline(y=14 - 0.5, color="yellow", lw=0.6, alpha=0.9)
+        # Mark card column boundaries (each card spans 7 px starting at x=0)
+        for c in range(1, 5):
+            ax.axvline(x=c * 7 - 0.5, color="yellow", lw=0.3, alpha=0.6)
+
+        # Annotate argmax cell with its value
+        flat = attn.flatten()
+        idx = int(flat.argmax())
+        ar, ac = divmod(idx, fw)
+        cy = ar * (img_h / fh) + (img_h / fh) / 2
+        cx = ac * (img_w / fw) + (img_w / fw) / 2
+        ax.text(
+            cx, cy, f"{flat.max():.2f}",
+            ha="center", va="center",
+            color="cyan", fontsize=8, fontweight="bold",
+        )
+
+        ax.set_title(f"t={t}\nH={entropies[t]:.2f}", fontsize=8)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    fig.suptitle(title, fontsize=10)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main() -> None:
@@ -83,6 +150,11 @@ def main() -> None:
         for agent_key in ("agent_0", "agent_1"):
             print(f"\n=== seed {args.seed_idx} ep {ep} {agent_key} ===")
             csv_path = out_dir / f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}.csv"
+            png_path = out_dir / f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}.png"
+
+            attn_seq = []
+            entropies = []
+
             with open(csv_path, "w", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["step", "row", "col", "attn"])
@@ -91,7 +163,6 @@ def main() -> None:
                 for t in range(num_steps):
                     attn_2d = np.asarray(attn_maps[agent_key][t]).squeeze()
                     if attn_2d.ndim != 2:
-                        # Defensive: should already be (H, W) per agents/ja_image_actor_critic.py
                         attn_2d = attn_2d.reshape(6, 9)
                     flat = attn_2d.flatten()
                     flat_sum = float(flat.sum())
@@ -102,10 +173,22 @@ def main() -> None:
                           f"argmax=(r={argmax_r}, c={argmax_c})  max_val={flat.max():.4f}")
                     print(_format_attn_grid(attn_2d))
 
+                    attn_seq.append(attn_2d)
+                    entropies.append(ent)
                     for r in range(attn_2d.shape[0]):
                         for c in range(attn_2d.shape[1]):
                             w.writerow([t, r, c, f"{attn_2d[r, c]:.6f}"])
-            print(f"\n[saved {csv_path}]")
+            print(f"[saved {csv_path}]")
+
+            attn_seq_np = np.stack(attn_seq, axis=0)
+            _save_attn_strip(
+                attn_seq_np,
+                entropies,
+                png_path,
+                title=f"seed {args.seed_idx} ep {ep} {agent_key} "
+                      f"(yellow lines = card row boundaries y=7,14)",
+            )
+            print(f"[saved {png_path}]")
 
 
 if __name__ == "__main__":
