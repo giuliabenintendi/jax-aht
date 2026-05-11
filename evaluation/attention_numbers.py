@@ -354,6 +354,20 @@ def main() -> None:
                           f"argmax=(r={argmax_r}, c={argmax_c})  max_val={flat.max():.4f}")
                     print(_format_attn_grid(attn_2d))
 
+                    # Per-head breakdown (when available)
+                    if raw.ndim == 3:
+                        num_heads = raw.shape[-1]
+                        for h_idx in range(num_heads):
+                            head_attn = raw[..., h_idx]
+                            head_flat = head_attn.flatten()
+                            head_sum = float(head_flat.sum())
+                            head_ent = _entropy(head_flat / max(head_sum, 1e-12))
+                            head_argmax = int(head_flat.argmax())
+                            har, hac = divmod(head_argmax, head_attn.shape[1])
+                            print(f"  head {h_idx}  sum={head_sum:.4f}  entropy={head_ent:.3f}  "
+                                  f"argmax=(r={har}, c={hac})  max_val={head_flat.max():.4f}")
+                            print("  " + _format_attn_grid(head_attn).replace("\n", "\n  "))
+
                     attn_seq.append(attn_2d)
                     entropies.append(ent)
                     for r in range(attn_2d.shape[0]):
