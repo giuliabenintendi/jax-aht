@@ -59,58 +59,78 @@ def _save_attn_strip(
     img_h: int = 21,
     img_w: int = 35,
 ) -> None:
-    """Save a 1xT strip of per-step attention heatmaps.
-
-    Each panel shows the (fh, fw) attention map bilinearly upsampled to
-    (img_h, img_w). The card row in pixel space (y=7..13) is marked with
-    horizontal lines so you can see which cells fall on cards vs background.
+    """Save a 2xT panel: row 0 = raw 6x9 grid with values, row 1 = bilinear
+    upsample to obs resolution with card row markers.
 
     Args:
         attn_2d_seq: (T, fh, fw) attention maps.
         entropies: list of per-step entropy values (nats).
         out_path: PNG path.
         title: figure suptitle.
-        img_h, img_w: target heatmap pixel size (the obs resolution).
+        img_h, img_w: target heatmap pixel size for the upsampled row.
     """
     T, fh, fw = attn_2d_seq.shape
-    fig, axes = plt.subplots(1, T, figsize=(1.7 * T, 2.0))
+    fig, axes = plt.subplots(2, T, figsize=(2.2 * T, 4.6),
+                              gridspec_kw={"height_ratios": [fh / fw, img_h / img_w]})
     if T == 1:
-        axes = [axes]
+        axes = axes[:, None]
 
     vmax = float(attn_2d_seq.max())
 
+    # Pixel coordinates of the card row in feature-grid units (used to
+    # highlight which CNN cells overlap the cards).
+    card_pixel_y_lo = 7
+    card_pixel_y_hi = 14  # exclusive
+    card_feat_r_lo = card_pixel_y_lo * fh / img_h  # ~2.0
+    card_feat_r_hi = card_pixel_y_hi * fh / img_h  # ~4.0
+
     for t in range(T):
         attn = attn_2d_seq[t]
+
+        # --- Row 0: raw 6x9 grid, no interpolation, value-annotated ---
+        ax = axes[0, t]
+        ax.imshow(attn, cmap="hot", vmin=0.0, vmax=vmax, interpolation="nearest", aspect="equal")
+
+        for r in range(fh):
+            for c in range(fw):
+                val = attn[r, c]
+                # White text on dark cells, black text on bright cells
+                text_color = "black" if val > vmax * 0.6 else "white"
+                ax.text(c, r, f"{val:.2f}", ha="center", va="center",
+                        fontsize=5.5, color=text_color)
+
+        # Highlight the card-row band (feature rows that overlap cards in pixel space)
+        ax.axhline(y=card_feat_r_lo - 0.5, color="cyan", lw=0.8, alpha=0.9)
+        ax.axhline(y=card_feat_r_hi - 0.5, color="cyan", lw=0.8, alpha=0.9)
+
+        ax.set_title(f"t={t}\nH={entropies[t]:.2f} nats", fontsize=8)
+        ax.set_xticks(range(fw))
+        ax.set_yticks(range(fh))
+        ax.set_xticklabels([f"c{c}" for c in range(fw)], fontsize=5)
+        ax.set_yticklabels([f"r{r}" for r in range(fh)], fontsize=5)
+        ax.tick_params(length=0, pad=1)
+
+        # --- Row 1: upsampled to obs resolution with card row markers ---
+        ax2 = axes[1, t]
         attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
-        ax = axes[t]
-        im = ax.imshow(np.asarray(attn_up), cmap="hot", vmin=0.0, vmax=vmax)
-
-        # Mark card row (pixel y=7..13). Two yellow horizontal lines.
-        ax.axhline(y=7 - 0.5, color="yellow", lw=0.6, alpha=0.9)
-        ax.axhline(y=14 - 0.5, color="yellow", lw=0.6, alpha=0.9)
-        # Mark card column boundaries (each card spans 7 px starting at x=0)
+        ax2.imshow(np.asarray(attn_up), cmap="hot", vmin=0.0, vmax=vmax)
+        ax2.axhline(y=card_pixel_y_lo - 0.5, color="cyan", lw=0.6, alpha=0.9)
+        ax2.axhline(y=card_pixel_y_hi - 0.5, color="cyan", lw=0.6, alpha=0.9)
         for c in range(1, 5):
-            ax.axvline(x=c * 7 - 0.5, color="yellow", lw=0.3, alpha=0.6)
-
-        # Annotate argmax cell with its value
+            ax2.axvline(x=c * 7 - 0.5, color="cyan", lw=0.3, alpha=0.6)
         flat = attn.flatten()
         idx = int(flat.argmax())
         ar, ac = divmod(idx, fw)
         cy = ar * (img_h / fh) + (img_h / fh) / 2
         cx = ac * (img_w / fw) + (img_w / fw) / 2
-        ax.text(
-            cx, cy, f"{flat.max():.2f}",
-            ha="center", va="center",
-            color="cyan", fontsize=8, fontweight="bold",
-        )
+        ax2.text(cx, cy, f"{flat.max():.2f}", ha="center", va="center",
+                 color="cyan", fontsize=7, fontweight="bold")
+        ax2.set_xticks([])
+        ax2.set_yticks([])
 
-        ax.set_title(f"t={t}\nH={entropies[t]:.2f}", fontsize=8)
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-    fig.suptitle(title, fontsize=10)
+    fig.suptitle(title + "  (cyan lines = card-row boundaries)", fontsize=10)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=170, bbox_inches="tight")
     plt.close(fig)
 
 
