@@ -126,11 +126,23 @@ def make_train_loop(config, env):
     # channel and rendered dot already provide.
     ja_card_partner_feed = ja_card_attn and config.get("JA_CARD_PARTNER_FEED", True)
     ja_card_jsd_coef = config.get("JA_CARD_JSD_COEF", 0.0)
+    # Three-part JA attention shaping (parallel to comm shaping):
+    #   match: +coef when both agents' canonical-frame attention argmaxes agree
+    #          on the same card AND both have enough card-mass (on-cards gate).
+    #   follow: +coef per agent at the decision step when the agent's pick (in GT
+    #           frame) equals its own canonical-frame attention argmax.
+    # Both terms reuse phys_0 / phys_1 computed in the JA_CARD_METRIC path.
+    ja_attn_match_coef = config.get("JA_ATTN_MATCH_COEF", 0.0)
+    ja_attn_follow_coef = config.get("JA_ATTN_FOLLOW_COEF", 0.0)
+    ja_attn_on_cards_threshold = config.get("JA_ATTN_ON_CARDS_THRESHOLD", 0.5)
+    ja_attn_shaping_active = ja_attn_match_coef > 0 or ja_attn_follow_coef > 0
     # When True, compute the OP-corrected card-level JSD as a diagnostic metric
     # without feeding partner attention back into the obs and without applying
     # any shaping reward. Same OP requirements as JA_CARD_ATTN.
-    # JA_CARD_ATTN implies this.
-    ja_card_metric = ja_card_attn or config.get("JA_CARD_METRIC", False)
+    # JA_CARD_ATTN implies this. So does JA_ATTN_*_COEF being positive.
+    ja_card_metric = (
+        ja_card_attn or config.get("JA_CARD_METRIC", False) or ja_attn_shaping_active
+    )
     if ja_card_attn and feed_other_attn:
         raise ValueError("JA_CARD_ATTN is mutually exclusive with FEED_OTHER_ATTN")
     if ja_card_metric:
@@ -500,6 +512,42 @@ def make_train_loop(config, env):
                     ja_card_reward = jnp.zeros(num_actors)
                     card_jsd_step_mean = jnp.float32(0.0)
 
+                # Three-part JA attention shaping (match + follow). Reuses
+                # phys_0 / phys_1 from the JA_CARD_METRIC path; only fires when
+                # at least one coef is positive.
+                if ja_card_metric and ja_attn_shaping_active:
+                    argmax_0 = phys_0.argmax(axis=-1)
+                    argmax_1 = phys_1.argmax(axis=-1)
+                    on_cards_0 = phys_0.sum(axis=-1) >= ja_attn_on_cards_threshold
+                    on_cards_1 = phys_1.sum(axis=-1) >= ja_attn_on_cards_threshold
+                    attn_match = on_cards_0 & on_cards_1 & (argmax_0 == argmax_1)
+
+                    is_decision_env = step_count_batch[:num_envs] == (_env_max_steps - 1)
+
+                    match_val_env = jnp.where(
+                        attn_match & ~is_decision_env, ja_attn_match_coef, 0.0,
+                    )
+
+                    inv_recol_0 = env_state.env_state.per_agent_inv_recolouring["agent_0"]
+                    inv_recol_1 = env_state.env_state.per_agent_inv_recolouring["agent_1"]
+                    env_idx = jnp.arange(num_envs)
+                    pick_0_view = action[:num_envs]
+                    pick_1_view = action[num_envs:]
+                    pick_0_gt = inv_recol_0[env_idx, pick_0_view]
+                    pick_1_gt = inv_recol_1[env_idx, pick_1_view]
+
+                    follow_ok_0 = is_decision_env & (pick_0_gt == argmax_0)
+                    follow_ok_1 = is_decision_env & (pick_1_gt == argmax_1)
+                    follow_val_0 = jnp.where(follow_ok_0, ja_attn_follow_coef, 0.0)
+                    follow_val_1 = jnp.where(follow_ok_1, ja_attn_follow_coef, 0.0)
+
+                    r_attn_0 = match_val_env + follow_val_0
+                    r_attn_1 = match_val_env + follow_val_1
+                    r_attn_shaping = jnp.concatenate([r_attn_0, r_attn_1])
+                else:
+                    r_attn_shaping = jnp.zeros(num_actors)
+                r_attn_shaping = jax.lax.stop_gradient(r_attn_shaping)
+
                 plh_a_stored = prev_plh_actor if query_partner_lstm else jnp.zeros((num_actors,))
                 plh_c_stored = prev_plh_critic if query_partner_lstm else jnp.zeros((num_actors,))
 
@@ -539,11 +587,13 @@ def make_train_loop(config, env):
                     runner_state = runner_state + (new_plh_a, new_plh_c)
                 return runner_state, (transition, intrinsic, comm_reward_batch,
                                      comm_match_batch, comm_stable_batch, comm_follow_batch,
-                                     ja_card_reward, card_jsd_step_mean)
+                                     ja_card_reward, card_jsd_step_mean,
+                                     r_attn_shaping)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
                            comm_match_batch, comm_stable_batch, comm_follow_batch,
-                           ja_card_reward_batch, card_jsd_batch) = jax.lax.scan(
+                           ja_card_reward_batch, card_jsd_batch,
+                           r_attn_shaping_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -614,7 +664,10 @@ def make_train_loop(config, env):
             scaled_comm_match = comm_scale * comm_match_batch
             scaled_comm_stable = comm_scale * comm_stable_batch
             scaled_comm_follow = comm_scale * comm_follow_batch
-            combined_raw = raw_env_reward + intrinsic_batch + scaled_comm_reward + ja_card_reward_batch
+            combined_raw = (
+                raw_env_reward + intrinsic_batch + scaled_comm_reward
+                + ja_card_reward_batch + r_attn_shaping_batch
+            )
             if normalize_rewards:
                 rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
                 combined = reward_norm_apply(rew_norm_state, combined_raw)
@@ -665,6 +718,9 @@ def make_train_loop(config, env):
             metric["combined_reward_mean"] = combined_raw[:, :num_envs].mean()
             metric["value_mean"] = traj_batch.value.mean()
             metric["card_jsd_mean"] = card_jsd_batch.mean()
+            metric["ja_attn_shaping_mean"] = r_attn_shaping_batch[:, :num_envs].mean()
+            metric["ja_attn_shaping_agent0_mean"] = r_attn_shaping_batch[:, :num_envs].mean()
+            metric["ja_attn_shaping_agent1_mean"] = r_attn_shaping_batch[:, num_envs:].mean()
 
             if feed_other_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
