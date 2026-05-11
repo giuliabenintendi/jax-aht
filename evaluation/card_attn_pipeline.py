@@ -87,6 +87,7 @@ def _save_pipeline_figure(
     attn_2d: np.ndarray,
     card_masks: np.ndarray,
     pos_perm: np.ndarray,
+    recolouring: np.ndarray,
     out_path: Path,
     title: str,
 ) -> None:
@@ -96,7 +97,10 @@ def _save_pipeline_figure(
         obs: (img_h, img_w, 3) agent-frame obs.
         attn_2d: (fh, fw) attention map (probably head-averaged).
         card_masks: (5, fh, fw) per-card overlap masks.
-        pos_perm: (5,) the agent's position permutation.
+        pos_perm: (5,) the agent's position permutation. pos_perm[k] = GT
+            card identity at view-slot k.
+        recolouring: (5,) forward recolouring. recolouring[g] = the displayed
+            colour index that GT card g appears as in this agent's view.
         out_path: PNG path.
         title: figure suptitle.
     """
@@ -112,6 +116,11 @@ def _save_pipeline_figure(
     canonical_card_attn[pos_perm] = view_card_attn
 
     card_colors_np = np.asarray(CARD_COLORS) / 255.0
+    # displayed colour at each view-slot = recolouring of the GT card sitting there
+    displayed_color_at_slot = np.stack(
+        [card_colors_np[int(recolouring[int(pos_perm[k])])] for k in range(NUM_CARDS)],
+        axis=0,
+    )  # (5, 3)
 
     # Layout: 4 rows
     #   row 0: obs | obs + raw attention overlay | raw attention grid
@@ -185,13 +194,16 @@ def _save_pipeline_figure(
                     tc = "white" if v > 0.6 else "black"
                     ax.text(cc, r, f"{v:.2f}", ha="center", va="center",
                             fontsize=5, color=tc)
-        # title shows view-slot index and the colour of that view-slot's card
-        slot_color = card_colors_np[pos_perm[c]]
-        ax.set_title(f"card_mask[c={c}]\nview-slot {c}, GT={int(pos_perm[c])}",
-                     fontsize=8)
+        # title: view-slot index, the GT identity, and the displayed colour the agent sees
+        ax.set_title(
+            f"card_mask[c={c}]\nview-slot {c}: GT={int(pos_perm[c])}, "
+            f"displayed=col{int(recolouring[int(pos_perm[c])])}",
+            fontsize=8,
+        )
         ax.set_xticks([])
         ax.set_yticks([])
-        # colored border to indicate the card's displayed colour
+        # colored border = the displayed colour the agent actually sees at this slot
+        slot_color = displayed_color_at_slot[c]
         for spine in ax.spines.values():
             spine.set_edgecolor(slot_color)
             spine.set_linewidth(2.0)
@@ -217,15 +229,19 @@ def _save_pipeline_figure(
 
     # ----- Row 3: bar charts (view-frame and canonical-frame) -----
     ax_view = fig.add_subplot(gs[3, 0:2])
-    bar_colors_view = [card_colors_np[pos_perm[c]] for c in range(NUM_CARDS)]
-    ax_view.bar(np.arange(NUM_CARDS), view_card_attn, color=bar_colors_view,
+    # Bars coloured by the AGENT'S DISPLAYED colour at each slot (what the agent sees).
+    ax_view.bar(np.arange(NUM_CARDS), view_card_attn,
+                color=displayed_color_at_slot,
                 edgecolor="black", linewidth=0.4)
     ax_view.set_xticks(np.arange(NUM_CARDS))
-    ax_view.set_xticklabels([f"slot {c}\n(GT {int(pos_perm[c])})"
-                              for c in range(NUM_CARDS)], fontsize=8)
+    ax_view.set_xticklabels(
+        [f"slot {c}\n(GT {int(pos_perm[c])})" for c in range(NUM_CARDS)],
+        fontsize=8,
+    )
     ax_view.set_ylabel("attention mass", fontsize=9)
     ax_view.set_title("view-frame card attention\n"
-                       "(per view-slot in agent's image)", fontsize=10)
+                       "(per view-slot — bar colour = what agent sees)",
+                       fontsize=10)
     ax_view.set_ylim(0, max(view_card_attn.max(), 0.01) * 1.15)
     ax_view.grid(axis="y", alpha=0.3)
 
@@ -243,12 +259,15 @@ def _save_pipeline_figure(
     ax_can.set_ylim(0, max(canonical_card_attn.max(), 0.01) * 1.15)
     ax_can.grid(axis="y", alpha=0.3)
 
-    # Position-permutation summary on the right
+    # Permutation summary on the right (both pos_perm and recolouring)
     ax_perm = fig.add_subplot(gs[3, 4])
     ax_perm.axis("off")
-    perm_text = "pos_perm (this agent's view):\n\n"
+    perm_text = "pos_perm (this agent):\n"
     for k in range(NUM_CARDS):
-        perm_text += f"  view_slot {k}  ->  GT card {int(pos_perm[k])}\n"
+        perm_text += f"  view_slot {k} -> GT {int(pos_perm[k])}\n"
+    perm_text += "\nrecolouring (this agent):\n"
+    for g in range(NUM_CARDS):
+        perm_text += f"  GT {g} shown as col {int(recolouring[g])}\n"
     ax_perm.text(0.0, 0.95, perm_text, fontsize=9, family="monospace",
                  va="top")
 
@@ -307,6 +326,7 @@ def main() -> None:
         head_label = "single head"
 
     pos_perm = np.asarray(state_t.env_state.per_agent_perm[args.agent])
+    recolouring = np.asarray(state_t.per_agent_recolouring[args.agent])
     card_masks = np.asarray(build_card_masks(IMG_H, IMG_W, FEAT_H, FEAT_W))
 
     out_path = out_dir / (
@@ -314,7 +334,7 @@ def main() -> None:
         f"{args.agent}_{'avg' if args.head < 0 else f'h{args.head}'}.png"
     )
     _save_pipeline_figure(
-        obs, attn_2d, card_masks, pos_perm, out_path,
+        obs, attn_2d, card_masks, pos_perm, recolouring, out_path,
         title=f"attention-on-card pipeline   |   seed {args.seed_idx}  "
               f"ep {args.episode}  t={t}  {args.agent}  ({head_label})",
     )
