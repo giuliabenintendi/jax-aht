@@ -99,6 +99,83 @@ def _entropy(p: np.ndarray, eps: float = 1e-12) -> float:
     return float(-(p * np.log(p)).sum())
 
 
+def _save_per_head_action_overlay(
+    per_head_seq: np.ndarray,
+    obs_seq: np.ndarray,
+    action_view_slots: list,
+    is_decision_seq: list,
+    out_path: Path,
+    title: str,
+    agent_idx: int,
+    img_h: int = 21,
+    img_w: int = 35,
+) -> None:
+    """4 rows (one per head) × T columns; obs as background, head-specific
+    attention overlay, and a colored marker on the card the agent acted on
+    (dot for deliberation message, box for decision pick).
+
+    Args:
+        per_head_seq: (T, fh, fw, num_heads).
+        obs_seq: (T, img_h, img_w, 3) agent-frame obs, float [0, 1].
+        action_view_slots: per step int in [0, NUM_CARDS) or -1 if invalid.
+        is_decision_seq: per step bool — True at the decision step.
+        out_path: PNG.
+        agent_idx: 0 (orange marker) or 1 (magenta).
+    """
+    T, fh, fw, H = per_head_seq.shape
+    fig, axes = plt.subplots(H, T, figsize=(2.0 * T, 1.6 * H + 0.4))
+    if H == 1:
+        axes = axes[None, :]
+    if T == 1:
+        axes = axes[:, None]
+
+    marker_color = "#ff8c00" if agent_idx == 0 else "#ff00ff"
+    vmax = float(per_head_seq.max())
+    TP = 7  # TILE_PIXELS
+    card_y_lo, card_y_hi = 7, 14
+
+    for h_idx in range(H):
+        for t in range(T):
+            ax = axes[h_idx, t]
+            ax.imshow(obs_seq[t])
+            attn = per_head_seq[t, :, :, h_idx]
+            attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
+            ax.imshow(np.asarray(attn_up), cmap="hot", alpha=0.55,
+                      vmin=0.0, vmax=vmax,
+                      extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
+
+            slot = action_view_slots[t]
+            if slot is not None and slot >= 0:
+                x0 = slot * TP - 0.5
+                y0 = card_y_lo - 0.5
+                if is_decision_seq[t]:
+                    rect = plt.Rectangle(
+                        (x0, y0), TP, card_y_hi - card_y_lo,
+                        fill=False, edgecolor=marker_color, linewidth=2.0,
+                    )
+                    ax.add_patch(rect)
+                else:
+                    cx = x0 + TP / 2
+                    cy = y0 + (card_y_hi - card_y_lo) / 2
+                    circ = plt.Circle(
+                        (cx, cy), radius=1.5,
+                        facecolor=marker_color, edgecolor="black", linewidth=0.4,
+                    )
+                    ax.add_patch(circ)
+
+            if t == 0:
+                ax.set_ylabel(f"head {h_idx}", fontsize=8)
+            if h_idx == 0:
+                ax.set_title(f"t={t}", fontsize=8)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+    fig.suptitle(title + "  (dot = message, box = pick)", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=170, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _save_per_head_strip(
     per_head_seq: np.ndarray,
     out_path: Path,
@@ -373,33 +450,6 @@ def main() -> None:
                                   f"argmax=(r={har}, c={hac})  max_val={head_flat.max():.4f}")
                             print("  " + _format_attn_grid(head_attn).replace("\n", "\n  "))
 
-                        # Action ↔ attention alignment per head (view-slot frame)
-                        state_t = ep_states[t]
-                        pos_perm = np.asarray(state_t.env_state.per_agent_perm[agent_key])
-                        inv_recol = np.asarray(state_t.per_agent_inv_recolouring[agent_key])
-                        # action this step (the discrete int the agent emitted)
-                        action_t = int(ep_actions[t][int(agent_key.split("_")[1])])
-                        if action_t >= 0:
-                            action_gt = int(inv_recol[action_t])
-                            pos_perm_inv = np.argsort(pos_perm)
-                            action_view_slot = int(pos_perm_inv[action_gt])
-                        else:
-                            action_view_slot = -1
-                        print(f"  action(view_color)={action_t}  GT_card={action_gt if action_t>=0 else '-'}  "
-                              f"view_slot={action_view_slot if action_view_slot>=0 else '-'}")
-                        for h_idx in range(num_heads):
-                            head_attn = raw[..., h_idx]
-                            card_pool = np.einsum(
-                                "hw,chw->c", head_attn, _card_masks_np,
-                            )
-                            slot = int(card_pool.argmax())
-                            mass = float(card_pool[slot])
-                            on_action = (slot == action_view_slot) and action_view_slot >= 0
-                            mark = "✓" if on_action else "✗"
-                            pool_str = "  ".join(f"s{s}:{card_pool[s]:.3f}" for s in range(NUM_CARDS))
-                            print(f"  head {h_idx}  view_slot_pool: {pool_str}  "
-                                  f"argmax_slot={slot} ({mass:.3f})  on_action {mark}")
-
                     attn_seq.append(attn_2d)
                     entropies.append(ent)
                     for r in range(attn_2d.shape[0]):
@@ -443,6 +493,37 @@ def main() -> None:
                     title=f"seed {args.seed_idx} ep {ep} {agent_key}",
                 )
                 print(f"[saved {per_head_path}]")
+
+                # Per-head with obs and action overlay.
+                agent_idx_int = int(agent_key.split("_")[1])
+                action_view_slots = []
+                is_decision_seq = []
+                for t in range(T_attn):
+                    state_t = ep_states[t]
+                    pos_perm = np.asarray(state_t.env_state.per_agent_perm[agent_key])
+                    inv_recol = np.asarray(state_t.per_agent_inv_recolouring[agent_key])
+                    action_t = int(ep_actions[t][agent_idx_int])
+                    if action_t >= 0:
+                        action_gt = int(inv_recol[action_t])
+                        pos_perm_inv = np.argsort(pos_perm)
+                        action_view_slots.append(int(pos_perm_inv[action_gt]))
+                    else:
+                        action_view_slots.append(-1)
+                    is_decision_seq.append(t == T_attn - 1)
+
+                action_overlay_path = out_dir / (
+                    f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}_per_head_action.png"
+                )
+                _save_per_head_action_overlay(
+                    per_head_seq_np,
+                    obs_seq_np[:T_attn],
+                    action_view_slots,
+                    is_decision_seq,
+                    action_overlay_path,
+                    title=f"seed {args.seed_idx} ep {ep} {agent_key}",
+                    agent_idx=agent_idx_int,
+                )
+                print(f"[saved {action_overlay_path}]")
 
 
 if __name__ == "__main__":
