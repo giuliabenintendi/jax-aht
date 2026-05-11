@@ -126,11 +126,15 @@ def make_train_loop(config, env):
     # channel and rendered dot already provide.
     ja_card_partner_feed = ja_card_attn and config.get("JA_CARD_PARTNER_FEED", True)
     ja_card_jsd_coef = config.get("JA_CARD_JSD_COEF", 0.0)
-    # Three-part JA attention shaping (parallel to comm shaping):
-    #   match: +coef when both agents' canonical-frame attention argmaxes
-    #          agree on the same card.
+    # Two-part JA attention shaping (parallel to comm shaping):
+    #   match: per-step continuous similarity between agents' canonical-frame
+    #          card-attention distributions during deliberation. Computed as
+    #          MATCH_COEF * (1 - JSD(phys_0_norm, phys_1_norm) / log(2)), so
+    #          it sits in [0, MATCH_COEF]: full reward when distributions are
+    #          identical, zero when fully disjoint.
     #   follow: +coef per agent at the decision step when the agent's pick
-    #           (in GT frame) equals its own canonical-frame attention argmax.
+    #           (in GT frame) equals its own canonical-frame attention argmax
+    #           ("the most attended card").
     # Both terms reuse phys_0 / phys_1 computed in the JA_CARD_METRIC path.
     ja_attn_match_coef = config.get("JA_ATTN_MATCH_COEF", 0.0)
     ja_attn_follow_coef = config.get("JA_ATTN_FOLLOW_COEF", 0.0)
@@ -515,15 +519,22 @@ def make_train_loop(config, env):
                 # phys_0 / phys_1 from the JA_CARD_METRIC path; only fires when
                 # at least one coef is positive.
                 if ja_card_metric and ja_attn_shaping_active:
-                    argmax_0 = phys_0.argmax(axis=-1)
-                    argmax_1 = phys_1.argmax(axis=-1)
-                    attn_match = argmax_0 == argmax_1
-
                     is_decision_env = step_count_batch[:num_envs] == (_env_max_steps - 1)
 
+                    # JSD-based continuous match during deliberation. Reuses
+                    # card_jsd_per_env computed by the metric block above,
+                    # which is JSD between the normalized canonical-frame
+                    # card-attention distributions. Range: [0, log(2)].
+                    log2 = jnp.log(jnp.asarray(2.0))
+                    jsd_clipped = jnp.clip(card_jsd_per_env.reshape(num_envs), 0.0, log2)
+                    match_score = 1.0 - jsd_clipped / log2  # in [0, 1]
                     match_val_env = jnp.where(
-                        attn_match & ~is_decision_env, ja_attn_match_coef, 0.0,
+                        ~is_decision_env, ja_attn_match_coef * match_score, 0.0,
                     )
+
+                    # Follow stays argmax-based: "the most attended card".
+                    argmax_0 = phys_0.argmax(axis=-1)
+                    argmax_1 = phys_1.argmax(axis=-1)
 
                     inv_recol_0 = env_state.env_state.per_agent_inv_recolouring["agent_0"]
                     inv_recol_1 = env_state.env_state.per_agent_inv_recolouring["agent_1"]
