@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 3x2 grid sweep over (follow_coef, aux_coef) for gaze-only JA + aux + partner-feed.
+# 5x2 grid sweep over (follow_coef, aux_coef) for gaze-only JA + aux + partner-feed.
 #
 # Shared config (all cells):
 #   - gaze-only (no comm channel, no comm shaping)
@@ -9,10 +9,10 @@
 #   - 6 seeds, 5M steps per cell
 #
 # Grid:
-#   follow ∈ {0.05, 0.1, 0.5}
+#   follow ∈ {0.05, 0.1, 0.5, 1.0, 2.0}
 #   aux    ∈ {0.0, 0.1}
 #
-# Sequential on GPU 6. ~30 min per cell × 6 = ~3 hours total.
+# Sequential on GPU 6. ~30 min per cell × 10 = ~5 hours total.
 # Logs:  grid_ja_aux.log  (one log, cells separated by [start]/[finish] timestamps)
 
 set -u
@@ -51,18 +51,26 @@ run_cell() {
   run_cell 0.1  0.1 "follow010_aux010"
   run_cell 0.5  0.0 "follow050_aux000"
   run_cell 0.5  0.1 "follow050_aux010"
+  run_cell 1.0  0.0 "follow100_aux000"
+  run_cell 1.0  0.1 "follow100_aux010"
+  run_cell 2.0  0.0 "follow200_aux000"
+  run_cell 2.0  0.1 "follow200_aux010"
 ) > grid_ja_aux.log 2>&1 &
 PID=$!
 
 echo "Grid PID: ${PID}"
 echo "GPU: ${GPU}"
-echo "Cells (sequential):"
+echo "Cells (sequential, 10 total):"
 echo "  1) follow=0.05  aux=0.0"
 echo "  2) follow=0.05  aux=0.1"
 echo "  3) follow=0.10  aux=0.0"
 echo "  4) follow=0.10  aux=0.1"
 echo "  5) follow=0.50  aux=0.0"
 echo "  6) follow=0.50  aux=0.1"
+echo "  7) follow=1.00  aux=0.0"
+echo "  8) follow=1.00  aux=0.1"
+echo "  9) follow=2.00  aux=0.0"
+echo " 10) follow=2.00  aux=0.1"
 echo "Log: tail -f grid_ja_aux.log"
 echo "Waiting..."
 wait ${PID}
