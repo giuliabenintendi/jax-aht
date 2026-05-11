@@ -807,6 +807,10 @@ def _overlay_attention(frame, attn, cmap_name, alpha=0.6):
     from PIL import Image
 
     attn = np.array(attn).squeeze()
+    # If the attention map still has a trailing num_heads axis after squeezing,
+    # average over heads so the colormap gets a 2D (fh, fw) input.
+    if attn.ndim == 3:
+        attn = attn.mean(axis=-1)
     a_min, a_max = attn.min(), attn.max()
     if a_max - a_min > 1e-8:
         attn_norm = (attn - a_min) / (a_max - a_min)
