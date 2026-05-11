@@ -98,6 +98,41 @@ def _entropy(p: np.ndarray, eps: float = 1e-12) -> float:
     return float(-(p * np.log(p)).sum())
 
 
+def _propagate_card_attention(
+    attn_2d_seq: np.ndarray,
+    card_row_lo: int,
+    card_row_hi: int,
+) -> np.ndarray:
+    """Build a propagated view: on-card cells carry a running max across time;
+    off-card cells show only the current step's value (no propagation).
+
+    Args:
+        attn_2d_seq: (T, fh, fw) raw per-step attention maps.
+        card_row_lo, card_row_hi: feature-row indices [lo, hi) considered to
+            overlap the card row in pixel space.
+
+    Returns:
+        (T, fh, fw) propagated attention.
+    """
+    T, fh, fw = attn_2d_seq.shape
+    on_card_mask = np.zeros((fh, fw), dtype=bool)
+    on_card_mask[card_row_lo:card_row_hi, :] = True
+
+    propagated = np.zeros_like(attn_2d_seq)
+    running_max_on_card = np.zeros((fh, fw), dtype=np.float32)
+
+    for t in range(T):
+        cur = attn_2d_seq[t]
+        # On-card cells: running max across time
+        on_card_now = np.where(on_card_mask, cur, 0.0)
+        running_max_on_card = np.maximum(running_max_on_card, on_card_now)
+        # Off-card cells: only current step's value (no propagation)
+        off_card_now = np.where(on_card_mask, 0.0, cur)
+        propagated[t] = running_max_on_card + off_card_now
+
+    return propagated
+
+
 def _save_attn_strip(
     attn_2d_seq: np.ndarray,
     entropies: list,
@@ -110,7 +145,8 @@ def _save_attn_strip(
     """Save a 3xT panel:
       row 0 = raw 6x9 grid with values
       row 1 = bilinear-upsampled attention overlaid on the agent's own-frame obs
-      row 2 = the agent's own-frame obs by itself (reference)
+      row 2 = propagated attention (on-card running max, off-card current only)
+              overlaid on the obs
 
     Args:
         attn_2d_seq: (T, fh, fw) attention maps.
@@ -121,29 +157,37 @@ def _save_attn_strip(
     """
     T, fh, fw = attn_2d_seq.shape
 
+    card_pixel_y_lo = 7
+    card_pixel_y_hi = 14
+    # Feature rows fully or mostly overlapping the card pixel row.
+    # With fh=6, img_h=21: r=2 covers y=7-10.5, r=3 covers y=10.5-14. Both on card.
+    card_feat_r_lo = int(round(card_pixel_y_lo * fh / img_h))   # 2
+    card_feat_r_hi = int(round(card_pixel_y_hi * fh / img_h))   # 4
+
+    propagated = _propagate_card_attention(
+        attn_2d_seq, card_feat_r_lo, card_feat_r_hi,
+    )
+
+    vmax_raw = float(attn_2d_seq.max())
+    vmax_prop = float(propagated.max())
+
     fig, axes = plt.subplots(3, T, figsize=(2.2 * T, 6.0),
                               gridspec_kw={"height_ratios": [fh / fw, img_h / img_w, img_h / img_w]})
     if T == 1:
         axes = axes[:, None]
 
-    vmax = float(attn_2d_seq.max())
-
-    card_pixel_y_lo = 7
-    card_pixel_y_hi = 14
-    card_feat_r_lo = card_pixel_y_lo * fh / img_h
-    card_feat_r_hi = card_pixel_y_hi * fh / img_h
-
     for t in range(T):
         attn = attn_2d_seq[t]
+        prop = propagated[t]
 
         # --- Row 0: raw 6x9 grid, value-annotated ---
         ax = axes[0, t]
-        ax.imshow(attn, cmap="hot", vmin=0.0, vmax=vmax,
+        ax.imshow(attn, cmap="hot", vmin=0.0, vmax=vmax_raw,
                   interpolation="nearest", aspect="equal")
         for r in range(fh):
             for c in range(fw):
                 val = attn[r, c]
-                text_color = "black" if val > vmax * 0.6 else "white"
+                text_color = "black" if val > vmax_raw * 0.6 else "white"
                 ax.text(c, r, f"{val:.2f}", ha="center", va="center",
                         fontsize=5.5, color=text_color)
         ax.axhline(y=card_feat_r_lo - 0.5, color="cyan", lw=0.8, alpha=0.9)
@@ -155,32 +199,36 @@ def _save_attn_strip(
         ax.set_yticklabels([f"r{r}" for r in range(fh)], fontsize=5)
         ax.tick_params(length=0, pad=1)
 
-        # --- Row 1: agent obs + bilinear-upsampled attention overlay ---
+        # --- Row 1: obs + raw attention overlay ---
         ax2 = axes[1, t]
         ax2.imshow(obs_seq[t])
         attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
         ax2.imshow(np.asarray(attn_up), cmap="hot", alpha=0.55,
-                   vmin=0.0, vmax=vmax,
+                   vmin=0.0, vmax=vmax_raw,
                    extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
         ax2.axhline(y=card_pixel_y_lo - 0.5, color="cyan", lw=0.4, alpha=0.7)
         ax2.axhline(y=card_pixel_y_hi - 0.5, color="cyan", lw=0.4, alpha=0.7)
-        flat = attn.flatten()
-        idx = int(flat.argmax())
-        ar, ac = divmod(idx, fw)
-        cy = ar * (img_h / fh) + (img_h / fh) / 2
-        cx = ac * (img_w / fw) + (img_w / fw) / 2
-        ax2.text(cx, cy, f"{flat.max():.2f}", ha="center", va="center",
-                 color="cyan", fontsize=7, fontweight="bold")
+        if t == 0:
+            ax2.set_ylabel("raw", fontsize=8)
         ax2.set_xticks([])
         ax2.set_yticks([])
 
-        # --- Row 2: agent obs alone (reference) ---
+        # --- Row 2: obs + propagated attention overlay ---
         ax3 = axes[2, t]
         ax3.imshow(obs_seq[t])
+        prop_up = jax.image.resize(jnp.asarray(prop), (img_h, img_w), method="bilinear")
+        ax3.imshow(np.asarray(prop_up), cmap="hot", alpha=0.55,
+                   vmin=0.0, vmax=vmax_prop,
+                   extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
+        ax3.axhline(y=card_pixel_y_lo - 0.5, color="cyan", lw=0.4, alpha=0.7)
+        ax3.axhline(y=card_pixel_y_hi - 0.5, color="cyan", lw=0.4, alpha=0.7)
+        if t == 0:
+            ax3.set_ylabel("propagated", fontsize=8)
         ax3.set_xticks([])
         ax3.set_yticks([])
 
-    fig.suptitle(title + "  (cyan lines = card-row boundaries)", fontsize=10)
+    fig.suptitle(title + "  (cyan lines = card-row boundaries; "
+                         "row 2 carries on-card max forward)", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=170, bbox_inches="tight")
     plt.close(fig)
