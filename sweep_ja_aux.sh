@@ -8,15 +8,11 @@
 #   - OP wrappers on
 #   - 6 seeds, 10M steps
 #
-# Two cells, in parallel:
-#   GPU 5: follow-only at 1/50         (match=0,     follow=0.01)
-#   GPU 6: match+follow at 1/50        (match=0.002, follow=0.01)
+# Two cells, sequential on GPU 6:
+#   1) follow_only:        match=0,     follow=0.01  (safer, no Goodhart risk)
+#   2) match_and_follow:   match=0.002, follow=0.01  (small per-step nudge)
 #
-# The follow-only cell tests whether the safer task-grounded shaping is
-# enough alongside the aux loss. The match+follow cell tests whether the
-# extra per-step match nudge helps without re-triggering Goodhart.
-#
-# Logs: sweep_aux_gpu5.log, sweep_aux_gpu6.log.
+# Log: sweep_aux.log.
 
 set -u
 
@@ -47,23 +43,17 @@ run_cell() {
   return ${rc}
 }
 
-# GPU 5: follow-only (no match shaping). Safest, no Goodhart risk.
+# Sequential on GPU 6.
 (
-  run_cell 5 0.0 0.01 "follow_only_1over50"
-) > sweep_aux_gpu5.log 2>&1 &
-PID_5=$!
-
-# GPU 6: match + follow at 1/50 original.
-(
+  run_cell 6 0.0   0.01 "follow_only_1over50"
   run_cell 6 0.002 0.01 "match_and_follow_1over50"
-) > sweep_aux_gpu6.log 2>&1 &
-PID_6=$!
+) > sweep_aux.log 2>&1 &
+PID=$!
 
-echo "GPU 5 chain PID: ${PID_5} (follow_only_1over50)"
-echo "GPU 6 chain PID: ${PID_6} (match_and_follow_1over50)"
-echo "Tail logs:"
-echo "  tail -f sweep_aux_gpu5.log"
-echo "  tail -f sweep_aux_gpu6.log"
-echo "Waiting for both chains to finish..."
-wait ${PID_5} ${PID_6}
+echo "GPU 6 chain PID: ${PID}"
+echo "Cells: follow_only_1over50 then match_and_follow_1over50"
+echo "Tail log:"
+echo "  tail -f sweep_aux.log"
+echo "Waiting for the chain to finish..."
+wait ${PID}
 echo "[$(date +%Y-%m-%d_%H:%M:%S)] All cells finished."
