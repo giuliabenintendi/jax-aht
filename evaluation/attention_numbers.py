@@ -104,6 +104,7 @@ def _save_per_head_action_overlay(
     obs_seq: np.ndarray,
     action_view_slots: list,
     is_decision_seq: list,
+    partner_msg_view_slots: list,
     out_path: Path,
     title: str,
     agent_idx: int,
@@ -163,6 +164,22 @@ def _save_per_head_action_overlay(
                     )
                     ax.add_patch(circ)
 
+            # Partner's message dot: white square at the messaged card's view slot
+            # (the env actually renders this in the obs as a 2x2 white dot, but our
+            # simplified renderer skips it; we draw it as an overlay here so it shows
+            # through the heat layer).
+            pslot = partner_msg_view_slots[t]
+            if pslot is not None and pslot >= 0:
+                p_x0 = pslot * TP - 0.5
+                p_y0 = card_y_lo - 0.5
+                pcx = p_x0 + TP / 2
+                pcy = p_y0 + (card_y_hi - card_y_lo) / 2
+                p_rect = plt.Rectangle(
+                    (pcx - 1.0, pcy - 1.0), 2.0, 2.0,
+                    facecolor="white", edgecolor="black", linewidth=0.4,
+                )
+                ax.add_patch(p_rect)
+
             if t == 0:
                 ax.set_ylabel(f"head {h_idx}", fontsize=8)
             if h_idx == 0:
@@ -170,7 +187,7 @@ def _save_per_head_action_overlay(
             ax.set_xticks([])
             ax.set_yticks([])
 
-    fig.suptitle(title + "  (dot = message, box = pick)", fontsize=10)
+    fig.suptitle(title + "  (coloured dot/box = own action; white square = partner msg)", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=170, bbox_inches="tight")
     plt.close(fig)
@@ -496,20 +513,37 @@ def main() -> None:
 
                 # Per-head with obs and action overlay.
                 agent_idx_int = int(agent_key.split("_")[1])
+                partner_idx_int = 1 - agent_idx_int
                 action_view_slots = []
                 is_decision_seq = []
+                partner_msg_view_slots = []
                 for t in range(T_attn):
                     state_t = ep_states[t]
                     pos_perm = np.asarray(state_t.env_state.per_agent_perm[agent_key])
                     inv_recol = np.asarray(state_t.per_agent_inv_recolouring[agent_key])
+                    pos_perm_inv = np.argsort(pos_perm)
+
                     action_t = int(ep_actions[t][agent_idx_int])
                     if action_t >= 0:
                         action_gt = int(inv_recol[action_t])
-                        pos_perm_inv = np.argsort(pos_perm)
                         action_view_slots.append(int(pos_perm_inv[action_gt]))
                     else:
                         action_view_slots.append(-1)
                     is_decision_seq.append(t == T_attn - 1)
+
+                    # Partner's last-emitted GT message (env_state.messages is GT frame).
+                    # Walk through wrappers to find the inner CardGameState.
+                    inner = state_t
+                    while hasattr(inner, "env_state") and not hasattr(inner, "messages"):
+                        inner = inner.env_state
+                    if hasattr(inner, "messages"):
+                        partner_msg_gt = int(np.asarray(inner.messages)[partner_idx_int])
+                        if partner_msg_gt >= 0:
+                            partner_msg_view_slots.append(int(pos_perm_inv[partner_msg_gt]))
+                        else:
+                            partner_msg_view_slots.append(-1)
+                    else:
+                        partner_msg_view_slots.append(-1)
 
                 action_overlay_path = out_dir / (
                     f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}_per_head_action.png"
@@ -519,6 +553,7 @@ def main() -> None:
                     obs_seq_np[:T_attn],
                     action_view_slots,
                     is_decision_seq,
+                    partner_msg_view_slots,
                     action_overlay_path,
                     title=f"seed {args.seed_idx} ep {ep} {agent_key}",
                     agent_idx=agent_idx_int,
