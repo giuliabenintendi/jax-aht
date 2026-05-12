@@ -9,4 +9,5 @@ ENV_KWARGS:
   match_coef: 0.0
   stability_coef: 0.0
   follow_coef: 0.0
+  gaze_mode: false
 TASK_NAME: card-game

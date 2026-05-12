@@ -9,4 +9,8 @@ ENV_KWARGS:
   match_coef: 0.1
   stability_coef: 0.05
   follow_coef: 0.5
+  # When true, action_dim becomes NUM_CARDS + 1 (noop). avail_actions forces
+  # noop during deliberation and picks at the decision step. Defaults to
+  # false so existing configs are unaffected.
+  gaze_mode: false
 TASK_NAME: card-game-op
