@@ -32,9 +32,18 @@ from envs.card_game.rendering import TILE_PIXELS, NUM_CARDS, CARD_COLORS
 
 
 def remap_recoloured_action(action, inv_recolouring):
-    """Map a recoloured-space action back to ground-truth color identity."""
+    """Map a recoloured-space action back to ground-truth color identity.
+
+    gaze_mode: action index NUM_CARDS is a noop that bypasses recolouring.
+    Without this guard, indexing `inv_recolouring[NUM_CARDS]` would read
+    out-of-bounds. The check is shape-stable (no Python branch) so it
+    composes with jit.
+    """
     action = jnp.asarray(action, dtype=jnp.int32)
-    return inv_recolouring[action]
+    is_noop = action >= NUM_CARDS
+    safe_idx = jnp.minimum(action, NUM_CARDS - 1)
+    mapped = inv_recolouring[safe_idx]
+    return jnp.where(is_noop, action, mapped)
 
 
 # ---------------------------------------------------------------------------

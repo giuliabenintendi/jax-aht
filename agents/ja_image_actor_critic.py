@@ -224,6 +224,7 @@ class JAImageActorCritic(nn.Module):
     scalar_embed_dim: int = 5
     query_partner_lstm: bool = False
     enable_aux_partner_head: bool = False  # when True, attach a Dense head that predicts partner's canonical-frame argmax
+    aux_num_classes: int = 5  # output dim of the aux partner-argmax head; stays NUM_CARDS even when action_dim grows (e.g. gaze_mode noop)
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -291,7 +292,7 @@ class JAImageActorCritic(nn.Module):
         # doesn't error on missing params.
         if self.enable_aux_partner_head:
             partner_argmax_logits = nn.Dense(
-                self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
+                self.aux_num_classes, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
                 name="aux_partner_argmax_head",
             )(actor_out)
             self.sow("intermediates", "partner_argmax_logits", partner_argmax_logits)

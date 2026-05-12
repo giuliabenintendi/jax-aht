@@ -36,6 +36,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
         scalar_embed_dim: int = 5,
         query_partner_lstm: bool = False,
         enable_aux_partner_head: bool = False,
+        aux_num_classes: int = 5,
     ):
         # Skip JAActorCriticPolicy.__init__ — we set self.network directly
         # but still call AgentPolicy.__init__ for action_dim/obs_dim
@@ -66,6 +67,7 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             scalar_embed_dim=scalar_embed_dim,
             query_partner_lstm=query_partner_lstm,
             enable_aux_partner_head=enable_aux_partner_head,
+            aux_num_classes=aux_num_classes,
         )
         self.lstm_hidden_dim = lstm_hidden_dim
 
