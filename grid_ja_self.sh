@@ -7,14 +7,16 @@
 # Shared: per_head=true, gaze=true, COMMUNICATION=false, NO PROBE.
 #         3 seeds, 5M steps each (~1h/cell).
 #
-# Sweep: self in {0, 0.1, 0.5, 1.0, 2.0}, prior shaping on/off.
-# Total: 10 cells. Runs sequentially on GPU 6. ~10h.
+# Sweep: self in {0.05, 0.1, 0.15}, prior shaping on/off.
+# Max per-agent shaped reward without self = match (7*0.05) + follow (0.5) = 0.85.
+# Constrained to keep total shaped < env_max (1.0), so self < 0.15.
+# Total: 6 cells. Runs sequentially on GPU 6. ~6h.
 
 set -u
 
 NUM_SEEDS=3
 TOTAL_STEPS=5e6
-PRIOR_M=0.01
+PRIOR_M=0.05
 PRIOR_F=0.5
 AUX_FIXED=0.1
 
@@ -64,22 +66,18 @@ run_self_plus_prior() {
   echo "[$(date +%Y-%m-%d_%H:%M:%S)] [finish] ${label} (exit $?)"
 }
 
-# All 10 cells sequentially on GPU 6.
+# All 6 cells sequentially on GPU 6.
 (
-  run_self_only       6 0.0  "S1_self_0"
-  run_self_only       6 0.1  "S2_self_0.1"
-  run_self_only       6 0.5  "S3_self_0.5"
-  run_self_only       6 1.0  "S4_self_1.0"
-  run_self_only       6 2.0  "S5_self_2.0"
-  run_self_plus_prior 6 0.0  "C1_prior_self_0"
-  run_self_plus_prior 6 0.1  "C2_prior_self_0.1"
-  run_self_plus_prior 6 0.5  "C3_prior_self_0.5"
-  run_self_plus_prior 6 1.0  "C4_prior_self_1.0"
-  run_self_plus_prior 6 2.0  "C5_prior_self_2.0"
+  run_self_only       6 0.05  "S1_self_0.05"
+  run_self_only       6 0.10  "S2_self_0.10"
+  run_self_only       6 0.15  "S3_self_0.15"
+  run_self_plus_prior 6 0.05  "C1_prior_self_0.05"
+  run_self_plus_prior 6 0.10  "C2_prior_self_0.10"
+  run_self_plus_prior 6 0.15  "C3_prior_self_0.15"
 ) > grid_self_gpu6.log 2>&1 &
 PID_6=$!
 
-echo "GPU 6 chain PID: ${PID_6}  (S1..S5 + C1..C5 sequentially)"
+echo "GPU 6 chain PID: ${PID_6}  (S1..S3 + C1..C3 sequentially)"
 echo "Log: tail -f grid_self_gpu6.log"
 echo "Waiting for chain to finish..."
 wait ${PID_6}
