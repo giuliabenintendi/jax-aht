@@ -173,13 +173,16 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     )
     act_1 = act_1.squeeze()
 
-    # Flatten attention maps to distributions for JSD
-    attn_0_flat = attn_0.reshape(-1)
-    attn_1_flat = attn_1.reshape(-1)
+    # Flatten attention maps to distributions for JSD. Per-head attention has
+    # an extra trailing axis (num_heads); collapse it before JSD so the metric
+    # stays comparable across per-head and head-avg runs.
+    attn_0_2d = attn_0.mean(axis=-1) if attn_0.ndim == 5 else attn_0
+    attn_1_2d = attn_1.mean(axis=-1) if attn_1.ndim == 5 else attn_1
+    attn_0_flat = attn_0_2d.reshape(-1)
+    attn_1_flat = attn_1_2d.reshape(-1)
     attn_0_dist = attn_0_flat / (attn_0_flat.sum() + 1e-8)
     attn_1_dist = attn_1_flat / (attn_1_flat.sum() + 1e-8)
-    # jsd_divergence expects (..., H, W) — reshape back
-    h, w = attn_0.shape[-2], attn_0.shape[-1]
+    h, w = attn_0_2d.shape[-2], attn_0_2d.shape[-1]
     step_jsd = jsd_divergence(attn_0_dist.reshape(h, w), attn_1_dist.reshape(h, w))
     jsd_sum = step_jsd
     jsd_count = jnp.array(1.0)
@@ -312,9 +315,12 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             )
             act_1 = act_1.squeeze()
 
-            # Compute JSD between attention maps
-            a0 = attn_0.reshape(-1)
-            a1 = attn_1.reshape(-1)
+            # Compute JSD between attention maps. Head-average if per-head so
+            # the (h, w) reshape stays valid.
+            a0_2d = attn_0.mean(axis=-1) if attn_0.ndim == 5 else attn_0
+            a1_2d = attn_1.mean(axis=-1) if attn_1.ndim == 5 else attn_1
+            a0 = a0_2d.reshape(-1)
+            a1 = a1_2d.reshape(-1)
             a0 = a0 / (a0.sum() + 1e-8)
             a1 = a1 / (a1.sum() + 1e-8)
             step_jsd = jsd_divergence(a0.reshape(h, w), a1.reshape(h, w))
