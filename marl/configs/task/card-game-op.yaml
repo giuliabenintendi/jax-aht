@@ -10,7 +10,7 @@ ENV_KWARGS:
   stability_coef: 0.05
   follow_coef: 0.5
   # When true, action_dim becomes NUM_CARDS + 1 (noop). avail_actions forces
-  # noop during deliberation and picks at the decision step. Defaults to
-  # false so existing configs are unaffected.
-  gaze_mode: false
+  # noop during deliberation and picks at the decision step. Default true:
+  # the clean training signal is what current sweeps assume.
+  gaze_mode: true
 TASK_NAME: card-game-op
