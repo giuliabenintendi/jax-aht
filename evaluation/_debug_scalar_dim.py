@@ -1,7 +1,7 @@
-"""Trace num_scalars resolution for the misunderstood-feather-1321 checkpoint.
+"""Reproduce the load_card_game_eval → apply pipeline and print actual shapes.
 
-Why: load fails with ScopeParamShapeError expecting (20, 5) but generator made (0, 5).
-This isolates whether num_scalars resolves to 20 (expected with per-head feed) or 0.
+Goal: identify where scalar_embed kernel becomes (0, 5) between disk (20, 5)
+and apply.
 """
 from __future__ import annotations
 
@@ -9,75 +9,61 @@ import argparse
 from pathlib import Path
 
 import jax
-from omegaconf import OmegaConf
+import jax.numpy as jnp
 
-from agents.initialize_agents import initialize_ja_image_agent, _get_image_dims
-from envs import make_env
-from envs.log_wrapper import LogWrapper
+from evaluation._card_game_utils import load_card_game_eval
+
+
+def walk_shapes(tree, prefix="", needle="scalar_embed"):
+    if hasattr(tree, "keys"):
+        for k, v in tree.items():
+            walk_shapes(v, f"{prefix}/{k}", needle)
+    else:
+        shape = getattr(tree, "shape", None)
+        if shape is not None and needle in prefix:
+            print(f"  {prefix}: shape={shape}")
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--run-dir", required=True,
-                   help="Hydra run dir (parent of saved_train_run/)")
+    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--seed-idx", type=int, default=3)
     args = p.parse_args()
 
-    run_dir = Path(args.run_dir)
-    cfg_path = run_dir / ".hydra" / "config.yaml"
-    cfg = OmegaConf.to_container(OmegaConf.load(cfg_path), resolve=True)
-    alg = cfg["algorithm"]
+    ev = load_card_game_eval(args.checkpoint)
+    print(f"label={ev.label} num_seeds={ev.num_seeds}")
+    print(f"policy.obs_dim = {ev.policy.obs_dim}")
+    print(f"network.scalar_dim = {ev.policy.network.scalar_dim}")
+    print(f"network.message_dim = {ev.policy.network.message_dim}")
 
-    print("=== flags from saved config ===")
-    for k in ("JA_CARD_ATTN", "JA_CARD_PARTNER_FEED",
-              "JA_PARTNER_FEED_PER_HEAD", "JA_NUM_HEADS",
-              "COMMUNICATION"):
-        v = alg.get(k)
-        print(f"  {k:30s} = {v!r}  (type={type(v).__name__})")
+    print("\n=== ev.params (best_per_seed, leading axis = num_seeds) ===")
+    walk_shapes(ev.params)
 
-    env_kwargs = dict(alg.get("ENV_KWARGS", {}))
-    if alg.get("COMMUNICATION", False):
-        env_kwargs["communication"] = True
-    env_kwargs["scramble_partner_msg"] = False
-    env = make_env(alg["ENV_NAME"], env_kwargs)
-    env_wrapped = LogWrapper(env)
+    seed_params = jax.tree.map(lambda x: x[args.seed_idx], ev.params)
+    print(f"\n=== seed_params (seed {args.seed_idx}) ===")
+    walk_shapes(seed_params)
 
-    print("\n=== env wrapper chain ===")
-    cur = env_wrapped
-    for i in range(6):
-        print(f"  L{i}: {type(cur).__name__}  num_scalar_obs="
-              f"{getattr(cur, 'num_scalar_obs', '<missing>')}")
-        if not hasattr(cur, "_env"):
-            break
-        cur = cur._env
+    print("\n=== attempting apply ===")
+    obs_dict, state = ev.env.reset(jax.random.PRNGKey(0))
+    obs = obs_dict["agent_0"]
+    print(f"env obs.shape = {obs.shape}")
+    hstate = ev.policy.init_hstate(1)
+    done = jnp.zeros((1, 1), dtype=bool)
+    avail = ev.env.get_avail_actions(state)["agent_0"]
+    avail = jnp.asarray(avail).reshape(1, 1, -1).astype(jnp.float32)
+    obs_flat = jnp.asarray(obs).reshape(1, 1, -1)
+    print(f"reshaped obs_flat.shape = {obs_flat.shape}")
 
-    h, w, num_scalars_env = _get_image_dims(env_wrapped)
-    print(f"\n_get_image_dims -> H={h} W={w} num_scalars={num_scalars_env}")
-
-    # Replicate initialize_ja_image_agent's scalar bookkeeping
-    num_scalars = num_scalars_env
-    if alg.get("JA_CARD_ATTN", False) and alg.get("JA_CARD_PARTNER_FEED", True):
-        if alg.get("JA_PARTNER_FEED_PER_HEAD", False):
-            num_scalars += 5 * alg.get("JA_NUM_HEADS", 4)
-        else:
-            num_scalars += 5
-    print(f"final num_scalars (manual replay) = {num_scalars}  "
-          f"(expected: 20 for per-head feed)")
-
-    # Now actually invoke the real init and check the param tree
-    print("\n=== invoking initialize_ja_image_agent ===")
-    policy, params = initialize_ja_image_agent(
-        alg, env_wrapped, jax.random.PRNGKey(0)
-    )
-
-    def find_scalar_embed(tree, path=""):
-        if hasattr(tree, "keys"):
-            for k, v in tree.items():
-                find_scalar_embed(v, f"{path}/{k}")
-        else:
-            if "scalar_embed" in path:
-                print(f"  {path}: shape={getattr(tree, 'shape', tree)}")
-
-    find_scalar_embed(params)
+    try:
+        action, hstate_new, attn = ev.policy.get_action_and_attention(
+            seed_params, obs_flat, done, avail, hstate,
+            jax.random.PRNGKey(1), greedy=True,
+        )
+        print(f"apply OK; attn.shape={attn.shape}")
+    except Exception as e:
+        print(f"apply FAILED: {type(e).__name__}")
+        print(f"  msg: {e}")
+        raise
 
 
 if __name__ == "__main__":
