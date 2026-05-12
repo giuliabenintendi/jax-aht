@@ -581,13 +581,31 @@ def make_train_loop(config, env):
                     ja_card_reward = jnp.zeros(num_actors)
                     card_jsd_step_mean = jnp.float32(0.0)
 
-                # Partner's most-attended canonical card per agent
-                # (target for the LIAM-style aux loss).
+                # LIAM-style aux loss target: "where in MY view-slot frame is
+                # the partner attending most?". The previous version targeted
+                # the partner's canonical-frame argmax — but the agent never
+                # sees canonical card identities (those require knowing the
+                # per-agent perms, which aren't in the obs), so the target was
+                # unrecoverable and the aux loss stayed at log(5) ≈ 1.61.
+                # Translating into the agent's own view-slot frame fixes that
+                # because the partner_feed scalar input already encodes this
+                # information directly (the supervised MLP probe recovered it
+                # at 99% from the 20-vector).
                 if ja_card_metric:
-                    partner_argmax_0 = phys_1.argmax(axis=-1)  # agent_0 predicts agent_1's argmax
-                    partner_argmax_1 = phys_0.argmax(axis=-1)  # vice versa
+                    partner_canon_argmax_0 = phys_1.argmax(axis=-1)  # agent_0's prediction target: partner_1's canonical argmax
+                    partner_canon_argmax_1 = phys_0.argmax(axis=-1)
+                    # Translate canonical → receiver's view-slot:
+                    # receiver's view-slot v of canonical card c = argsort(perm_receiver)[c].
+                    inv_perm_0 = jnp.argsort(perm_0, axis=-1)
+                    inv_perm_1 = jnp.argsort(perm_1, axis=-1)
+                    partner_argmax_in_ego_view_0 = jnp.take_along_axis(
+                        inv_perm_0, partner_canon_argmax_0[:, None], axis=1,
+                    ).squeeze(-1)
+                    partner_argmax_in_ego_view_1 = jnp.take_along_axis(
+                        inv_perm_1, partner_canon_argmax_1[:, None], axis=1,
+                    ).squeeze(-1)
                     partner_argmax_per_actor = jnp.concatenate(
-                        [partner_argmax_0, partner_argmax_1]
+                        [partner_argmax_in_ego_view_0, partner_argmax_in_ego_view_1]
                     ).astype(jnp.int32)
                 else:
                     partner_argmax_per_actor = jnp.zeros(num_actors, dtype=jnp.int32)
