@@ -38,9 +38,15 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
 
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
     ja_card_attn = algorithm_config.get("JA_CARD_ATTN", False)
-    # JA_CARD_PARTNER_FEED gates whether the 5-dim partner attention vector
-    # is appended to the obs at eval time (must match training).
+    # JA_CARD_PARTNER_FEED gates whether the partner attention vector is
+    # appended to the obs at eval time (must match training).
     ja_card_partner_feed = ja_card_attn and algorithm_config.get("JA_CARD_PARTNER_FEED", True)
+    # Per-head feed: 5 cards * num_heads scalars instead of a head-averaged 5
+    # vector. When enabled, the partner-feed scatter/translate is done per
+    # head and the layout flattens c-order to match marl/ja_ippo.py.
+    ja_partner_feed_per_head = algorithm_config.get("JA_PARTNER_FEED_PER_HEAD", False)
+    _ja_num_heads = algorithm_config.get("JA_NUM_HEADS", 4)
+    partner_feed_dim = (5 * _ja_num_heads) if ja_partner_feed_per_head else 5
     query_partner_lstm = algorithm_config.get("QUERY_PARTNER_LSTM", False)
     _lstm_dim = algorithm_config.get("LSTM_HIDDEN_DIM", 128)
     if feed_attn or ja_card_attn:
@@ -92,8 +98,8 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
             if ja_card_partner_feed:
-                prev_partner_card_attn_0 = jnp.zeros(5)
-                prev_partner_card_attn_1 = jnp.zeros(5)
+                prev_partner_card_attn_0 = jnp.zeros(partner_feed_dim)
+                prev_partner_card_attn_1 = jnp.zeros(partner_feed_dim)
 
             if query_partner_lstm:
                 plh_a0 = jnp.zeros((1, 1, _lstm_dim))
@@ -159,20 +165,35 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                     prev_attn_1 = attn_1.squeeze()
 
                 if ja_card_partner_feed:
-                    # Compute card-level attention and translate through OP perms
-                    a0_sq = attn_0.squeeze()  # (feat_h, feat_w)
+                    # Pool attention to per-card slots, scatter to canonical frame
+                    # via each agent's position perm, then translate back into the
+                    # OTHER agent's view-frame. Mirrors the rollout in
+                    # marl/ja_ippo.py — the per-head branch flattens c-order so
+                    # the scalar feed layout matches what training fed the net.
+                    a0_sq = attn_0.squeeze()  # (fh, fw) or (fh, fw, num_heads)
                     a1_sq = attn_1.squeeze()
-                    card_attn_0 = jnp.einsum("hw,chw->c", a0_sq, _card_masks_eval)  # (5,)
-                    card_attn_1 = jnp.einsum("hw,chw->c", a1_sq, _card_masks_eval)
-                    perm_0 = env_state.env_state.per_agent_perm["agent_0"]  # (5,)
+                    perm_0 = env_state.env_state.per_agent_perm["agent_0"]
                     perm_1 = env_state.env_state.per_agent_perm["agent_1"]
-                    phys_0 = jnp.zeros(5).at[perm_0].set(card_attn_0)
-                    phys_1 = jnp.zeros(5).at[perm_1].set(card_attn_1)
-                    prev_partner_card_attn_0 = phys_1[perm_0]  # translate 1→0's frame
-                    prev_partner_card_attn_1 = phys_0[perm_1]  # translate 0→1's frame
+                    if ja_partner_feed_per_head:
+                        cpa_0 = jnp.einsum("hwk,chw->ck", a0_sq, _card_masks_eval)  # (5, num_heads)
+                        cpa_1 = jnp.einsum("hwk,chw->ck", a1_sq, _card_masks_eval)
+                        nh = cpa_0.shape[-1]
+                        phys_0 = jnp.zeros((5, nh)).at[perm_0].set(cpa_0)
+                        phys_1 = jnp.zeros((5, nh)).at[perm_1].set(cpa_1)
+                        prev_partner_card_attn_0 = phys_1[perm_0].reshape(-1)
+                        prev_partner_card_attn_1 = phys_0[perm_1].reshape(-1)
+                    else:
+                        a0_2d = a0_sq.mean(axis=-1) if a0_sq.ndim == 3 else a0_sq
+                        a1_2d = a1_sq.mean(axis=-1) if a1_sq.ndim == 3 else a1_sq
+                        card_attn_0 = jnp.einsum("hw,chw->c", a0_2d, _card_masks_eval)
+                        card_attn_1 = jnp.einsum("hw,chw->c", a1_2d, _card_masks_eval)
+                        phys_0 = jnp.zeros(5).at[perm_0].set(card_attn_0)
+                        phys_1 = jnp.zeros(5).at[perm_1].set(card_attn_1)
+                        prev_partner_card_attn_0 = phys_1[perm_0]
+                        prev_partner_card_attn_1 = phys_0[perm_1]
                     if done["__all__"]:
-                        prev_partner_card_attn_0 = jnp.zeros(5)
-                        prev_partner_card_attn_1 = jnp.zeros(5)
+                        prev_partner_card_attn_0 = jnp.zeros(partner_feed_dim)
+                        prev_partner_card_attn_1 = jnp.zeros(partner_feed_dim)
 
                 jsd_val = float(jsd_divergence(
                     attn_0.squeeze(0), attn_1.squeeze(0)).mean())
