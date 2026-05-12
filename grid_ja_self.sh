@@ -15,7 +15,7 @@ set -u
 NUM_SEEDS=3
 TOTAL_STEPS=5e6
 PRIOR_M=0.01
-PRIOR_F=1.0
+PRIOR_F=0.5
 AUX_FIXED=0.1
 
 run_self_only() {
