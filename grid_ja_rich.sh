@@ -4,19 +4,19 @@
 # Shared (all cells):
 #   - COMMUNICATION=false, gaze_mode=true, per_head=true
 #   - JA_CARD_ATTN=true   -> partner-feed pathway on
-#   - 6 seeds, 5M steps   -> ~2h/cell
+#   - 6 seeds, 10M steps  -> ~3.7h/cell (reference: 3h 39m for 6 seeds @ 10M)
 #
 # Grid axes:
 #   match  in {0.01, 0.05}        — dense per-step JSD signal during deliberation
 #   follow in {0.5, 1.0, 2.0}     — per-agent decision-step pick-matches-attn
 #   aux    in {0.1, 0.5}          — LIAM aux loss predicting partner's argmax
 # Total: 2 x 3 x 2 = 12 cells. Split across GPU 2 (match=0.01) and GPU 6 (match=0.05).
-# Estimated wall time: ~12h overnight.
+# Wall time per GPU: 6 cells x 3.7h = ~22h. Total ~22h (GPUs in parallel).
 
 set -u
 
 NUM_SEEDS=6
-TOTAL_STEPS=5e6
+TOTAL_STEPS=10e6
 
 run_cell() {
   local gpu="$1"
