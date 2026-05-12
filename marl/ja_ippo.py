@@ -143,7 +143,15 @@ def make_train_loop(config, env):
     # Both terms reuse phys_0 / phys_1 computed in the JA_CARD_METRIC path.
     ja_attn_match_coef = config.get("JA_ATTN_MATCH_COEF", 0.0)
     ja_attn_follow_coef = config.get("JA_ATTN_FOLLOW_COEF", 0.0)
-    ja_attn_shaping_active = ja_attn_match_coef > 0 or ja_attn_follow_coef > 0
+    # Self-consistency reward: per-agent, fires at decision step when the
+    # agent picks the card its OWN attention argmax points to (view-frame).
+    # No shared condition - this anchors each agent's attention <-> own pick
+    # independently of partner. Designed to keep escape stable when partner
+    # attention drifts and follow stops firing.
+    ja_attn_self_coef = config.get("JA_ATTN_SELF_COEF", 0.0)
+    ja_attn_shaping_active = (
+        ja_attn_match_coef > 0 or ja_attn_follow_coef > 0 or ja_attn_self_coef > 0
+    )
     # LIAM-style auxiliary loss: predict partner's most-attended canonical-frame
     # card from the actor's pre-head features. Cross-entropy. Forces the
     # network to encode partner-related info from the (canonical-frame)
@@ -637,14 +645,50 @@ def make_train_loop(config, env):
                     r_attn_follow_per_actor = jnp.concatenate(
                         [follow_val_0, follow_val_1]
                     )
-                    r_attn_shaping = r_attn_match_per_actor + r_attn_follow_per_actor
+
+                    # Self-consistency: per-agent at decision step. Pays out
+                    # when the agent's own pick matches its own attention's
+                    # argmax card. View-frame: each agent's attention is
+                    # pooled to per-card slots, head-averaged, argmax taken;
+                    # the agent's recoloured-space action is mapped through
+                    # the same view-frame card identity. No shared condition.
+                    if ja_attn_self_coef > 0:
+                        # Head-averaged per-card pool of attention, view-frame.
+                        # attn_map: (1, num_actors, fh, fw, num_heads).
+                        attn_2d = attn_map.squeeze(0).mean(axis=-1)  # (num_actors, fh, fw)
+                        per_card_view = jnp.einsum(
+                            "ahw,chw->ac", attn_2d, _card_masks,
+                        )  # (num_actors, 5)
+                        own_argmax_view = per_card_view.argmax(axis=-1)  # (num_actors,)
+                        own_argmax_view_0 = own_argmax_view[:num_envs]
+                        own_argmax_view_1 = own_argmax_view[num_envs:]
+                        # Picks are still in recoloured space; the argmax we
+                        # just computed is from the agent's own view-frame
+                        # attention, which already inherits the recolouring.
+                        # So compare directly with the recoloured-space action.
+                        self_ok_0 = is_decision_env & (pick_0_view == own_argmax_view_0)
+                        self_ok_1 = is_decision_env & (pick_1_view == own_argmax_view_1)
+                        r_attn_self_per_actor = jnp.concatenate([
+                            jnp.where(self_ok_0, ja_attn_self_coef, 0.0),
+                            jnp.where(self_ok_1, ja_attn_self_coef, 0.0),
+                        ])
+                    else:
+                        r_attn_self_per_actor = jnp.zeros(num_actors)
+
+                    r_attn_shaping = (
+                        r_attn_match_per_actor
+                        + r_attn_follow_per_actor
+                        + r_attn_self_per_actor
+                    )
                 else:
                     r_attn_shaping = jnp.zeros(num_actors)
                     r_attn_match_per_actor = jnp.zeros(num_actors)
                     r_attn_follow_per_actor = jnp.zeros(num_actors)
+                    r_attn_self_per_actor = jnp.zeros(num_actors)
                 r_attn_shaping = jax.lax.stop_gradient(r_attn_shaping)
                 r_attn_match_per_actor = jax.lax.stop_gradient(r_attn_match_per_actor)
                 r_attn_follow_per_actor = jax.lax.stop_gradient(r_attn_follow_per_actor)
+                r_attn_self_per_actor = jax.lax.stop_gradient(r_attn_self_per_actor)
 
                 plh_a_stored = prev_plh_actor if query_partner_lstm else jnp.zeros((num_actors,))
                 plh_c_stored = prev_plh_critic if query_partner_lstm else jnp.zeros((num_actors,))
@@ -688,13 +732,15 @@ def make_train_loop(config, env):
                                      comm_match_batch, comm_stable_batch, comm_follow_batch,
                                      ja_card_reward, card_jsd_step_mean,
                                      r_attn_shaping,
-                                     r_attn_match_per_actor, r_attn_follow_per_actor)
+                                     r_attn_match_per_actor, r_attn_follow_per_actor,
+                                     r_attn_self_per_actor)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
                            comm_match_batch, comm_stable_batch, comm_follow_batch,
                            ja_card_reward_batch, card_jsd_batch,
                            r_attn_shaping_batch,
-                           r_attn_match_batch, r_attn_follow_batch) = jax.lax.scan(
+                           r_attn_match_batch, r_attn_follow_batch,
+                           r_attn_self_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -825,6 +871,7 @@ def make_train_loop(config, env):
             metric["ja_attn_shaping_mean"] = r_attn_shaping_batch.mean()
             metric["ja_attn_match_mean"] = r_attn_match_batch.mean()
             metric["ja_attn_follow_mean"] = r_attn_follow_batch.mean()
+            metric["ja_attn_self_mean"] = r_attn_self_batch.mean()
             metric["aux_partner_argmax_loss"] = aux_partner_argmax_loss[0].mean()
 
             if feed_other_attn:
@@ -905,6 +952,7 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
         ("ja_attn_shaping_mean",         "JA/attn_shaping"),
         ("ja_attn_match_mean",           "JA/attn_match"),
         ("ja_attn_follow_mean",          "JA/attn_follow"),
+        ("ja_attn_self_mean",            "JA/attn_self"),
         ("aux_partner_argmax_loss",      "JA/aux_partner_argmax_loss"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
