@@ -129,6 +129,12 @@ def make_train_loop(config, env):
     ja_partner_feed_per_head = config.get("JA_PARTNER_FEED_PER_HEAD", False)
     ja_num_heads = config.get("JA_NUM_HEADS", 4)
     partner_feed_dim = 5 * ja_num_heads if ja_partner_feed_per_head else 5
+    # PROBE: when true, the per-head partner feed is replaced with a perfect
+    # one-hot indicating canonical card 0's view-slot in each agent's view.
+    # Used to test whether the policy CAN use a useful partner signal at all,
+    # bypassing the chicken-and-egg of getting attention to produce one.
+    # Requires JA_PARTNER_FEED_PER_HEAD=true to apply.
+    probe_perfect_partner_feed = config.get("PROBE_PERFECT_PARTNER_FEED", False)
     ja_card_jsd_coef = config.get("JA_CARD_JSD_COEF", 0.0)
     # Two-part JA attention shaping (parallel to comm shaping):
     #   match: per-step continuous similarity between agents' canonical-frame
@@ -582,6 +588,34 @@ def make_train_loop(config, env):
                             translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
                         new_partner_card_attn = jnp.concatenate(
                             [translated_for_0, translated_for_1], axis=0)
+                        # PROBE: replace the computed partner feed with an
+                        # ideal one. Picks a target canonical card (always 0)
+                        # and tells each agent "your partner attended fully
+                        # to canonical card 0", expressed in their own view
+                        # frame. Both heads get the same one-hot per agent.
+                        # If the policy can't use this signal to coordinate,
+                        # the bottleneck isn't in attention training, it's
+                        # in the policy's downstream pathway.
+                        if probe_perfect_partner_feed:
+                            target_canon = jnp.zeros(num_envs, dtype=jnp.int32)
+                            pos_perm_inv_0 = jnp.argsort(perm_0, axis=-1)
+                            pos_perm_inv_1 = jnp.argsort(perm_1, axis=-1)
+                            target_v0 = jnp.take_along_axis(
+                                pos_perm_inv_0, target_canon[:, None], axis=1
+                            ).squeeze(-1)
+                            target_v1 = jnp.take_along_axis(
+                                pos_perm_inv_1, target_canon[:, None], axis=1
+                            ).squeeze(-1)
+                            one_hot_0 = jax.nn.one_hot(target_v0, 5)  # (num_envs, 5)
+                            one_hot_1 = jax.nn.one_hot(target_v1, 5)
+                            perfect_0 = jnp.broadcast_to(
+                                one_hot_0[:, :, None], (num_envs, 5, ja_num_heads)
+                            ).reshape(num_envs, -1)
+                            perfect_1 = jnp.broadcast_to(
+                                one_hot_1[:, :, None], (num_envs, 5, ja_num_heads)
+                            ).reshape(num_envs, -1)
+                            new_partner_card_attn = jnp.concatenate(
+                                [perfect_0, perfect_1], axis=0)
                         new_done_batch_ja = batchify(new_done, env.agents, num_actors).squeeze()
                         new_partner_card_attn = jnp.where(
                             new_done_batch_ja[:, None], 0.0, new_partner_card_attn)
