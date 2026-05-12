@@ -4,8 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import jax
-import orbax.checkpoint as ocp
+from common.save_load_utils import load_train_run
 
 
 def main():
@@ -18,16 +17,15 @@ def main():
     print(f"ckpt_dir = {ckpt_dir}")
     print(f"contents: {sorted(p.name for p in ckpt_dir.iterdir())}\n")
 
-    mgr = ocp.CheckpointManager(ckpt_dir, options=ocp.CheckpointManagerOptions())
-    steps = mgr.all_steps()
-    print(f"steps: {steps}\n")
-
-    latest = steps[-1] if steps else None
-    if latest is None:
-        print("no steps found")
-        return
-
-    restored = mgr.restore(latest)
+    restored = load_train_run(str(ckpt_dir))
+    print(f"top-level type: {type(restored).__name__}")
+    if isinstance(restored, (list, tuple)):
+        print(f"  length: {len(restored)}")
+        roots = list(enumerate(restored))
+    elif hasattr(restored, "keys"):
+        roots = list(restored.items())
+    else:
+        roots = [("root", restored)]
 
     def walk(tree, prefix=""):
         if hasattr(tree, "keys"):
@@ -35,10 +33,15 @@ def main():
                 walk(v, f"{prefix}/{k}")
         else:
             shape = getattr(tree, "shape", None)
-            if shape is not None and "scalar_embed" in prefix:
+            if shape is None:
+                return
+            # print ALL leaves under actor_lstm / critic_lstm to see the param tree
+            if "lstm" in prefix or "scalar_embed" in prefix:
                 print(f"  {prefix}: shape={shape}")
 
-    walk(restored)
+    for key, sub in roots:
+        print(f"\n--- root[{key}] ---")
+        walk(sub)
 
 
 if __name__ == "__main__":
