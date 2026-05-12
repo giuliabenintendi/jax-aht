@@ -144,10 +144,8 @@ def make_train_loop(config, env):
     ja_attn_match_coef = config.get("JA_ATTN_MATCH_COEF", 0.0)
     ja_attn_follow_coef = config.get("JA_ATTN_FOLLOW_COEF", 0.0)
     ja_attn_shaping_active = ja_attn_match_coef > 0 or ja_attn_follow_coef > 0
-    # LIAM-style auxiliary loss: predict partner's most-attended canonical-frame
-    # card from the actor's pre-head features. Cross-entropy. Forces the
-    # network to encode partner-related info from the (canonical-frame)
-    # partner-attention pathway (JA_CARD_PARTNER_FEED).
+    # Auxiliary cross-entropy loss: from actor pre-head features, predict the
+    # view-slot in the agent's own frame where the partner is attending most.
     ja_aux_partner_argmax_coef = config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0)
     ja_aux_partner_argmax_active = ja_aux_partner_argmax_coef > 0
     # When True, compute the OP-corrected card-level JSD as a diagnostic metric
@@ -581,21 +579,15 @@ def make_train_loop(config, env):
                     ja_card_reward = jnp.zeros(num_actors)
                     card_jsd_step_mean = jnp.float32(0.0)
 
-                # LIAM-style aux loss target: "where in MY view-slot frame is
-                # the partner attending most?". The previous version targeted
-                # the partner's canonical-frame argmax — but the agent never
-                # sees canonical card identities (those require knowing the
-                # per-agent perms, which aren't in the obs), so the target was
-                # unrecoverable and the aux loss stayed at log(5) ≈ 1.61.
-                # Translating into the agent's own view-slot frame fixes that
-                # because the partner_feed scalar input already encodes this
-                # information directly (the supervised MLP probe recovered it
-                # at 99% from the 20-vector).
+                # Aux target: view-slot in the agent's own frame where the
+                # partner is attending most. Computed by taking the partner's
+                # canonical argmax and translating it into the receiver's
+                # view via argsort(perm_receiver). Target lives in the same
+                # frame the agent observes (the partner_feed already encodes
+                # this), so cross-entropy is learnable.
                 if ja_card_metric:
-                    partner_canon_argmax_0 = phys_1.argmax(axis=-1)  # agent_0's prediction target: partner_1's canonical argmax
+                    partner_canon_argmax_0 = phys_1.argmax(axis=-1)
                     partner_canon_argmax_1 = phys_0.argmax(axis=-1)
-                    # Translate canonical → receiver's view-slot:
-                    # receiver's view-slot v of canonical card c = argsort(perm_receiver)[c].
                     inv_perm_0 = jnp.argsort(perm_0, axis=-1)
                     inv_perm_1 = jnp.argsort(perm_1, axis=-1)
                     partner_argmax_in_ego_view_0 = jnp.take_along_axis(
