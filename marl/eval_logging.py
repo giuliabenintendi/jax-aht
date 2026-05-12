@@ -468,12 +468,14 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                     num_episodes=sp_video_episodes, fps=3,
+                    partner_feed_dim=eval_partner_feed_dim,
                 )
                 _log_card_game_action_distributions(
                     inner_env, policy, final_params, max_steps, tag, logger,
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                     num_episodes=30,
+                    partner_feed_dim=eval_partner_feed_dim,
                 )
                 # Under OP the canonical-scene video misrepresents what each
                 # agent actually sees; for JA_CARD_ATTN runs also log a video
@@ -485,6 +487,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                         feed_attn_dims=feed_attn_dims,
                         ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                         num_episodes=sp_video_episodes, fps=3,
+                        partner_feed_dim=eval_partner_feed_dim,
                     )
             else:
                 # Other envs: videos + attention overlays
@@ -611,4 +614,5 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             feed_attn_dims=feed_attn_dims,
             ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
             num_episodes=xp_video_episodes, fps=3,
+            partner_feed_dim=eval_partner_feed_dim,
         )

@@ -147,6 +147,7 @@ def _log_card_game_action_distributions(
     inner_env, policy, params, max_steps, tag, logger,
     feed_attn_dims=None, ja_card_masks=None,
     num_episodes=30, rng_seed_base=300,
+    partner_feed_dim=5,
 ):
     """Print + log per-agent action distributions in EACH AGENT'S OWN VIEW
     frame across `num_episodes` SP eps.
@@ -183,6 +184,7 @@ def _log_card_game_action_distributions(
             collect_attention=False,
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
+            partner_feed_dim=partner_feed_dim,
         )
         n_steps = min(len(ep_messages), len(ep_actions))
         for t in range(n_steps):
@@ -242,7 +244,8 @@ def _log_card_game_action_distributions(
 def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_dir, logger,
                                feed_attn_dims=None,
                                ja_card_masks=None,
-                               num_episodes=30, fps=3):
+                               num_episodes=30, fps=3,
+                               partner_feed_dim=5):
     """Run multiple card game episodes and save a video with attention spots and choices."""
     import wandb
     from envs.card_game.rendering import (
@@ -275,6 +278,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             collect_obs=True,
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
+            partner_feed_dim=partner_feed_dim,
         )
 
         maps_0 = attn_data.get("agent_0", [])
@@ -338,7 +342,8 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
 def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, video_dir, logger,
                               feed_attn_dims=None, ja_card_masks=None,
                               seed_pairs=None,
-                              num_episodes=10, fps=3):
+                              num_episodes=10, fps=3,
+                              partner_feed_dim=5):
     """Generate cross-play videos: pair seed_i (agent 0) with seed_j (agent 1).
 
     Records a few episodes for each off-diagonal pair and logs as wandb videos.
@@ -370,6 +375,7 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                     collect_obs=True,
                     feed_other_attn_dims=feed_attn_dims,
                     ja_card_masks=ja_card_masks,
+                    partner_feed_dim=partner_feed_dim,
                 )
 
                 maps_0 = attn_data.get("agent_0", [])
@@ -472,6 +478,7 @@ def _log_card_game_per_agent_obs_video(
     num_episodes=30, fps=3,
     params_partner=None, video_filename="eval_card_game_per_agent.mp4",
     rng_seed_base=100, video_log_key=None,
+    partner_feed_dim=5,
 ):
     """Eval video built from each agent's actual observation.
 
@@ -514,6 +521,7 @@ def _log_card_game_per_agent_obs_video(
             collect_obs=True,
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
+            partner_feed_dim=partner_feed_dim,
         )
 
         maps_0 = attn_data.get("agent_0", [])
@@ -601,6 +609,7 @@ def _log_card_game_per_agent_xp_videos(
     inner_env, policy, all_params, max_steps, tag, video_dir, logger,
     feed_attn_dims=None, ja_card_masks=None,
     seed_pairs=None, num_episodes=5, fps=3,
+    partner_feed_dim=5,
 ):
     """Per-agent obs cross-play videos: one mp4 per (i, j) pair, agent 0 = seed_i.
 
@@ -627,4 +636,5 @@ def _log_card_game_per_agent_xp_videos(
             video_filename=f"per_agent_xp_s{seed_i}_vs_s{seed_j}.mp4",
             rng_seed_base=5000 + seed_i * 1000 + seed_j * 100,
             video_log_key=f"{tag}/per_agent_xp_s{seed_i}_vs_s{seed_j}",
+            partner_feed_dim=partner_feed_dim,
         )
