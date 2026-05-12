@@ -406,6 +406,12 @@ def main() -> None:
     # 21x35 image, 6x9 feature grid match the JA image agent's downsampling.
     _card_masks_np = np.asarray(build_card_masks(21, 35, 6, 9))
 
+    # Pass per-head partner-feed config to the rollout so obs is augmented as
+    # in training; otherwise scalar_embed param shape doesn't match.
+    _policy_scalar_dim = int(getattr(ev.policy.network, "scalar_dim", 0))
+    _partner_feed_dim = _policy_scalar_dim if _policy_scalar_dim > 0 else 5
+    _use_card_masks = jnp.asarray(_card_masks_np) if _policy_scalar_dim > 0 else None
+
     print(f"Checkpoint: {args.checkpoint}")
     print(f"  label={ev.label}  seeds={ev.num_seeds}  seed_idx={args.seed_idx}")
     print(f"  max_steps={ev.max_steps}  greedy={greedy}")
@@ -418,6 +424,8 @@ def main() -> None:
         ep_states, attn_maps, ep_actions, ep_messages = run_episode_with_states(
             rng, ev.env, params, ev.policy, params, ev.policy, ev.max_steps,
             collect_attention=True, greedy=greedy,
+            ja_card_masks=_use_card_masks,
+            partner_feed_dim=_partner_feed_dim,
         )
 
         for agent_key in ("agent_0", "agent_1"):
