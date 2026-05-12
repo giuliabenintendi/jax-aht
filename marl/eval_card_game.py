@@ -638,3 +638,102 @@ def _log_card_game_per_agent_xp_videos(
             video_log_key=f"{tag}/per_agent_xp_s{seed_i}_vs_s{seed_j}",
             partner_feed_dim=partner_feed_dim,
         )
+
+
+def _log_card_game_per_head_attn_panel(
+    inner_env, policy, params, max_steps, tag, video_dir, logger,
+    feed_attn_dims=None, ja_card_masks=None,
+    partner_feed_dim=5, num_episodes=2,
+    rng_seed_base=8000,
+):
+    """Per-head x per-step attention overlay PNG, one per agent per episode.
+
+    Mirrors the post-hoc `attention_numbers._save_per_head_action_overlay`:
+    NUM_HEADS rows x T columns, each cell = agent-frame obs with that head's
+    attention heatmap, plus a red box around the picked card on the decision
+    step. Built from the agent's actual recoloured/shuffled obs so the overlay
+    lands on the cards the policy actually saw.
+    """
+    import wandb
+    from pathlib import Path
+    from evaluation.attention_numbers import _save_per_head_action_overlay
+
+    img_h_const, img_w_const = 21, 35
+
+    for ep in range(num_episodes):
+        ep_rng = jax.random.PRNGKey(rng_seed_base + ep * 17)
+        ep_states, attn_data, ep_actions, ep_messages, ep_obs = run_episode_with_states(
+            ep_rng, inner_env, params, policy, params, policy, max_steps,
+            collect_attention=True,
+            collect_obs=True,
+            feed_other_attn_dims=feed_attn_dims,
+            ja_card_masks=ja_card_masks,
+            partner_feed_dim=partner_feed_dim,
+        )
+
+        T = len(ep_obs)
+        if T == 0:
+            continue
+        is_decision_seq = [t == T - 1 for t in range(T)]
+
+        for agent_idx, agent_key in enumerate(("agent_0", "agent_1")):
+            maps = attn_data.get(agent_key, [])
+            if not maps or len(maps) < T:
+                continue
+
+            per_head_seq = []
+            for a in maps[:T]:
+                a_sq = np.asarray(a).squeeze()
+                if a_sq.ndim == 2:
+                    a_sq = a_sq[..., None]
+                per_head_seq.append(a_sq)
+            per_head_seq = np.stack(per_head_seq, axis=0)  # (T, fh, fw, num_heads)
+
+            obs_seq = []
+            for o in ep_obs:
+                a_obs = np.asarray(o[agent_key])
+                img = a_obs[: img_h_const * img_w_const * 3].reshape(
+                    img_h_const, img_w_const, 3
+                )
+                obs_seq.append(np.clip(img, 0.0, 1.0).astype(np.float32))
+            obs_seq = np.stack(obs_seq, axis=0)  # (T, img_h, img_w, 3)
+
+            # Pick view-slot at decision step. Translate the recorded raw action
+            # through recolouring and position perm exactly as attention_numbers
+            # does: inv_recol -> canonical, then argsort(pos_perm) to view-slot.
+            action_view_slots = [-1] * T
+            if len(ep_actions) >= T and len(ep_states) >= T:
+                state_dec = ep_states[T - 1]
+                inv_recol = None
+                pos_perm = None
+                s = state_dec
+                while s is not None:
+                    if inv_recol is None and hasattr(s, "per_agent_inv_recolouring"):
+                        inv_recol = np.asarray(s.per_agent_inv_recolouring[agent_key])
+                    if pos_perm is None and hasattr(s, "per_agent_perm"):
+                        pos_perm = np.asarray(s.per_agent_perm[agent_key])
+                    s = getattr(s, "env_state", None)
+                raw = int(ep_actions[T - 1][agent_idx])
+                if raw >= 0 and inv_recol is not None and pos_perm is not None:
+                    own_pick_gt = int(inv_recol[raw])
+                    pos_perm_inv = np.argsort(pos_perm)
+                    action_view_slots[T - 1] = int(pos_perm_inv[own_pick_gt])
+
+            partner_msg_view_slots = [-1] * T  # no comm -> no message overlay
+
+            out_path = Path(video_dir) / f"per_head_attn_{agent_key}_ep{ep}.png"
+            _save_per_head_action_overlay(
+                per_head_seq=per_head_seq,
+                obs_seq=obs_seq,
+                action_view_slots=action_view_slots,
+                is_decision_seq=is_decision_seq,
+                partner_msg_view_slots=partner_msg_view_slots,
+                out_path=out_path,
+                title=f"{tag} {agent_key} ep{ep}",
+                agent_idx=agent_idx,
+            )
+            logger.log(
+                {f"{tag}/per_head_attn_{agent_key}_ep{ep}": wandb.Image(str(out_path))},
+                commit=False,
+            )
+            print(f"[card_game] Saved per-head overlay: {out_path}")

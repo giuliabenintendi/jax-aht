@@ -14,6 +14,7 @@ from marl.eval_card_game import (
     _log_card_game_attention_grid,
     _log_card_game_eval_video,
     _log_card_game_per_agent_obs_video,
+    _log_card_game_per_head_attn_panel,
     _log_card_game_xp_videos,
 )
 from marl.eval_lbf import _render_lbf_eval_frames
@@ -488,6 +489,13 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                         ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                         num_episodes=sp_video_episodes, fps=3,
                         partner_feed_dim=eval_partner_feed_dim,
+                    )
+                    _log_card_game_per_head_attn_panel(
+                        inner_env, policy, final_params, max_steps, tag, video_dir, logger,
+                        feed_attn_dims=feed_attn_dims,
+                        ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
+                        partner_feed_dim=eval_partner_feed_dim,
+                        num_episodes=2,
                     )
             else:
                 # Other envs: videos + attention overlays
