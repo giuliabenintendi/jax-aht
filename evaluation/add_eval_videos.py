@@ -120,6 +120,10 @@ def main():
         feed_attn = alg_config.get("FEED_OTHER_ATTN", False)
         ja_card_attn = alg_config.get("JA_CARD_ATTN", False)
         ja_card_partner_feed = ja_card_attn and alg_config.get("JA_CARD_PARTNER_FEED", True)
+        ja_num_heads = int(alg_config.get("JA_NUM_HEADS", 4))
+        partner_feed_dim = (
+            5 * ja_num_heads if alg_config.get("JA_PARTNER_FEED_PER_HEAD", False) else 5
+        )
         feed_attn_dims = None
         ja_card_masks = None
         if feed_attn or ja_card_partner_feed:
@@ -161,6 +165,7 @@ def main():
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=ja_card_masks,
                     num_episodes=args.num_episodes, fps=3,
+                    partner_feed_dim=partner_feed_dim,
                 )
                 # Per-agent OP-recoloured/shuffled view — the actual policy input,
                 # with attention overlaid. Partner-message dot is drawn into the
@@ -173,6 +178,7 @@ def main():
                     feed_attn_dims=feed_attn_dims,
                     ja_card_masks=ja_card_masks,
                     num_episodes=args.num_episodes, fps=3,
+                    partner_feed_dim=partner_feed_dim,
                 )
                 print(f"Seed {seed_idx}: SP videos in {video_dir}")
 
@@ -194,6 +200,7 @@ def main():
                 ja_card_masks=ja_card_masks,
                 seed_pairs=xp_pairs,
                 num_episodes=args.num_episodes, fps=3,
+                partner_feed_dim=partner_feed_dim,
             )
         wb_run.log({}, commit=True)
         wb_run.finish()
@@ -207,6 +214,7 @@ def main():
             jax.random.PRNGKey(42 + seed_idx), inner_env, params, policy,
             params, policy, max_steps,
             collect_attention=True,
+            partner_feed_dim=partner_feed_dim,
         )
         print(f"Seed {seed_idx}: {len(ep_states)} frames collected")
 

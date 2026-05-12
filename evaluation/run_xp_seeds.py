@@ -88,7 +88,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 agent_1_param, agent_1_policy,
                                 max_episode_steps, action_sizes,
                                 feed_attn_dims=None, ja_card_masks=None,
-                                greedy_eval=True):
+                                greedy_eval=True, partner_feed_dim=5):
     """Run one eval episode, returning LogWrapper info + mean JSD between attention maps.
 
     Args:
@@ -127,9 +127,10 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_action_1 = jnp.zeros((1, 1), dtype=jnp.float32)
 
     _ja_card = ja_card_masks is not None
+    _per_head_feed = partner_feed_dim > 5
     if _ja_card:
-        prev_pca_0 = jnp.zeros(5)  # partner card attention for agent 0
-        prev_pca_1 = jnp.zeros(5)
+        prev_pca_0 = jnp.zeros(partner_feed_dim)
+        prev_pca_1 = jnp.zeros(partner_feed_dim)
 
     # Initialize uniform attention maps for feed_other_attn
     if feed_attn_dims is not None:
@@ -216,17 +217,33 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     if _ja_card:
         a0_sq = attn_0.squeeze()
         a1_sq = attn_1.squeeze()
-        ca_0 = jnp.einsum("hw,chw->c", a0_sq, ja_card_masks)
-        ca_1 = jnp.einsum("hw,chw->c", a1_sq, ja_card_masks)
         perm_0 = _get_card_game_position_perm(init_env_state, "agent_0")
         perm_1 = _get_card_game_position_perm(init_env_state, "agent_1")
-        ph_0 = jnp.zeros(5).at[perm_0].set(ca_0)
-        ph_1 = jnp.zeros(5).at[perm_1].set(ca_1)
-        prev_pca_0 = ph_1[perm_0]
-        prev_pca_1 = ph_0[perm_1]
-        # OP-corrected card-level JSD for the initial obs.
-        _m0 = ca_0.sum()
-        _m1 = ca_1.sum()
+        if _per_head_feed:
+            cpa_0 = jnp.einsum("hwk,chw->ck", a0_sq, ja_card_masks)
+            cpa_1 = jnp.einsum("hwk,chw->ck", a1_sq, ja_card_masks)
+            nh = cpa_0.shape[-1]
+            ph_0_full = jnp.zeros((5, nh)).at[perm_0].set(cpa_0)
+            ph_1_full = jnp.zeros((5, nh)).at[perm_1].set(cpa_1)
+            prev_pca_0 = ph_1_full[perm_0].reshape(-1)
+            prev_pca_1 = ph_0_full[perm_1].reshape(-1)
+            # Card-level JSD uses head-averaged distributions (kept stable so
+            # the metric is comparable across per-head and head-avg runs).
+            ca_0_avg = cpa_0.mean(axis=-1)
+            ca_1_avg = cpa_1.mean(axis=-1)
+            ph_0 = ph_0_full.mean(axis=-1)
+            ph_1 = ph_1_full.mean(axis=-1)
+            _m0 = ca_0_avg.sum()
+            _m1 = ca_1_avg.sum()
+        else:
+            ca_0 = jnp.einsum("hw,chw->c", a0_sq, ja_card_masks)
+            ca_1 = jnp.einsum("hw,chw->c", a1_sq, ja_card_masks)
+            ph_0 = jnp.zeros(5).at[perm_0].set(ca_0)
+            ph_1 = jnp.zeros(5).at[perm_1].set(ca_1)
+            prev_pca_0 = ph_1[perm_0]
+            prev_pca_1 = ph_0[perm_1]
+            _m0 = ca_0.sum()
+            _m1 = ca_1.sum()
         _q0 = ph_0 / (_m0 + 1e-8)
         _q1 = ph_1 / (_m1 + 1e-8)
         card_jsd_sum = jsd_divergence(_q0[None, :], _q1[None, :])
@@ -320,24 +337,39 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
 
             # Update JA card partner attention + accumulate card-level JSD.
             if _ja_card:
-                ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
-                ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
                 p0 = _get_card_game_position_perm(env_state, "agent_0")
                 p1 = _get_card_game_position_perm(env_state, "agent_1")
-                ph0 = jnp.zeros(5).at[p0].set(ca0)
-                ph1 = jnp.zeros(5).at[p1].set(ca1)
-                next_pca_0 = ph1[p0]
-                next_pca_1 = ph0[p1]
-                m0 = ca0.sum()
-                m1 = ca1.sum()
+                if _per_head_feed:
+                    cpa0 = jnp.einsum("hwk,chw->ck", attn_0.squeeze(), ja_card_masks)
+                    cpa1 = jnp.einsum("hwk,chw->ck", attn_1.squeeze(), ja_card_masks)
+                    nh = cpa0.shape[-1]
+                    ph0_full = jnp.zeros((5, nh)).at[p0].set(cpa0)
+                    ph1_full = jnp.zeros((5, nh)).at[p1].set(cpa1)
+                    next_pca_0 = ph1_full[p0].reshape(-1)
+                    next_pca_1 = ph0_full[p1].reshape(-1)
+                    ca0_avg = cpa0.mean(axis=-1)
+                    ca1_avg = cpa1.mean(axis=-1)
+                    ph0 = ph0_full.mean(axis=-1)
+                    ph1 = ph1_full.mean(axis=-1)
+                    m0 = ca0_avg.sum()
+                    m1 = ca1_avg.sum()
+                else:
+                    ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
+                    ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
+                    ph0 = jnp.zeros(5).at[p0].set(ca0)
+                    ph1 = jnp.zeros(5).at[p1].set(ca1)
+                    next_pca_0 = ph1[p0]
+                    next_pca_1 = ph0[p1]
+                    m0 = ca0.sum()
+                    m1 = ca1.sum()
                 q0 = ph0 / (m0 + 1e-8)
                 q1 = ph1 / (m1 + 1e-8)
                 step_card_jsd = jsd_divergence(q0[None, :], q1[None, :])
                 card_jsd_sum_next = card_jsd_sum + step_card_jsd
                 card_jsd_count_next = card_jsd_count + 1.0
             else:
-                next_pca_0 = jnp.zeros(5)
-                next_pca_1 = jnp.zeros(5)
+                next_pca_0 = jnp.zeros(partner_feed_dim)
+                next_pca_1 = jnp.zeros(partner_feed_dim)
                 card_jsd_sum_next = card_jsd_sum
                 card_jsd_count_next = card_jsd_count
 
@@ -385,7 +417,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
                           agent_1_param, agent_1_policy,
                           max_episode_steps, num_eps, action_sizes,
                           feed_attn_dims=None, ja_card_masks=None,
-                          greedy_eval=True):
+                          greedy_eval=True, partner_feed_dim=5):
     """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
@@ -395,7 +427,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
             ep_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, action_sizes,
             feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
-            greedy_eval=greedy_eval,
+            greedy_eval=greedy_eval, partner_feed_dim=partner_feed_dim,
         )
     )
     all_info, all_jsd, all_card_jsd, all_match = vmap_fn(ep_rngs)
@@ -407,7 +439,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
                      all_agent_1_params, agent_1_policy,
                      max_episode_steps, num_eps, action_sizes,
                      feed_attn_dims=None, ja_card_masks=None,
-                     greedy_eval=True):
+                     greedy_eval=True, partner_feed_dim=5):
     """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
     num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
     partner_rngs = jax.random.split(rng, num_partners)
@@ -418,7 +450,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
             partner_rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, num_eps, action_sizes,
             feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
-            greedy_eval=greedy_eval,
+            greedy_eval=greedy_eval, partner_feed_dim=partner_feed_dim,
         )
 
     return jax.vmap(eval_one_partner)(partner_rngs, all_agent_1_params)
@@ -739,9 +771,16 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         )
         ja_card_masks = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
+    xp_partner_feed_dim = (
+        5 * int(algo_cfg.get("JA_NUM_HEADS", 4))
+        if algo_cfg.get("JA_PARTNER_FEED_PER_HEAD", False)
+        else 5
+    )
+
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks, greedy_eval=greedy_eval,
+        partner_feed_dim=xp_partner_feed_dim,
     ))
 
     all_row_metrics = []
@@ -1191,9 +1230,16 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
         )
         ja_card_masks = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
+    xp_partner_feed_dim = (
+        5 * int(algo_cfg.get("JA_NUM_HEADS", 4))
+        if algo_cfg.get("JA_PARTNER_FEED_PER_HEAD", False)
+        else 5
+    )
+
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks, greedy_eval=greedy_eval,
+        partner_feed_dim=xp_partner_feed_dim,
     ))
 
     all_row_metrics = []
