@@ -352,6 +352,12 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
     ja_card_attn = algorithm_config.get("JA_CARD_ATTN", False)
     ja_card_partner_feed = ja_card_attn and algorithm_config.get("JA_CARD_PARTNER_FEED", True)
+    # Per-head partner feed dim. Must match training, otherwise the eval
+    # video's per-step obs augmentation will use a different scalar count
+    # than the policy's scalar_embed expects, producing a Flax shape error.
+    _ja_num_heads_v = algorithm_config.get("JA_NUM_HEADS", 4)
+    _per_head_v = algorithm_config.get("JA_PARTNER_FEED_PER_HEAD", False)
+    eval_partner_feed_dim = (5 * _ja_num_heads_v) if _per_head_v else 5
     feed_attn_dims = None
     if feed_attn or ja_card_attn:
         ev_img_h, ev_img_w, _ = _get_image_dims(env)
@@ -402,6 +408,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 collect_obs=True,
                 feed_other_attn_dims=feed_attn_dims,
                 ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
+                partner_feed_dim=eval_partner_feed_dim,
             )
             all_ep_states.extend(ep_states_i)
             for ak in ("agent_0", "agent_1"):
@@ -550,6 +557,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 collect_attention=True,
                 feed_other_attn_dims=feed_attn_dims,
                 ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
+                partner_feed_dim=eval_partner_feed_dim,
             )
             _accumulate_episode(attn_data_extra, ep_states_extra)
 

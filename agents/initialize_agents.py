@@ -137,12 +137,24 @@ def initialize_ja_image_agent(config, env, rng):
     # JA_CARD_ATTN appends a translated partner-attention vector to the obs.
     # Default: 5-dim head-averaged canonical card attention.
     # JA_PARTNER_FEED_PER_HEAD=True: 5 * NUM_HEADS-dim per-head canonical attention.
-    if config.get("JA_CARD_ATTN", False) and config.get("JA_CARD_PARTNER_FEED", True):
-        if config.get("JA_PARTNER_FEED_PER_HEAD", False):
-            num_scalars += 5 * config.get("JA_NUM_HEADS", 4)
+    _flag_ja_card = config.get("JA_CARD_ATTN", False)
+    _flag_partner_feed = config.get("JA_CARD_PARTNER_FEED", True)
+    _flag_per_head = config.get("JA_PARTNER_FEED_PER_HEAD", False)
+    _num_heads_cfg = config.get("JA_NUM_HEADS", 4)
+    if _flag_ja_card and _flag_partner_feed:
+        if _flag_per_head:
+            num_scalars += 5 * _num_heads_cfg
         else:
             num_scalars += 5
     obs_dim = img_h * img_w * num_channels + num_scalars
+    print(
+        f"[initialize_ja_image_agent] JA_CARD_ATTN={_flag_ja_card} "
+        f"JA_CARD_PARTNER_FEED={_flag_partner_feed} "
+        f"JA_PARTNER_FEED_PER_HEAD={_flag_per_head} "
+        f"JA_NUM_HEADS={_num_heads_cfg} -> scalar_dim={num_scalars} "
+        f"obs_dim={obs_dim} action_dim={env.action_space(env.agents[0]).n}",
+        flush=True,
+    )
 
     policy = JAImageActorCriticPolicy(
         action_dim=env.action_space(env.agents[0]).n,
