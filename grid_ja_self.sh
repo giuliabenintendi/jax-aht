@@ -8,7 +8,7 @@
 #         3 seeds, 5M steps each (~1h/cell).
 #
 # Sweep: self in {0, 0.1, 0.5, 1.0, 2.0}, prior shaping on/off.
-# Total: 10 cells. 5 cells per GPU. ~5h.
+# Total: 10 cells. Runs sequentially on GPU 6. ~10h.
 
 set -u
 
@@ -64,18 +64,13 @@ run_self_plus_prior() {
   echo "[$(date +%Y-%m-%d_%H:%M:%S)] [finish] ${label} (exit $?)"
 }
 
-# GPU 2: self-coef alone (no match, no follow), 5 cells
+# All 10 cells sequentially on GPU 6.
 (
-  run_self_only 2 0.0  "S1_self_0"
-  run_self_only 2 0.1  "S2_self_0.1"
-  run_self_only 2 0.5  "S3_self_0.5"
-  run_self_only 2 1.0  "S4_self_1.0"
-  run_self_only 2 2.0  "S5_self_2.0"
-) > grid_self_gpu2.log 2>&1 &
-PID_2=$!
-
-# GPU 6: self-coef on top of prior shaping (m=0.01 f=1.0 a=0.1), 5 cells
-(
+  run_self_only       6 0.0  "S1_self_0"
+  run_self_only       6 0.1  "S2_self_0.1"
+  run_self_only       6 0.5  "S3_self_0.5"
+  run_self_only       6 1.0  "S4_self_1.0"
+  run_self_only       6 2.0  "S5_self_2.0"
   run_self_plus_prior 6 0.0  "C1_prior_self_0"
   run_self_plus_prior 6 0.1  "C2_prior_self_0.1"
   run_self_plus_prior 6 0.5  "C3_prior_self_0.5"
@@ -84,11 +79,8 @@ PID_2=$!
 ) > grid_self_gpu6.log 2>&1 &
 PID_6=$!
 
-echo "GPU 2 chain PID: ${PID_2}  (self-only sweep: S1..S5)"
-echo "GPU 6 chain PID: ${PID_6}  (self + prior sweep: C1..C5)"
-echo "Logs:"
-echo "  tail -f grid_self_gpu2.log"
-echo "  tail -f grid_self_gpu6.log"
-echo "Waiting for both chains to finish..."
-wait ${PID_2} ${PID_6}
+echo "GPU 6 chain PID: ${PID_6}  (S1..S5 + C1..C5 sequentially)"
+echo "Log: tail -f grid_self_gpu6.log"
+echo "Waiting for chain to finish..."
+wait ${PID_6}
 echo "[$(date +%Y-%m-%d_%H:%M:%S)] Grid finished."
