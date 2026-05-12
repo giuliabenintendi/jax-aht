@@ -132,7 +132,6 @@ def _save_per_head_action_overlay(
         axes = axes[:, None]
 
     marker_color = "#ff8c00" if agent_idx == 0 else "#ff00ff"
-    vmax = float(per_head_seq.max())
     TP = 7  # TILE_PIXELS
     card_y_lo, card_y_hi = 7, 14
 
@@ -142,8 +141,17 @@ def _save_per_head_action_overlay(
             ax.imshow(obs_seq[t])
             attn = per_head_seq[t, :, :, h_idx]
             attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
+            # Per-cell normalization: with global vmax, step 0 (near-uniform
+            # attention from a fresh LSTM state, ~0.02/cell) is invisible
+            # against a peaked-1.0 cell elsewhere in the grid. Normalizing per
+            # cell makes the spatial pattern visible at every step regardless
+            # of magnitude. Trade-off: intensities are NOT comparable across
+            # cells; treat each cell as a relative heatmap.
+            cell_vmax = float(np.asarray(attn_up).max())
+            if cell_vmax < 1e-6:
+                cell_vmax = 1.0
             ax.imshow(np.asarray(attn_up), cmap="hot", alpha=0.55,
-                      vmin=0.0, vmax=vmax,
+                      vmin=0.0, vmax=cell_vmax,
                       extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
 
             slot = action_view_slots[t]
