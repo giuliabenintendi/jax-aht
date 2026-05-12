@@ -102,7 +102,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            agent_1_param, agent_1_policy,
                            max_episode_steps, collect_attention=False,
                            greedy=True, feed_other_attn_dims=None,
-                           ja_card_masks=None, collect_obs=False):
+                           ja_card_masks=None, collect_obs=False,
+                           partner_feed_dim=5):
     '''
     Run a single episode and collect states for rendering.
 
@@ -147,9 +148,10 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
     _ja_card = ja_card_masks is not None
+    _per_head_feed = partner_feed_dim > 5
     if _ja_card:
-        prev_pca_0 = jnp.zeros(5)
-        prev_pca_1 = jnp.zeros(5)
+        prev_pca_0 = jnp.zeros(partner_feed_dim)
+        prev_pca_1 = jnp.zeros(partner_feed_dim)
 
     # Collect states and actions for rendering
     ep_states = [env_state]
@@ -262,17 +264,30 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
         # Update partner card attention for JA_CARD_ATTN
         if _ja_card and collect_attention:
-            ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
-            ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
+            attn_0_sq = attn_0.squeeze()
+            attn_1_sq = attn_1.squeeze()
             p0 = _get_card_game_position_perm(env_state, "agent_0")
             p1 = _get_card_game_position_perm(env_state, "agent_1")
-            ph0 = jnp.zeros(5).at[p0].set(ca0)
-            ph1 = jnp.zeros(5).at[p1].set(ca1)
-            prev_pca_0 = ph1[p0]
-            prev_pca_1 = ph0[p1]
+            if _per_head_feed:
+                cpa_0 = jnp.einsum("hwk,chw->ck", attn_0_sq, ja_card_masks)
+                cpa_1 = jnp.einsum("hwk,chw->ck", attn_1_sq, ja_card_masks)
+                num_heads = cpa_0.shape[-1]
+                phys_0 = jnp.zeros((5, num_heads)).at[p0].set(cpa_0)
+                phys_1 = jnp.zeros((5, num_heads)).at[p1].set(cpa_1)
+                prev_pca_0 = phys_1[p0].reshape(-1)
+                prev_pca_1 = phys_0[p1].reshape(-1)
+            else:
+                attn_0_2d = attn_0_sq.mean(axis=-1) if attn_0_sq.ndim == 3 else attn_0_sq
+                attn_1_2d = attn_1_sq.mean(axis=-1) if attn_1_sq.ndim == 3 else attn_1_sq
+                ca0 = jnp.einsum("hw,chw->c", attn_0_2d, ja_card_masks)
+                ca1 = jnp.einsum("hw,chw->c", attn_1_2d, ja_card_masks)
+                ph0 = jnp.zeros(5).at[p0].set(ca0)
+                ph1 = jnp.zeros(5).at[p1].set(ca1)
+                prev_pca_0 = ph1[p0]
+                prev_pca_1 = ph0[p1]
             if done["__all__"]:
-                prev_pca_0 = jnp.zeros(5)
-                prev_pca_1 = jnp.zeros(5)
+                prev_pca_0 = jnp.zeros(partner_feed_dim)
+                prev_pca_1 = jnp.zeros(partner_feed_dim)
 
         # Take step in environment using the card-game macro-action encoding.
         both_actions = [act_0, act_1]

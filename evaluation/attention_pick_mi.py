@@ -221,6 +221,13 @@ def main() -> None:
     seeds_to_run = ([args.seed_idx] if args.seed_idx >= 0
                     else list(range(ev.num_seeds)))
 
+    # Per-step partner-attention augmentation must mirror what marl/ja_ippo.py
+    # does at training time, otherwise the policy sees zero-dim scalar input
+    # and Flax raises a shape mismatch for scalar_embed.
+    policy_scalar_dim = int(getattr(ev.policy.network, "scalar_dim", 0))
+    partner_feed_dim = policy_scalar_dim if policy_scalar_dim > 0 else 5
+    use_card_masks = jnp.asarray(card_masks) if policy_scalar_dim > 0 else None
+
     csv_path = out_dir / "attention_pick_mi.csv"
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
@@ -244,6 +251,8 @@ def main() -> None:
                     ep_states, attn_maps, ep_actions, ep_messages = run_episode_with_states(
                         rng, ev.env, params, ev.policy, params, ev.policy,
                         ev.max_steps, collect_attention=True, greedy=greedy,
+                        ja_card_masks=use_card_masks,
+                        partner_feed_dim=partner_feed_dim,
                     )
                     raw_first = np.asarray(attn_maps[agent_key][0]).squeeze()
                     num_heads = raw_first.shape[-1] if raw_first.ndim == 3 else 1
