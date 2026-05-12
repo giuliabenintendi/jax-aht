@@ -62,6 +62,4 @@ JA_PARTNER_FEED_PER_HEAD: false  # if True, partner card attention is fed per-he
 # Three-part JA attention shaping (parallel to comm shaping)
 JA_ATTN_MATCH_COEF: 0.0         # per-step continuous match: coef * (1 - JSD/log 2) during deliberation
 JA_ATTN_FOLLOW_COEF: 0.0        # per-agent at decision: coef * (argmax_match & pick==own_argmax)
-JA_ATTN_SELF_COEF: 0.0          # per-agent at decision: coef * (pick == own attention argmax). No partner gate.
-PROBE_PERFECT_PARTNER_FEED: false  # PROBE: replace per-head partner feed with one-hot indicating canonical card 0's view-slot. Tests whether policy can use a perfect signal.
 JA_AUX_PARTNER_ARGMAX_COEF: 0.0  # LIAM-style aux loss: predict partner's canonical-frame attention argmax
