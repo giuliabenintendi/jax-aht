@@ -165,8 +165,9 @@ def initialize_ja_image_agent(config, env, rng):
         scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
         query_partner_lstm=config.get("QUERY_PARTNER_LSTM", False),
         enable_aux_partner_head=config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0) > 0,
-        # Aux head predicts partner's canonical card argmax, always over
-        # NUM_CARDS=5 classes. Stays 5 even under gaze_mode where action_dim=6.
+        # The aux head's target is the partner's canonical card argmax,
+        # which always has 5 classes (one per card). Don't tie it to
+        # action_dim — gaze_mode adds a 6th action (noop) that is not a card.
         aux_num_classes=5,
     )
 

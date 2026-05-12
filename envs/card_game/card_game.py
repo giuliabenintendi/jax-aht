@@ -69,10 +69,12 @@ class CardGameEnv(BaseEnv):
         self.match_coef = match_coef
         self.stability_coef = stability_coef
         self.follow_coef = follow_coef
-        # gaze_mode: agents may only emit a noop (action index NUM_CARDS) during
-        # deliberation. Picks (0..NUM_CARDS-1) are masked except at the decision
-        # step. Removes the wasted PPO gradient on inert deliberation actions
-        # when communication is off. action_dim becomes NUM_CARDS + 1.
+        # gaze_mode: extends the action space to NUM_CARDS + 1. The new last
+        # action (index 5 when NUM_CARDS=5) is a noop. avail_actions forces
+        # the noop during deliberation and forbids it at the decision step,
+        # so the policy can't emit picks during deliberation or noops at
+        # decision. Removes the wasted PPO gradient on inert deliberation
+        # actions when communication is off.
         self.gaze_mode = gaze_mode
         # When True, the partner-message dot rendered into each agent's obs is
         # drawn at a uniformly random card color instead of the color the
@@ -110,7 +112,10 @@ class CardGameEnv(BaseEnv):
 
     @property
     def noop_action(self) -> int:
-        """Index of the noop action (only valid when gaze_mode=True)."""
+        """Action index that means 'do nothing'. Equals NUM_CARDS (the slot
+        just past the last card). Only valid when gaze_mode=True; outside
+        gaze mode the action space ends at NUM_CARDS-1 and this index is
+        unused."""
         return self.num_cards
 
     def _make_obs(
@@ -196,10 +201,12 @@ class CardGameEnv(BaseEnv):
         steps the action populates `messages`; on the decision step it
         populates the pick and `messages` is held at its previous value.
 
-        gaze_mode: action == NUM_CARDS is a noop. It produces pick=-1 and
-        leaves messages unchanged at every step. avail_actions ensures the
-        policy can only choose noop during deliberation and only picks at
-        the decision step, so the env doesn't need to validate the choice.
+        Under gaze_mode, the action space is one larger: indices 0..NUM_CARDS-1
+        are picks (as before) and index NUM_CARDS is the noop. The noop always
+        produces pick=-1 and leaves messages unchanged. avail_actions
+        guarantees the policy only ever samples the noop during deliberation
+        and only ever samples picks at the decision step, so we don't need
+        to validate inside _decode_actions.
         """
         a0 = jnp.asarray(raw_a0, dtype=jnp.int32)
         a1 = jnp.asarray(raw_a1, dtype=jnp.int32)
@@ -364,8 +371,10 @@ class CardGameEnv(BaseEnv):
     @partial(jax.jit, static_argnums=(0,))
     def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
         if self.gaze_mode:
-            # action index NUM_CARDS is noop. Allow only noop during
-            # deliberation; allow only picks (0..NUM_CARDS-1) at decision.
+            # Mask layout (length NUM_CARDS+1):
+            #   [pick_0, pick_1, ..., pick_{NUM_CARDS-1}, noop]
+            # Deliberation: only the trailing noop is allowed.
+            # Decision:     only the leading NUM_CARDS picks are allowed.
             is_decision = (state.env_state.step_count + 1) >= self.max_steps
             picks_mask = jnp.where(is_decision, 1.0, 0.0)
             noop_mask = jnp.where(is_decision, 0.0, 1.0)

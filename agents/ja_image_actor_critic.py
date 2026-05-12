@@ -224,7 +224,11 @@ class JAImageActorCritic(nn.Module):
     scalar_embed_dim: int = 5
     query_partner_lstm: bool = False
     enable_aux_partner_head: bool = False  # when True, attach a Dense head that predicts partner's canonical-frame argmax
-    aux_num_classes: int = 5  # output dim of the aux partner-argmax head; stays NUM_CARDS even when action_dim grows (e.g. gaze_mode noop)
+    # Output dim of the aux partner-argmax head. The target is the partner's
+    # canonical card argmax in [0, NUM_CARDS), so this should equal NUM_CARDS
+    # regardless of action_dim. Decoupled from action_dim because gaze_mode
+    # extends action_dim with a noop slot that the aux head does not predict.
+    aux_num_classes: int = 5
 
     @nn.compact
     def __call__(self, hidden, x):
