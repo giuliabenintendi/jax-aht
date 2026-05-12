@@ -647,14 +647,14 @@ def make_train_loop(config, env):
                     )
 
                     # Self-consistency: per-agent at decision step. Pays out
-                    # when the agent's own pick matches its own attention's
-                    # argmax card. View-frame: each agent's attention is
-                    # pooled to per-card slots, head-averaged, argmax taken;
-                    # the agent's recoloured-space action is mapped through
-                    # the same view-frame card identity. No shared condition.
+                    # when the agent's own pick matches the canonical card
+                    # at its own attention's argmax view-slot. No shared
+                    # condition. Index semantics: per-card-view-pooled
+                    # attention argmax gives a view-slot, which perm_X
+                    # translates to a canonical card identity; pick_X_gt is
+                    # already canonical (via inv_recol). Comparing in
+                    # canonical space matches the follow-reward convention.
                     if ja_attn_self_coef > 0:
-                        # Head-averaged per-card pool of attention, view-frame.
-                        # attn_map: (1, num_actors, fh, fw, num_heads).
                         attn_2d = attn_map.squeeze(0).mean(axis=-1)  # (num_actors, fh, fw)
                         per_card_view = jnp.einsum(
                             "ahw,chw->ac", attn_2d, _card_masks,
@@ -662,12 +662,19 @@ def make_train_loop(config, env):
                         own_argmax_view = per_card_view.argmax(axis=-1)  # (num_actors,)
                         own_argmax_view_0 = own_argmax_view[:num_envs]
                         own_argmax_view_1 = own_argmax_view[num_envs:]
-                        # Picks are still in recoloured space; the argmax we
-                        # just computed is from the agent's own view-frame
-                        # attention, which already inherits the recolouring.
-                        # So compare directly with the recoloured-space action.
-                        self_ok_0 = is_decision_env & (pick_0_view == own_argmax_view_0)
-                        self_ok_1 = is_decision_env & (pick_1_view == own_argmax_view_1)
+                        # Translate view-slot to canonical card identity:
+                        # perm_X[view_slot] = canonical id at that view-slot.
+                        # Use take_along_axis for vmap-friendly batched gather.
+                        perm_0_batch = env_state.env_state.per_agent_perm["agent_0"]  # (num_envs, 5)
+                        perm_1_batch = env_state.env_state.per_agent_perm["agent_1"]
+                        own_argmax_canon_0 = jnp.take_along_axis(
+                            perm_0_batch, own_argmax_view_0[:, None], axis=1
+                        ).squeeze(-1)
+                        own_argmax_canon_1 = jnp.take_along_axis(
+                            perm_1_batch, own_argmax_view_1[:, None], axis=1
+                        ).squeeze(-1)
+                        self_ok_0 = is_decision_env & (pick_0_gt == own_argmax_canon_0)
+                        self_ok_1 = is_decision_env & (pick_1_gt == own_argmax_canon_1)
                         r_attn_self_per_actor = jnp.concatenate([
                             jnp.where(self_ok_0, ja_attn_self_coef, 0.0),
                             jnp.where(self_ok_1, ja_attn_self_coef, 0.0),

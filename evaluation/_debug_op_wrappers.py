@@ -129,8 +129,13 @@ def main():
     print(f"  expected:                {expected.tolist()}")
     print(f"  status:                  {'PASS' if ok_rt else 'FAIL'}")
 
-    # ---- check 5: same-net different-obs → different attention ----
-    print("\n=== CHECK 5: identical network params produce different attention ===")
+    # ---- check 5: same-net different-obs → different attention after LSTM warms up ----
+    # At step 0 with init_hstate=zeros, queries are Dense(0)=0 -> softmax(0) is
+    # uniform regardless of image. So step-0 attention is mathematically forced
+    # to be identical for both agents; that's NOT a content-invariance bug. To
+    # actually probe content dependence, we step the LSTM forward two iterations
+    # on each agent's own image and check whether attention at step 2 differs.
+    print("\n=== CHECK 5: attention depends on image after LSTM warm-up ===")
     try:
         from agents.initialize_agents import initialize_ja_image_agent
         cfg = dict(
@@ -151,26 +156,33 @@ def main():
             JA_AUX_PARTNER_ARGMAX_COEF=0.0,
         )
         policy, params = initialize_ja_image_agent(cfg, env, jax.random.PRNGKey(args.seed + 1))
-        # Build the augmented obs (image + 20-dim zeros for partner feed at step 0).
         aug_obs_0 = jnp.concatenate([obs["agent_0"], jnp.zeros(20)]).reshape(1, 1, -1)
         aug_obs_1 = jnp.concatenate([obs["agent_1"], jnp.zeros(20)]).reshape(1, 1, -1)
         done_in = jnp.zeros((1, 1), dtype=bool)
         avail = env.get_avail_actions(state)["agent_0"]
         avail_in = jnp.asarray(avail).reshape(1, 1, -1).astype(jnp.float32)
-        hstate = policy.init_hstate(1)
-        _, _, attn_0 = policy.get_action_and_attention(
-            params=params, obs=aug_obs_0, done=done_in,
-            avail_actions=avail_in, hstate=hstate, rng=jax.random.PRNGKey(1),
-            greedy=True,
-        )
-        _, _, attn_1 = policy.get_action_and_attention(
-            params=params, obs=aug_obs_1, done=done_in,
-            avail_actions=avail_in, hstate=hstate, rng=jax.random.PRNGKey(1),
-            greedy=True,
-        )
-        d = float(jnp.abs(attn_0 - attn_1).max())
-        print(f"  max abs diff between attn(obs_0) and attn(obs_1):  {d:.6f}")
-        print(f"  status: {'PASS (attention depends on input)' if d > 1e-5 else 'FAIL (attention is content-invariant)'}")
+        hstate_0 = policy.init_hstate(1)
+        hstate_1 = policy.init_hstate(1)
+        last_attn_0 = None
+        last_attn_1 = None
+        for step in range(3):
+            _, hstate_0, attn_0_step = policy.get_action_and_attention(
+                params=params, obs=aug_obs_0, done=done_in,
+                avail_actions=avail_in, hstate=hstate_0, rng=jax.random.PRNGKey(1 + step),
+                greedy=True,
+            )
+            _, hstate_1, attn_1_step = policy.get_action_and_attention(
+                params=params, obs=aug_obs_1, done=done_in,
+                avail_actions=avail_in, hstate=hstate_1, rng=jax.random.PRNGKey(1 + step),
+                greedy=True,
+            )
+            d = float(jnp.abs(attn_0_step - attn_1_step).max())
+            note = "(uniform; query=0)" if step == 0 else ""
+            print(f"  step {step}: max abs diff attention(a0) vs attention(a1) = {d:.6f}  {note}")
+            last_attn_0 = attn_0_step
+            last_attn_1 = attn_1_step
+        d_final = float(jnp.abs(last_attn_0 - last_attn_1).max())
+        print(f"  status: {'PASS (attention depends on image)' if d_final > 1e-5 else 'FAIL (attention is content-invariant after warm-up)'}")
     except Exception as e:
         print(f"  could not run forward pass: {type(e).__name__}: {e}")
 
