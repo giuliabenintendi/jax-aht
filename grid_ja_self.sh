@@ -5,14 +5,14 @@
 # prior best (m=0.01, f=1.0) (C row).
 #
 # Shared: per_head=true, gaze=true, COMMUNICATION=false, NO PROBE.
-#         6 seeds, 5M steps each (~2h/cell).
+#         3 seeds, 5M steps each (~1h/cell).
 #
 # Sweep: self in {0, 0.1, 0.5, 1.0, 2.0}, prior shaping on/off.
-# Total: 10 cells. 5 cells per GPU. ~10h overnight.
+# Total: 10 cells. 5 cells per GPU. ~5h.
 
 set -u
 
-NUM_SEEDS=6
+NUM_SEEDS=3
 TOTAL_STEPS=5e6
 PRIOR_M=0.01
 PRIOR_F=1.0
