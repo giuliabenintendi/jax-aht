@@ -645,6 +645,8 @@ def _log_card_game_per_head_attn_panel(
     feed_attn_dims=None, ja_card_masks=None,
     partner_feed_dim=5, num_episodes=2,
     rng_seed_base=8000,
+    seed_idx=None,
+    has_comm=False,
 ):
     """Per-head x per-step attention overlay PNG, one per agent per episode.
 
@@ -722,6 +724,17 @@ def _log_card_game_per_head_attn_panel(
             partner_msg_view_slots = [-1] * T  # no comm -> no message overlay
 
             out_path = Path(video_dir) / f"per_head_attn_{agent_key}_ep{ep}.png"
+            seed_label = "" if seed_idx is None else f"seed {seed_idx}  "
+            agent_label = f"Agent {agent_idx}"
+            human_title = (
+                f"{seed_label}{agent_label}  episode {ep}  "
+                f"(own attention, own obs)"
+            )
+            legend = (
+                "  (red box = own pick at decision step)"
+                if not has_comm
+                else "  (coloured dot/box = own action; white square = partner msg)"
+            )
             _save_per_head_action_overlay(
                 per_head_seq=per_head_seq,
                 obs_seq=obs_seq,
@@ -729,8 +742,9 @@ def _log_card_game_per_head_attn_panel(
                 is_decision_seq=is_decision_seq,
                 partner_msg_view_slots=partner_msg_view_slots,
                 out_path=out_path,
-                title=f"{tag} {agent_key} ep{ep}",
+                title=human_title,
                 agent_idx=agent_idx,
+                legend=legend,
             )
             logger.log(
                 {f"{tag}/per_head_attn_{agent_key}_ep{ep}": wandb.Image(str(out_path))},

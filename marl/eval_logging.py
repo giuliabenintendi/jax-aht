@@ -496,6 +496,8 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                         ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                         partner_feed_dim=eval_partner_feed_dim,
                         num_episodes=2,
+                        seed_idx=seed_idx,
+                        has_comm=bool(getattr(inner_env, "communication", False)),
                     )
             else:
                 # Other envs: videos + attention overlays

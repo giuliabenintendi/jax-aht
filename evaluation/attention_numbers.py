@@ -110,6 +110,7 @@ def _save_per_head_action_overlay(
     agent_idx: int,
     img_h: int = 21,
     img_w: int = 35,
+    legend: str | None = None,
 ) -> None:
     """4 rows (one per head) × T columns; obs as background, head-specific
     attention overlay, and a colored marker on the card the agent acted on
@@ -187,7 +188,9 @@ def _save_per_head_action_overlay(
             ax.set_xticks([])
             ax.set_yticks([])
 
-    fig.suptitle(title + "  (coloured dot/box = own action; white square = partner msg)", fontsize=10)
+    if legend is None:
+        legend = "  (coloured dot/box = own action; white square = partner msg)"
+    fig.suptitle(title + legend, fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=170, bbox_inches="tight")
     plt.close(fig)
