@@ -133,13 +133,11 @@ def make_train_loop(config, env):
     partner_feed_dim = 5 * ja_num_heads if ja_partner_feed_per_head else 5
     ja_card_jsd_coef = config.get("JA_CARD_JSD_COEF", 0.0)
     # Two-part JA attention shaping (parallel to comm shaping):
-    #   match: per-step continuous lagged gaze-following during deliberation.
-    #          Agent i at step t is rewarded for aligning its CURRENT
-    #          canonical-frame card-attention distribution with the PARTNER'S
-    #          canonical-frame distribution from step t-1. Computed as
-    #          MATCH_COEF * min(current_mass, previous_partner_mass)
-    #          * (1 - JSD / log(2)), so it vanishes when card mass is tiny and
-    #          peaks when the ego really follows where the partner was looking.
+    #   match: per-step continuous similarity between agents' canonical-frame
+    #          card-attention distributions during deliberation. Computed as
+    #          MATCH_COEF * (1 - JSD(phys_0_norm, phys_1_norm) / log(2)), so
+    #          it sits in [0, MATCH_COEF]: full reward when distributions are
+    #          identical, zero when fully disjoint.
     #   follow: +coef per agent at the decision step when BOTH agents' attention
     #           argmaxes agree on the same card AND that agent's pick equals
     #           that shared argmax. Mirrors comm follow which requires
@@ -153,7 +151,6 @@ def make_train_loop(config, env):
     ja_attn_shaping_active = (
         ja_attn_match_coef > 0 or ja_attn_follow_coef > 0 or ja_attn_self_coef > 0
     )
-    ja_attn_lagged_match_active = ja_attn_match_coef > 0
     # Auxiliary NLL loss read from the attention pool directly: forces the
     # per-card pooled attention to peak at the partner's argmax view-slot in
     # the agent's own frame. When JA_CARD_PARTNER_FEED is on, the target is
@@ -251,15 +248,6 @@ def make_train_loop(config, env):
                             init_partner_card_attn)
         else:
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
-        if ja_attn_lagged_match_active:
-            init_prev_partner_phys = jnp.zeros((num_actors, 5), dtype=jnp.float32)
-            init_prev_partner_mass = jnp.zeros((num_actors,), dtype=jnp.float32)
-            init_prev_partner_valid = jnp.zeros((num_actors,), dtype=bool)
-            runner_state = runner_state + (
-                init_prev_partner_phys,
-                init_prev_partner_mass,
-                init_prev_partner_valid,
-            )
         if ja_aux_partner_argmax_active and ja_card_partner_feed:
             init_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
             init_partner_argmax_valid = jnp.zeros((num_actors,), dtype=bool)
@@ -479,18 +467,6 @@ def make_train_loop(config, env):
                     prev_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
                     prev_partner_argmax_valid = jnp.zeros((num_actors,), dtype=bool)
                     prev_partner_argmax_weight = jnp.zeros((num_actors,), dtype=jnp.float32)
-                if ja_attn_lagged_match_active:
-                    (
-                        *rest,
-                        prev_partner_phys_for_actor,
-                        prev_partner_mass_for_actor,
-                        prev_partner_valid_for_actor,
-                    ) = runner_state_core
-                    runner_state_core = tuple(rest)
-                else:
-                    prev_partner_phys_for_actor = jnp.zeros((num_actors, 5), dtype=jnp.float32)
-                    prev_partner_mass_for_actor = jnp.zeros((num_actors,), dtype=jnp.float32)
-                    prev_partner_valid_for_actor = jnp.zeros((num_actors,), dtype=bool)
                 if feed_other_attn:
                     (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state_core
                 elif ja_card_partner_feed:
@@ -698,44 +674,18 @@ def make_train_loop(config, env):
                 if ja_card_metric and ja_attn_shaping_active:
                     is_decision_env = step_count_batch[:num_envs] >= _env_max_steps
 
-                    # Lagged gaze-following: compare ego current canonical
-                    # card attention against partner previous-step canonical
-                    # attention. This rewards "I looked where you were just
-                    # looking", not same-step synchrony.
+                    # JSD-based continuous match during deliberation. Reuses
+                    # card_jsd_per_env computed by the metric block above,
+                    # which is JSD between the normalized canonical-frame
+                    # card-attention distributions. Range: [0, log(2)].
                     log2 = jnp.log(jnp.asarray(2.0))
-                    if ja_attn_lagged_match_active:
-                        prev_partner_phys_0 = prev_partner_phys_for_actor[:num_envs]
-                        prev_partner_phys_1 = prev_partner_phys_for_actor[num_envs:]
-                        prev_partner_mass_0 = prev_partner_mass_for_actor[:num_envs]
-                        prev_partner_mass_1 = prev_partner_mass_for_actor[num_envs:]
-                        prev_partner_valid_0 = prev_partner_valid_for_actor[:num_envs]
-                        prev_partner_valid_1 = prev_partner_valid_for_actor[num_envs:]
-
-                        jsd_match_0 = jsd_divergence(
-                            q_phys_0[:, None, :], prev_partner_phys_0[:, None, :]
-                        ).reshape(num_envs)
-                        jsd_match_1 = jsd_divergence(
-                            q_phys_1[:, None, :], prev_partner_phys_1[:, None, :]
-                        ).reshape(num_envs)
-                        match_score_0 = 1.0 - jnp.clip(jsd_match_0, 0.0, log2) / log2
-                        match_score_1 = 1.0 - jnp.clip(jsd_match_1, 0.0, log2) / log2
-                        match_weight_0 = jnp.minimum(m_0, prev_partner_mass_0)
-                        match_weight_1 = jnp.minimum(m_1, prev_partner_mass_1)
-                        match_ok_0 = (~is_decision_env) & prev_partner_valid_0
-                        match_ok_1 = (~is_decision_env) & prev_partner_valid_1
-                        match_val_0 = jnp.where(
-                            match_ok_0,
-                            ja_attn_match_coef * match_weight_0 * match_score_0,
-                            0.0,
-                        )
-                        match_val_1 = jnp.where(
-                            match_ok_1,
-                            ja_attn_match_coef * match_weight_1 * match_score_1,
-                            0.0,
-                        )
-                    else:
-                        match_val_0 = jnp.zeros(num_envs)
-                        match_val_1 = jnp.zeros(num_envs)
+                    jsd_clipped = jnp.clip(card_jsd_per_env.reshape(num_envs), 0.0, log2)
+                    match_score = 1.0 - jsd_clipped / log2  # in [0, 1]
+                    match_val_env = jnp.where(
+                        ~is_decision_env,
+                        ja_attn_match_coef * jnp.minimum(m_0, m_1) * match_score,
+                        0.0,
+                    )
 
                     # Follow stays argmax-based: "the most attended card".
                     argmax_0 = phys_0.argmax(axis=-1)
@@ -767,7 +717,7 @@ def make_train_loop(config, env):
                     follow_val_1 = jnp.where(follow_ok_1, ja_attn_follow_coef, 0.0)
 
                     r_attn_match_per_actor = jnp.concatenate(
-                        [match_val_0, match_val_1]
+                        [match_val_env, match_val_env]
                     )
                     r_attn_follow_per_actor = jnp.concatenate(
                         [follow_val_0, follow_val_1]
@@ -816,52 +766,6 @@ def make_train_loop(config, env):
                 r_attn_follow_per_actor = jax.lax.stop_gradient(r_attn_follow_per_actor)
                 r_attn_self_per_actor = jax.lax.stop_gradient(r_attn_self_per_actor)
 
-                # Coefficient-independent diagnostics: rates at decision step,
-                # logged regardless of shaping coefs so we can track what the
-                # policy actually does in any config (including pure baseline).
-                if ja_card_metric:
-                    is_decision_diag = step_count_batch[:num_envs] >= _env_max_steps
-                    inv_recol_0_d = env_state.env_state.per_agent_inv_recolouring["agent_0"]
-                    inv_recol_1_d = env_state.env_state.per_agent_inv_recolouring["agent_1"]
-                    env_idx_d = jnp.arange(num_envs)
-                    p0_view = action[:num_envs]
-                    p1_view = action[num_envs:]
-                    p0_is_card = p0_view < num_cards
-                    p1_is_card = p1_view < num_cards
-                    p0_gt = inv_recol_0_d[env_idx_d, jnp.minimum(p0_view, num_cards - 1)]
-                    p1_gt = inv_recol_1_d[env_idx_d, jnp.minimum(p1_view, num_cards - 1)]
-                    argmax_canon_0_d = phys_0.argmax(axis=-1)
-                    argmax_canon_1_d = phys_1.argmax(axis=-1)
-                    # Own attention argmax in canonical:
-                    attn_2d_d = attn_map.squeeze(0).mean(axis=-1)
-                    per_card_view_d = jnp.einsum("ahw,chw->ac", attn_2d_d, _card_masks)
-                    own_argmax_view_d = per_card_view_d.argmax(axis=-1)
-                    own_argmax_v0 = own_argmax_view_d[:num_envs]
-                    own_argmax_v1 = own_argmax_view_d[num_envs:]
-                    own_argmax_c0 = jnp.take_along_axis(perm_0, own_argmax_v0[:, None], axis=1).squeeze(-1)
-                    own_argmax_c1 = jnp.take_along_axis(perm_1, own_argmax_v1[:, None], axis=1).squeeze(-1)
-                    self_ok_d_0 = is_decision_diag & p0_is_card & (p0_gt == own_argmax_c0)
-                    self_ok_d_1 = is_decision_diag & p1_is_card & (p1_gt == own_argmax_c1)
-                    argmax_match_d = argmax_canon_0_d == argmax_canon_1_d
-                    follow_ok_d_0 = is_decision_diag & p0_is_card & argmax_match_d & (p0_gt == argmax_canon_0_d)
-                    follow_ok_d_1 = is_decision_diag & p1_is_card & argmax_match_d & (p1_gt == argmax_canon_1_d)
-                    diag_self_per_actor = jnp.concatenate(
-                        [self_ok_d_0.astype(jnp.float32), self_ok_d_1.astype(jnp.float32)]
-                    )
-                    diag_follow_per_actor = jnp.concatenate(
-                        [follow_ok_d_0.astype(jnp.float32), follow_ok_d_1.astype(jnp.float32)]
-                    )
-                    diag_decision_per_actor = jnp.concatenate(
-                        [is_decision_diag.astype(jnp.float32), is_decision_diag.astype(jnp.float32)]
-                    )
-                else:
-                    diag_self_per_actor = jnp.zeros(num_actors, dtype=jnp.float32)
-                    diag_follow_per_actor = jnp.zeros(num_actors, dtype=jnp.float32)
-                    diag_decision_per_actor = jnp.zeros(num_actors, dtype=jnp.float32)
-                diag_self_per_actor = jax.lax.stop_gradient(diag_self_per_actor)
-                diag_follow_per_actor = jax.lax.stop_gradient(diag_follow_per_actor)
-                diag_decision_per_actor = jax.lax.stop_gradient(diag_decision_per_actor)
-
                 plh_a_stored = prev_plh_actor if query_partner_lstm else jnp.zeros((num_actors,))
                 plh_c_stored = prev_plh_critic if query_partner_lstm else jnp.zeros((num_actors,))
 
@@ -891,22 +795,6 @@ def make_train_loop(config, env):
                                     new_partner_card_attn)
                 else:
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
-                if ja_attn_lagged_match_active:
-                    new_done_batch_match = batchify(new_done, env.agents, num_actors).squeeze()
-                    new_partner_phys_for_actor = jnp.concatenate([q_phys_1, q_phys_0], axis=0).astype(jnp.float32)
-                    new_partner_mass_for_actor = jnp.concatenate([m_1, m_0], axis=0).astype(jnp.float32)
-                    new_partner_valid_for_actor = ~new_done_batch_match
-                    new_partner_phys_for_actor = jnp.where(
-                        new_done_batch_match[:, None], 0.0, new_partner_phys_for_actor
-                    )
-                    new_partner_mass_for_actor = jnp.where(
-                        new_done_batch_match, 0.0, new_partner_mass_for_actor
-                    )
-                    runner_state = runner_state + (
-                        new_partner_phys_for_actor,
-                        new_partner_mass_for_actor,
-                        new_partner_valid_for_actor,
-                    )
                 if ja_aux_partner_argmax_active and ja_card_partner_feed:
                     new_done_batch_aux = batchify(new_done, env.agents, num_actors).squeeze()
                     new_partner_argmax = jnp.where(
@@ -937,18 +825,14 @@ def make_train_loop(config, env):
                                      ja_card_reward, card_jsd_step_mean,
                                      r_attn_shaping,
                                      r_attn_match_per_actor, r_attn_follow_per_actor,
-                                     r_attn_self_per_actor,
-                                     diag_self_per_actor, diag_follow_per_actor,
-                                     diag_decision_per_actor)
+                                     r_attn_self_per_actor)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
                            comm_match_batch, comm_stable_batch, comm_follow_batch,
                            ja_card_reward_batch, card_jsd_batch,
                            r_attn_shaping_batch,
                            r_attn_match_batch, r_attn_follow_batch,
-                           r_attn_self_batch,
-                           diag_self_batch, diag_follow_batch,
-                           diag_decision_batch) = jax.lax.scan(
+                           r_attn_self_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -961,14 +845,6 @@ def make_train_loop(config, env):
                     prev_partner_argmax,
                     prev_partner_argmax_valid,
                     prev_partner_argmax_weight,
-                ) = runner_state
-                runner_state = tuple(rest)
-            if ja_attn_lagged_match_active:
-                (
-                    *rest,
-                    prev_partner_phys_for_actor,
-                    prev_partner_mass_for_actor,
-                    prev_partner_valid_for_actor,
                 ) = runner_state
                 runner_state = tuple(rest)
             if feed_other_attn:
@@ -1096,16 +972,6 @@ def make_train_loop(config, env):
             metric["ja_attn_match_mean"] = r_attn_match_batch.mean()
             metric["ja_attn_follow_mean"] = r_attn_follow_batch.mean()
             metric["ja_attn_self_mean"] = r_attn_self_batch.mean()
-            # Coefficient-independent rates: fraction of decision-step events
-            # that satisfy the condition. denom = total decision-step actor
-            # entries in the rollout; numer = match events.
-            diag_dec_total = diag_decision_batch.sum()
-            metric["ja_self_consistency_rate"] = (
-                diag_self_batch.sum() / jnp.maximum(diag_dec_total, 1e-8)
-            )
-            metric["ja_follow_rate"] = (
-                diag_follow_batch.sum() / jnp.maximum(diag_dec_total, 1e-8)
-            )
             metric["aux_partner_argmax_loss"] = aux_partner_argmax_loss[0].mean()
 
             if feed_other_attn:
@@ -1115,12 +981,6 @@ def make_train_loop(config, env):
                                 prev_partner_card_attn)
             else:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
-            if ja_attn_lagged_match_active:
-                runner_state = runner_state + (
-                    prev_partner_phys_for_actor,
-                    prev_partner_mass_for_actor,
-                    prev_partner_valid_for_actor,
-                )
             if ja_aux_partner_argmax_active and ja_card_partner_feed:
                 runner_state = runner_state + (
                     prev_partner_argmax,
@@ -1199,8 +1059,6 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
         ("ja_attn_match_mean",           "JA/attn_match"),
         ("ja_attn_follow_mean",          "JA/attn_follow"),
         ("ja_attn_self_mean",            "JA/attn_self"),
-        ("ja_self_consistency_rate",     "JA/self_consistency_rate"),
-        ("ja_follow_rate",               "JA/follow_rate"),
         ("aux_partner_argmax_loss",      "JA/aux_partner_argmax_loss"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
