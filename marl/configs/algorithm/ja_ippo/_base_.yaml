@@ -63,4 +63,4 @@ JA_PARTNER_FEED_PER_HEAD: false  # if True, partner card attention is fed per-he
 JA_ATTN_MATCH_COEF: 0.0         # per-step continuous match: coef * (1 - JSD/log 2) during deliberation
 JA_ATTN_FOLLOW_COEF: 0.0        # per-agent at decision: coef * (argmax_match & pick==own_argmax)
 JA_ATTN_SELF_COEF: 0.0          # per-agent at decision: coef if pick == own attention argmax (canonical-frame compare)
-JA_AUX_PARTNER_ARGMAX_COEF: 0.0  # aux cross-entropy: predict partner's argmax in agent's own view-slot frame
+JA_AUX_PARTNER_ARGMAX_COEF: 0.0  # aux NLL on attention pool: force attention to peak at partner argmax view-slot

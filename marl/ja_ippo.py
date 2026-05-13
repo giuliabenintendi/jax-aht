@@ -149,8 +149,10 @@ def make_train_loop(config, env):
     ja_attn_shaping_active = (
         ja_attn_match_coef > 0 or ja_attn_follow_coef > 0 or ja_attn_self_coef > 0
     )
-    # Auxiliary cross-entropy loss: from actor pre-head features, predict the
-    # view-slot in the agent's own frame where the partner is attending most.
+    # Auxiliary NLL loss read from the attention pool directly: forces the
+    # per-card pooled attention to peak at the partner's argmax view-slot in
+    # the agent's own frame. The loss can only descend if attention itself is
+    # content-dependent (no Dense shortcut from actor_out).
     ja_aux_partner_argmax_coef = config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0)
     ja_aux_partner_argmax_active = ja_aux_partner_argmax_coef > 0
     # When True, compute the OP-corrected card-level JSD as a diagnostic metric
@@ -278,27 +280,30 @@ def make_train_loop(config, env):
                             )
                         hidden = policy._unpack_hstate(init_hstate)
 
-                        # Single forward pass. When the aux loss is active we
-                        # request `mutable=['intermediates']` so the sown
-                        # partner-argmax logits are returned alongside the
-                        # normal policy outputs.
+                        # Single forward pass. When aux is active, read the
+                        # attention map directly and compute NLL against the
+                        # partner argmax target after head-averaging and
+                        # pooling per card. The loss can only descend if
+                        # attention itself peaks on the partner-indicated
+                        # view-slot — no Dense shortcut from actor_out.
+                        _, pi, value, attn_map_apply = policy.network.apply(
+                            params, hidden, inputs_apply,
+                        )
                         if ja_aux_partner_argmax_active:
-                            (_, pi, value, _), mutated = policy.network.apply(
-                                params, hidden, inputs_apply,
-                                mutable=["intermediates"],
+                            attn_2d = attn_map_apply.mean(axis=-1)              # (T, num_actors, fh, fw)
+                            per_card_attn = jnp.einsum(
+                                "tahw,chw->tac", attn_2d, _card_masks,
+                            )                                                   # (T, num_actors, 5)
+                            per_card_norm = per_card_attn / (
+                                per_card_attn.sum(axis=-1, keepdims=True) + 1e-8
                             )
-                            partner_logits = mutated["intermediates"]["partner_argmax_logits"][0]
-                            partner_logits_flat = partner_logits.reshape(
-                                -1, partner_logits.shape[-1]
-                            )
+                            log_probs = jnp.log(per_card_norm + 1e-8)
                             partner_target_flat = traj_batch.partner_argmax.reshape(-1)
-                            aux_loss = optax.softmax_cross_entropy_with_integer_labels(
-                                partner_logits_flat, partner_target_flat
+                            log_probs_flat = log_probs.reshape(-1, log_probs.shape[-1])
+                            aux_loss = -jnp.take_along_axis(
+                                log_probs_flat, partner_target_flat[:, None], axis=-1,
                             ).mean()
                         else:
-                            _, pi, value, _ = policy.network.apply(
-                                params, hidden, inputs_apply,
-                            )
                             aux_loss = jnp.float32(0.0)
 
                         log_prob = pi.log_prob(traj_batch.action)
