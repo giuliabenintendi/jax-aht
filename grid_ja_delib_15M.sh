@@ -3,7 +3,7 @@
 # Goal: find which combination of (match, self, gaze_pick, aux) escapes chance.
 #
 # Each cell: ~3h. 3 GPUs × 3 cells sequential = ~9h wall.
-# Run names are LABEL=m{match}_s{self}_g{gaze_pick}_a{aux}.
+# Run names are LABEL=match{x}_self{x}_gaze{x}_aux{x}.
 #
 # GPU 1 — no match, no aux (minimal coupling):
 #   m=0,    s=0.05, g=0
@@ -28,7 +28,7 @@ PER_HEAD=false
 
 run_cell() {
   local gpu="$1"; local match="$2"; local self="$3"; local gaze_pick="$4"; local aux="$5"
-  local tag="m${match}_s${self}_g${gaze_pick}_a${aux}"
+  local tag="match${match}_self${self}_gaze${gaze_pick}_aux${aux}"
   echo "[$(date +%Y-%m-%d_%H:%M:%S)] [start] ${tag} GPU ${gpu}"
   MATCH="${match}" SELF="${self}" GAZE_PICK="${gaze_pick}" AUX="${aux}" \
     SEEDS="${SEEDS}" STEPS="${STEPS}" PER_HEAD="${PER_HEAD}" \
