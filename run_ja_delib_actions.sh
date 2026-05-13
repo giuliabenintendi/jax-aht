@@ -10,7 +10,7 @@ SEEDS="${SEEDS:-5}"
 STEPS="${STEPS:-5e6}"
 PER_HEAD="${PER_HEAD:-false}"
 
-LABEL="${LABEL:-delib_actions_m${MATCH}_s${SELF}_g${GAZE_PICK}_aux${AUX}_ph${PER_HEAD}}"
+LABEL="${LABEL:-m${MATCH}_s${SELF}_g${GAZE_PICK}_a${AUX}}"
 
 echo "[$(date +%Y-%m-%d_%H:%M:%S)] starting ${LABEL} on GPU ${GPU}"
 
