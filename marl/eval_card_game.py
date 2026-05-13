@@ -167,6 +167,7 @@ def _log_card_game_own_vs_partner_panel(
     if ja_card_masks is None:
         raise ValueError("own_vs_partner_panel requires ja_card_masks (set by JA_CARD_PARTNER_FEED).")
 
+    os.makedirs(video_dir, exist_ok=True)
     img_h_const, img_w_const = 21, 35
     palettes = ("hot", "RdPu")  # by agent_idx
 
