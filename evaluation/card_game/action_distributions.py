@@ -22,7 +22,7 @@ Under OP, view-position and view-color concentration flags a trivial convention;
 gt-color concentration flags a wiring bug.
 
 Usage:
-    ./run_gpu.sh <gpu> evaluation.action_distributions \\
+    ./run_gpu.sh <gpu> evaluation.card_game.action_distributions \\
         --checkpoint /path/to/saved_train_run \\
         --all-seeds \\
         --num-episodes 50 \\

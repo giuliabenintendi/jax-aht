@@ -35,7 +35,9 @@ from common.tree_utils import tree_stack
 from envs import make_env
 from envs.card_game.rendering import NUM_CARDS
 from envs.log_wrapper import LogWrapper
-from evaluation.action_distributions import generate_action_distribution_artifacts
+from evaluation.card_game.action_distributions import (
+    generate_action_distribution_artifacts,
+)
 from marl.eval_card_game import _log_card_game_xp_videos
 
 

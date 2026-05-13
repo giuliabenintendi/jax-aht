@@ -3,10 +3,10 @@
 Per-seed and aggregate SC_i^(k) for each agent `i` and each deliberation
 slot `k`, using paired `(M_{i,k}, A_i)` samples from N rollouts. A_i is the
 decision-step pick; messages are decoded from the Discrete(10) comm action
-space. See `evaluation.comm_metrics` for the underlying MI formula.
+space. See `evaluation.card_game.comm_metrics` for the underlying MI formula.
 
 Usage:
-    ./run_gpu.sh 0 evaluation.eval_comm_sc \
+    ./run_gpu.sh 0 evaluation.card_game.eval_comm_sc \
         --checkpoint <path_to_saved_train_run> \
         --num-episodes 512
 """
@@ -24,8 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from envs.card_game.rendering import NUM_CARDS
-from evaluation._card_game_utils import load_card_game_eval
-from evaluation.comm_metrics import compute_sc_slotwise
+from evaluation.card_game._card_game_utils import load_card_game_eval
+from evaluation.card_game.comm_metrics import compute_sc_slotwise
 from evaluation.vis_episodes import run_episode_with_states
 
 

@@ -27,7 +27,7 @@ Design notes:
   intervention is just a forced action at one step.
 
 Usage:
-    ./run_gpu.sh 0 evaluation.eval_comm_cic \
+    ./run_gpu.sh 0 evaluation.card_game.eval_comm_cic \
         --checkpoint <path_to_saved_train_run> \
         --num-episodes 256
 """
@@ -43,8 +43,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from envs.card_game.rendering import NUM_CARDS
-from evaluation._card_game_utils import load_card_game_eval
-from evaluation.comm_metrics import calc_cic
+from evaluation.card_game._card_game_utils import load_card_game_eval
+from evaluation.card_game.comm_metrics import calc_cic
 
 
 def _policy_step(policy, params, obs_dict, agent_id, hstate, avail, rng):

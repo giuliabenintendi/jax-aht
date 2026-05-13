@@ -8,7 +8,7 @@ The file also keeps `_save_per_head_action_overlay`, which is reused by
 `marl.eval_card_game` for training-time visualization.
 
 Usage:
-    ./run_gpu.sh 5 evaluation.attention_numbers \\
+    ./run_gpu.sh 5 evaluation.card_game.attention_numbers \\
         --checkpoint /scratch/.../saved_train_run \\
         --seed-idx 0 \\
         --num-episodes 2
@@ -30,7 +30,7 @@ from envs.card_game.rendering import (
     CARD_COLORS, NUM_CARDS, TILE_PIXELS, render_card_game_minimal,
 )
 from agents.ja_utils import build_card_masks
-from evaluation._card_game_utils import load_card_game_eval
+from evaluation.card_game._card_game_utils import load_card_game_eval
 from evaluation.vis_episodes import run_episode_with_states
 
 
