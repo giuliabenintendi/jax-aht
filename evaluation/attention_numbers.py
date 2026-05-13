@@ -156,8 +156,14 @@ def _save_per_head_action_overlay(
             if cell_vmax < 1e-6:
                 cell_vmax = 1.0
             cmap_h = row_cmaps[h_idx] if (row_cmaps and h_idx < len(row_cmaps)) else "hot"
-            ax.imshow(np.asarray(attn_up), cmap=cmap_h, alpha=0.55,
-                      vmin=0.0, vmax=cell_vmax,
+            # Alpha proportional to attention value (peak alpha 0.85). Low-attention
+            # regions become transparent so colormaps with white-at-low (e.g. RdPu)
+            # don't wash out the obs background.
+            attn_up_np = np.asarray(attn_up)
+            attn_norm = np.clip(attn_up_np / cell_vmax, 0.0, 1.0)
+            rgba = plt.get_cmap(cmap_h)(attn_norm)
+            rgba[..., 3] = attn_norm * 0.85
+            ax.imshow(rgba,
                       extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
 
             slot = action_view_slots[t]
