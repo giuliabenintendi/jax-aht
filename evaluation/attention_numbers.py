@@ -1,13 +1,11 @@
-"""Dump per-tile attention values from a trained JA checkpoint, as numbers.
+"""Visualize head-averaged attention over time for a trained JA checkpoint.
 
-For each of N self-play episodes, run the policy and print the 6x9 attention
-map at every step as a numerical table. Useful to see whether the trained
-policy actually concentrates attention on a small number of cells or spreads
-it across the grid.
+For each of N self-play episodes, run the policy and save one compact strip
+per agent. Each strip shows the agent-view observation at every timestep with
+the head-averaged attention map overlaid.
 
-Outputs:
-  - stdout: tables per step, plus per-step argmax cell and entropy
-  - <out>/attn_seed{i}_ep{j}.csv: flat (step, row, col, value) rows
+The file also keeps `_save_per_head_action_overlay`, which is reused by
+`marl.eval_card_game` for training-time visualization.
 
 Usage:
     ./run_gpu.sh 5 evaluation.attention_numbers \\
@@ -18,8 +16,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
-import math
 from pathlib import Path
 
 import jax
@@ -445,7 +441,7 @@ def main() -> None:
 
     for ep in range(args.num_episodes):
         rng = jax.random.PRNGKey(args.episode_rng_base + args.seed_idx * 1000 + ep)
-        ep_states, attn_maps, ep_actions, ep_messages = run_episode_with_states(
+        ep_states, attn_maps, _, _ = run_episode_with_states(
             rng, ev.env, params, ev.policy, params, ev.policy, ev.max_steps,
             collect_attention=True, greedy=greedy,
             ja_card_masks=_use_card_masks,
@@ -453,58 +449,24 @@ def main() -> None:
         )
 
         for agent_key in ("agent_0", "agent_1"):
-            print(f"\n=== seed {args.seed_idx} ep {ep} {agent_key} ===")
-            csv_path = out_dir / f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}.csv"
             png_path = out_dir / f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}.png"
 
             attn_seq = []
             entropies = []
-            attn_per_head_seq = []  # (T, fh, fw, num_heads) if available
-
-            with open(csv_path, "w", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(["step", "row", "col", "attn"])
-
-                num_steps = len(attn_maps[agent_key])
-                for t in range(num_steps):
-                    raw = np.asarray(attn_maps[agent_key][t]).squeeze()
-                    # raw may be (fh, fw) (old) or (fh, fw, num_heads) (new)
-                    if raw.ndim == 3:
-                        attn_per_head_seq.append(raw)
-                        attn_2d = raw.mean(axis=-1)
-                    elif raw.ndim == 2:
-                        attn_2d = raw
-                    else:
-                        attn_2d = raw.reshape(6, 9)
-                    flat = attn_2d.flatten()
-                    flat_sum = float(flat.sum())
-                    ent = _entropy(flat / max(flat_sum, 1e-12))
-                    argmax_flat = int(flat.argmax())
-                    argmax_r, argmax_c = divmod(argmax_flat, attn_2d.shape[1])
-                    print(f"\nstep={t}  sum={flat_sum:.4f}  entropy={ent:.3f} nats  "
-                          f"argmax=(r={argmax_r}, c={argmax_c})  max_val={flat.max():.4f}")
-                    print(_format_attn_grid(attn_2d))
-
-                    # Per-head breakdown (when available)
-                    if raw.ndim == 3:
-                        num_heads = raw.shape[-1]
-                        for h_idx in range(num_heads):
-                            head_attn = raw[..., h_idx]
-                            head_flat = head_attn.flatten()
-                            head_sum = float(head_flat.sum())
-                            head_ent = _entropy(head_flat / max(head_sum, 1e-12))
-                            head_argmax = int(head_flat.argmax())
-                            har, hac = divmod(head_argmax, head_attn.shape[1])
-                            print(f"  head {h_idx}  sum={head_sum:.4f}  entropy={head_ent:.3f}  "
-                                  f"argmax=(r={har}, c={hac})  max_val={head_flat.max():.4f}")
-                            print("  " + _format_attn_grid(head_attn).replace("\n", "\n  "))
-
-                    attn_seq.append(attn_2d)
-                    entropies.append(ent)
-                    for r in range(attn_2d.shape[0]):
-                        for c in range(attn_2d.shape[1]):
-                            w.writerow([t, r, c, f"{attn_2d[r, c]:.6f}"])
-            print(f"[saved {csv_path}]")
+            num_steps = len(attn_maps[agent_key])
+            for t in range(num_steps):
+                raw = np.asarray(attn_maps[agent_key][t]).squeeze()
+                if raw.ndim == 3:
+                    attn_2d = raw.mean(axis=-1)
+                elif raw.ndim == 2:
+                    attn_2d = raw
+                else:
+                    attn_2d = raw.reshape(6, 9)
+                flat = attn_2d.flatten()
+                flat_sum = float(flat.sum())
+                ent = _entropy(flat / max(flat_sum, 1e-12))
+                attn_seq.append(attn_2d)
+                entropies.append(ent)
 
             attn_seq_np = np.stack(attn_seq, axis=0)
 
@@ -528,78 +490,6 @@ def main() -> None:
                 title=f"seed {args.seed_idx} ep {ep} {agent_key}",
             )
             print(f"[saved {png_path}]")
-
-            if attn_per_head_seq:
-                per_head_seq_np = np.stack(attn_per_head_seq, axis=0)
-                if per_head_seq_np.shape[0] != T_attn:
-                    per_head_seq_np = per_head_seq_np[:T_attn]
-                per_head_path = out_dir / (
-                    f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}_per_head.png"
-                )
-                _save_per_head_strip(
-                    per_head_seq_np,
-                    per_head_path,
-                    title=f"seed {args.seed_idx} ep {ep} {agent_key}",
-                )
-                print(f"[saved {per_head_path}]")
-
-                # Per-head with obs and action overlay.
-                agent_idx_int = int(agent_key.split("_")[1])
-                partner_idx_int = 1 - agent_idx_int
-                action_view_slots = []
-                is_decision_seq = []
-                partner_msg_view_slots = []
-                for t in range(T_attn):
-                    state_t = ep_states[t]
-                    pos_perm = np.asarray(state_t.env_state.per_agent_perm[agent_key])
-                    inv_recol = np.asarray(state_t.per_agent_inv_recolouring[agent_key])
-                    pos_perm_inv = np.argsort(pos_perm)
-
-                    # ep_actions has picks (-1 on deliberation); ep_messages
-                    # has messages (-1 at decision). Use whichever applies.
-                    is_decision_t = (t == T_attn - 1)
-                    if is_decision_t:
-                        action_t = int(ep_actions[t][agent_idx_int])
-                    else:
-                        action_t = (
-                            int(ep_messages[t][agent_idx_int])
-                            if len(ep_messages) > t else -1
-                        )
-                    if action_t >= 0:
-                        action_gt = int(inv_recol[action_t])
-                        action_view_slots.append(int(pos_perm_inv[action_gt]))
-                    else:
-                        action_view_slots.append(-1)
-                    is_decision_seq.append(is_decision_t)
-
-                    # Partner's last-emitted GT message (env_state.messages is GT frame).
-                    # Walk through wrappers to find the inner CardGameState.
-                    inner = state_t
-                    while hasattr(inner, "env_state") and not hasattr(inner, "messages"):
-                        inner = inner.env_state
-                    if hasattr(inner, "messages"):
-                        partner_msg_gt = int(np.asarray(inner.messages)[partner_idx_int])
-                        if partner_msg_gt >= 0:
-                            partner_msg_view_slots.append(int(pos_perm_inv[partner_msg_gt]))
-                        else:
-                            partner_msg_view_slots.append(-1)
-                    else:
-                        partner_msg_view_slots.append(-1)
-
-                action_overlay_path = out_dir / (
-                    f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}_per_head_action.png"
-                )
-                _save_per_head_action_overlay(
-                    per_head_seq_np,
-                    obs_seq_np[:T_attn],
-                    action_view_slots,
-                    is_decision_seq,
-                    partner_msg_view_slots,
-                    action_overlay_path,
-                    title=f"seed {args.seed_idx} ep {ep} {agent_key}",
-                    agent_idx=agent_idx_int,
-                )
-                print(f"[saved {action_overlay_path}]")
 
 
 if __name__ == "__main__":
