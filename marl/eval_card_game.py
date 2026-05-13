@@ -143,45 +143,6 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
 
 
-def _log_card_game_per_episode_attention_grids(
-    inner_env, policy, params, max_steps, tag, video_dir, logger,
-    feed_attn_dims=None, ja_card_masks=None,
-    num_episodes=10, params_partner=None,
-    rng_seed_base=100, partner_feed_dim=5,
-):
-    """Post-hoc helper: run N episodes and save one 2xT attention_grid.png per
-    episode (each in its own episode_<i>/ subdir). Reuses
-    `_log_card_game_attention_grid` so the rendering matches the train-time
-    eval grids logged from eval_logging.py.
-    """
-    from envs.card_game.rendering import _unwrap_card_game_state
-
-    if params_partner is None:
-        params_partner = params
-
-    for ep in range(num_episodes):
-        ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
-        ep_states, attn_data, ep_actions, ep_messages, ep_obs = run_episode_with_states(
-            ep_rng, inner_env, params, policy, params_partner, policy, max_steps,
-            collect_attention=True,
-            collect_obs=True,
-            feed_other_attn_dims=feed_attn_dims,
-            ja_card_masks=ja_card_masks,
-            partner_feed_dim=partner_feed_dim,
-        )
-        if not attn_data.get("agent_0") or not attn_data.get("agent_1"):
-            continue
-        es0 = _unwrap_card_game_state(ep_states[0])
-        card_perm = np.asarray(es0.card_permutation)
-        ep_dir = os.path.join(video_dir, f"episode_{ep}")
-        os.makedirs(ep_dir, exist_ok=True)
-        _log_card_game_attention_grid(
-            None, attn_data, ep_actions, f"{tag}/ep_{ep}", ep_dir, logger,
-            ep_messages=ep_messages, card_permutation=card_perm,
-            ep_obs=ep_obs, ep_states=ep_states,
-        )
-
-
 def _log_card_game_action_distributions(
     inner_env, policy, params, max_steps, tag, logger,
     feed_attn_dims=None, ja_card_masks=None,
