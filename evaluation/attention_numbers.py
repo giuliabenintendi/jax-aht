@@ -111,10 +111,14 @@ def _save_per_head_action_overlay(
     img_h: int = 21,
     img_w: int = 35,
     legend: str | None = None,
+    row_labels: list[str] | None = None,
 ) -> None:
     """4 rows (one per head) × T columns; obs as background, head-specific
     attention overlay, and a colored marker on the card the agent acted on
     (dot for deliberation message, box for decision pick).
+
+    Pass `row_labels` (length H) to override the default "head 0", "head 1"… —
+    e.g. ["avg"] for a single head-averaged row.
 
     Args:
         per_head_seq: (T, fh, fw, num_heads).
@@ -190,7 +194,8 @@ def _save_per_head_action_overlay(
                 ax.add_patch(p_rect)
 
             if t == 0:
-                ax.set_ylabel(f"head {h_idx}", fontsize=8)
+                label = row_labels[h_idx] if (row_labels and h_idx < len(row_labels)) else f"head {h_idx}"
+                ax.set_ylabel(label, fontsize=8)
             if h_idx == 0:
                 ax.set_title(f"t={t}", fontsize=8)
             ax.set_xticks([])

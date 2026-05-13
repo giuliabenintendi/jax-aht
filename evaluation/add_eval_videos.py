@@ -114,6 +114,7 @@ def main():
             _log_card_game_eval_video,
             _log_card_game_per_agent_obs_video,
             _log_card_game_per_episode_attention_grids,
+            _log_card_game_avg_attn_panel,
             _log_card_game_xp_videos,
             _log_card_game_per_agent_xp_videos,
         )
@@ -196,6 +197,17 @@ def main():
                         feed_attn_dims=feed_attn_dims,
                         ja_card_masks=ja_card_masks,
                         num_episodes=args.num_episodes,
+                        partner_feed_dim=partner_feed_dim,
+                    )
+                    _log_card_game_avg_attn_panel(
+                        inner_env, policy, params, max_steps,
+                        tag=f"Eval/seed_{seed_idx}",
+                        video_dir=grids_dir,
+                        logger=wandb_logger,
+                        feed_attn_dims=feed_attn_dims,
+                        ja_card_masks=ja_card_masks,
+                        num_episodes=args.num_episodes,
+                        seed_idx=seed_idx,
                         partner_feed_dim=partner_feed_dim,
                     )
                 print(f"Seed {seed_idx}: SP videos in {video_dir}")
