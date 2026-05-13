@@ -294,9 +294,13 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
     if num_steps == 0:
         return
 
-    attn_stack = np.array([
-        np.asarray(attn_maps[agent_key][t]).squeeze() for t in range(num_steps)
-    ])
+    def _head_average(raw):
+        a = np.asarray(raw).squeeze()
+        if a.ndim == 3:
+            a = a.mean(axis=-1)
+        return a
+
+    attn_stack = np.array([_head_average(attn_maps[agent_key][t]) for t in range(num_steps)])
     attn_max = float(attn_stack.max())
     if attn_max <= 0:
         attn_max = 1.0
@@ -346,7 +350,7 @@ def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
     for t in range(num_steps):
         is_decision = (t == num_steps - 1)
         if draw_heatmap:
-            attn = np.asarray(attn_maps[agent_key][t]).squeeze()
+            attn = _head_average(attn_maps[agent_key][t])
             axes[t].imshow(
                 attn, cmap=cmap, vmin=0.0, vmax=attn_max,
                 interpolation="nearest", extent=extent,
