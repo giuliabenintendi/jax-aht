@@ -241,8 +241,11 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             _m0 = ca_0_avg.sum()
             _m1 = ca_1_avg.sum()
         else:
-            ca_0 = jnp.einsum("hw,chw->c", a0_sq, ja_card_masks)
-            ca_1 = jnp.einsum("hw,chw->c", a1_sq, ja_card_masks)
+            # Network output has trailing num_heads axis even when per-head feed is off.
+            a0_avg = a0_sq.mean(axis=-1) if a0_sq.ndim == 3 else a0_sq
+            a1_avg = a1_sq.mean(axis=-1) if a1_sq.ndim == 3 else a1_sq
+            ca_0 = jnp.einsum("hw,chw->c", a0_avg, ja_card_masks)
+            ca_1 = jnp.einsum("hw,chw->c", a1_avg, ja_card_masks)
             ph_0 = jnp.zeros(5).at[perm_0].set(ca_0)
             ph_1 = jnp.zeros(5).at[perm_1].set(ca_1)
             prev_pca_0 = ph_1[perm_0]
@@ -362,8 +365,12 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                     m0 = ca0_avg.sum()
                     m1 = ca1_avg.sum()
                 else:
-                    ca0 = jnp.einsum("hw,chw->c", attn_0.squeeze(), ja_card_masks)
-                    ca1 = jnp.einsum("hw,chw->c", attn_1.squeeze(), ja_card_masks)
+                    a0_sq = attn_0.squeeze()
+                    a1_sq = attn_1.squeeze()
+                    a0_avg = a0_sq.mean(axis=-1) if a0_sq.ndim == 3 else a0_sq
+                    a1_avg = a1_sq.mean(axis=-1) if a1_sq.ndim == 3 else a1_sq
+                    ca0 = jnp.einsum("hw,chw->c", a0_avg, ja_card_masks)
+                    ca1 = jnp.einsum("hw,chw->c", a1_avg, ja_card_masks)
                     ph0 = jnp.zeros(5).at[p0].set(ca0)
                     ph1 = jnp.zeros(5).at[p1].set(ca1)
                     next_pca_0 = ph1[p0]
