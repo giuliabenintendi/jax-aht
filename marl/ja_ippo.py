@@ -193,7 +193,6 @@ def make_train_loop(config, env):
         img_h = img_w = feat_h = feat_w = 0
 
     _env_max_steps = int(config.get("ENV_KWARGS", {}).get("max_steps", 8))
-    num_card_slots = int(getattr(env, "num_cards", 5))
 
     # Precompute card tile masks (used by JA card attention and the diagnostic-
     # only JA_CARD_METRIC path).
@@ -342,23 +341,7 @@ def make_train_loop(config, env):
                             aux_loss = jnp.float32(0.0)
 
                         log_prob = pi.log_prob(traj_batch.action)
-                        entropy_per_actor = pi.entropy()
-                        entropy = entropy_per_actor.mean()
-                        decision_mask = (
-                            traj_batch.avail_actions.sum(axis=-1) > 1.5
-                        ).astype(jnp.float32)
-                        decision_entropy = (
-                            (entropy_per_actor * decision_mask).sum()
-                            / jnp.maximum(decision_mask.sum(), 1.0)
-                        )
-                        num_valid_actions = traj_batch.avail_actions.sum(axis=-1)
-                        normalized_entropy = entropy_per_actor / jnp.maximum(
-                            jnp.log(jnp.maximum(num_valid_actions, 2.0)), 1e-8
-                        )
-                        decision_entropy_normalized = (
-                            (normalized_entropy * decision_mask).sum()
-                            / jnp.maximum(decision_mask.sum(), 1.0)
-                        )
+                        entropy = pi.entropy().mean()
 
                         value_pred_clipped = traj_batch.value + (
                             value - traj_batch.value
@@ -406,8 +389,7 @@ def make_train_loop(config, env):
                         clip_frac = (jnp.abs(ratio - 1.0) > config["CLIP_EPS"]).mean()
                         return total_loss, (value_loss, loss_actor, entropy,
                                             approx_kl, clip_frac, ratio.mean(), ratio.std(),
-                                            aux_loss, decision_entropy,
-                                            decision_entropy_normalized)
+                                            aux_loss)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
@@ -725,16 +707,6 @@ def make_train_loop(config, env):
                     pick_0_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
                     pick_1_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
 
-                decision_denom = jnp.maximum(decision_mask_actor.astype(jnp.float32).sum(), 1.0)
-                own_pick_hist_step = (
-                    jax.nn.one_hot(jnp.minimum(action, num_cards - 1), num_cards)
-                    * decision_mask_actor[:, None].astype(jnp.float32)
-                ).sum(axis=0) / decision_denom
-                canonical_pick_hist_step = (
-                    jax.nn.one_hot(jnp.concatenate([pick_0_gt, pick_1_gt]), num_cards)
-                    * decision_mask_actor[:, None].astype(jnp.float32)
-                ).sum(axis=0) / decision_denom
-
                 # Three-part JA attention shaping (match + follow). Reuses
                 # phys_0 / phys_1 from the JA_CARD_METRIC path; only fires when
                 # at least one coef is positive.
@@ -892,8 +864,7 @@ def make_train_loop(config, env):
                                      r_attn_shaping,
                                      r_attn_match_per_actor,
                                      r_attn_self_per_actor, r_gaze_pick_per_actor,
-                                     gaze_pick_match_per_actor,
-                                     own_pick_hist_step, canonical_pick_hist_step)
+                                     gaze_pick_match_per_actor)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
                            comm_match_batch, comm_stable_batch, comm_follow_batch,
@@ -901,8 +872,7 @@ def make_train_loop(config, env):
                            r_attn_shaping_batch,
                            r_attn_match_batch,
                            r_attn_self_batch, r_gaze_pick_batch,
-                           gaze_pick_match_batch,
-                           own_pick_hist_batch, canonical_pick_hist_batch) = jax.lax.scan(
+                           gaze_pick_match_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -1008,8 +978,7 @@ def make_train_loop(config, env):
 
             (total_loss, (value_loss, policy_loss, entropy,
                          approx_kl, clip_frac, ratio_mean, ratio_std,
-                         aux_partner_argmax_loss,
-                         decision_entropy, decision_entropy_normalized)), grad_norm = loss_info
+                         aux_partner_argmax_loss)), grad_norm = loss_info
 
             jsd_values = -traj_batch.ja_reward[:, :num_envs]
 
@@ -1050,26 +1019,12 @@ def make_train_loop(config, env):
             metric["ja_attn_match_mean"] = r_attn_match_batch.mean()
             metric["ja_attn_self_mean"] = r_attn_self_batch.mean()
             metric["aux_partner_argmax_loss"] = aux_partner_argmax_loss[0].mean()
-            metric["decision_entropy"] = decision_entropy.mean()
-            metric["decision_entropy_normalized"] = decision_entropy_normalized.mean()
-            decision_actor_count = jnp.maximum(
-                (traj_batch.avail_actions.sum(axis=-1) > 1.5).astype(jnp.float32).sum(),
-                1.0,
-            )
+            # One decision step per actor per rollout (ROLLOUT_LENGTH == max_steps).
+            decision_actor_count = float(num_actors)
             metric["ja_gaze_pick_mean"] = r_gaze_pick_batch.sum() / decision_actor_count
             metric["ja_gaze_pick_target_mass_mean"] = (
                 gaze_pick_match_batch.sum() / decision_actor_count
             )
-            decision_step_count = jnp.maximum(
-                (own_pick_hist_batch.sum(axis=-1) > 0).astype(jnp.float32).sum(), 1.0
-            )
-            for slot in range(num_card_slots):
-                metric[f"decision_pick_own_slot_{slot}"] = (
-                    own_pick_hist_batch[:, slot].sum() / decision_step_count
-                )
-                metric[f"decision_pick_canonical_slot_{slot}"] = (
-                    canonical_pick_hist_batch[:, slot].sum() / decision_step_count
-                )
 
             if feed_other_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
@@ -1167,8 +1122,6 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
         ("entropy",              "Loss/entropy"),
-        ("decision_entropy",     "Loss/decision_entropy"),
-        ("decision_entropy_normalized", "Loss/decision_entropy_normalized"),
         ("grad_norm",            "Loss/grad_norm"),
         ("approx_kl",            "Loss/approx_kl"),
         ("clip_frac",            "Loss/clip_frac"),
@@ -1179,9 +1132,6 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
     for key, name in scalar_keys:
         if key in m:
             data[f"LiveTrain/seed_{seed_idx}/{name}"] = float(np.asarray(m[key]).mean())
-    for key in m:
-        if key.startswith("decision_pick_own_slot_") or key.startswith("decision_pick_canonical_slot_"):
-            data[f"LiveTrain/seed_{seed_idx}/Diag/{key}"] = float(np.asarray(m[key]).mean())
 
     logger.log(data, commit=True)
 
