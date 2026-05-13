@@ -27,11 +27,13 @@ PER_HEAD=false
 
 run_cell() {
   local gpu="$1"; local match="$2"; local self="$3"; local gaze_pick="$4"; local aux="$5"; local label="$6"
-  echo "[$(date +%Y-%m-%d_%H:%M:%S)] [start] ${label} GPU ${gpu} (m=${match} s=${self} g=${gaze_pick} a=${aux})"
+  local run_label="${label}_m${match}_s${self}_g${gaze_pick}_a${aux}"
+  echo "[$(date +%Y-%m-%d_%H:%M:%S)] [start] ${run_label} GPU ${gpu}"
   MATCH="${match}" SELF="${self}" GAZE_PICK="${gaze_pick}" AUX="${aux}" \
     SEEDS="${SEEDS}" STEPS="${STEPS}" PER_HEAD="${PER_HEAD}" \
+    LABEL="${run_label}" \
     ./run_ja_delib_actions.sh "${gpu}"
-  echo "[$(date +%Y-%m-%d_%H:%M:%S)] [finish] ${label} (exit $?)"
+  echo "[$(date +%Y-%m-%d_%H:%M:%S)] [finish] ${run_label} (exit $?)"
 }
 
 # GPU 1
