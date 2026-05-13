@@ -135,21 +135,22 @@ def make_train_loop(config, env):
     # Two-part JA attention shaping (parallel to comm shaping):
     #   match: per-step continuous similarity between agents' canonical-frame
     #          card-attention distributions during deliberation. Computed as
-    #          MATCH_COEF * (1 - JSD(phys_0_norm, phys_1_norm) / log(2)), so
-    #          it sits in [0, MATCH_COEF]: full reward when distributions are
-    #          identical, zero when fully disjoint.
-    #   follow: +coef per agent at the decision step when BOTH agents' attention
-    #           argmaxes agree on the same card AND that agent's pick equals
-    #           that shared argmax. Mirrors comm follow which requires
-    #           prev_match (shared message) before crediting per-agent pick.
+    #          MATCH_COEF * (1 - JSD(q_phys_0, q_phys_1) / log(2)), so it sits
+    #          in [0, MATCH_COEF]: full reward when distributions are identical,
+    #          zero when fully disjoint.
+    #   self: +coef per agent at the decision step when its pick matches the
+    #         card at its own attention argmax in canonical frame.
     # Both terms reuse phys_0 / phys_1 computed in the JA_CARD_METRIC path.
     ja_attn_match_coef = config.get("JA_ATTN_MATCH_COEF", 0.0)
-    ja_attn_follow_coef = config.get("JA_ATTN_FOLLOW_COEF", 0.0)
     # Per-agent, decision step: coef if pick == own attention argmax
     # (compared in canonical frame). Pulls pick to follow attention.
     ja_attn_self_coef = config.get("JA_ATTN_SELF_COEF", 0.0)
+    # Direct decision shaping: reward the picked canonical card according to
+    # the partner's PREVIOUS-step canonical card-attention distribution.
+    ja_gaze_pick_coef = config.get("JA_GAZE_PICK_COEF", 0.0)
+    ja_gaze_pick_active = ja_gaze_pick_coef > 0
     ja_attn_shaping_active = (
-        ja_attn_match_coef > 0 or ja_attn_follow_coef > 0 or ja_attn_self_coef > 0
+        ja_attn_match_coef > 0 or ja_attn_self_coef > 0
     )
     # Auxiliary NLL loss read from the attention pool directly: forces the
     # per-card pooled attention to peak at the partner's argmax view-slot in
@@ -165,7 +166,7 @@ def make_train_loop(config, env):
     # JA_CARD_ATTN implies this. So does JA_ATTN_*_COEF being positive.
     ja_card_metric = (
         ja_card_attn or config.get("JA_CARD_METRIC", False) or ja_attn_shaping_active
-        or ja_aux_partner_argmax_active
+        or ja_aux_partner_argmax_active or ja_gaze_pick_active
     )
     if ja_card_attn and feed_other_attn:
         raise ValueError("JA_CARD_ATTN is mutually exclusive with FEED_OTHER_ATTN")
@@ -192,6 +193,7 @@ def make_train_loop(config, env):
         img_h = img_w = feat_h = feat_w = 0
 
     _env_max_steps = int(config.get("ENV_KWARGS", {}).get("max_steps", 8))
+    num_card_slots = int(getattr(env, "num_cards", 5))
 
     # Precompute card tile masks (used by JA card attention and the diagnostic-
     # only JA_CARD_METRIC path).
@@ -248,6 +250,13 @@ def make_train_loop(config, env):
                             init_partner_card_attn)
         else:
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
+        if ja_gaze_pick_active:
+            init_prev_partner_phys = jnp.zeros((num_actors, 5), dtype=jnp.float32)
+            init_prev_partner_valid = jnp.zeros((num_actors,), dtype=bool)
+            runner_state = runner_state + (
+                init_prev_partner_phys,
+                init_prev_partner_valid,
+            )
         if ja_aux_partner_argmax_active and ja_card_partner_feed:
             init_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
             init_partner_argmax_valid = jnp.zeros((num_actors,), dtype=bool)
@@ -333,7 +342,23 @@ def make_train_loop(config, env):
                             aux_loss = jnp.float32(0.0)
 
                         log_prob = pi.log_prob(traj_batch.action)
-                        entropy = pi.entropy().mean()
+                        entropy_per_actor = pi.entropy()
+                        entropy = entropy_per_actor.mean()
+                        decision_mask = (
+                            traj_batch.avail_actions.sum(axis=-1) > 1.5
+                        ).astype(jnp.float32)
+                        decision_entropy = (
+                            (entropy_per_actor * decision_mask).sum()
+                            / jnp.maximum(decision_mask.sum(), 1.0)
+                        )
+                        num_valid_actions = traj_batch.avail_actions.sum(axis=-1)
+                        normalized_entropy = entropy_per_actor / jnp.maximum(
+                            jnp.log(jnp.maximum(num_valid_actions, 2.0)), 1e-8
+                        )
+                        decision_entropy_normalized = (
+                            (normalized_entropy * decision_mask).sum()
+                            / jnp.maximum(decision_mask.sum(), 1.0)
+                        )
 
                         value_pred_clipped = traj_batch.value + (
                             value - traj_batch.value
@@ -381,7 +406,8 @@ def make_train_loop(config, env):
                         clip_frac = (jnp.abs(ratio - 1.0) > config["CLIP_EPS"]).mean()
                         return total_loss, (value_loss, loss_actor, entropy,
                                             approx_kl, clip_frac, ratio.mean(), ratio.std(),
-                                            aux_loss)
+                                            aux_loss, decision_entropy,
+                                            decision_entropy_normalized)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
@@ -467,6 +493,16 @@ def make_train_loop(config, env):
                     prev_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
                     prev_partner_argmax_valid = jnp.zeros((num_actors,), dtype=bool)
                     prev_partner_argmax_weight = jnp.zeros((num_actors,), dtype=jnp.float32)
+                if ja_gaze_pick_active:
+                    (
+                        *rest,
+                        prev_partner_phys_for_actor,
+                        prev_partner_valid_for_actor,
+                    ) = runner_state_core
+                    runner_state_core = tuple(rest)
+                else:
+                    prev_partner_phys_for_actor = jnp.zeros((num_actors, 5), dtype=jnp.float32)
+                    prev_partner_valid_for_actor = jnp.zeros((num_actors,), dtype=bool)
                 if feed_other_attn:
                     (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state_core
                 elif ja_card_partner_feed:
@@ -650,11 +686,16 @@ def make_train_loop(config, env):
                     partner_argmax_per_actor = jnp.concatenate(
                         [partner_argmax_in_ego_view_0, partner_argmax_in_ego_view_1]
                     ).astype(jnp.int32)
+                    current_partner_phys_for_actor = jnp.concatenate([q_phys_1, q_phys_0], axis=0)
                     current_partner_mass_per_actor = jnp.concatenate([m_1, m_0])
                 else:
                     partner_argmax_per_actor = jnp.zeros(num_actors, dtype=jnp.int32)
+                    current_partner_phys_for_actor = jnp.zeros((num_actors, num_cards), dtype=jnp.float32)
                     current_partner_mass_per_actor = jnp.zeros(num_actors, dtype=jnp.float32)
                 partner_argmax_per_actor = jax.lax.stop_gradient(partner_argmax_per_actor)
+                current_partner_phys_for_actor = jax.lax.stop_gradient(
+                    current_partner_phys_for_actor.astype(jnp.float32)
+                )
                 current_partner_mass_per_actor = jax.lax.stop_gradient(
                     current_partner_mass_per_actor.astype(jnp.float32)
                 )
@@ -668,59 +709,51 @@ def make_train_loop(config, env):
                     aux_partner_argmax_valid = jnp.ones((num_actors,), dtype=bool)
                     aux_partner_argmax_weight = current_partner_mass_per_actor
 
+                is_decision_env = step_count_batch[:num_envs] >= _env_max_steps
+                decision_mask_actor = jnp.concatenate([is_decision_env, is_decision_env])
+                env_idx = jnp.arange(num_envs)
+                pick_0_view = action[:num_envs]
+                pick_1_view = action[num_envs:]
+                pick_0_is_card = pick_0_view < num_cards
+                pick_1_is_card = pick_1_view < num_cards
+                if ja_card_metric:
+                    inv_recol_0 = env_state.env_state.per_agent_inv_recolouring["agent_0"]
+                    inv_recol_1 = env_state.env_state.per_agent_inv_recolouring["agent_1"]
+                    pick_0_gt = inv_recol_0[env_idx, jnp.minimum(pick_0_view, num_cards - 1)]
+                    pick_1_gt = inv_recol_1[env_idx, jnp.minimum(pick_1_view, num_cards - 1)]
+                else:
+                    pick_0_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
+                    pick_1_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
+
+                decision_denom = jnp.maximum(decision_mask_actor.astype(jnp.float32).sum(), 1.0)
+                own_pick_hist_step = (
+                    jax.nn.one_hot(jnp.minimum(action, num_cards - 1), num_cards)
+                    * decision_mask_actor[:, None].astype(jnp.float32)
+                ).sum(axis=0) / decision_denom
+                canonical_pick_hist_step = (
+                    jax.nn.one_hot(jnp.concatenate([pick_0_gt, pick_1_gt]), num_cards)
+                    * decision_mask_actor[:, None].astype(jnp.float32)
+                ).sum(axis=0) / decision_denom
+
                 # Three-part JA attention shaping (match + follow). Reuses
                 # phys_0 / phys_1 from the JA_CARD_METRIC path; only fires when
                 # at least one coef is positive.
                 if ja_card_metric and ja_attn_shaping_active:
-                    is_decision_env = step_count_batch[:num_envs] >= _env_max_steps
-
-                    # JSD-based continuous match during deliberation. Reuses
-                    # card_jsd_per_env computed by the metric block above,
-                    # which is JSD between the normalized canonical-frame
-                    # card-attention distributions. Range: [0, log(2)].
                     log2 = jnp.log(jnp.asarray(2.0))
-                    jsd_clipped = jnp.clip(card_jsd_per_env.reshape(num_envs), 0.0, log2)
-                    match_score = 1.0 - jsd_clipped / log2  # in [0, 1]
+                    jsd_match = jsd_divergence(
+                        q_phys_0[:, None, :], q_phys_1[:, None, :]
+                    ).reshape(num_envs)
+                    match_score = 1.0 - jnp.clip(jsd_match, 0.0, log2) / log2
                     match_val_env = jnp.where(
                         ~is_decision_env,
-                        ja_attn_match_coef * jnp.minimum(m_0, m_1) * match_score,
+                        ja_attn_match_coef * match_score,
                         0.0,
                     )
-
-                    # Follow stays argmax-based: "the most attended card".
-                    argmax_0 = phys_0.argmax(axis=-1)
-                    argmax_1 = phys_1.argmax(axis=-1)
-
-                    inv_recol_0 = env_state.env_state.per_agent_inv_recolouring["agent_0"]
-                    inv_recol_1 = env_state.env_state.per_agent_inv_recolouring["agent_1"]
-                    env_idx = jnp.arange(num_envs)
-                    pick_0_view = action[:num_envs]
-                    pick_1_view = action[num_envs:]
-                    pick_0_is_card = pick_0_view < num_cards
-                    pick_1_is_card = pick_1_view < num_cards
-                    pick_0_gt = inv_recol_0[env_idx, jnp.minimum(pick_0_view, num_cards - 1)]
-                    pick_1_gt = inv_recol_1[env_idx, jnp.minimum(pick_1_view, num_cards - 1)]
-
-                    # Follow mirrors the comm shaping: require shared attention
-                    # at the decision step (both agents' argmaxes equal),
-                    # then reward each agent for picking that shared card.
-                    attn_match_argmax = argmax_0 == argmax_1
-                    follow_ok_0 = (
-                        is_decision_env & pick_0_is_card & attn_match_argmax
-                        & (pick_0_gt == argmax_0)
-                    )
-                    follow_ok_1 = (
-                        is_decision_env & pick_1_is_card & attn_match_argmax
-                        & (pick_1_gt == argmax_1)
-                    )
-                    follow_val_0 = jnp.where(follow_ok_0, ja_attn_follow_coef, 0.0)
-                    follow_val_1 = jnp.where(follow_ok_1, ja_attn_follow_coef, 0.0)
+                    match_val_0 = match_val_env
+                    match_val_1 = match_val_env
 
                     r_attn_match_per_actor = jnp.concatenate(
-                        [match_val_env, match_val_env]
-                    )
-                    r_attn_follow_per_actor = jnp.concatenate(
-                        [follow_val_0, follow_val_1]
+                        [match_val_0, match_val_1]
                     )
 
                     # Self-consistency: per-agent at decision step. Each
@@ -753,18 +786,41 @@ def make_train_loop(config, env):
 
                     r_attn_shaping = (
                         r_attn_match_per_actor
-                        + r_attn_follow_per_actor
                         + r_attn_self_per_actor
                     )
                 else:
                     r_attn_shaping = jnp.zeros(num_actors)
                     r_attn_match_per_actor = jnp.zeros(num_actors)
-                    r_attn_follow_per_actor = jnp.zeros(num_actors)
                     r_attn_self_per_actor = jnp.zeros(num_actors)
+                if ja_gaze_pick_active:
+                    decision_mask_actor = jnp.concatenate([is_decision_env, is_decision_env])
+                    pick_canonical_per_actor = jnp.concatenate([pick_0_gt, pick_1_gt])
+                    picked_partner_mass = jnp.take_along_axis(
+                        prev_partner_phys_for_actor,
+                        pick_canonical_per_actor[:, None],
+                        axis=1,
+                    ).squeeze(-1)
+                    gaze_pick_ok = (
+                        decision_mask_actor
+                        & prev_partner_valid_for_actor
+                        & (action < num_cards)
+                    )
+                    r_gaze_pick_per_actor = jnp.where(
+                        gaze_pick_ok,
+                        ja_gaze_pick_coef * picked_partner_mass,
+                        0.0,
+                    )
+                    gaze_pick_match_per_actor = jnp.where(
+                        gaze_pick_ok, picked_partner_mass, 0.0
+                    )
+                else:
+                    r_gaze_pick_per_actor = jnp.zeros(num_actors)
+                    gaze_pick_match_per_actor = jnp.zeros(num_actors)
                 r_attn_shaping = jax.lax.stop_gradient(r_attn_shaping)
                 r_attn_match_per_actor = jax.lax.stop_gradient(r_attn_match_per_actor)
-                r_attn_follow_per_actor = jax.lax.stop_gradient(r_attn_follow_per_actor)
                 r_attn_self_per_actor = jax.lax.stop_gradient(r_attn_self_per_actor)
+                r_gaze_pick_per_actor = jax.lax.stop_gradient(r_gaze_pick_per_actor)
+                gaze_pick_match_per_actor = jax.lax.stop_gradient(gaze_pick_match_per_actor)
 
                 plh_a_stored = prev_plh_actor if query_partner_lstm else jnp.zeros((num_actors,))
                 plh_c_stored = prev_plh_critic if query_partner_lstm else jnp.zeros((num_actors,))
@@ -795,6 +851,16 @@ def make_train_loop(config, env):
                                     new_partner_card_attn)
                 else:
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
+                if ja_gaze_pick_active:
+                    new_done_batch_gaze = batchify(new_done, env.agents, num_actors).squeeze()
+                    new_partner_phys_for_actor = jnp.where(
+                        new_done_batch_gaze[:, None], 0.0, current_partner_phys_for_actor
+                    ).astype(jnp.float32)
+                    new_gaze_pick_valid = ~new_done_batch_gaze
+                    runner_state = runner_state + (
+                        new_partner_phys_for_actor,
+                        new_gaze_pick_valid,
+                    )
                 if ja_aux_partner_argmax_active and ja_card_partner_feed:
                     new_done_batch_aux = batchify(new_done, env.agents, num_actors).squeeze()
                     new_partner_argmax = jnp.where(
@@ -824,15 +890,19 @@ def make_train_loop(config, env):
                                      comm_match_batch, comm_stable_batch, comm_follow_batch,
                                      ja_card_reward, card_jsd_step_mean,
                                      r_attn_shaping,
-                                     r_attn_match_per_actor, r_attn_follow_per_actor,
-                                     r_attn_self_per_actor)
+                                     r_attn_match_per_actor,
+                                     r_attn_self_per_actor, r_gaze_pick_per_actor,
+                                     gaze_pick_match_per_actor,
+                                     own_pick_hist_step, canonical_pick_hist_step)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
                            comm_match_batch, comm_stable_batch, comm_follow_batch,
                            ja_card_reward_batch, card_jsd_batch,
                            r_attn_shaping_batch,
-                           r_attn_match_batch, r_attn_follow_batch,
-                           r_attn_self_batch) = jax.lax.scan(
+                           r_attn_match_batch,
+                           r_attn_self_batch, r_gaze_pick_batch,
+                           gaze_pick_match_batch,
+                           own_pick_hist_batch, canonical_pick_hist_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -845,6 +915,13 @@ def make_train_loop(config, env):
                     prev_partner_argmax,
                     prev_partner_argmax_valid,
                     prev_partner_argmax_weight,
+                ) = runner_state
+                runner_state = tuple(rest)
+            if ja_gaze_pick_active:
+                (
+                    *rest,
+                    prev_partner_phys_for_actor,
+                    prev_partner_valid_for_actor,
                 ) = runner_state
                 runner_state = tuple(rest)
             if feed_other_attn:
@@ -913,7 +990,7 @@ def make_train_loop(config, env):
             scaled_comm_follow = comm_scale * comm_follow_batch
             combined_raw = (
                 raw_env_reward + intrinsic_batch + scaled_comm_reward
-                + ja_card_reward_batch + r_attn_shaping_batch
+                + ja_card_reward_batch + r_attn_shaping_batch + r_gaze_pick_batch
             )
             if normalize_rewards:
                 rew_norm_state = reward_norm_update(rew_norm_state, combined_raw)
@@ -931,7 +1008,8 @@ def make_train_loop(config, env):
 
             (total_loss, (value_loss, policy_loss, entropy,
                          approx_kl, clip_frac, ratio_mean, ratio_std,
-                         aux_partner_argmax_loss)), grad_norm = loss_info
+                         aux_partner_argmax_loss,
+                         decision_entropy, decision_entropy_normalized)), grad_norm = loss_info
 
             jsd_values = -traj_batch.ja_reward[:, :num_envs]
 
@@ -970,9 +1048,28 @@ def make_train_loop(config, env):
             # to the same value in expectation, so a single number suffices.
             metric["ja_attn_shaping_mean"] = r_attn_shaping_batch.mean()
             metric["ja_attn_match_mean"] = r_attn_match_batch.mean()
-            metric["ja_attn_follow_mean"] = r_attn_follow_batch.mean()
             metric["ja_attn_self_mean"] = r_attn_self_batch.mean()
             metric["aux_partner_argmax_loss"] = aux_partner_argmax_loss[0].mean()
+            metric["decision_entropy"] = decision_entropy.mean()
+            metric["decision_entropy_normalized"] = decision_entropy_normalized.mean()
+            decision_actor_count = jnp.maximum(
+                (traj_batch.avail_actions.sum(axis=-1) > 1.5).astype(jnp.float32).sum(),
+                1.0,
+            )
+            metric["ja_gaze_pick_mean"] = r_gaze_pick_batch.sum() / decision_actor_count
+            metric["ja_gaze_pick_target_mass_mean"] = (
+                gaze_pick_match_batch.sum() / decision_actor_count
+            )
+            decision_step_count = jnp.maximum(
+                (own_pick_hist_batch.sum(axis=-1) > 0).astype(jnp.float32).sum(), 1.0
+            )
+            for slot in range(num_card_slots):
+                metric[f"decision_pick_own_slot_{slot}"] = (
+                    own_pick_hist_batch[:, slot].sum() / decision_step_count
+                )
+                metric[f"decision_pick_canonical_slot_{slot}"] = (
+                    canonical_pick_hist_batch[:, slot].sum() / decision_step_count
+                )
 
             if feed_other_attn:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn)
@@ -981,6 +1078,11 @@ def make_train_loop(config, env):
                                 prev_partner_card_attn)
             else:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
+            if ja_gaze_pick_active:
+                runner_state = runner_state + (
+                    prev_partner_phys_for_actor,
+                    prev_partner_valid_for_actor,
+                )
             if ja_aux_partner_argmax_active and ja_card_partner_feed:
                 runner_state = runner_state + (
                     prev_partner_argmax,
@@ -1057,13 +1159,16 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
         ("card_jsd_mean",        "JA/card_jsd"),
         ("ja_attn_shaping_mean",         "JA/attn_shaping"),
         ("ja_attn_match_mean",           "JA/attn_match"),
-        ("ja_attn_follow_mean",          "JA/attn_follow"),
         ("ja_attn_self_mean",            "JA/attn_self"),
+        ("ja_gaze_pick_mean",            "JA/gaze_pick"),
+        ("ja_gaze_pick_target_mass_mean", "JA/gaze_pick_target_mass"),
         ("aux_partner_argmax_loss",      "JA/aux_partner_argmax_loss"),
         ("loss_total",           "Loss/total"),
         ("loss_value",           "Loss/value"),
         ("loss_policy",          "Loss/policy"),
         ("entropy",              "Loss/entropy"),
+        ("decision_entropy",     "Loss/decision_entropy"),
+        ("decision_entropy_normalized", "Loss/decision_entropy_normalized"),
         ("grad_norm",            "Loss/grad_norm"),
         ("approx_kl",            "Loss/approx_kl"),
         ("clip_frac",            "Loss/clip_frac"),
@@ -1074,6 +1179,9 @@ def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
     for key, name in scalar_keys:
         if key in m:
             data[f"LiveTrain/seed_{seed_idx}/{name}"] = float(np.asarray(m[key]).mean())
+    for key in m:
+        if key.startswith("decision_pick_own_slot_") or key.startswith("decision_pick_canonical_slot_"):
+            data[f"LiveTrain/seed_{seed_idx}/Diag/{key}"] = float(np.asarray(m[key]).mean())
 
     logger.log(data, commit=True)
 

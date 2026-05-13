@@ -223,12 +223,6 @@ class JAImageActorCritic(nn.Module):
     scalar_dim: int = 0
     scalar_embed_dim: int = 5
     query_partner_lstm: bool = False
-    enable_aux_partner_head: bool = False  # when True, attach a Dense head that predicts partner's canonical-frame argmax
-    # Output dim of the aux partner-argmax head. The target is the partner's
-    # canonical card argmax in [0, NUM_CARDS), so this should equal NUM_CARDS
-    # regardless of action_dim. Decoupled from action_dim because gaze_mode
-    # extends action_dim with a noop slot that the aux head does not predict.
-    aux_num_classes: int = 5
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -288,18 +282,6 @@ class JAImageActorCritic(nn.Module):
 
         action_logits = mask_action_logits(action_logits, avail_actions)
         pi = distrax.Categorical(logits=action_logits)
-
-        # Auxiliary head (optional, only when enable_aux_partner_head=True).
-        # Reads actor pre-head features → action_dim-way logits predicting
-        # partner's canonical-frame attention argmax. Sown via self.sow.
-        # Gated so loading older checkpoints (trained without the aux head)
-        # doesn't error on missing params.
-        if self.enable_aux_partner_head:
-            partner_argmax_logits = nn.Dense(
-                self.aux_num_classes, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
-                name="aux_partner_argmax_head",
-            )(actor_out)
-            self.sow("intermediates", "partner_argmax_logits", partner_argmax_logits)
 
         # Critic path — partner's critic h feeds the critic query
         _plh_c = plh_critic if self.query_partner_lstm else None

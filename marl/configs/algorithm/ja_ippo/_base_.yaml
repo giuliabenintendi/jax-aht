@@ -60,7 +60,7 @@ JA_CARD_JSD_COEF: 0.0           # mass-gated card-level JSD alignment reward
 JA_PARTNER_FEED_PER_HEAD: false  # if True, partner card attention is fed per-head (NUM_HEADS * 5 features) instead of head-averaged 5
 
 # Three-part JA attention shaping (parallel to comm shaping)
-JA_ATTN_MATCH_COEF: 0.0         # per-step continuous match: coef * (1 - JSD/log 2) during deliberation
-JA_ATTN_FOLLOW_COEF: 0.0        # per-agent at decision: coef * (argmax_match & pick==own_argmax)
+JA_ATTN_MATCH_COEF: 0.0         # per-step card-attention agreement during deliberation: coef * (1 - JSD(q_0, q_1)/log 2) on OP-corrected 5-way card attention
 JA_ATTN_SELF_COEF: 0.0          # per-agent at decision: coef if pick == own attention argmax (canonical-frame compare)
 JA_AUX_PARTNER_ARGMAX_COEF: 0.0  # aux NLL on attention pool: force attention to peak at partner argmax view-slot
+JA_GAZE_PICK_COEF: 0.0          # per-agent at decision: reward mass that the partner assigned on the previous step to the picked canonical card
