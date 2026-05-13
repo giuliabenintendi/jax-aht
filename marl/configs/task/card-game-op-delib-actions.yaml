@@ -1,0 +1,13 @@
+ENV_NAME: card-game
+ROLLOUT_LENGTH: 8   # = max_steps; one full episode per env per rollout
+ENV_KWARGS:
+  max_steps: 8
+  obs_type: image
+  shuffle: true
+  other_play_position_shuffle: true
+  other_play_recolouring: true
+  match_coef: 0.0
+  stability_coef: 0.0
+  follow_coef: 0.0
+  gaze_mode: false
+TASK_NAME: card-game-op-delib-actions

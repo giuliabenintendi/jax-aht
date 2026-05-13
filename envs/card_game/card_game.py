@@ -9,9 +9,11 @@ Layout (3×5 grid, TILE_PIXELS=7 → 21×35 px):
   Row 1: [card] [card] [card] [card] [card]
   Row 2: [ ] [ ] [agent_1 △] [ ] [ ]
 
-Actions: a single Discrete(NUM_CARDS) at every step. The same emitted
-card is interpreted as a deliberation message when not on the decision
-step and as a pick on the decision step (intent-expression layout).
+Actions: a single Discrete(NUM_CARDS) at every step. Outside gaze mode the
+same emitted card is interpreted as a deliberation message when not on the
+decision step and as a pick on the decision step (intent-expression layout).
+In gaze mode, deliberation-step actions are still emitted but ignored by the
+env dynamics; only the final-step action is committed as a pick.
 
 The `communication` flag now toggles only whether the partner's last
 emitted card is rendered into each agent's obs as a coloured dot — the
@@ -69,12 +71,10 @@ class CardGameEnv(BaseEnv):
         self.match_coef = match_coef
         self.stability_coef = stability_coef
         self.follow_coef = follow_coef
-        # gaze_mode: extends the action space to NUM_CARDS + 1. The new last
-        # action (index 5 when NUM_CARDS=5) is a noop. avail_actions forces
-        # the noop during deliberation and forbids it at the decision step,
-        # so the policy can't emit picks during deliberation or noops at
-        # decision. Removes the wasted PPO gradient on inert deliberation
-        # actions when communication is off.
+        # gaze_mode: deliberation-step actions remain private latent intentions.
+        # They are emitted every step but ignored by the env dynamics; only the
+        # final-step action becomes the committed pick. There is no dedicated
+        # noop action and no deliberation-time masking.
         self.gaze_mode = gaze_mode
         # When True, the partner-message dot rendered into each agent's obs is
         # drawn at a uniformly random card color instead of the color the
@@ -103,19 +103,15 @@ class CardGameEnv(BaseEnv):
         return jaxmarl_spaces.Box(0.0, 1.0, (self._obs_dim,))
 
     def action_space(self, agent: str):
-        n = self.num_cards + (1 if self.gaze_mode else 0)
-        return jaxmarl_spaces.Discrete(num_categories=n)
+        return jaxmarl_spaces.Discrete(num_categories=self.num_cards)
 
     @property
     def action_dim(self) -> int:
-        return self.num_cards + (1 if self.gaze_mode else 0)
+        return self.num_cards
 
     @property
     def noop_action(self) -> int:
-        """Action index that means 'do nothing'. Equals NUM_CARDS (the slot
-        just past the last card). Only valid when gaze_mode=True; outside
-        gaze mode the action space ends at NUM_CARDS-1 and this index is
-        unused."""
+        """Legacy compatibility property. Gaze mode no longer exposes noop."""
         return self.num_cards
 
     def _make_obs(
@@ -201,22 +197,16 @@ class CardGameEnv(BaseEnv):
         steps the action populates `messages`; on the decision step it
         populates the pick and `messages` is held at its previous value.
 
-        Under gaze_mode, the action space is one larger: indices 0..NUM_CARDS-1
-        are picks (as before) and index NUM_CARDS is the noop. The noop always
-        produces pick=-1 and leaves messages unchanged. avail_actions
-        guarantees the policy only ever samples the noop during deliberation
-        and only ever samples picks at the decision step, so we don't need
-        to validate inside _decode_actions.
+        Under gaze_mode there is no message channel: deliberation-step actions
+        are ignored by the env and only the final-step action becomes the pick.
+        Outside gaze mode, deliberation-step actions populate `messages`.
         """
         a0 = jnp.asarray(raw_a0, dtype=jnp.int32)
         a1 = jnp.asarray(raw_a1, dtype=jnp.int32)
 
         if self.gaze_mode:
-            noop = jnp.int32(self.num_cards)
-            a0_is_noop = a0 == noop
-            a1_is_noop = a1 == noop
-            pick_0 = jnp.where(is_decision & ~a0_is_noop, a0, jnp.int32(-1))
-            pick_1 = jnp.where(is_decision & ~a1_is_noop, a1, jnp.int32(-1))
+            pick_0 = jnp.where(is_decision, a0, jnp.int32(-1))
+            pick_1 = jnp.where(is_decision, a1, jnp.int32(-1))
             new_messages = prev_messages
         else:
             pick_0 = jnp.where(is_decision, a0, jnp.int32(-1))
@@ -370,20 +360,7 @@ class CardGameEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
-        if self.gaze_mode:
-            # Mask layout (length NUM_CARDS+1):
-            #   [pick_0, pick_1, ..., pick_{NUM_CARDS-1}, noop]
-            # Deliberation: only the trailing noop is allowed.
-            # Decision:     only the leading NUM_CARDS picks are allowed.
-            is_decision = (state.env_state.step_count + 1) >= self.max_steps
-            picks_mask = jnp.where(is_decision, 1.0, 0.0)
-            noop_mask = jnp.where(is_decision, 0.0, 1.0)
-            mask = jnp.concatenate([
-                jnp.full((self.num_cards,), picks_mask, dtype=jnp.float32),
-                jnp.array([noop_mask], dtype=jnp.float32),
-            ])
-        else:
-            mask = jnp.ones(self.num_cards, dtype=jnp.float32)
+        mask = jnp.ones(self.num_cards, dtype=jnp.float32)
         return {agent: mask for agent in self.agents}
 
     @partial(jax.jit, static_argnums=(0,))

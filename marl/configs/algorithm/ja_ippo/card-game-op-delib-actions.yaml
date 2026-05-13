@@ -1,0 +1,34 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+TOTAL_TIMESTEPS: 5e6
+NUM_ENVS: 1024
+NUM_SEEDS: 5
+EVAL_VIDEO_NUM_SEEDS: 100
+LR: 5e-4
+ANNEAL_LR: false
+GAE_LAMBDA: 0.95
+ENT_COEF: 0.01
+
+# New mode: deliberation actions are enabled every step (task uses gaze_mode=false,
+# communication=false), but the env reward still only fires on the final step.
+COMMUNICATION: false
+COMM_WARMUP_ENV_STEPS: 0
+COMM_REWARD_START_SCALE: 0.0
+
+# Feed translated partner card attention into the policy while the main reward
+# stays simple:
+#   1. own attention should follow previous partner attention
+#   2. each emitted action should align with the agent's own card attention
+JA_CARD_ATTN: true
+JA_CARD_PARTNER_FEED: true
+JA_PARTNER_FEED_PER_HEAD: false
+JA_CARD_METRIC: true
+JA_CARD_JSD_COEF: 0.0
+
+# Default reward for the new mode.
+JA_ATTN_MATCH_COEF: 0.05
+JA_ATTN_SELF_COEF: 0.10
+JA_GAZE_PICK_COEF: 0.0
+JA_AUX_PARTNER_ARGMAX_COEF: 0.0

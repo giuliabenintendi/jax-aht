@@ -177,40 +177,47 @@ def test_comm_decision_pick_reward():
     assert float(reward["agent_0"]) == 1.0
 
 
-def test_gaze_mode_avail_actions_flip_between_deliberation_and_decision():
-    """Gaze mode should force noop on deliberation and picks on the decision step."""
+def test_gaze_mode_allows_card_actions_during_deliberation():
+    """Gaze mode keeps the card action space active on every step."""
     env = make_env("card-game", {"max_steps": 2, "gaze_mode": True, "shuffle": False})
     key = jax.random.PRNGKey(21)
     obs, state = env.reset(key)
 
-    expected_delib = jnp.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=jnp.float32)
-    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_delib)
+    expected_mask = jnp.ones(NUM_CARDS, dtype=jnp.float32)
+    assert env.action_space("agent_0").n == NUM_CARDS
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
 
     key, subkey = jax.random.split(key)
-    noop = jnp.int32(NUM_CARDS)
     obs, state, reward, dones, _ = env.step(
-        subkey, state, {"agent_0": noop, "agent_1": noop}
+        subkey, state, {"agent_0": jnp.int32(1), "agent_1": jnp.int32(4)}
     )
     assert not dones["__all__"]
     assert float(reward["agent_0"]) == 0.0
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
+    assert int(state.env_state.messages[0]) == -1
+    assert int(state.env_state.messages[1]) == -1
 
-    expected_decision = jnp.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0], dtype=jnp.float32)
-    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_decision)
 
-
-def test_gaze_mode_noop_on_decision_is_invalid_and_scores_zero():
-    """Even if a noop leaks to decision time, it must not coordinate by accident."""
-    env = make_env("card-game", {"max_steps": 1, "gaze_mode": True, "shuffle": False})
+def test_gaze_mode_deliberation_actions_are_ignored_until_decision():
+    """Deliberation actions in gaze mode stay private; only the last action commits."""
+    env = make_env("card-game", {"max_steps": 2, "gaze_mode": True, "shuffle": False})
     key = jax.random.PRNGKey(22)
     obs, state = env.reset(key)
 
     key, subkey = jax.random.split(key)
-    noop = jnp.int32(NUM_CARDS)
     obs, state, reward, dones, _ = env.step(
-        subkey, state, {"agent_0": noop, "agent_1": noop}
+        subkey, state, {"agent_0": jnp.int32(0), "agent_1": jnp.int32(3)}
+    )
+    assert not dones["__all__"]
+    assert float(reward["agent_0"]) == 0.0
+    assert jnp.array_equal(state.env_state.agent_choices, jnp.array([-1, -1], dtype=jnp.int32))
+
+    key, subkey = jax.random.split(key)
+    obs, state, reward, dones, _ = env.step(
+        subkey, state, {"agent_0": jnp.int32(2), "agent_1": jnp.int32(2)}
     )
     assert dones["__all__"]
-    assert float(reward["agent_0"]) == 0.0
+    assert float(reward["agent_0"]) == 1.0
 
 
 def test_following_partner_message_is_chance_without_follow_reward():

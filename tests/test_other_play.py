@@ -310,8 +310,8 @@ def test_recolouring_message_remapping():
     assert int(inner_state.messages[1]) == int(inv1[4])
 
 
-def test_recolouring_noop_passthrough_in_gaze_mode():
-    """The recolouring wrapper must pass the gaze-mode noop through unchanged."""
+def test_recolouring_gaze_mode_ignores_deliberation_actions_but_keeps_decision_pick():
+    """Gaze mode keeps recoloured deliberation actions private and decision picks valid."""
     env = CardGameEnv(max_steps=2, shuffle=False, gaze_mode=True)
     wrapped = CardGameRecolouringWrapper(env)
 
@@ -320,14 +320,17 @@ def test_recolouring_noop_passthrough_in_gaze_mode():
 
     recolour_0 = state.per_agent_recolouring["agent_0"]
     recolour_1 = state.per_agent_recolouring["agent_1"]
-    noop = jnp.int32(NUM_CARDS)
-
     key, subkey = jax.random.split(key)
     obs, state, reward, dones, _ = wrapped.step(
-        subkey, state, {"agent_0": noop, "agent_1": noop}
+        subkey,
+        state,
+        {"agent_0": jnp.int32(recolour_0[3]), "agent_1": jnp.int32(recolour_1[4])},
     )
     assert not dones["__all__"]
     assert float(reward["agent_0"]) == 0.0
+    inner_state = state.env_state.env_state
+    assert int(inner_state.messages[0]) == -1
+    assert int(inner_state.messages[1]) == -1
 
     key, subkey = jax.random.split(key)
     _, _, reward, dones, _ = wrapped.step(
