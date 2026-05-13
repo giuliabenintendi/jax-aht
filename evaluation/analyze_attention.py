@@ -140,6 +140,113 @@ def _render_own_frame(card_perm, pos_perm, recolouring, agent_idx: int,
     return base
 
 
+def _render_joint_canonical_sequence(
+    ep_states, ep_actions, ep_messages, output_path: Path, max_steps: int,
+):
+    """1 × T row of canonical-frame snapshots showing BOTH agents' actions.
+
+    Cards are rendered in canonical colours and canonical positions (no
+    per-agent recolouring or position shuffle). At each step:
+      - Agent 0's canonical action is marked in orange.
+      - Agent 1's canonical action is marked in magenta.
+      - Marks are placed in different vertical halves of the card so they
+        don't overlap when both agents act on the same canonical card.
+    Decision step: the picked card gets a coloured border per agent
+    (agent 0 outer, agent 1 inset by 1 pixel).
+    """
+    num_steps = min(len(ep_states) - 1, max_steps)
+    if num_steps == 0:
+        return
+
+    fig, axes = plt.subplots(1, num_steps, figsize=(num_steps * 1.8, 2.0))
+    if num_steps == 1:
+        axes = [axes]
+
+    TP = TILE_PIXELS
+    card_row = 1
+    a0_color = np.asarray(AGENT_0_COLOR)
+    a1_color = np.asarray(AGENT_1_COLOR)
+
+    def _canonical_pos_of(card_perm: np.ndarray, canonical_value: int) -> int:
+        if canonical_value < 0:
+            return -1
+        positions = np.where(card_perm == canonical_value)[0]
+        return int(positions[0]) if positions.size > 0 else -1
+
+    def _draw_dot_top(img, pos: int, color):
+        dot_size = 2
+        dy = card_row * TP + 1
+        dx = pos * TP + (TP - dot_size) // 2
+        img[dy:dy + dot_size, dx:dx + dot_size] = color
+        return img
+
+    def _draw_dot_bottom(img, pos: int, color):
+        dot_size = 2
+        dy = card_row * TP + TP - 1 - dot_size
+        dx = pos * TP + (TP - dot_size) // 2
+        img[dy:dy + dot_size, dx:dx + dot_size] = color
+        return img
+
+    def _draw_border_inset(img, pos: int, color, inset: int):
+        y = card_row * TP + inset
+        x = pos * TP + inset
+        size = TP - 2 * inset
+        img[y, x:x + size] = color
+        img[y + size - 1, x:x + size] = color
+        img[y:y + size, x] = color
+        img[y:y + size, x + size - 1] = color
+        return img
+
+    for t in range(num_steps):
+        is_decision = (t == num_steps - 1)
+        state = ep_states[t]
+        card_state = _walk_to_card_state(state)
+        card_perm = np.asarray(card_state.card_permutation)
+
+        a0_inv = np.asarray(state.per_agent_inv_recolouring["agent_0"])
+        a1_inv = np.asarray(state.per_agent_inv_recolouring["agent_1"])
+
+        if is_decision:
+            a0_own = int(ep_actions[t][0]) if t < len(ep_actions) else -1
+            a1_own = int(ep_actions[t][1]) if t < len(ep_actions) else -1
+        else:
+            a0_own = int(ep_messages[t][0]) if t < len(ep_messages) else -1
+            a1_own = int(ep_messages[t][1]) if t < len(ep_messages) else -1
+        a0_canon = int(a0_inv[a0_own]) if a0_own >= 0 else -1
+        a1_canon = int(a1_inv[a1_own]) if a1_own >= 0 else -1
+
+        img = np.asarray(render_card_game(jnp.asarray(card_perm))).copy()
+
+        a0_pos = _canonical_pos_of(card_perm, a0_canon)
+        a1_pos = _canonical_pos_of(card_perm, a1_canon)
+
+        if is_decision:
+            if a0_pos >= 0:
+                img = _draw_border_inset(img, a0_pos, a0_color, inset=0)
+            if a1_pos >= 0:
+                img = _draw_border_inset(img, a1_pos, a1_color, inset=1)
+        else:
+            if a0_pos >= 0:
+                img = _draw_dot_top(img, a0_pos, a0_color)
+            if a1_pos >= 0:
+                img = _draw_dot_bottom(img, a1_pos, a1_color)
+
+        axes[t].imshow(img, interpolation="nearest")
+        axes[t].axis("off")
+        title = "decision" if is_decision else f"step {t}"
+        axes[t].set_title(title, fontsize=9)
+
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.02, wspace=0.05)
+    fig.suptitle(
+        "Joint canonical view (orange = agent 0, magenta = agent 1; "
+        "top dot = agent 0, bottom dot = agent 1; "
+        "matching positions = joint behaviour)",
+        fontsize=10,
+    )
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _render_obs_sequence(ep_states, ep_actions, ep_messages, agent_idx: int,
                         output_path: Path, max_steps: int):
     """1 row × T columns: agent's own view with own-action dot per step."""
@@ -508,6 +615,12 @@ def main():
                     max_steps=max_steps,
                     draw_heatmap=not args.no_heatmap,
                 )
+
+            _render_joint_canonical_sequence(
+                ep_states, ep_actions, ep_messages,
+                output_path=ep_dir / "joint_canonical.png",
+                max_steps=max_steps,
+            )
 
             summary = ep_dir / "summary.txt"
             with summary.open("w") as f:

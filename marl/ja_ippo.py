@@ -46,7 +46,9 @@ class JATransition(NamedTuple):
     ja_reward: jnp.ndarray       # (NUM_ACTORS,) -- raw JA intrinsic reward (unscaled)
     plh_actor: jnp.ndarray             # (NUM_ACTORS, lstm_dim) or scalar 0 when disabled
     plh_critic: jnp.ndarray            # (NUM_ACTORS, lstm_dim) or scalar 0 when disabled
-    partner_argmax: jnp.ndarray        # (NUM_ACTORS,) int — partner's canonical-frame attention argmax this step
+    partner_argmax: jnp.ndarray        # (NUM_ACTORS,) int — aux target aligned to this observation
+    partner_argmax_valid: jnp.ndarray  # (NUM_ACTORS,) bool — False when no causal target exists yet
+    partner_argmax_weight: jnp.ndarray # (NUM_ACTORS,) float — mass-based reliability weight for aux target
 
 
 class RewardNormState(NamedTuple):
@@ -151,8 +153,10 @@ def make_train_loop(config, env):
     )
     # Auxiliary NLL loss read from the attention pool directly: forces the
     # per-card pooled attention to peak at the partner's argmax view-slot in
-    # the agent's own frame. The loss can only descend if attention itself is
-    # content-dependent (no Dense shortcut from actor_out).
+    # the agent's own frame. When JA_CARD_PARTNER_FEED is on, the target is
+    # shifted by one step to match the causal partner-feed suffix. The loss is
+    # also weighted by partner/ego card mass so negligible card attention does
+    # not create arbitrary supervision.
     ja_aux_partner_argmax_coef = config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0)
     ja_aux_partner_argmax_active = ja_aux_partner_argmax_coef > 0
     # When True, compute the OP-corrected card-level JSD as a diagnostic metric
@@ -244,6 +248,15 @@ def make_train_loop(config, env):
                             init_partner_card_attn)
         else:
             runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
+        if ja_aux_partner_argmax_active and ja_card_partner_feed:
+            init_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
+            init_partner_argmax_valid = jnp.zeros((num_actors,), dtype=bool)
+            init_partner_argmax_weight = jnp.zeros((num_actors,), dtype=jnp.float32)
+            runner_state = runner_state + (
+                init_partner_argmax,
+                init_partner_argmax_valid,
+                init_partner_argmax_weight,
+            )
         if query_partner_lstm:
             init_plh_a = jnp.zeros((num_actors, lstm_hidden_dim))
             init_plh_c = jnp.zeros((num_actors, lstm_hidden_dim))
@@ -281,11 +294,15 @@ def make_train_loop(config, env):
                         hidden = policy._unpack_hstate(init_hstate)
 
                         # Single forward pass. When aux is active, read the
-                        # attention map directly and compute NLL against the
-                        # partner argmax target after head-averaging and
-                        # pooling per card. The loss can only descend if
-                        # attention itself peaks on the partner-indicated
-                        # view-slot — no Dense shortcut from actor_out.
+                        # attention map directly and compute a mass-weighted
+                        # NLL against the partner argmax target stored in the
+                        # transition. The target is already time-aligned to
+                        # the observation: when partner-feed is enabled it
+                        # refers to the previous step (the only causal signal
+                        # present in the obs suffix), otherwise it refers to
+                        # the current step. The loss can only descend if
+                        # attention itself peaks on the target view-slot — no
+                        # Dense shortcut from actor_out.
                         _, pi, value, attn_map_apply = policy.network.apply(
                             params, hidden, inputs_apply,
                         )
@@ -294,15 +311,24 @@ def make_train_loop(config, env):
                             per_card_attn = jnp.einsum(
                                 "tahw,chw->tac", attn_2d, _card_masks,
                             )                                                   # (T, num_actors, 5)
+                            own_card_mass = per_card_attn.sum(axis=-1)
                             per_card_norm = per_card_attn / (
-                                per_card_attn.sum(axis=-1, keepdims=True) + 1e-8
+                                own_card_mass[..., None] + 1e-8
                             )
                             log_probs = jnp.log(per_card_norm + 1e-8)
                             partner_target_flat = traj_batch.partner_argmax.reshape(-1)
                             log_probs_flat = log_probs.reshape(-1, log_probs.shape[-1])
-                            aux_loss = -jnp.take_along_axis(
+                            nll_flat = -jnp.take_along_axis(
                                 log_probs_flat, partner_target_flat[:, None], axis=-1,
-                            ).mean()
+                            ).squeeze(-1)
+                            aux_weight_flat = (
+                                traj_batch.partner_argmax_valid.reshape(-1).astype(jnp.float32)
+                                * traj_batch.partner_argmax_weight.reshape(-1)
+                                * own_card_mass.reshape(-1)
+                            )
+                            aux_weight_flat = jax.lax.stop_gradient(aux_weight_flat)
+                            aux_denom = jnp.maximum(aux_weight_flat.sum(), 1e-8)
+                            aux_loss = (nll_flat * aux_weight_flat).sum() / aux_denom
                         else:
                             aux_loss = jnp.float32(0.0)
 
@@ -429,6 +455,18 @@ def make_train_loop(config, env):
                 else:
                     runner_state_core = runner_state
                     prev_plh_actor = prev_plh_critic = None
+                if ja_aux_partner_argmax_active and ja_card_partner_feed:
+                    (
+                        *rest,
+                        prev_partner_argmax,
+                        prev_partner_argmax_valid,
+                        prev_partner_argmax_weight,
+                    ) = runner_state_core
+                    runner_state_core = tuple(rest)
+                else:
+                    prev_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
+                    prev_partner_argmax_valid = jnp.zeros((num_actors,), dtype=bool)
+                    prev_partner_argmax_weight = jnp.zeros((num_actors,), dtype=jnp.float32)
                 if feed_other_attn:
                     (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state_core
                 elif ja_card_partner_feed:
@@ -530,6 +568,7 @@ def make_train_loop(config, env):
                     card_pos_attn_1 = card_pos_attn[num_envs:]
 
                     _eps = 1e-8
+                    num_cards = _card_masks.shape[0]
                     perm_0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
                     perm_1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
                     batch_idx = jnp.arange(num_envs)[:, None]
@@ -588,13 +627,15 @@ def make_train_loop(config, env):
                 else:
                     ja_card_reward = jnp.zeros(num_actors)
                     card_jsd_step_mean = jnp.float32(0.0)
+                    m_0 = jnp.zeros((num_envs,), dtype=jnp.float32)
+                    m_1 = jnp.zeros((num_envs,), dtype=jnp.float32)
+                    num_cards = 5
 
                 # Aux target: view-slot in the agent's own frame where the
-                # partner is attending most. Computed by taking the partner's
-                # canonical argmax and translating it into the receiver's
-                # view via argsort(perm_receiver). Target lives in the same
-                # frame the agent observes (the partner_feed already encodes
-                # this), so cross-entropy is learnable.
+                # partner is attending most. When partner-feed is enabled, the
+                # scalar suffix at step t reflects partner attention from step
+                # t-1, so the causal aux label must be shifted the same way.
+                # Otherwise fall back to current-step supervision.
                 if ja_card_metric:
                     partner_canon_argmax_0 = phys_1.argmax(axis=-1)
                     partner_canon_argmax_1 = phys_0.argmax(axis=-1)
@@ -609,15 +650,29 @@ def make_train_loop(config, env):
                     partner_argmax_per_actor = jnp.concatenate(
                         [partner_argmax_in_ego_view_0, partner_argmax_in_ego_view_1]
                     ).astype(jnp.int32)
+                    current_partner_mass_per_actor = jnp.concatenate([m_1, m_0])
                 else:
                     partner_argmax_per_actor = jnp.zeros(num_actors, dtype=jnp.int32)
+                    current_partner_mass_per_actor = jnp.zeros(num_actors, dtype=jnp.float32)
                 partner_argmax_per_actor = jax.lax.stop_gradient(partner_argmax_per_actor)
+                current_partner_mass_per_actor = jax.lax.stop_gradient(
+                    current_partner_mass_per_actor.astype(jnp.float32)
+                )
+
+                if ja_aux_partner_argmax_active and ja_card_partner_feed:
+                    aux_partner_argmax = prev_partner_argmax
+                    aux_partner_argmax_valid = prev_partner_argmax_valid
+                    aux_partner_argmax_weight = prev_partner_argmax_weight
+                else:
+                    aux_partner_argmax = partner_argmax_per_actor
+                    aux_partner_argmax_valid = jnp.ones((num_actors,), dtype=bool)
+                    aux_partner_argmax_weight = current_partner_mass_per_actor
 
                 # Three-part JA attention shaping (match + follow). Reuses
                 # phys_0 / phys_1 from the JA_CARD_METRIC path; only fires when
                 # at least one coef is positive.
                 if ja_card_metric and ja_attn_shaping_active:
-                    is_decision_env = step_count_batch[:num_envs] == (_env_max_steps - 1)
+                    is_decision_env = step_count_batch[:num_envs] >= _env_max_steps
 
                     # JSD-based continuous match during deliberation. Reuses
                     # card_jsd_per_env computed by the metric block above,
@@ -627,7 +682,9 @@ def make_train_loop(config, env):
                     jsd_clipped = jnp.clip(card_jsd_per_env.reshape(num_envs), 0.0, log2)
                     match_score = 1.0 - jsd_clipped / log2  # in [0, 1]
                     match_val_env = jnp.where(
-                        ~is_decision_env, ja_attn_match_coef * match_score, 0.0,
+                        ~is_decision_env,
+                        ja_attn_match_coef * jnp.minimum(m_0, m_1) * match_score,
+                        0.0,
                     )
 
                     # Follow stays argmax-based: "the most attended card".
@@ -639,15 +696,23 @@ def make_train_loop(config, env):
                     env_idx = jnp.arange(num_envs)
                     pick_0_view = action[:num_envs]
                     pick_1_view = action[num_envs:]
-                    pick_0_gt = inv_recol_0[env_idx, pick_0_view]
-                    pick_1_gt = inv_recol_1[env_idx, pick_1_view]
+                    pick_0_is_card = pick_0_view < num_cards
+                    pick_1_is_card = pick_1_view < num_cards
+                    pick_0_gt = inv_recol_0[env_idx, jnp.minimum(pick_0_view, num_cards - 1)]
+                    pick_1_gt = inv_recol_1[env_idx, jnp.minimum(pick_1_view, num_cards - 1)]
 
                     # Follow mirrors the comm shaping: require shared attention
                     # at the decision step (both agents' argmaxes equal),
                     # then reward each agent for picking that shared card.
                     attn_match_argmax = argmax_0 == argmax_1
-                    follow_ok_0 = is_decision_env & attn_match_argmax & (pick_0_gt == argmax_0)
-                    follow_ok_1 = is_decision_env & attn_match_argmax & (pick_1_gt == argmax_1)
+                    follow_ok_0 = (
+                        is_decision_env & pick_0_is_card & attn_match_argmax
+                        & (pick_0_gt == argmax_0)
+                    )
+                    follow_ok_1 = (
+                        is_decision_env & pick_1_is_card & attn_match_argmax
+                        & (pick_1_gt == argmax_1)
+                    )
                     follow_val_0 = jnp.where(follow_ok_0, ja_attn_follow_coef, 0.0)
                     follow_val_1 = jnp.where(follow_ok_1, ja_attn_follow_coef, 0.0)
 
@@ -677,8 +742,8 @@ def make_train_loop(config, env):
                         own_argmax_canon_1 = jnp.take_along_axis(
                             perm_1, own_argmax_view_1[:, None], axis=1,
                         ).squeeze(-1)
-                        self_ok_0 = is_decision_env & (pick_0_gt == own_argmax_canon_0)
-                        self_ok_1 = is_decision_env & (pick_1_gt == own_argmax_canon_1)
+                        self_ok_0 = is_decision_env & pick_0_is_card & (pick_0_gt == own_argmax_canon_0)
+                        self_ok_1 = is_decision_env & pick_1_is_card & (pick_1_gt == own_argmax_canon_1)
                         r_attn_self_per_actor = jnp.concatenate([
                             jnp.where(self_ok_0, ja_attn_self_coef, 0.0),
                             jnp.where(self_ok_1, ja_attn_self_coef, 0.0),
@@ -716,7 +781,9 @@ def make_train_loop(config, env):
                     ja_reward=r_ja_batch,
                     plh_actor=plh_a_stored,
                     plh_critic=plh_c_stored,
-                    partner_argmax=partner_argmax_per_actor,
+                    partner_argmax=aux_partner_argmax,
+                    partner_argmax_valid=aux_partner_argmax_valid,
+                    partner_argmax_weight=aux_partner_argmax_weight,
                 )
 
                 if feed_other_attn:
@@ -728,6 +795,20 @@ def make_train_loop(config, env):
                                     new_partner_card_attn)
                 else:
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
+                if ja_aux_partner_argmax_active and ja_card_partner_feed:
+                    new_done_batch_aux = batchify(new_done, env.agents, num_actors).squeeze()
+                    new_partner_argmax = jnp.where(
+                        new_done_batch_aux, 0, partner_argmax_per_actor
+                    ).astype(jnp.int32)
+                    new_partner_argmax_valid = ~new_done_batch_aux
+                    new_partner_argmax_weight = jnp.where(
+                        new_done_batch_aux, 0.0, current_partner_mass_per_actor
+                    ).astype(jnp.float32)
+                    runner_state = runner_state + (
+                        new_partner_argmax,
+                        new_partner_argmax_valid,
+                        new_partner_argmax_weight,
+                    )
                 if query_partner_lstm:
                     # Extract actor h and critic h from packed hstate, swap halves
                     d = lstm_hidden_dim
@@ -757,6 +838,14 @@ def make_train_loop(config, env):
 
             if query_partner_lstm:
                 *rest, prev_plh_actor, prev_plh_critic = runner_state
+                runner_state = tuple(rest)
+            if ja_aux_partner_argmax_active and ja_card_partner_feed:
+                (
+                    *rest,
+                    prev_partner_argmax,
+                    prev_partner_argmax_valid,
+                    prev_partner_argmax_weight,
+                ) = runner_state
                 runner_state = tuple(rest)
             if feed_other_attn:
                 (train_state, env_state, last_obs, last_done, hstate, rng, prev_other_attn) = runner_state
@@ -892,6 +981,12 @@ def make_train_loop(config, env):
                                 prev_partner_card_attn)
             else:
                 runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
+            if ja_aux_partner_argmax_active and ja_card_partner_feed:
+                runner_state = runner_state + (
+                    prev_partner_argmax,
+                    prev_partner_argmax_valid,
+                    prev_partner_argmax_weight,
+                )
             if query_partner_lstm:
                 runner_state = runner_state + (prev_plh_actor, prev_plh_critic)
             return runner_state, update_steps + 1, rew_norm_state, metric

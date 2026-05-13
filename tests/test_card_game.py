@@ -177,6 +177,42 @@ def test_comm_decision_pick_reward():
     assert float(reward["agent_0"]) == 1.0
 
 
+def test_gaze_mode_avail_actions_flip_between_deliberation_and_decision():
+    """Gaze mode should force noop on deliberation and picks on the decision step."""
+    env = make_env("card-game", {"max_steps": 2, "gaze_mode": True, "shuffle": False})
+    key = jax.random.PRNGKey(21)
+    obs, state = env.reset(key)
+
+    expected_delib = jnp.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=jnp.float32)
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_delib)
+
+    key, subkey = jax.random.split(key)
+    noop = jnp.int32(NUM_CARDS)
+    obs, state, reward, dones, _ = env.step(
+        subkey, state, {"agent_0": noop, "agent_1": noop}
+    )
+    assert not dones["__all__"]
+    assert float(reward["agent_0"]) == 0.0
+
+    expected_decision = jnp.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0], dtype=jnp.float32)
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_decision)
+
+
+def test_gaze_mode_noop_on_decision_is_invalid_and_scores_zero():
+    """Even if a noop leaks to decision time, it must not coordinate by accident."""
+    env = make_env("card-game", {"max_steps": 1, "gaze_mode": True, "shuffle": False})
+    key = jax.random.PRNGKey(22)
+    obs, state = env.reset(key)
+
+    key, subkey = jax.random.split(key)
+    noop = jnp.int32(NUM_CARDS)
+    obs, state, reward, dones, _ = env.step(
+        subkey, state, {"agent_0": noop, "agent_1": noop}
+    )
+    assert dones["__all__"]
+    assert float(reward["agent_0"]) == 0.0
+
+
 def test_following_partner_message_is_chance_without_follow_reward():
     """Following partner messages can yield 0.2 return without any shaping.
 

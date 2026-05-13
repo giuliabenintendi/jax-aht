@@ -295,10 +295,10 @@ def test_recolouring_message_remapping():
     inv0 = state.per_agent_inv_recolouring["agent_0"]
     inv1 = state.per_agent_inv_recolouring["agent_1"]
 
-    # Agent 0 sends message 2 (recoloured), Agent 1 sends message 4 (recoloured)
-    # Deliberation with communication: action = NUM_CARDS + msg_idx
-    a0 = jnp.int32(NUM_CARDS + 2)
-    a1 = jnp.int32(NUM_CARDS + 4)
+    # Under the unified action layout, deliberation messages are the same
+    # recoloured card indices the agents would later pick on the decision step.
+    a0 = jnp.int32(2)
+    a1 = jnp.int32(4)
 
     key, subkey = jax.random.split(key)
     obs, state, _, _, _ = wrapped.step(
@@ -308,6 +308,35 @@ def test_recolouring_message_remapping():
     inner_state = state.env_state.env_state  # WrappedEnvState → CardGameState
     assert int(inner_state.messages[0]) == int(inv0[2])
     assert int(inner_state.messages[1]) == int(inv1[4])
+
+
+def test_recolouring_noop_passthrough_in_gaze_mode():
+    """The recolouring wrapper must pass the gaze-mode noop through unchanged."""
+    env = CardGameEnv(max_steps=2, shuffle=False, gaze_mode=True)
+    wrapped = CardGameRecolouringWrapper(env)
+
+    key = jax.random.PRNGKey(1234)
+    obs, state = wrapped.reset(key)
+
+    recolour_0 = state.per_agent_recolouring["agent_0"]
+    recolour_1 = state.per_agent_recolouring["agent_1"]
+    noop = jnp.int32(NUM_CARDS)
+
+    key, subkey = jax.random.split(key)
+    obs, state, reward, dones, _ = wrapped.step(
+        subkey, state, {"agent_0": noop, "agent_1": noop}
+    )
+    assert not dones["__all__"]
+    assert float(reward["agent_0"]) == 0.0
+
+    key, subkey = jax.random.split(key)
+    _, _, reward, dones, _ = wrapped.step(
+        subkey,
+        state,
+        {"agent_0": jnp.int32(recolour_0[1]), "agent_1": jnp.int32(recolour_1[1])},
+    )
+    assert dones["__all__"]
+    assert float(reward["agent_0"]) == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -566,8 +595,8 @@ def test_op_comm_end_to_end_coordination():
             msg_a0_visual = int(recolour_0[gt_color])
             msg_a1_visual = int(recolour_1[0])
             action_step1 = {
-                "agent_0": jnp.int32(NUM_CARDS + msg_a0_visual),
-                "agent_1": jnp.int32(NUM_CARDS + msg_a1_visual),
+                "agent_0": jnp.int32(msg_a0_visual),
+                "agent_1": jnp.int32(msg_a1_visual),
             }
             key, subkey = jax.random.split(key)
             obs, state, _, dones, _ = env.step(subkey, state, action_step1)

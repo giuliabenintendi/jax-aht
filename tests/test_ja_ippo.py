@@ -155,8 +155,8 @@ def test_ja_train_loop():
 
     # Should have JA-specific metrics
     assert "ja_beta" in all_metrics[-1]
-    assert "ja_reward_mean" in all_metrics[-1]
     assert "jsd_mean" in all_metrics[-1]
+    assert "loss_total" in all_metrics[-1]
 
     # JSD should be non-negative
     assert jnp.all(all_metrics[-1]["jsd_mean"] >= 0)
