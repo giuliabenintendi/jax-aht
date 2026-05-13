@@ -40,9 +40,10 @@ def main():
     parser.add_argument("--no-sp-videos", action="store_true",
                         help="Skip per-seed self-play videos (card-game env only). "
                              "Useful when --xp-pairs is the only thing you want.")
-    parser.add_argument("--attention-grids", action="store_true",
-                        help="Also save one static 2xT obs+attention grid PNG per episode "
-                             "(via _log_card_game_per_episode_attention_grids). Card-game env only.")
+    parser.add_argument("--attention-panels", action="store_true",
+                        help="Also save one own-vs-partner attention panel PNG per agent per "
+                             "episode (top row: own attention; bottom row: partner's attention "
+                             "translated to own view-slot frame). Card-game env only.")
     parser.add_argument("--use-best", action="store_true",
                         help="Use best_params (per-seed best ckpt) instead of final_params.")
     parser.add_argument("--num-episodes", type=int, default=5,
@@ -113,8 +114,7 @@ def main():
         from marl.eval_card_game import (
             _log_card_game_eval_video,
             _log_card_game_per_agent_obs_video,
-            _log_card_game_per_episode_attention_grids,
-            _log_card_game_avg_attn_panel,
+            _log_card_game_own_vs_partner_panel,
             _log_card_game_xp_videos,
             _log_card_game_per_agent_xp_videos,
         )
@@ -187,22 +187,12 @@ def main():
                     num_episodes=args.num_episodes, fps=3,
                     partner_feed_dim=partner_feed_dim,
                 )
-                if args.attention_grids:
-                    grids_dir = os.path.join(video_dir, "attention_grids")
-                    _log_card_game_per_episode_attention_grids(
+                if args.attention_panels:
+                    panels_dir = os.path.join(video_dir, "attention_panels")
+                    _log_card_game_own_vs_partner_panel(
                         inner_env, policy, params, max_steps,
                         tag=f"Eval/seed_{seed_idx}",
-                        video_dir=grids_dir,
-                        logger=wandb_logger,
-                        feed_attn_dims=feed_attn_dims,
-                        ja_card_masks=ja_card_masks,
-                        num_episodes=args.num_episodes,
-                        partner_feed_dim=partner_feed_dim,
-                    )
-                    _log_card_game_avg_attn_panel(
-                        inner_env, policy, params, max_steps,
-                        tag=f"Eval/seed_{seed_idx}",
-                        video_dir=grids_dir,
+                        video_dir=panels_dir,
                         logger=wandb_logger,
                         feed_attn_dims=feed_attn_dims,
                         ja_card_masks=ja_card_masks,

@@ -143,43 +143,170 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
 
 
-def _log_card_game_per_episode_attention_grids(
+def _log_card_game_own_vs_partner_panel(
     inner_env, policy, params, max_steps, tag, video_dir, logger,
     feed_attn_dims=None, ja_card_masks=None,
-    num_episodes=10, params_partner=None,
-    rng_seed_base=100, partner_feed_dim=5,
+    partner_feed_dim=5, num_episodes=10,
+    rng_seed_base=8000,
+    seed_idx=None,
 ):
-    """Post-hoc helper: run N episodes and save one 2xT attention_grid.png per
-    episode (each in its own episode_<i>/ subdir). Reuses
-    `_log_card_game_attention_grid` so the rendering matches the train-time
-    eval grids logged from eval_logging.py.
-    """
-    from envs.card_game.rendering import _unwrap_card_game_state
+    """For each agent, per episode: 2 rows × T cols.
+       Top    = own head-averaged attention overlaid on own obs (agent's palette).
+       Bottom = partner's attention translated to own view-slot frame, overlaid
+                on own obs (partner's palette).
+       Palette convention: agent 0 = "hot", agent 1 = "RdPu".
 
-    if params_partner is None:
-        params_partner = params
+       This is the diagnostic for whether aux is working: the bottom row is
+       what the agent receives as partner_feed; if attention has learned to
+       decode it (aux_nll small) the top row should match.
+    """
+    import wandb
+    from pathlib import Path
+    from evaluation.attention_numbers import _save_per_head_action_overlay
+
+    if ja_card_masks is None:
+        raise ValueError("own_vs_partner_panel requires ja_card_masks (set by JA_CARD_PARTNER_FEED).")
+
+    img_h_const, img_w_const = 21, 35
+    palettes = ("hot", "RdPu")  # by agent_idx
 
     for ep in range(num_episodes):
-        ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
+        ep_rng = jax.random.PRNGKey(rng_seed_base + ep * 17)
         ep_states, attn_data, ep_actions, ep_messages, ep_obs = run_episode_with_states(
-            ep_rng, inner_env, params, policy, params_partner, policy, max_steps,
+            ep_rng, inner_env, params, policy, params, policy, max_steps,
             collect_attention=True,
             collect_obs=True,
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
             partner_feed_dim=partner_feed_dim,
         )
-        if not attn_data.get("agent_0") or not attn_data.get("agent_1"):
+
+        T = len(ep_obs)
+        if T == 0:
             continue
-        es0 = _unwrap_card_game_state(ep_states[0])
-        card_perm = np.asarray(es0.card_permutation)
-        ep_dir = os.path.join(video_dir, f"episode_{ep}")
-        os.makedirs(ep_dir, exist_ok=True)
-        _log_card_game_attention_grid(
-            None, attn_data, ep_actions, f"{tag}/ep_{ep}", ep_dir, logger,
-            ep_messages=ep_messages, card_permutation=card_perm,
-            ep_obs=ep_obs, ep_states=ep_states,
-        )
+        is_decision_seq = [t == T - 1 for t in range(T)]
+        maps0 = attn_data.get("agent_0", [])
+        maps1 = attn_data.get("agent_1", [])
+        if not maps0 or not maps1 or len(maps0) < T or len(maps1) < T:
+            continue
+
+        # Per-step head-averaged spatial attention, per agent.
+        def _head_avg(a):
+            a_sq = np.asarray(a).squeeze()
+            if a_sq.ndim == 3:
+                a_sq = a_sq.mean(axis=-1)
+            return a_sq
+
+        attn0 = np.stack([_head_avg(maps0[t]) for t in range(T)], axis=0)  # (T, fh, fw)
+        attn1 = np.stack([_head_avg(maps1[t]) for t in range(T)], axis=0)
+
+        card_masks_np = np.asarray(ja_card_masks)  # (5, fh, fw)
+
+        def _per_card_mass(attn_t):
+            # (5,) for each t — view-slot mass under the agent's own view.
+            return np.einsum("thw,chw->tc", attn_t, card_masks_np)
+
+        m0 = _per_card_mass(attn0)  # (T, 5) — agent 0 view-slot masses
+        m1 = _per_card_mass(attn1)  # (T, 5)
+
+        # Per-step perms — at step t both agents' perms come from state t.
+        perms_0 = []
+        perms_1 = []
+        for t in range(T):
+            s = ep_states[t]
+            walk = s
+            p0 = p1 = None
+            while walk is not None:
+                if hasattr(walk, "per_agent_perm"):
+                    p0 = np.asarray(walk.per_agent_perm["agent_0"])
+                    p1 = np.asarray(walk.per_agent_perm["agent_1"])
+                    break
+                walk = getattr(walk, "env_state", None)
+            perms_0.append(p0 if p0 is not None else np.arange(5))
+            perms_1.append(p1 if p1 is not None else np.arange(5))
+
+        # Translate partner's per-card mass into ego view-slot frame.
+        # phys[partner][canon_pos] = m_partner[k] when partner_perm[k] = canon_pos.
+        # translated_for_ego[k] = phys_partner[ego_perm[k]] = partner's mass on the
+        # canonical card sitting at ego's view-slot k.
+        translated_for_0 = np.zeros((T, 5), dtype=np.float32)  # partner=1, ego=0
+        translated_for_1 = np.zeros((T, 5), dtype=np.float32)
+        for t in range(T):
+            phys1 = np.zeros(5, dtype=np.float32)
+            phys1[perms_1[t]] = m1[t]
+            phys0 = np.zeros(5, dtype=np.float32)
+            phys0[perms_0[t]] = m0[t]
+            translated_for_0[t] = phys1[perms_0[t]]
+            translated_for_1[t] = phys0[perms_1[t]]
+
+        def _paint_card_mass(per_card_seq):
+            # (T, 5) -> (T, fh, fw, 1): uniform fill per card region.
+            painted = np.einsum("tc,chw->thw", per_card_seq, card_masks_np)
+            return painted[..., None]
+
+        for agent_idx, (agent_key, own_mass_attn, partner_mass) in enumerate([
+            ("agent_0", attn0, translated_for_0),
+            ("agent_1", attn1, translated_for_1),
+        ]):
+            obs_seq = []
+            for o in ep_obs:
+                a_obs = np.asarray(o[agent_key])
+                img = a_obs[: img_h_const * img_w_const * 3].reshape(
+                    img_h_const, img_w_const, 3
+                )
+                obs_seq.append(np.clip(img, 0.0, 1.0).astype(np.float32))
+            obs_seq = np.stack(obs_seq, axis=0)
+
+            own_row = own_mass_attn[..., None]                 # (T, fh, fw, 1) — raw spatial
+            partner_row = _paint_card_mass(partner_mass)        # (T, fh, fw, 1) — synthetic per-card
+            stacked = np.concatenate([own_row, partner_row], axis=-1)  # (T, fh, fw, 2)
+
+            action_view_slots = [-1] * T
+            if len(ep_actions) >= T and len(ep_states) >= T:
+                state_dec = ep_states[T - 1]
+                inv_recol = None
+                pos_perm = None
+                s = state_dec
+                while s is not None:
+                    if inv_recol is None and hasattr(s, "per_agent_inv_recolouring"):
+                        inv_recol = np.asarray(s.per_agent_inv_recolouring[agent_key])
+                    if pos_perm is None and hasattr(s, "per_agent_perm"):
+                        pos_perm = np.asarray(s.per_agent_perm[agent_key])
+                    s = getattr(s, "env_state", None)
+                raw = int(ep_actions[T - 1][agent_idx])
+                if raw >= 0 and inv_recol is not None and pos_perm is not None:
+                    own_pick_gt = int(inv_recol[raw])
+                    pos_perm_inv = np.argsort(pos_perm)
+                    action_view_slots[T - 1] = int(pos_perm_inv[own_pick_gt])
+            partner_msg_view_slots = [-1] * T
+
+            own_palette = palettes[agent_idx]
+            partner_palette = palettes[1 - agent_idx]
+
+            out_path = Path(video_dir) / f"own_vs_partner_{agent_key}_ep{ep}.png"
+            seed_label = "" if seed_idx is None else f"seed {seed_idx}  "
+            human_title = (
+                f"{seed_label}Agent {agent_idx}  episode {ep}  "
+                f"(own attn vs partner attn translated to own frame)"
+            )
+            _save_per_head_action_overlay(
+                per_head_seq=stacked,
+                obs_seq=obs_seq,
+                action_view_slots=action_view_slots,
+                is_decision_seq=is_decision_seq,
+                partner_msg_view_slots=partner_msg_view_slots,
+                out_path=out_path,
+                title=human_title,
+                agent_idx=agent_idx,
+                legend="  (top = own; bottom = partner translated)",
+                row_labels=["own", "partner"],
+                row_cmaps=[own_palette, partner_palette],
+            )
+            logger.log(
+                {f"{tag}/own_vs_partner_{agent_key}_ep{ep}": wandb.Image(str(out_path))},
+                commit=False,
+            )
+            print(f"[card_game] Saved own-vs-partner panel: {out_path}")
 
 
 def _log_card_game_action_distributions(
@@ -679,115 +806,6 @@ def _log_card_game_per_agent_xp_videos(
         )
 
 
-def _log_card_game_avg_attn_panel(
-    inner_env, policy, params, max_steps, tag, video_dir, logger,
-    feed_attn_dims=None, ja_card_masks=None,
-    partner_feed_dim=5, num_episodes=2,
-    rng_seed_base=8000,
-    seed_idx=None,
-    has_comm=False,
-):
-    """Head-averaged version of `_log_card_game_per_head_attn_panel`.
-
-    Same per-episode per-agent layout (obs background + attention overlay +
-    pick/message markers), but collapses the per-head axis to a single
-    head-averaged row.
-    """
-    import wandb
-    from pathlib import Path
-    from evaluation.attention_numbers import _save_per_head_action_overlay
-
-    img_h_const, img_w_const = 21, 35
-
-    for ep in range(num_episodes):
-        ep_rng = jax.random.PRNGKey(rng_seed_base + ep * 17)
-        ep_states, attn_data, ep_actions, ep_messages, ep_obs = run_episode_with_states(
-            ep_rng, inner_env, params, policy, params, policy, max_steps,
-            collect_attention=True,
-            collect_obs=True,
-            feed_other_attn_dims=feed_attn_dims,
-            ja_card_masks=ja_card_masks,
-            partner_feed_dim=partner_feed_dim,
-        )
-
-        T = len(ep_obs)
-        if T == 0:
-            continue
-        is_decision_seq = [t == T - 1 for t in range(T)]
-
-        for agent_idx, agent_key in enumerate(("agent_0", "agent_1")):
-            maps = attn_data.get(agent_key, [])
-            if not maps or len(maps) < T:
-                continue
-
-            # Head-average each step, then add a singleton head axis so the
-            # plotter draws a single row.
-            avg_seq = []
-            for a in maps[:T]:
-                a_sq = np.asarray(a).squeeze()
-                if a_sq.ndim == 3:
-                    a_sq = a_sq.mean(axis=-1)
-                avg_seq.append(a_sq[..., None])
-            avg_seq = np.stack(avg_seq, axis=0)  # (T, fh, fw, 1)
-
-            obs_seq = []
-            for o in ep_obs:
-                a_obs = np.asarray(o[agent_key])
-                img = a_obs[: img_h_const * img_w_const * 3].reshape(
-                    img_h_const, img_w_const, 3
-                )
-                obs_seq.append(np.clip(img, 0.0, 1.0).astype(np.float32))
-            obs_seq = np.stack(obs_seq, axis=0)
-
-            action_view_slots = [-1] * T
-            if len(ep_actions) >= T and len(ep_states) >= T:
-                state_dec = ep_states[T - 1]
-                inv_recol = None
-                pos_perm = None
-                s = state_dec
-                while s is not None:
-                    if inv_recol is None and hasattr(s, "per_agent_inv_recolouring"):
-                        inv_recol = np.asarray(s.per_agent_inv_recolouring[agent_key])
-                    if pos_perm is None and hasattr(s, "per_agent_perm"):
-                        pos_perm = np.asarray(s.per_agent_perm[agent_key])
-                    s = getattr(s, "env_state", None)
-                raw = int(ep_actions[T - 1][agent_idx])
-                if raw >= 0 and inv_recol is not None and pos_perm is not None:
-                    own_pick_gt = int(inv_recol[raw])
-                    pos_perm_inv = np.argsort(pos_perm)
-                    action_view_slots[T - 1] = int(pos_perm_inv[own_pick_gt])
-
-            partner_msg_view_slots = [-1] * T
-
-            out_path = Path(video_dir) / f"avg_attn_{agent_key}_ep{ep}.png"
-            seed_label = "" if seed_idx is None else f"seed {seed_idx}  "
-            agent_label = f"Agent {agent_idx}"
-            human_title = (
-                f"{seed_label}{agent_label}  episode {ep}  "
-                f"(head-averaged attention, own obs)"
-            )
-            legend = (
-                "  (red box = own pick at decision step)"
-                if not has_comm
-                else "  (coloured dot/box = own action; white square = partner msg)"
-            )
-            _save_per_head_action_overlay(
-                per_head_seq=avg_seq,
-                obs_seq=obs_seq,
-                action_view_slots=action_view_slots,
-                is_decision_seq=is_decision_seq,
-                partner_msg_view_slots=partner_msg_view_slots,
-                out_path=out_path,
-                title=human_title,
-                agent_idx=agent_idx,
-                legend=legend,
-                row_labels=["avg"],
-            )
-            logger.log(
-                {f"{tag}/avg_attn_{agent_key}_ep{ep}": wandb.Image(str(out_path))},
-                commit=False,
-            )
-            print(f"[card_game] Saved averaged-attention overlay: {out_path}")
 
 
 def _log_card_game_per_head_attn_panel(

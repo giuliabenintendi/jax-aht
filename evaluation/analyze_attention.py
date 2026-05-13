@@ -279,65 +279,6 @@ def _render_obs_sequence(ep_states, ep_actions, ep_messages, agent_idx: int,
     plt.close(fig)
 
 
-def _render_obs_with_attention_sequence(
-    attn_maps, ep_states, ep_actions, ep_messages,
-    agent_idx: int, agent_key: str, cmap: str,
-    output_path: Path, max_steps: int, alpha: float = 0.55,
-):
-    """1 row × T columns: agent's own-frame observation with head-averaged
-    attention heatmap overlaid at `alpha` opacity. Own-action dot (delib) or
-    pick bbox (decision) is drawn on top so it stays visible through the heatmap.
-    """
-    num_steps = min(len(ep_states) - 1, len(attn_maps[agent_key]), max_steps)
-    if num_steps == 0:
-        return
-
-    def _head_average(raw):
-        a = np.asarray(raw).squeeze()
-        if a.ndim == 3:
-            a = a.mean(axis=-1)
-        return a
-
-    attn_stack = np.array([_head_average(attn_maps[agent_key][t]) for t in range(num_steps)])
-    attn_max = float(attn_stack.max())
-    if attn_max <= 0:
-        attn_max = 1.0
-
-    fig, axes = plt.subplots(1, num_steps, figsize=(num_steps * 1.8, 2.0))
-    if num_steps == 1:
-        axes = [axes]
-
-    TP = TILE_PIXELS
-    H_px = GRID_ROWS * TP
-    W_px = GRID_COLS * TP
-
-    for t in range(num_steps):
-        is_decision = (t == num_steps - 1)
-        if is_decision:
-            own_value = int(ep_actions[t][agent_idx]) if t < len(ep_actions) else -1
-        else:
-            own_value = int(ep_messages[t][agent_idx]) if t < len(ep_messages) else -1
-
-        state = ep_states[t]
-        card_perm, pos_perm, recolouring = _get_per_agent_info(state, agent_idx)
-        img = _render_own_frame(
-            card_perm, pos_perm, recolouring, agent_idx, own_value, is_decision,
-        )
-        axes[t].imshow(img, interpolation="nearest", extent=(0, W_px, H_px, 0))
-
-        # Overlay head-averaged attention (resized to pixel grid via imshow).
-        axes[t].imshow(
-            attn_stack[t], cmap=cmap, vmin=0.0, vmax=attn_max,
-            interpolation="nearest", alpha=alpha,
-            extent=(0, W_px, H_px, 0),
-        )
-        axes[t].axis("off")
-
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.98, bottom=0.02, wspace=0.05)
-    fig.savefig(output_path, bbox_inches="tight")
-    plt.close(fig)
-
-
 def _render_attention_sequence(attn_maps, ep_states, ep_actions, ep_messages,
                               agent_idx: int, agent_key: str, cmap: str,
                               output_path: Path, max_steps: int,
@@ -678,13 +619,6 @@ def main():
                     max_steps=max_steps,
                     draw_heatmap=not args.no_heatmap,
                 )
-                _render_obs_with_attention_sequence(
-                    attn_maps, ep_states, ep_actions, ep_messages,
-                    agent_idx, agent_key, cmap,
-                    output_path=ep_dir / f"{agent_key}_obs_attention.png",
-                    max_steps=max_steps,
-                )
-
             _render_joint_canonical_sequence(
                 ep_states, ep_actions, ep_messages,
                 output_path=ep_dir / "joint_canonical.png",

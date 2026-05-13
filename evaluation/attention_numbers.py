@@ -112,6 +112,7 @@ def _save_per_head_action_overlay(
     img_w: int = 35,
     legend: str | None = None,
     row_labels: list[str] | None = None,
+    row_cmaps: list[str] | None = None,
 ) -> None:
     """4 rows (one per head) × T columns; obs as background, head-specific
     attention overlay, and a colored marker on the card the agent acted on
@@ -154,7 +155,8 @@ def _save_per_head_action_overlay(
             cell_vmax = float(np.asarray(attn_up).max())
             if cell_vmax < 1e-6:
                 cell_vmax = 1.0
-            ax.imshow(np.asarray(attn_up), cmap="hot", alpha=0.55,
+            cmap_h = row_cmaps[h_idx] if (row_cmaps and h_idx < len(row_cmaps)) else "hot"
+            ax.imshow(np.asarray(attn_up), cmap=cmap_h, alpha=0.55,
                       vmin=0.0, vmax=cell_vmax,
                       extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
 
