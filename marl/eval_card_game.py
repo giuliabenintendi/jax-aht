@@ -303,6 +303,8 @@ def _log_card_game_own_vs_partner_panel(
 
             own_palette = palettes[agent_idx]
             partner_palette = palettes[1 - agent_idx]
+            own_color = "#ff8c00" if agent_idx == 0 else "#ff00ff"
+            partner_color = "#ff00ff" if agent_idx == 0 else "#ff8c00"
 
             out_path = Path(video_dir) / f"own_vs_partner_{agent_key}_ep{ep}.png"
             seed_label = "" if seed_idx is None else f"seed {seed_idx}  "
@@ -319,12 +321,11 @@ def _log_card_game_own_vs_partner_panel(
                 out_path=out_path,
                 title=human_title,
                 agent_idx=agent_idx,
-                legend="  (top = own heatmap; bottom = partner per-card values; "
-                       "solid box = own pick, dashed box = partner pick)",
                 row_labels=["own", "partner"],
                 row_cmaps=[own_palette, partner_palette],
                 row_card_values=[None, partner_mass],
-                partner_action_view_slots=partner_action_view_slots,
+                row_action_slots=[action_view_slots, partner_action_view_slots],
+                row_marker_colors=[own_color, partner_color],
             )
             logger.log(
                 {f"{tag}/own_vs_partner_{agent_key}_ep{ep}": wandb.Image(str(out_path))},

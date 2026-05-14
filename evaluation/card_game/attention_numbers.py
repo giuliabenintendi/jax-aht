@@ -110,7 +110,8 @@ def _save_per_head_action_overlay(
     row_labels: list[str] | None = None,
     row_cmaps: list[str] | None = None,
     row_card_values: list | None = None,
-    partner_action_view_slots: list | None = None,
+    row_action_slots: list | None = None,
+    row_marker_colors: list | None = None,
 ) -> None:
     """4 rows (one per head) × T columns; obs as background, head-specific
     attention overlay, and a colored marker on the card the agent acted on
@@ -150,6 +151,19 @@ def _save_per_head_action_overlay(
             if (row_card_values and h_idx < len(row_card_values))
             else None
         )
+        # Per-row action markers: each row draws only its own slots in its own
+        # colour (e.g. own pick on the own row, partner pick on the partner
+        # row). Falls back to the shared action_view_slots / marker_color.
+        slots_h = (
+            row_action_slots[h_idx]
+            if (row_action_slots and h_idx < len(row_action_slots))
+            else action_view_slots
+        )
+        color_h = (
+            row_marker_colors[h_idx]
+            if (row_marker_colors and h_idx < len(row_marker_colors))
+            else marker_color
+        )
         for t in range(T):
             ax = axes[h_idx, t]
             ax.imshow(obs_seq[t])
@@ -157,7 +171,9 @@ def _save_per_head_action_overlay(
                 # Render this row as per-card numbers instead of a heatmap.
                 vals = np.asarray(card_values[t])
                 vmax = float(vals.max())
-                for c in range(NUM_CARDS):
+                # vmax < 1e-9 → no feed yet (t=0: partner_feed is all zeros);
+                # the empty range skips drawing any numbers for that step.
+                for c in (range(NUM_CARDS) if vmax >= 1e-9 else ()):
                     cx = c * TP + TP / 2
                     cy = (card_y_lo + card_y_hi) / 2
                     v = float(vals[c])
@@ -197,14 +213,14 @@ def _save_per_head_action_overlay(
                 ax.imshow(rgba,
                           extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
 
-            slot = action_view_slots[t]
+            slot = slots_h[t]
             if slot is not None and slot >= 0:
                 x0 = slot * TP - 0.5
                 y0 = card_y_lo - 0.5
                 if is_decision_seq[t]:
                     rect = plt.Rectangle(
                         (x0, y0), TP, card_y_hi - card_y_lo,
-                        fill=False, edgecolor=marker_color, linewidth=2.0,
+                        fill=False, edgecolor=color_h, linewidth=2.0,
                     )
                     ax.add_patch(rect)
                 else:
@@ -212,24 +228,9 @@ def _save_per_head_action_overlay(
                     cy = y0 + (card_y_hi - card_y_lo) / 2
                     circ = plt.Circle(
                         (cx, cy), radius=1.5,
-                        facecolor=marker_color, edgecolor="black", linewidth=0.4,
+                        facecolor=color_h, edgecolor="black", linewidth=0.4,
                     )
                     ax.add_patch(circ)
-
-            # Partner's pick at the decision step, translated into this agent's
-            # view-slot frame. Dashed box in the partner's colour — if it lands
-            # on the same card as the solid box, the agents coordinated.
-            if partner_action_view_slots is not None:
-                p_slot = partner_action_view_slots[t]
-                if p_slot is not None and p_slot >= 0 and is_decision_seq[t]:
-                    partner_color = "#ff00ff" if agent_idx == 0 else "#ff8c00"
-                    p_rect = plt.Rectangle(
-                        (p_slot * TP - 0.5 + 0.6, card_y_lo - 0.5 + 0.6),
-                        TP - 1.2, card_y_hi - card_y_lo - 1.2,
-                        fill=False, edgecolor=partner_color, linewidth=1.6,
-                        linestyle="--",
-                    )
-                    ax.add_patch(p_rect)
 
             # Partner's message dot: white square at the messaged card's view slot
             # (the env actually renders this in the obs as a 2x2 white dot, but our
