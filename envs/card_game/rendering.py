@@ -373,6 +373,64 @@ def _recolour_message_dot(base, state, agent_idx):
     return base
 
 
+def render_card_game_gt_frame(state, last_action, is_decision, scale):
+    """Render the canonical (un-OP'd) card scene with both agents' true
+    broadcast messages and final picks overlaid in GT colour-id space.
+
+    Lets a viewer check whether the two agents' signals actually converge on
+    the same physical card, vs. coordinating by chance. A0 = orange, A1 =
+    magenta; message dots sit near the top (A0) and bottom (A1) of each card.
+    On the decision step, picks are drawn as colour-coded borders (A0 inner,
+    A1 outer). `last_action` is the GT `(pick_0, pick_1)` tuple, used only
+    when `is_decision` is True.
+    """
+    import numpy as np
+    from PIL import Image
+
+    inner = _unwrap_card_game_state(state)
+    perm_np = np.asarray(inner.card_permutation)
+    img = np.array(
+        render_card_game_minimal(inner.card_permutation, inner.step_count + 1)
+    )
+
+    a0_color = np.array(AGENT_0_COLOR, dtype=np.uint8)
+    a1_color = np.array(AGENT_1_COLOR, dtype=np.uint8)
+
+    msgs = np.asarray(inner.messages)
+    dot_size = 2
+    for ai, color in ((0, a0_color), (1, a1_color)):
+        msg = int(msgs[ai])
+        if msg < 0:
+            continue
+        pos = int(np.argmin(np.abs(perm_np - msg)))
+        card_x = 1 + pos * (CARD_RECT_W + 2)
+        dot_x = card_x + (CARD_RECT_W - dot_size) // 2
+        # A0 dot near the top of the card, A1 near the bottom, so both stay
+        # visible when the two agents message the same card.
+        dot_y = int(CARD_RECT_Y) + (1 if ai == 0 else CARD_RECT_H - dot_size - 1)
+        img[dot_y:dot_y + dot_size, dot_x:dot_x + dot_size] = color
+
+    sub = np.array(
+        Image.fromarray(img).resize(
+            (img.shape[1] * scale, img.shape[0] * scale), Image.NEAREST,
+        )
+    )
+
+    if is_decision and last_action is not None:
+        for ai, color, outset in ((0, a0_color, 1), (1, a1_color, 3)):
+            pick = int(last_action[ai])
+            if pick < 0:
+                continue
+            matches = np.where(perm_np == pick)[0]
+            if not len(matches):
+                continue
+            sub = _draw_card_border_upscaled(
+                sub, int(matches[0]), color, 2 * scale, scale,
+                outset_raw=outset,
+            )
+    return sub
+
+
 def _render_one_agent_frame_from_obs(agent_idx, flat_obs, pick_view_col, scale,
                                       border_thickness, state=None,
                                       border_color=None):

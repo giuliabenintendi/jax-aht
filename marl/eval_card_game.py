@@ -419,6 +419,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
     import wandb
     from envs.card_game.rendering import (
         render_card_game_minimal,
+        render_card_game_gt_frame,
         _unwrap_card_game_state,
         _stamp_label_np,
         _A0_PATTERN_SMALL,
@@ -489,10 +490,19 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
             _stamp_label_np(cell_0, _A0_PATTERN_SMALL, 1, 27, a0_color_np, scale=scale)
             _stamp_label_np(cell_1, _A1_PATTERN_SMALL, 1, 27, a1_color_np, scale=scale)
 
+            is_decision_step = t == n_steps - 1
+            cell_gt = render_card_game_gt_frame(
+                ep_states[t],
+                last_action if is_decision_step else None,
+                is_decision_step,
+                scale,
+            )
+
             cell_h, cell_w = cell_0.shape[:2]
-            frame = np.full((2 * cell_h + padding, cell_w, 3), 255, dtype=np.uint8)
+            frame = np.full((3 * cell_h + 2 * padding, cell_w, 3), 255, dtype=np.uint8)
             frame[:cell_h] = cell_0
-            frame[cell_h + padding:] = cell_1
+            frame[cell_h + padding:2 * cell_h + padding] = cell_1
+            frame[2 * cell_h + 2 * padding:] = cell_gt
             all_video_frames.append(frame)
 
     if not all_video_frames:
