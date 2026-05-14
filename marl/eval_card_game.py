@@ -242,11 +242,6 @@ def _log_card_game_own_vs_partner_panel(
             translated_for_0[t] = phys1[perms_0[t]]
             translated_for_1[t] = phys0[perms_1[t]]
 
-        def _paint_card_mass(per_card_seq):
-            # (T, 5) -> (T, fh, fw, 1): uniform fill per card region.
-            painted = np.einsum("tc,chw->thw", per_card_seq, card_masks_np)
-            return painted[..., None]
-
         for agent_idx, (agent_key, own_mass_attn, partner_mass) in enumerate([
             ("agent_0", attn0, translated_for_0),
             ("agent_1", attn1, translated_for_1),
@@ -260,9 +255,14 @@ def _log_card_game_own_vs_partner_panel(
                 obs_seq.append(np.clip(img, 0.0, 1.0).astype(np.float32))
             obs_seq = np.stack(obs_seq, axis=0)
 
-            own_row = own_mass_attn[..., None]                 # (T, fh, fw, 1) — raw spatial
-            partner_row = _paint_card_mass(partner_mass)        # (T, fh, fw, 1) — synthetic per-card
-            stacked = np.concatenate([own_row, partner_row], axis=-1)  # (T, fh, fw, 2)
+            # Two rows: own attention as a real spatial heatmap; partner's
+            # translated per-card mass rendered as numbers (passed via
+            # row_card_values). The partner-row slice of `stacked` is a dummy
+            # zero map — it's never drawn because row_card_values[1] is set.
+            own_row = own_mass_attn[..., None]                 # (T, fh, fw, 1)
+            stacked = np.concatenate(
+                [own_row, np.zeros_like(own_row)], axis=-1,
+            )  # (T, fh, fw, 2)
 
             action_view_slots = [-1] * T
             if len(ep_actions) >= T and len(ep_states) >= T:
@@ -301,9 +301,10 @@ def _log_card_game_own_vs_partner_panel(
                 out_path=out_path,
                 title=human_title,
                 agent_idx=agent_idx,
-                legend="  (top = own; bottom = partner translated)",
+                legend="  (top = own heatmap; bottom = partner per-card values)",
                 row_labels=["own", "partner"],
                 row_cmaps=[own_palette, partner_palette],
+                row_card_values=[None, partner_mass],
             )
             logger.log(
                 {f"{tag}/own_vs_partner_{agent_key}_ep{ep}": wandb.Image(str(out_path))},

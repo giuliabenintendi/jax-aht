@@ -109,6 +109,7 @@ def _save_per_head_action_overlay(
     legend: str | None = None,
     row_labels: list[str] | None = None,
     row_cmaps: list[str] | None = None,
+    row_card_values: list | None = None,
 ) -> None:
     """4 rows (one per head) × T columns; obs as background, head-specific
     attention overlay, and a colored marker on the card the agent acted on
@@ -116,6 +117,11 @@ def _save_per_head_action_overlay(
 
     Pass `row_labels` (length H) to override the default "head 0", "head 1"… —
     e.g. ["avg"] for a single head-averaged row.
+
+    Pass `row_card_values` (length H, each None or a (T, 5) array) to render a
+    row as per-card numbers instead of a heatmap — the value is printed on each
+    of the 5 card cells. Used for the partner-feed row, which is just 5 numbers
+    per step and is clearer as text than as a blocky synthetic heatmap.
 
     Args:
         per_head_seq: (T, fh, fw, num_heads).
@@ -136,31 +142,59 @@ def _save_per_head_action_overlay(
     TP = 7  # TILE_PIXELS
     card_y_lo, card_y_hi = 7, 14
 
+    NUM_CARDS = 5
     for h_idx in range(H):
+        card_values = (
+            row_card_values[h_idx]
+            if (row_card_values and h_idx < len(row_card_values))
+            else None
+        )
         for t in range(T):
             ax = axes[h_idx, t]
             ax.imshow(obs_seq[t])
-            attn = per_head_seq[t, :, :, h_idx]
-            attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
-            # Per-cell normalization: with global vmax, step 0 (near-uniform
-            # attention from a fresh LSTM state, ~0.02/cell) is invisible
-            # against a peaked-1.0 cell elsewhere in the grid. Normalizing per
-            # cell makes the spatial pattern visible at every step regardless
-            # of magnitude. Trade-off: intensities are NOT comparable across
-            # cells; treat each cell as a relative heatmap.
-            cell_vmax = float(np.asarray(attn_up).max())
-            if cell_vmax < 1e-6:
-                cell_vmax = 1.0
-            cmap_h = row_cmaps[h_idx] if (row_cmaps and h_idx < len(row_cmaps)) else "hot"
-            # Alpha proportional to attention value (peak alpha 0.85). Low-attention
-            # regions become transparent so colormaps with white-at-low (e.g. RdPu)
-            # don't wash out the obs background.
-            attn_up_np = np.asarray(attn_up)
-            attn_norm = np.clip(attn_up_np / cell_vmax, 0.0, 1.0)
-            rgba = plt.get_cmap(cmap_h)(attn_norm)
-            rgba[..., 3] = attn_norm * 0.85
-            ax.imshow(rgba,
-                      extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
+            if card_values is not None:
+                # Render this row as per-card numbers instead of a heatmap.
+                vals = np.asarray(card_values[t])
+                vmax = float(vals.max())
+                for c in range(NUM_CARDS):
+                    cx = c * TP + TP / 2
+                    cy = (card_y_lo + card_y_hi) / 2
+                    v = float(vals[c])
+                    # bold the dominant card so the argmax is easy to spot
+                    is_peak = (vmax > 1e-6) and (v >= vmax - 1e-6)
+                    ax.text(
+                        cx, cy, f"{v:.2f}",
+                        ha="center", va="center", fontsize=5.5,
+                        color="black",
+                        fontweight="bold" if is_peak else "normal",
+                        bbox=dict(
+                            boxstyle="round,pad=0.1",
+                            facecolor="yellow" if is_peak else "white",
+                            edgecolor="none", alpha=0.75,
+                        ),
+                    )
+            else:
+                attn = per_head_seq[t, :, :, h_idx]
+                attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
+                # Per-cell normalization: with global vmax, step 0 (near-uniform
+                # attention from a fresh LSTM state, ~0.02/cell) is invisible
+                # against a peaked-1.0 cell elsewhere in the grid. Normalizing per
+                # cell makes the spatial pattern visible at every step regardless
+                # of magnitude. Trade-off: intensities are NOT comparable across
+                # cells; treat each cell as a relative heatmap.
+                cell_vmax = float(np.asarray(attn_up).max())
+                if cell_vmax < 1e-6:
+                    cell_vmax = 1.0
+                cmap_h = row_cmaps[h_idx] if (row_cmaps and h_idx < len(row_cmaps)) else "hot"
+                # Alpha proportional to attention value (peak alpha 0.85). Low-attention
+                # regions become transparent so colormaps with white-at-low (e.g. RdPu)
+                # don't wash out the obs background.
+                attn_up_np = np.asarray(attn_up)
+                attn_norm = np.clip(attn_up_np / cell_vmax, 0.0, 1.0)
+                rgba = plt.get_cmap(cmap_h)(attn_norm)
+                rgba[..., 3] = attn_norm * 0.85
+                ax.imshow(rgba,
+                          extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
 
             slot = action_view_slots[t]
             if slot is not None and slot >= 0:
