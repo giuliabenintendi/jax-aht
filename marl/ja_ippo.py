@@ -738,6 +738,12 @@ def make_train_loop(config, env):
                         own_action_mass_1 = jnp.take_along_axis(
                             q_phys_1, action_1_gt[:, None], axis=1,
                         ).squeeze(-1)
+                        # Gate by "the emitted action is a real card pick".
+                        # Under gaze_mode (forced-noop deliberation) this fires
+                        # only at the decision step; with gaze_mode off the
+                        # action is always a card so it fires every step.
+                        own_action_mass_0 = jnp.where(pick_0_is_card, own_action_mass_0, 0.0)
+                        own_action_mass_1 = jnp.where(pick_1_is_card, own_action_mass_1, 0.0)
                         r_attn_self_per_actor = ja_attn_self_coef * jnp.concatenate([
                             own_action_mass_0,
                             own_action_mass_1,
@@ -760,7 +766,11 @@ def make_train_loop(config, env):
                         action_canonical_per_actor[:, None],
                         axis=1,
                     ).squeeze(-1)
-                    gaze_pick_ok = prev_partner_valid_for_actor
+                    # Gate by "emitted action is a real card pick" — under
+                    # gaze_mode this restricts gaze_pick to the decision step;
+                    # with gaze_mode off it fires every step.
+                    action_is_card = jnp.concatenate([pick_0_is_card, pick_1_is_card])
+                    gaze_pick_ok = prev_partner_valid_for_actor & action_is_card
                     r_gaze_pick_per_actor = jnp.where(
                         gaze_pick_ok,
                         ja_gaze_pick_coef * picked_partner_mass,
