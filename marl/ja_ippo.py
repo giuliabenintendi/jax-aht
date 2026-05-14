@@ -150,6 +150,10 @@ def make_train_loop(config, env):
     ja_attn_shaping_active = (
         ja_attn_match_coef > 0 or ja_attn_self_coef > 0
     )
+    # Store the partner's previous-step canonical per-card attention *mass*
+    # (not just the normalized 5-way distribution). This lets us:
+    #   - gate match by actual on-card mass on both sides
+    #   - reward gaze-pick by the partner's actual mass on the chosen card
     ja_prev_partner_phys_active = ja_attn_match_coef > 0 or ja_gaze_pick_active
     # Auxiliary NLL loss read from the attention pool directly: forces the
     # per-card pooled attention to peak at the partner's argmax view-slot in
@@ -667,7 +671,11 @@ def make_train_loop(config, env):
                     partner_argmax_per_actor = jnp.concatenate(
                         [partner_argmax_in_ego_view_0, partner_argmax_in_ego_view_1]
                     ).astype(jnp.int32)
-                    current_partner_phys_for_actor = jnp.concatenate([q_phys_1, q_phys_0], axis=0)
+                    # Partner-attention signal stored for the next step in the
+                    # actor's own canonical frame. Keep raw per-card mass so we
+                    # can both normalize it for match and use it directly for
+                    # gaze-pick reward.
+                    current_partner_phys_for_actor = jnp.concatenate([phys_1, phys_0], axis=0)
                     current_partner_mass_per_actor = jnp.concatenate([m_1, m_0])
                 else:
                     partner_argmax_per_actor = jnp.zeros(num_actors, dtype=jnp.int32)
@@ -716,27 +724,45 @@ def make_train_loop(config, env):
                         prev_partner_phys_1 = prev_partner_phys_for_actor[num_envs:]
                         prev_partner_valid_0 = prev_partner_valid_for_actor[:num_envs]
                         prev_partner_valid_1 = prev_partner_valid_for_actor[num_envs:]
+                        prev_partner_m_0 = prev_partner_phys_0.sum(axis=-1)
+                        prev_partner_m_1 = prev_partner_phys_1.sum(axis=-1)
+                        prev_partner_q_0 = prev_partner_phys_0 / (
+                            prev_partner_m_0[:, None] + _eps
+                        )
+                        prev_partner_q_1 = prev_partner_phys_1 / (
+                            prev_partner_m_1[:, None] + _eps
+                        )
                         jsd_match_0 = jsd_divergence(
-                            q_phys_0[:, None, :], prev_partner_phys_0[:, None, :]
+                            q_phys_0[:, None, :], prev_partner_q_0[:, None, :]
                         ).reshape(num_envs)
                         jsd_match_1 = jsd_divergence(
-                            q_phys_1[:, None, :], prev_partner_phys_1[:, None, :]
+                            q_phys_1[:, None, :], prev_partner_q_1[:, None, :]
                         ).reshape(num_envs)
                         match_score_0 = 1.0 - jnp.clip(jsd_match_0, 0.0, log2) / log2
                         match_score_1 = 1.0 - jnp.clip(jsd_match_1, 0.0, log2) / log2
+                        match_weight_0 = jnp.minimum(m_0, prev_partner_m_0)
+                        match_weight_1 = jnp.minimum(m_1, prev_partner_m_1)
                         r_attn_match_per_actor = jnp.concatenate([
-                            jnp.where(prev_partner_valid_0, ja_attn_match_coef * match_score_0, 0.0),
-                            jnp.where(prev_partner_valid_1, ja_attn_match_coef * match_score_1, 0.0),
+                            jnp.where(
+                                prev_partner_valid_0,
+                                ja_attn_match_coef * match_weight_0 * match_score_0,
+                                0.0,
+                            ),
+                            jnp.where(
+                                prev_partner_valid_1,
+                                ja_attn_match_coef * match_weight_1 * match_score_1,
+                                0.0,
+                            ),
                         ])
                     else:
                         r_attn_match_per_actor = jnp.zeros(num_actors)
 
                     if ja_attn_self_coef > 0:
                         own_action_mass_0 = jnp.take_along_axis(
-                            q_phys_0, action_0_gt[:, None], axis=1,
+                            phys_0, action_0_gt[:, None], axis=1,
                         ).squeeze(-1)
                         own_action_mass_1 = jnp.take_along_axis(
-                            q_phys_1, action_1_gt[:, None], axis=1,
+                            phys_1, action_1_gt[:, None], axis=1,
                         ).squeeze(-1)
                         r_attn_self_per_actor = ja_attn_self_coef * jnp.concatenate([
                             own_action_mass_0,
