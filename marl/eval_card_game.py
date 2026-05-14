@@ -232,13 +232,20 @@ def _log_card_game_own_vs_partner_panel(
         # phys[partner][canon_pos] = m_partner[k] when partner_perm[k] = canon_pos.
         # translated_for_ego[k] = phys_partner[ego_perm[k]] = partner's mass on the
         # canonical card sitting at ego's view-slot k.
+        #
+        # Lag by one step: the `partner_feed` the agent actually receives at
+        # step t carries the partner's attention from step t-1 (and the aux
+        # target is lagged the same way). So row t shows partner's step-(t-1)
+        # attention; row 0 is zeros (no feed exists yet).
         translated_for_0 = np.zeros((T, 5), dtype=np.float32)  # partner=1, ego=0
         translated_for_1 = np.zeros((T, 5), dtype=np.float32)
-        for t in range(T):
+        for t in range(1, T):
             phys1 = np.zeros(5, dtype=np.float32)
-            phys1[perms_1[t]] = m1[t]
+            phys1[perms_1[t - 1]] = m1[t - 1]
             phys0 = np.zeros(5, dtype=np.float32)
-            phys0[perms_0[t]] = m0[t]
+            phys0[perms_0[t - 1]] = m0[t - 1]
+            # Translate using the *current-step* ego perm — that's the frame the
+            # agent sees the feed in at step t.
             translated_for_0[t] = phys1[perms_0[t]]
             translated_for_1[t] = phys0[perms_1[t]]
 

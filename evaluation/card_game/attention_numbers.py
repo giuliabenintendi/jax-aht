@@ -255,9 +255,6 @@ def _save_per_head_action_overlay(
             ax.set_xticks([])
             ax.set_yticks([])
 
-    if legend is None:
-        legend = "  (coloured dot/box = own action; white square = partner msg)"
-    fig.suptitle(title + legend, fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=170, bbox_inches="tight")
     plt.close(fig)
@@ -311,7 +308,6 @@ def _save_per_head_strip(
             ax.set_xticks([])
             ax.set_yticks([])
 
-    fig.suptitle(title + "  (per-head attention, cyan = card-row boundaries)", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
@@ -446,8 +442,6 @@ def _save_attn_strip(
         ax3.set_xticks([])
         ax3.set_yticks([])
 
-    fig.suptitle(title + "  (cyan lines = card-row boundaries; "
-                         "row 2 carries on-card max forward)", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=170, bbox_inches="tight")
     plt.close(fig)
