@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Forced-noop deliberation experiment. Mirrors the best explicit-comm config:
-#   match 0.1, self 0.05, gaze_pick 0.5, aux 0.25.
-# Deliberation steps are forced to noop (gaze_mode=true); the decision-step
-# pick is the only real action. self/gaze_pick fire only at the decision step,
-# match fires per deliberation step.
+# Forced-noop deliberation launcher (task=card-game-op-noop, gaze_mode=true).
+# Deliberation steps are forced to noop; the decision-step pick is the only
+# real action. self/gaze_pick fire only at the decision step; match fires per
+# deliberation step. Coefficients are passed in via env vars (see grid_ja_noop.sh).
 set -u
 
 GPU="${1:-0}"
-MATCH="${MATCH:-0.10}"
+MATCH="${MATCH:-0.0}"
 SELF="${SELF:-0.05}"
-GAZE_PICK="${GAZE_PICK:-0.50}"
+GAZE_PICK="${GAZE_PICK:-0.30}"
 AUX="${AUX:-0.25}"
 SEEDS="${SEEDS:-1}"
 STEPS="${STEPS:-15e6}"

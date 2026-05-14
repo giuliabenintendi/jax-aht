@@ -26,10 +26,8 @@ JA_PARTNER_FEED_PER_HEAD: false
 JA_CARD_METRIC: true
 JA_CARD_JSD_COEF: 0.0
 
-# Coefficients mirroring the best explicit-comm config:
-#   match 0.1 (≈ matching-message bonus), self 0.05 (≈ consistency),
-#   gaze_pick 0.5 (≈ follow bonus), aux 0.25 (JA-specific, no comm analog).
-JA_ATTN_MATCH_COEF: 0.10
+# Placeholder coefficients — the noop sweep (grid_ja_noop.sh) overrides these.
+JA_ATTN_MATCH_COEF: 0.0
 JA_ATTN_SELF_COEF: 0.05
-JA_GAZE_PICK_COEF: 0.50
+JA_GAZE_PICK_COEF: 0.30
 JA_AUX_PARTNER_ARGMAX_COEF: 0.25
