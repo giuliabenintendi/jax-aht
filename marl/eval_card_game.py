@@ -265,22 +265,33 @@ def _log_card_game_own_vs_partner_panel(
             )  # (T, fh, fw, 2)
 
             action_view_slots = [-1] * T
+            partner_action_view_slots = [-1] * T
             if len(ep_actions) >= T and len(ep_states) >= T:
                 state_dec = ep_states[T - 1]
+                partner_key = "agent_1" if agent_idx == 0 else "agent_0"
                 inv_recol = None
                 pos_perm = None
+                partner_inv_recol = None
                 s = state_dec
                 while s is not None:
                     if inv_recol is None and hasattr(s, "per_agent_inv_recolouring"):
                         inv_recol = np.asarray(s.per_agent_inv_recolouring[agent_key])
+                        partner_inv_recol = np.asarray(s.per_agent_inv_recolouring[partner_key])
                     if pos_perm is None and hasattr(s, "per_agent_perm"):
                         pos_perm = np.asarray(s.per_agent_perm[agent_key])
                     s = getattr(s, "env_state", None)
+                pos_perm_inv = np.argsort(pos_perm) if pos_perm is not None else None
+                # Own pick → ego view-slot.
                 raw = int(ep_actions[T - 1][agent_idx])
-                if raw >= 0 and inv_recol is not None and pos_perm is not None:
+                if raw >= 0 and inv_recol is not None and pos_perm_inv is not None:
                     own_pick_gt = int(inv_recol[raw])
-                    pos_perm_inv = np.argsort(pos_perm)
                     action_view_slots[T - 1] = int(pos_perm_inv[own_pick_gt])
+                # Partner pick → canonical → ego's view-slot frame (so it can be
+                # compared against the agent's own pick in the same picture).
+                praw = int(ep_actions[T - 1][1 - agent_idx])
+                if praw >= 0 and partner_inv_recol is not None and pos_perm_inv is not None:
+                    partner_pick_gt = int(partner_inv_recol[praw])
+                    partner_action_view_slots[T - 1] = int(pos_perm_inv[partner_pick_gt])
             partner_msg_view_slots = [-1] * T
 
             own_palette = palettes[agent_idx]
@@ -301,10 +312,12 @@ def _log_card_game_own_vs_partner_panel(
                 out_path=out_path,
                 title=human_title,
                 agent_idx=agent_idx,
-                legend="  (top = own heatmap; bottom = partner per-card values)",
+                legend="  (top = own heatmap; bottom = partner per-card values; "
+                       "solid box = own pick, dashed box = partner pick)",
                 row_labels=["own", "partner"],
                 row_cmaps=[own_palette, partner_palette],
                 row_card_values=[None, partner_mass],
+                partner_action_view_slots=partner_action_view_slots,
             )
             logger.log(
                 {f"{tag}/own_vs_partner_{agent_key}_ep{ep}": wandb.Image(str(out_path))},

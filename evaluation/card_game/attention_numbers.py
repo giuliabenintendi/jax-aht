@@ -110,6 +110,7 @@ def _save_per_head_action_overlay(
     row_labels: list[str] | None = None,
     row_cmaps: list[str] | None = None,
     row_card_values: list | None = None,
+    partner_action_view_slots: list | None = None,
 ) -> None:
     """4 rows (one per head) × T columns; obs as background, head-specific
     attention overlay, and a colored marker on the card the agent acted on
@@ -214,6 +215,21 @@ def _save_per_head_action_overlay(
                         facecolor=marker_color, edgecolor="black", linewidth=0.4,
                     )
                     ax.add_patch(circ)
+
+            # Partner's pick at the decision step, translated into this agent's
+            # view-slot frame. Dashed box in the partner's colour — if it lands
+            # on the same card as the solid box, the agents coordinated.
+            if partner_action_view_slots is not None:
+                p_slot = partner_action_view_slots[t]
+                if p_slot is not None and p_slot >= 0 and is_decision_seq[t]:
+                    partner_color = "#ff00ff" if agent_idx == 0 else "#ff8c00"
+                    p_rect = plt.Rectangle(
+                        (p_slot * TP - 0.5 + 0.6, card_y_lo - 0.5 + 0.6),
+                        TP - 1.2, card_y_hi - card_y_lo - 1.2,
+                        fill=False, edgecolor=partner_color, linewidth=1.6,
+                        linestyle="--",
+                    )
+                    ax.add_patch(p_rect)
 
             # Partner's message dot: white square at the messaged card's view slot
             # (the env actually renders this in the obs as a 2x2 white dot, but our
