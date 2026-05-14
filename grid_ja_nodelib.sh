@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Sweep over the forced-noop deliberation config (task=card-game-op-noop,
-# gaze_mode=true). Deliberation steps are noop; the decision-step pick is the
-# only real action. `match` fires per deliberation step; `self`/`gaze_pick`
-# fire only at the decision step.
+# Sweep over the no-deliberation-action config (task=card-game-op-nodelib,
+# gaze_mode=true). Deliberation steps emit no action (forced noop slot); the
+# decision-step pick is the only real action. `match` fires per deliberation
+# step; `self`/`gaze_pick` fire only at the decision step.
 #
-# Goal: find whether *any* coefficient combination escapes chance under noop
-# (the open question — noop caused entropy collapse before; aux now pins the
-# attention head every step, which is the new factor).
+# Goal: find whether *any* coefficient combination escapes chance in nodelib
+# mode (the open question — this design caused entropy collapse before; aux now
+# pins the attention head every step, which is the new factor).
 #
 # Sweep axes: gaze_pick (the decision-step coordination signal) × aux.
 # match=0 (per-step, biggest shaped-budget risk — start off);
@@ -26,12 +26,12 @@ PER_HEAD=false
 
 run_cell() {
   local gaze_pick="$1"; local aux="$2"
-  local tag="noop_match${MATCH}_self${SELF}_gaze${gaze_pick}_aux${aux}"
+  local tag="nodelib_match${MATCH}_self${SELF}_gaze${gaze_pick}_aux${aux}"
   echo "[$(date +%Y-%m-%d_%H:%M:%S)] [start] ${tag} GPU ${GPU}"
   MATCH="${MATCH}" SELF="${SELF}" GAZE_PICK="${gaze_pick}" AUX="${aux}" \
     SEEDS="${SEEDS}" STEPS="${STEPS}" PER_HEAD="${PER_HEAD}" \
     LABEL="${tag}" \
-    ./run_ja_noop.sh "${GPU}"
+    ./run_ja_nodelib.sh "${GPU}"
   echo "[$(date +%Y-%m-%d_%H:%M:%S)] [finish] ${tag} (exit $?)"
 }
 
@@ -42,8 +42,8 @@ run_cell() {
   run_cell 0.30 0.25
   run_cell 0.50 0.10
   run_cell 0.50 0.25
-) > grid_noop_gpu${GPU}.log 2>&1 &
+) > grid_nodelib_gpu${GPU}.log 2>&1 &
 PID=$!
 
-echo "GPU ${GPU} chain PID: ${PID}  (6 cells, noop mode, 1 seed × 15M each)"
-echo "Log: tail -f grid_noop_gpu${GPU}.log"
+echo "GPU ${GPU} chain PID: ${PID}  (6 cells, nodelib mode, 1 seed × 15M each)"
+echo "Log: tail -f grid_nodelib_gpu${GPU}.log"

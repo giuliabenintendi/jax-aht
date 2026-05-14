@@ -9,5 +9,5 @@ ENV_KWARGS:
   match_coef: 0.0
   stability_coef: 0.0
   follow_coef: 0.0
-  gaze_mode: true   # forced-noop deliberation; only the decision-step action is a pick
-TASK_NAME: card-game-op-noop
+  gaze_mode: true   # no deliberation actions; only the decision-step action is a pick
+TASK_NAME: card-game-op-nodelib

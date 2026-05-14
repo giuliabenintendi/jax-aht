@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Forced-noop deliberation launcher (task=card-game-op-noop, gaze_mode=true).
-# Deliberation steps are forced to noop; the decision-step pick is the only
-# real action. self/gaze_pick fire only at the decision step; match fires per
-# deliberation step. Coefficients are passed in via env vars (see grid_ja_noop.sh).
+# No-deliberation-action launcher (task=card-game-op-nodelib, gaze_mode=true).
+# Deliberation steps emit no action (forced noop slot); the decision-step pick
+# is the only real action. self/gaze_pick fire only at the decision step;
+# match fires per deliberation step. Coefficients via env vars (see
+# grid_ja_nodelib.sh).
 set -u
 
 GPU="${1:-0}"
@@ -14,13 +15,13 @@ SEEDS="${SEEDS:-1}"
 STEPS="${STEPS:-15e6}"
 PER_HEAD="${PER_HEAD:-false}"
 
-LABEL="${LABEL:-noop_match${MATCH}_self${SELF}_gaze${GAZE_PICK}_aux${AUX}}"
+LABEL="${LABEL:-nodelib_match${MATCH}_self${SELF}_gaze${GAZE_PICK}_aux${AUX}}"
 
 echo "[$(date +%Y-%m-%d_%H:%M:%S)] starting ${LABEL} on GPU ${GPU}"
 
 ./run_gpu.sh "${GPU}" marl.run \
-  task=card-game-op-noop \
-  algorithm=ja_ippo/card-game-op-noop \
+  task=card-game-op-nodelib \
+  algorithm=ja_ippo/card-game-op-nodelib \
   label="${LABEL}" \
   algorithm.NUM_SEEDS="${SEEDS}" \
   algorithm.TOTAL_TIMESTEPS="${STEPS}" \

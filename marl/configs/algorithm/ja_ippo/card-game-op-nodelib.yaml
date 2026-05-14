@@ -11,11 +11,10 @@ ANNEAL_LR: false
 GAE_LAMBDA: 0.95
 ENT_COEF: 0.01
 
-# Forced-noop deliberation (task uses gaze_mode=true): the only real action is
+# No deliberation actions (task uses gaze_mode=true): the only real action is
 # the decision-step pick; deliberation is pure attention. `match` fires per
 # deliberation step; `self`/`gaze_pick` fire only at the decision step (gated
-# by "action is a real card pick"). Mirrors the explicit-comm setup where the
-# pick was the single coordinating action.
+# by "action is a real card pick").
 COMMUNICATION: false
 COMM_WARMUP_ENV_STEPS: 0
 COMM_REWARD_START_SCALE: 0.0
@@ -26,7 +25,7 @@ JA_PARTNER_FEED_PER_HEAD: false
 JA_CARD_METRIC: true
 JA_CARD_JSD_COEF: 0.0
 
-# Placeholder coefficients — the noop sweep (grid_ja_noop.sh) overrides these.
+# Placeholder coefficients — the nodelib sweep (grid_ja_nodelib.sh) overrides these.
 JA_ATTN_MATCH_COEF: 0.0
 JA_ATTN_SELF_COEF: 0.05
 JA_GAZE_PICK_COEF: 0.30
