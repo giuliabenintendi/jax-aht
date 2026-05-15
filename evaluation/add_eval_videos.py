@@ -44,6 +44,10 @@ def main():
                         help="Also save one own-vs-partner attention panel PNG per agent per "
                              "episode (top row: own attention; bottom row: partner's attention "
                              "translated to own view-slot frame). Card-game env only.")
+    parser.add_argument("--three-view-panels", action="store_true",
+                        help="Also save one static 3-row x T-col PNG per episode "
+                             "(agent_0 view / agent_1 view / GT canonical), mirroring the "
+                             "eval video's per-step rendering. Card-game env only.")
     parser.add_argument("--use-best", action="store_true",
                         help="Use best_params (per-seed best ckpt) instead of final_params.")
     parser.add_argument("--num-episodes", type=int, default=5,
@@ -115,6 +119,7 @@ def main():
             _log_card_game_eval_video,
             _log_card_game_per_agent_obs_video,
             _log_card_game_own_vs_partner_panel,
+            _log_card_game_per_episode_three_view,
             _log_card_game_xp_videos,
             _log_card_game_per_agent_xp_videos,
         )
@@ -198,6 +203,18 @@ def main():
                         ja_card_masks=ja_card_masks,
                         num_episodes=args.num_episodes,
                         seed_idx=seed_idx,
+                        partner_feed_dim=partner_feed_dim,
+                    )
+                if args.three_view_panels:
+                    tv_dir = os.path.join(video_dir, "three_view")
+                    _log_card_game_per_episode_three_view(
+                        inner_env, policy, params, max_steps,
+                        tag=f"Eval/seed_{seed_idx}",
+                        video_dir=tv_dir,
+                        logger=wandb_logger,
+                        feed_attn_dims=feed_attn_dims,
+                        ja_card_masks=ja_card_masks,
+                        num_episodes=args.num_episodes,
                         partner_feed_dim=partner_feed_dim,
                     )
                 print(f"Seed {seed_idx}: SP videos in {video_dir}")

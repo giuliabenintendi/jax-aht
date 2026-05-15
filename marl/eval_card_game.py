@@ -334,6 +334,116 @@ def _log_card_game_own_vs_partner_panel(
             print(f"[card_game] Saved own-vs-partner panel: {out_path}")
 
 
+def _log_card_game_per_episode_three_view(
+    inner_env, policy, params, max_steps, tag, video_dir, logger,
+    feed_attn_dims=None, ja_card_masks=None,
+    num_episodes=10, params_partner=None,
+    rng_seed_base=100, partner_feed_dim=5,
+):
+    """Per-episode static 3-row × T-col PNG (own / partner / GT canonical).
+
+    Mirrors the eval-video per-step rendering exactly: per-agent OP obs as
+    backdrop, attention overlay (Oranges for agent 0, RdPu for agent 1),
+    own-coloured message dots during deliberation, and a yellow (success) or
+    white (miss) bounding box around the picked card at the decision step.
+    Bottom row is the canonical GT scene with both picks marked.
+    """
+    import wandb
+    from envs.card_game.rendering import (
+        render_card_game_gt_frame,
+        _stamp_label_np,
+        _A0_PATTERN_SMALL,
+        _A1_PATTERN_SMALL,
+        _gt_pick_to_view_col,
+        _recolour_message_dot,
+        GRID_ROWS,
+        GRID_COLS,
+        TILE_PIXELS,
+    )
+
+    scale = 20
+    padding = 4
+    a0_color = np.array([255, 140, 0], dtype=np.uint8)
+    a1_color = np.array([255, 0, 255], dtype=np.uint8)
+    h_px = GRID_ROWS * TILE_PIXELS
+    w_px = GRID_COLS * TILE_PIXELS
+
+    if params_partner is None:
+        params_partner = params
+
+    os.makedirs(video_dir, exist_ok=True)
+    for ep in range(num_episodes):
+        ep_rng = jax.random.PRNGKey(rng_seed_base + ep)
+        ep_states, attn_data, ep_actions, _, ep_obs = run_episode_with_states(
+            ep_rng, inner_env, params, policy, params_partner, policy, max_steps,
+            collect_attention=True, collect_obs=True,
+            feed_other_attn_dims=feed_attn_dims,
+            ja_card_masks=ja_card_masks,
+            partner_feed_dim=partner_feed_dim,
+        )
+        maps_0 = attn_data.get("agent_0", [])
+        maps_1 = attn_data.get("agent_1", [])
+        if not maps_0 or not maps_1:
+            continue
+        n_steps = min(len(maps_0), len(maps_1))
+        last_action = ep_actions[-1] if ep_actions else (-1, -1)
+
+        row_0, row_1, row_gt = [], [], []
+        for t in range(n_steps):
+            base_0 = (np.asarray(ep_obs[t]["agent_0"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+            base_1 = (np.asarray(ep_obs[t]["agent_1"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
+            _recolour_message_dot(base_0, ep_states[t], 0)
+            _recolour_message_dot(base_1, ep_states[t], 1)
+            up_0 = np.array(Image.fromarray(base_0).resize(
+                (w_px * scale, h_px * scale), Image.NEAREST,
+            ))
+            up_1 = np.array(Image.fromarray(base_1).resize(
+                (w_px * scale, h_px * scale), Image.NEAREST,
+            ))
+            cell_0 = _overlay_attention(up_0, maps_0[t], "Oranges", alpha=0.6).copy()
+            cell_1 = _overlay_attention(up_1, maps_1[t], "RdPu", alpha=0.6).copy()
+
+            is_decision = (t == n_steps - 1)
+            if is_decision and int(last_action[0]) >= 0:
+                state_for_perm = ep_states[t - 1] if t > 0 else ep_states[t]
+                view_0 = _gt_pick_to_view_col(state_for_perm, 0, int(last_action[0]))
+                view_1 = _gt_pick_to_view_col(state_for_perm, 1, int(last_action[1]))
+                won = int(last_action[0]) == int(last_action[1])
+                decision_border = [255, 255, 0] if won else [255, 255, 255]
+                if view_0 >= 0:
+                    _draw_choice_on_cell(cell_0, view_0, 0, scale, color=decision_border)
+                if view_1 >= 0:
+                    _draw_choice_on_cell(cell_1, view_1, 1, scale, color=decision_border)
+
+            _stamp_label_np(cell_0, _A0_PATTERN_SMALL, 1, 27, a0_color, scale=scale)
+            _stamp_label_np(cell_1, _A1_PATTERN_SMALL, 1, 27, a1_color, scale=scale)
+
+            cell_gt = render_card_game_gt_frame(
+                ep_states[t],
+                last_action if is_decision else None,
+                is_decision,
+                scale,
+            )
+            row_0.append(cell_0)
+            row_1.append(cell_1)
+            row_gt.append(cell_gt)
+
+        cell_h, cell_w = row_0[0].shape[:2]
+        h_total = 3 * cell_h + 2 * padding
+        w_total = n_steps * cell_w + (n_steps - 1) * padding
+        grid = np.full((h_total, w_total, 3), 255, dtype=np.uint8)
+        for t in range(n_steps):
+            x = t * (cell_w + padding)
+            grid[0:cell_h, x:x + cell_w] = row_0[t]
+            grid[cell_h + padding:2 * cell_h + padding, x:x + cell_w] = row_1[t]
+            grid[2 * cell_h + 2 * padding:, x:x + cell_w] = row_gt[t]
+
+        out_path = f"{video_dir}/three_view_ep{ep}.png"
+        Image.fromarray(grid).save(out_path)
+        print(f"[card_game] Saved 3-view panel: {out_path}")
+        logger.log({f"{tag}/three_view_ep{ep}": wandb.Image(out_path)}, commit=False)
+
+
 def _log_card_game_action_distributions(
     inner_env, policy, params, max_steps, tag, logger,
     feed_attn_dims=None, ja_card_masks=None,
