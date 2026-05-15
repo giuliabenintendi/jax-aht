@@ -355,10 +355,13 @@ def _log_card_game_per_episode_three_view(
         _A0_PATTERN_SMALL,
         _A1_PATTERN_SMALL,
         _gt_pick_to_view_col,
-        _recolour_message_dot,
         GRID_ROWS,
         GRID_COLS,
         TILE_PIXELS,
+        CARD_RECT_W,
+        CARD_RECT_H,
+        CARD_RECT_Y,
+        NUM_CARDS,
     )
 
     scale = 20
@@ -367,6 +370,21 @@ def _log_card_game_per_episode_three_view(
     a1_color = np.array([255, 0, 255], dtype=np.uint8)
     h_px = GRID_ROWS * TILE_PIXELS
     w_px = GRID_COLS * TILE_PIXELS
+
+    def _draw_own_action_dot(base, view_col, agent_idx):
+        # Draws a 2x2 dot of the agent's own colour on the agent's own view at
+        # the picked / messaged view-slot. Communication is off here so we do
+        # NOT recolour a partner-message dot — each agent only sees its own
+        # action.
+        if view_col < 0 or view_col >= NUM_CARDS:
+            return base
+        color = a0_color if agent_idx == 0 else a1_color
+        dot_size = 2
+        card_x = 1 + view_col * (CARD_RECT_W + 2)
+        dot_y = int(CARD_RECT_Y) + (CARD_RECT_H - dot_size) // 2
+        dot_x = card_x + (CARD_RECT_W - dot_size) // 2
+        base[dot_y:dot_y + dot_size, dot_x:dot_x + dot_size] = color
+        return base
 
     if params_partner is None:
         params_partner = params
@@ -392,8 +410,12 @@ def _log_card_game_per_episode_three_view(
         for t in range(n_steps):
             base_0 = (np.asarray(ep_obs[t]["agent_0"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
             base_1 = (np.asarray(ep_obs[t]["agent_1"]).reshape(h_px, w_px, 3) * 255).astype(np.uint8)
-            _recolour_message_dot(base_0, ep_states[t], 0)
-            _recolour_message_dot(base_1, ep_states[t], 1)
+            # During deliberation, draw each agent's OWN emitted action as a
+            # dot on its OWN view in its own colour (orange / magenta). At the
+            # decision step a bounding box is drawn instead (after upscale).
+            if t < n_steps - 1 and t < len(ep_actions):
+                _draw_own_action_dot(base_0, int(ep_actions[t][0]), 0)
+                _draw_own_action_dot(base_1, int(ep_actions[t][1]), 1)
             up_0 = np.array(Image.fromarray(base_0).resize(
                 (w_px * scale, h_px * scale), Image.NEAREST,
             ))
