@@ -89,7 +89,7 @@ def main():
 
     for ep in range(args.num_episodes):
         rng = jax.random.PRNGKey(args.rng_base + args.seed_idx * 1000 + ep)
-        ep_states, attn_data, ep_actions, _, _ = run_episode_with_states(
+        ep_states, attn_data, ep_actions, _ = run_episode_with_states(
             rng, ev.env, params, ev.policy, params, ev.policy, T,
             collect_attention=True, greedy=greedy,
             ja_card_masks=use_card_masks,
