@@ -84,6 +84,11 @@ def main():
     own_attn_eq_pick = [0, 0]            # per agent
     attn_align_in_own_view = [0, 0]      # per agent (joint-attention agreement)
     coordinated_picks = 0                # both agents picked same canonical card
+    # Per-card-mass diagnostics (normalized) at the decision step:
+    #   own_mass_on_pick[a]    = q_own_a[own_pick_a]            (= self reward / coef)
+    #   partner_mass_on_pick[a]= q_partner_a_in_own_view[own_pick_a] (= gaze_pick / coef, unlagged)
+    own_mass_on_pick = [[], []]
+    partner_mass_on_pick = [[], []]
     # Diagnostic: distribution of own-pick view-slots (catch constant-action collapse)
     pick_hist = [Counter(), Counter()]
 
@@ -111,6 +116,12 @@ def main():
         # Partner attention translated into ego view-slot frame
         partner_in_0 = phys_1[perm_0]    # agent 0's view of partner's attention
         partner_in_1 = phys_0[perm_1]
+        # Normalised distributions for "fraction of mass" diagnostics
+        eps = 1e-9
+        q_own_0 = m0 / max(m0.sum(), eps)
+        q_own_1 = m1 / max(m1.sum(), eps)
+        q_partner_in_0 = partner_in_0 / max(partner_in_0.sum(), eps)
+        q_partner_in_1 = partner_in_1 / max(partner_in_1.sum(), eps)
         # Argmaxes — each in its own agent's view-slot frame
         own_argmax_0 = int(np.argmax(m0))
         own_argmax_1 = int(np.argmax(m1))
@@ -126,12 +137,16 @@ def main():
                 own_attn_eq_pick[0] += 1
             if own_argmax_0 == partner_argmax_in_0:
                 attn_align_in_own_view[0] += 1
+            own_mass_on_pick[0].append(float(q_own_0[pick_0]))
+            partner_mass_on_pick[0].append(float(q_partner_in_0[pick_0]))
         if 0 <= pick_1 < NUM_CARDS:
             pick_hist[1][pick_1] += 1
             if own_argmax_1 == pick_1:
                 own_attn_eq_pick[1] += 1
             if own_argmax_1 == partner_argmax_in_1:
                 attn_align_in_own_view[1] += 1
+            own_mass_on_pick[1].append(float(q_own_1[pick_1]))
+            partner_mass_on_pick[1].append(float(q_partner_in_1[pick_1]))
 
         # Coordinated picks: same CANONICAL card. Translate each pick to canonical.
         # raw action = view-slot, perm[view_slot] = canonical position.
@@ -147,6 +162,18 @@ def main():
     print(f"  P(own attention argmax  ==  partner attention argmax in own view)")
     print(f"    agent 0: {attn_align_in_own_view[0]/n:.3f}   agent 1: {attn_align_in_own_view[1]/n:.3f}    (chance {chance:.2f})")
     print(f"\n  P(coordinated pick — both picked same canonical card) = {coordinated_picks/n:.3f}    (chance {chance:.2f})")
+
+    def _stats(xs):
+        a = np.asarray(xs, dtype=float)
+        return (a.mean(), np.median(a), a.std()) if len(a) else (float("nan"),)*3
+    print(f"\n  fraction of own attention mass on own picked card (= self/coef)")
+    for i in (0, 1):
+        mn, md, sd = _stats(own_mass_on_pick[i])
+        print(f"    agent {i}: mean {mn:.3f}  median {md:.3f}  std {sd:.3f}    (chance {chance:.2f})")
+    print(f"  fraction of partner attention mass (translated to own view) on own picked card (= gaze/coef, unlagged)")
+    for i in (0, 1):
+        mn, md, sd = _stats(partner_mass_on_pick[i])
+        print(f"    agent {i}: mean {mn:.3f}  median {md:.3f}  std {sd:.3f}    (chance {chance:.2f})")
     print(f"\n  Pick distribution (agent 0 view-slots): {dict(pick_hist[0])}")
     print(f"  Pick distribution (agent 1 view-slots): {dict(pick_hist[1])}")
 
