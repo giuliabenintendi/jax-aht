@@ -400,8 +400,13 @@ def _log_card_game_per_episode_three_view(
             up_1 = np.array(Image.fromarray(base_1).resize(
                 (w_px * scale, h_px * scale), Image.NEAREST,
             ))
-            cell_0 = _overlay_attention(up_0, maps_0[t], "Oranges", alpha=0.6).copy()
-            cell_1 = _overlay_attention(up_1, maps_1[t], "RdPu", alpha=0.6).copy()
+            # Fade the agent-view backdrops so the attention overlay reads
+            # clearly. GT row stays unfaded as the unambiguous reference.
+            fade = 0.4
+            up_0_f = (up_0.astype(np.float32) * fade + 255.0 * (1.0 - fade)).astype(np.uint8)
+            up_1_f = (up_1.astype(np.float32) * fade + 255.0 * (1.0 - fade)).astype(np.uint8)
+            cell_0 = _overlay_attention(up_0_f, maps_0[t], "Oranges", alpha=0.6).copy()
+            cell_1 = _overlay_attention(up_1_f, maps_1[t], "RdPu", alpha=0.6).copy()
 
             is_decision = (t == n_steps - 1)
             if is_decision and int(last_action[0]) >= 0:
