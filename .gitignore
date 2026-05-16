@@ -20,6 +20,7 @@ eval_teammates/*
 # pycache
 **/__pycache__/
 **/*.pyc
+**/*.pytest_cache
 
 # Claude Code
 claude/
@@ -33,4 +34,6 @@ __pycache__/
 *.pyc
 dist/
 build/
-tests/card_game_obs/
+tests/*
+
+*logs/*
