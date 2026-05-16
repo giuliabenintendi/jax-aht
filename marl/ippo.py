@@ -2,10 +2,6 @@
 Based on the IPPO implementation from JaxMarl. Trains a parameter-shared, MLP IPPO agent on a
 fully cooperative multi-agent environment. Note that this code is only compatible with MLP policies.
 '''
-import shutil
-
-import hydra
-import numpy as np
 import jax
 import jax.numpy as jnp
 import optax
@@ -13,8 +9,7 @@ from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_s5_agent, initialize_mlp_agent, \
     initialize_rnn_agent, initialize_pseudo_actor_with_double_critic, initialize_pseudo_actor_with_conditional_critic
-from common.plot_utils import get_stats, get_metric_names
-from common.save_load_utils import save_train_run
+from common.train_logging import report_basic_training_outputs
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
@@ -340,34 +335,11 @@ def run_ippo(config, logger):
         train_jit = jax.jit(jax.vmap(make_train(algorithm_config, env)))
         out = train_jit(rngs)
 
-    log_metrics(config, out, logger)
+    report_basic_training_outputs(
+        config,
+        out,
+        logger,
+        scalar_keys=[],
+        print_prefix="ippo",
+    )
     return out
-
-def log_metrics(config, out, logger):
-    '''Save train run output and log to wandb as artifact.'''    
-    train_metrics = out["metrics"]
-    metric_names = get_metric_names(config["ENV_NAME"])
-    train_stats = get_stats(train_metrics, metric_names)
-
-    # each key in train_stats is a metric name, and the value is an array of shape (num_seeds, num_updates, num_agents_per_game)
-    # where the last dimension contains the mean and std of the metric
-    train_stats = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
-
-    # Log metrics for each update step
-    num_updates = train_metrics["returned_episode"].shape[1] # shape is (num_seeds, num_updates, rollout_len, num_envs*num_agents_per_game)
-    for step in range(num_updates):
-        for stat_name, stat_data in train_stats.items():
-            # second dimension contains the mean and std of the metric
-            stat_mean = stat_data[step, 0]
-            logger.log_item(f"Train/{stat_name}", stat_mean, train_step=step, commit=True)
-
-    logger.commit()
-
-    # save artifacts
-    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    out_savepath = save_train_run(out, savedir, savename="saved_train_run")
-    if config["logger"]["log_train_out"]:
-        logger.log_artifact(name="saved_train_run", path=out_savepath, type_name="train_run")
-        # Cleanup locally logged out file
-    if not config["local_logger"]["save_train_out"]:
-        shutil.rmtree(out_savepath)

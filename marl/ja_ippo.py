@@ -10,7 +10,6 @@ coordination comes from:
 '''
 import functools
 import os
-import shutil
 from typing import NamedTuple
 
 import hydra
@@ -23,11 +22,11 @@ from flax.training.train_state import TrainState
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent, _get_image_dims
 from agents.ja_image_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence, build_card_masks
-from common.plot_utils import get_stats, get_metric_names, plot_seed_aggregate
-from common.save_load_utils import save_train_run, REPO_PATH
+from common.save_load_utils import REPO_PATH, save_train_run
+from common.train_logging import log_live_chunk_metrics, report_ja_training_outputs
 from envs import make_env
 from envs.log_wrapper import LogWrapper
-from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
+from marl.ppo_utils import batchify, unbatchify, _create_minibatches
 
 
 _build_card_masks = build_card_masks  # backward compat alias
@@ -200,6 +199,7 @@ def make_train_loop(config, env):
         _card_masks = _build_card_masks(img_h, img_w, feat_h, feat_w)
     else:
         _card_masks = None
+    _num_cards = int(_card_masks.shape[0]) if _card_masks is not None else 5
 
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
@@ -441,6 +441,191 @@ def make_train_loop(config, env):
             uniform = jnp.ones((feat_h, feat_w)) / (feat_h * feat_w)
             return jnp.where(done_batch[:, None, None], uniform[None], swapped)
 
+        def _extract_comm_reward_components(info):
+            """Pop communication reward diagnostics and flatten them per actor."""
+            def _pop_metric(key):
+                raw = info.pop(key, jnp.zeros((num_envs, env.num_agents)))
+                return raw.transpose(1, 0).reshape(-1)
+
+            return (
+                _pop_metric("comm_reward"),
+                _pop_metric("comm_reward_match"),
+                _pop_metric("comm_reward_stable"),
+                _pop_metric("comm_reward_follow"),
+            )
+
+        def _project_card_attention(attn_map, env_state):
+            """Project head-averaged attention into canonical card space."""
+            attn = attn_map.squeeze(0).mean(axis=-1)  # (num_actors, feat_h, feat_w)
+            card_pos_attn = jnp.einsum("ahw,chw->ac", attn, _card_masks)
+            card_pos_attn_0 = card_pos_attn[:num_envs]
+            card_pos_attn_1 = card_pos_attn[num_envs:]
+
+            eps = 1e-8
+            perm_0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
+            perm_1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
+            batch_idx = jnp.arange(num_envs)[:, None]
+            phys_0 = jnp.zeros((num_envs, _num_cards)).at[batch_idx, perm_0].set(card_pos_attn_0)
+            phys_1 = jnp.zeros((num_envs, _num_cards)).at[batch_idx, perm_1].set(card_pos_attn_1)
+
+            m_0 = card_pos_attn_0.sum(axis=-1)
+            m_1 = card_pos_attn_1.sum(axis=-1)
+            q_phys_0 = phys_0 / (m_0[:, None] + eps)
+            q_phys_1 = phys_1 / (m_1[:, None] + eps)
+            return perm_0, perm_1, phys_0, phys_1, q_phys_0, q_phys_1, m_0, m_1
+
+        def _compute_card_jsd_reward(q_phys_0, q_phys_1, m_0, m_1, step_count_batch):
+            """Compute diagnostic card JSD and optional shaping reward."""
+            card_jsd_per_env = jsd_divergence(
+                q_phys_0[:, None, :], q_phys_1[:, None, :]
+            )
+            card_jsd_step_mean = card_jsd_per_env.mean()
+
+            if ja_card_attn and ja_card_jsd_coef > 0:
+                l2_div = jnp.sum((q_phys_0 - q_phys_1) ** 2, axis=-1)
+                r_card_jsd_env = -ja_card_jsd_coef * jnp.minimum(m_0, m_1) * l2_div
+                r_card_jsd_valid = step_count_batch[:num_envs] > 1
+                r_card_jsd_env = jnp.where(r_card_jsd_valid, r_card_jsd_env, 0.0)
+                r_card_jsd = jnp.concatenate([r_card_jsd_env, r_card_jsd_env])
+            else:
+                r_card_jsd = jnp.zeros(num_actors)
+            return card_jsd_step_mean, jax.lax.stop_gradient(r_card_jsd)
+
+        def _build_partner_card_attention_feed(attn_map, new_done_batch, perm_0, perm_1, phys_0, phys_1):
+            """Translate partner attention into each agent's own view frame."""
+            batch_idx = jnp.arange(num_envs)[:, None]
+            if ja_partner_feed_per_head:
+                attn_per_head = attn_map.squeeze(0)  # (num_actors, fh, fw, num_heads)
+                card_pos_per_head = jnp.einsum(
+                    "ahwk,chw->ack", attn_per_head, _card_masks,
+                )  # (num_actors, 5, num_heads)
+                cpa0 = card_pos_per_head[:num_envs]
+                cpa1 = card_pos_per_head[num_envs:]
+
+                def _scatter_per_head(card_pos_one_head, perm):
+                    return jnp.zeros((num_envs, _num_cards)).at[batch_idx, perm].set(card_pos_one_head)
+
+                phys_0_ph = jax.vmap(
+                    _scatter_per_head, in_axes=(-1, None), out_axes=-1
+                )(cpa0, perm_0)
+                phys_1_ph = jax.vmap(
+                    _scatter_per_head, in_axes=(-1, None), out_axes=-1
+                )(cpa1, perm_1)
+                translated_for_0 = jnp.take_along_axis(
+                    phys_1_ph, perm_0[..., None], axis=1,
+                ).reshape(num_envs, -1)
+                translated_for_1 = jnp.take_along_axis(
+                    phys_0_ph, perm_1[..., None], axis=1,
+                ).reshape(num_envs, -1)
+            else:
+                translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
+                translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
+
+            partner_card_attn = jnp.concatenate([translated_for_0, translated_for_1], axis=0)
+            return jnp.where(new_done_batch[:, None], 0.0, partner_card_attn)
+
+        def _compute_partner_argmax_targets(phys_0, phys_1, q_phys_0, q_phys_1, perm_0, perm_1, m_0, m_1):
+            """Compute partner attention targets in each agent's own view frame."""
+            partner_canon_argmax_0 = phys_1.argmax(axis=-1)
+            partner_canon_argmax_1 = phys_0.argmax(axis=-1)
+            inv_perm_0 = jnp.argsort(perm_0, axis=-1)
+            inv_perm_1 = jnp.argsort(perm_1, axis=-1)
+            partner_argmax_in_ego_view_0 = jnp.take_along_axis(
+                inv_perm_0, partner_canon_argmax_0[:, None], axis=1,
+            ).squeeze(-1)
+            partner_argmax_in_ego_view_1 = jnp.take_along_axis(
+                inv_perm_1, partner_canon_argmax_1[:, None], axis=1,
+            ).squeeze(-1)
+            partner_argmax_per_actor = jnp.concatenate(
+                [partner_argmax_in_ego_view_0, partner_argmax_in_ego_view_1]
+            ).astype(jnp.int32)
+            current_partner_phys_for_actor = jnp.concatenate([q_phys_1, q_phys_0], axis=0)
+            current_partner_mass_per_actor = jnp.concatenate([m_1, m_0])
+            return (
+                jax.lax.stop_gradient(partner_argmax_per_actor),
+                jax.lax.stop_gradient(current_partner_phys_for_actor.astype(jnp.float32)),
+                jax.lax.stop_gradient(current_partner_mass_per_actor.astype(jnp.float32)),
+            )
+
+        def _compute_attention_shaping_rewards(
+            q_phys_0,
+            q_phys_1,
+            prev_partner_phys_for_actor,
+            prev_partner_valid_for_actor,
+            action_0_gt,
+            action_1_gt,
+            pick_0_is_card,
+            pick_1_is_card,
+        ):
+            """Compute attention shaping and gaze-pick rewards."""
+            if ja_card_metric and ja_attn_shaping_active:
+                if ja_attn_match_coef > 0:
+                    log2 = jnp.log(jnp.asarray(2.0))
+                    prev_partner_phys_0 = prev_partner_phys_for_actor[:num_envs]
+                    prev_partner_phys_1 = prev_partner_phys_for_actor[num_envs:]
+                    prev_partner_valid_0 = prev_partner_valid_for_actor[:num_envs]
+                    prev_partner_valid_1 = prev_partner_valid_for_actor[num_envs:]
+                    jsd_match_0 = jsd_divergence(
+                        q_phys_0[:, None, :], prev_partner_phys_0[:, None, :]
+                    ).reshape(num_envs)
+                    jsd_match_1 = jsd_divergence(
+                        q_phys_1[:, None, :], prev_partner_phys_1[:, None, :]
+                    ).reshape(num_envs)
+                    match_score_0 = 1.0 - jnp.clip(jsd_match_0, 0.0, log2) / log2
+                    match_score_1 = 1.0 - jnp.clip(jsd_match_1, 0.0, log2) / log2
+                    r_attn_match_per_actor = jnp.concatenate([
+                        jnp.where(prev_partner_valid_0, ja_attn_match_coef * match_score_0, 0.0),
+                        jnp.where(prev_partner_valid_1, ja_attn_match_coef * match_score_1, 0.0),
+                    ])
+                else:
+                    r_attn_match_per_actor = jnp.zeros(num_actors)
+
+                if ja_attn_self_coef > 0:
+                    own_action_mass_0 = jnp.take_along_axis(
+                        q_phys_0, action_0_gt[:, None], axis=1,
+                    ).squeeze(-1)
+                    own_action_mass_1 = jnp.take_along_axis(
+                        q_phys_1, action_1_gt[:, None], axis=1,
+                    ).squeeze(-1)
+                    own_action_mass_0 = jnp.where(pick_0_is_card, own_action_mass_0, 0.0)
+                    own_action_mass_1 = jnp.where(pick_1_is_card, own_action_mass_1, 0.0)
+                    r_attn_self_per_actor = ja_attn_self_coef * jnp.concatenate([
+                        own_action_mass_0,
+                        own_action_mass_1,
+                    ])
+                else:
+                    r_attn_self_per_actor = jnp.zeros(num_actors)
+
+                r_attn_shaping = r_attn_match_per_actor + r_attn_self_per_actor
+            else:
+                r_attn_shaping = jnp.zeros(num_actors)
+                r_attn_match_per_actor = jnp.zeros(num_actors)
+                r_attn_self_per_actor = jnp.zeros(num_actors)
+
+            if ja_gaze_pick_active:
+                action_canonical_per_actor = jnp.concatenate([action_0_gt, action_1_gt])
+                picked_partner_mass = jnp.take_along_axis(
+                    prev_partner_phys_for_actor,
+                    action_canonical_per_actor[:, None],
+                    axis=1,
+                ).squeeze(-1)
+                action_is_card = jnp.concatenate([pick_0_is_card, pick_1_is_card])
+                gaze_pick_ok = prev_partner_valid_for_actor & action_is_card
+                r_gaze_pick_per_actor = jnp.where(
+                    gaze_pick_ok,
+                    ja_gaze_pick_coef * picked_partner_mass,
+                    0.0,
+                )
+            else:
+                r_gaze_pick_per_actor = jnp.zeros(num_actors)
+
+            return (
+                jax.lax.stop_gradient(r_attn_shaping),
+                jax.lax.stop_gradient(r_attn_match_per_actor),
+                jax.lax.stop_gradient(r_attn_self_per_actor),
+                jax.lax.stop_gradient(r_gaze_pick_per_actor),
+            )
+
         def _single_step(runner_state, update_steps, rew_norm_state):
             ja_beta = jnp.minimum(
                 ja_beta_max,
@@ -495,7 +680,6 @@ def make_train_loop(config, env):
                 rng, act_rng = jax.random.split(rng)
 
                 last_obs_batch = batchify(last_obs, env.agents, num_actors)
-                raw_obs_batch = last_obs_batch  # keep pre-augmentation obs for attn-msg reward
                 last_done_batch = batchify(last_done, env.agents, num_actors)
 
                 # Augment obs with other agent's previous attention as 4th channel
@@ -540,16 +724,12 @@ def make_train_loop(config, env):
                     rng_step, env_state, env_act
                 )
 
-                # Extract per-agent communication reward components before
-                # interleaving reshape.
-                comm_reward_raw = info.pop("comm_reward", jnp.zeros((num_envs, env.num_agents)))
-                comm_reward_batch = comm_reward_raw.transpose(1, 0).reshape(-1)
-                comm_match_raw = info.pop("comm_reward_match", jnp.zeros((num_envs, env.num_agents)))
-                comm_match_batch = comm_match_raw.transpose(1, 0).reshape(-1)
-                comm_stable_raw = info.pop("comm_reward_stable", jnp.zeros((num_envs, env.num_agents)))
-                comm_stable_batch = comm_stable_raw.transpose(1, 0).reshape(-1)
-                comm_follow_raw = info.pop("comm_reward_follow", jnp.zeros((num_envs, env.num_agents)))
-                comm_follow_batch = comm_follow_raw.transpose(1, 0).reshape(-1)
+                (
+                    comm_reward_batch,
+                    comm_match_batch,
+                    comm_stable_batch,
+                    comm_follow_batch,
+                ) = _extract_comm_reward_components(info)
 
                 # Extract step count for attn-msg reward gating
                 step_count_raw = info.pop("step_count", jnp.zeros((num_envs, env.num_agents)))
@@ -571,6 +751,8 @@ def make_train_loop(config, env):
                 r_ja_batch = jnp.concatenate([r_ja, r_ja])
 
                 intrinsic = ja_beta * r_ja_batch
+                new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
+                num_cards = _num_cards
 
                 # OP-corrected card-level joint attention. Under JA_CARD_METRIC we
                 # always compute the JSD as a diagnostic; only JA_CARD_ATTN +
@@ -578,75 +760,36 @@ def make_train_loop(config, env):
                 # only JA_CARD_ATTN feeds the partner's translated card-attention
                 # back into the next obs.
                 if ja_card_metric:
-                    # attn_map is (1, num_actors, feat_h, feat_w, num_heads); mean over heads for card-level diagnostic.
-                    attn = attn_map.squeeze(0).mean(axis=-1)  # (num_actors, feat_h, feat_w)
-                    card_pos_attn = jnp.einsum("ahw,chw->ac", attn, _card_masks)
-                    card_pos_attn_0 = card_pos_attn[:num_envs]
-                    card_pos_attn_1 = card_pos_attn[num_envs:]
-
-                    _eps = 1e-8
-                    num_cards = _card_masks.shape[0]
-                    perm_0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
-                    perm_1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
-                    batch_idx = jnp.arange(num_envs)[:, None]
-                    phys_0 = jnp.zeros((num_envs, 5)).at[batch_idx, perm_0].set(card_pos_attn_0)
-                    phys_1 = jnp.zeros((num_envs, 5)).at[batch_idx, perm_1].set(card_pos_attn_1)
-
-                    m_0 = card_pos_attn_0.sum(axis=-1)
-                    m_1 = card_pos_attn_1.sum(axis=-1)
-                    q_phys_0 = phys_0 / (m_0[:, None] + _eps)
-                    q_phys_1 = phys_1 / (m_1[:, None] + _eps)
-
-                    card_jsd_per_env = jsd_divergence(
-                        q_phys_0[:, None, :], q_phys_1[:, None, :]
+                    (
+                        perm_0,
+                        perm_1,
+                        phys_0,
+                        phys_1,
+                        q_phys_0,
+                        q_phys_1,
+                        m_0,
+                        m_1,
+                    ) = _project_card_attention(attn_map, env_state)
+                    card_jsd_step_mean, ja_card_reward = _compute_card_jsd_reward(
+                        q_phys_0, q_phys_1, m_0, m_1, step_count_batch,
                     )
-                    card_jsd_step_mean = card_jsd_per_env.mean()
-
-                    if ja_card_attn and ja_card_jsd_coef > 0:
-                        l2_div = jnp.sum((q_phys_0 - q_phys_1) ** 2, axis=-1)
-                        r_card_jsd_env = -ja_card_jsd_coef * jnp.minimum(m_0, m_1) * l2_div
-                        r_card_jsd_valid = step_count_batch[:num_envs] > 1
-                        r_card_jsd_env = jnp.where(r_card_jsd_valid, r_card_jsd_env, 0.0)
-                        r_card_jsd = jnp.concatenate([r_card_jsd_env, r_card_jsd_env])
-                    else:
-                        r_card_jsd = jnp.zeros(num_actors)
-                    ja_card_reward = jax.lax.stop_gradient(r_card_jsd)
-
                     if ja_card_attn:
-                        if ja_partner_feed_per_head:
-                            # Per-head: recompute card_pos_attn without head-mean.
-                            attn_per_head = attn_map.squeeze(0)  # (num_actors, fh, fw, num_heads)
-                            card_pos_per_head = jnp.einsum(
-                                "ahwk,chw->ack", attn_per_head, _card_masks,
-                            )  # (num_actors, 5, num_heads)
-                            cpa0 = card_pos_per_head[:num_envs]
-                            cpa1 = card_pos_per_head[num_envs:]
-                            # Scatter to canonical frame per head (vmap over head axis).
-                            def _scatter_per_head(card_pos_one_head, perm):
-                                return jnp.zeros((num_envs, 5)).at[batch_idx, perm].set(card_pos_one_head)
-                            phys_0_ph = jax.vmap(_scatter_per_head, in_axes=(-1, None), out_axes=-1)(cpa0, perm_0)
-                            phys_1_ph = jax.vmap(_scatter_per_head, in_axes=(-1, None), out_axes=-1)(cpa1, perm_1)
-                            # Translate to ego view: ego_X[k, h] = phys_partner[perm_ego[k], h]
-                            translated_for_0 = jnp.take_along_axis(
-                                phys_1_ph, perm_0[..., None], axis=1,
-                            ).reshape(num_envs, -1)  # (num_envs, 5*num_heads)
-                            translated_for_1 = jnp.take_along_axis(
-                                phys_0_ph, perm_1[..., None], axis=1,
-                            ).reshape(num_envs, -1)
-                        else:
-                            translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
-                            translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
-                        new_partner_card_attn = jnp.concatenate(
-                            [translated_for_0, translated_for_1], axis=0)
-                        new_done_batch_ja = batchify(new_done, env.agents, num_actors).squeeze()
-                        new_partner_card_attn = jnp.where(
-                            new_done_batch_ja[:, None], 0.0, new_partner_card_attn)
+                        new_partner_card_attn = _build_partner_card_attention_feed(
+                            attn_map, new_done_batch, perm_0, perm_1, phys_0, phys_1,
+                        )
                 else:
                     ja_card_reward = jnp.zeros(num_actors)
                     card_jsd_step_mean = jnp.float32(0.0)
                     m_0 = jnp.zeros((num_envs,), dtype=jnp.float32)
                     m_1 = jnp.zeros((num_envs,), dtype=jnp.float32)
-                    num_cards = 5
+                    num_cards = _num_cards
+                    q_phys_0 = jnp.zeros((num_envs, num_cards), dtype=jnp.float32)
+                    q_phys_1 = jnp.zeros((num_envs, num_cards), dtype=jnp.float32)
+                    phys_0 = jnp.zeros((num_envs, num_cards), dtype=jnp.float32)
+                    phys_1 = jnp.zeros((num_envs, num_cards), dtype=jnp.float32)
+                    perm_0 = jnp.zeros((num_envs, num_cards), dtype=jnp.int32)
+                    perm_1 = jnp.zeros((num_envs, num_cards), dtype=jnp.int32)
+                    new_partner_card_attn = jnp.zeros((num_actors, partner_feed_dim), dtype=jnp.float32)
 
                 # Aux target: view-slot in the agent's own frame where the
                 # partner is attending most. When partner-feed is enabled, the
@@ -654,32 +797,17 @@ def make_train_loop(config, env):
                 # t-1, so the causal aux label must be shifted the same way.
                 # Otherwise fall back to current-step supervision.
                 if ja_card_metric:
-                    partner_canon_argmax_0 = phys_1.argmax(axis=-1)
-                    partner_canon_argmax_1 = phys_0.argmax(axis=-1)
-                    inv_perm_0 = jnp.argsort(perm_0, axis=-1)
-                    inv_perm_1 = jnp.argsort(perm_1, axis=-1)
-                    partner_argmax_in_ego_view_0 = jnp.take_along_axis(
-                        inv_perm_0, partner_canon_argmax_0[:, None], axis=1,
-                    ).squeeze(-1)
-                    partner_argmax_in_ego_view_1 = jnp.take_along_axis(
-                        inv_perm_1, partner_canon_argmax_1[:, None], axis=1,
-                    ).squeeze(-1)
-                    partner_argmax_per_actor = jnp.concatenate(
-                        [partner_argmax_in_ego_view_0, partner_argmax_in_ego_view_1]
-                    ).astype(jnp.int32)
-                    current_partner_phys_for_actor = jnp.concatenate([q_phys_1, q_phys_0], axis=0)
-                    current_partner_mass_per_actor = jnp.concatenate([m_1, m_0])
+                    (
+                        partner_argmax_per_actor,
+                        current_partner_phys_for_actor,
+                        current_partner_mass_per_actor,
+                    ) = _compute_partner_argmax_targets(
+                        phys_0, phys_1, q_phys_0, q_phys_1, perm_0, perm_1, m_0, m_1,
+                    )
                 else:
                     partner_argmax_per_actor = jnp.zeros(num_actors, dtype=jnp.int32)
                     current_partner_phys_for_actor = jnp.zeros((num_actors, num_cards), dtype=jnp.float32)
                     current_partner_mass_per_actor = jnp.zeros(num_actors, dtype=jnp.float32)
-                partner_argmax_per_actor = jax.lax.stop_gradient(partner_argmax_per_actor)
-                current_partner_phys_for_actor = jax.lax.stop_gradient(
-                    current_partner_phys_for_actor.astype(jnp.float32)
-                )
-                current_partner_mass_per_actor = jax.lax.stop_gradient(
-                    current_partner_mass_per_actor.astype(jnp.float32)
-                )
 
                 if ja_aux_partner_argmax_active and ja_card_partner_feed:
                     aux_partner_argmax = prev_partner_argmax
@@ -690,8 +818,6 @@ def make_train_loop(config, env):
                     aux_partner_argmax_valid = jnp.ones((num_actors,), dtype=bool)
                     aux_partner_argmax_weight = current_partner_mass_per_actor
 
-                is_decision_env = step_count_batch[:num_envs] >= _env_max_steps
-                decision_mask_actor = jnp.concatenate([is_decision_env, is_decision_env])
                 env_idx = jnp.arange(num_envs)
                 pick_0_view = action[:num_envs]
                 pick_1_view = action[num_envs:]
@@ -709,84 +835,21 @@ def make_train_loop(config, env):
                 # JA attention shaping. Reuses phys_0 / phys_1 from the
                 # JA_CARD_METRIC path; only fires when at least one coef is
                 # positive.
-                if ja_card_metric and ja_attn_shaping_active:
-                    if ja_attn_match_coef > 0:
-                        log2 = jnp.log(jnp.asarray(2.0))
-                        prev_partner_phys_0 = prev_partner_phys_for_actor[:num_envs]
-                        prev_partner_phys_1 = prev_partner_phys_for_actor[num_envs:]
-                        prev_partner_valid_0 = prev_partner_valid_for_actor[:num_envs]
-                        prev_partner_valid_1 = prev_partner_valid_for_actor[num_envs:]
-                        jsd_match_0 = jsd_divergence(
-                            q_phys_0[:, None, :], prev_partner_phys_0[:, None, :]
-                        ).reshape(num_envs)
-                        jsd_match_1 = jsd_divergence(
-                            q_phys_1[:, None, :], prev_partner_phys_1[:, None, :]
-                        ).reshape(num_envs)
-                        match_score_0 = 1.0 - jnp.clip(jsd_match_0, 0.0, log2) / log2
-                        match_score_1 = 1.0 - jnp.clip(jsd_match_1, 0.0, log2) / log2
-                        r_attn_match_per_actor = jnp.concatenate([
-                            jnp.where(prev_partner_valid_0, ja_attn_match_coef * match_score_0, 0.0),
-                            jnp.where(prev_partner_valid_1, ja_attn_match_coef * match_score_1, 0.0),
-                        ])
-                    else:
-                        r_attn_match_per_actor = jnp.zeros(num_actors)
-
-                    if ja_attn_self_coef > 0:
-                        own_action_mass_0 = jnp.take_along_axis(
-                            q_phys_0, action_0_gt[:, None], axis=1,
-                        ).squeeze(-1)
-                        own_action_mass_1 = jnp.take_along_axis(
-                            q_phys_1, action_1_gt[:, None], axis=1,
-                        ).squeeze(-1)
-                        # Gate by "the emitted action is a real card pick".
-                        # Under gaze_mode (forced-noop deliberation) this fires
-                        # only at the decision step; with gaze_mode off the
-                        # action is always a card so it fires every step.
-                        own_action_mass_0 = jnp.where(pick_0_is_card, own_action_mass_0, 0.0)
-                        own_action_mass_1 = jnp.where(pick_1_is_card, own_action_mass_1, 0.0)
-                        r_attn_self_per_actor = ja_attn_self_coef * jnp.concatenate([
-                            own_action_mass_0,
-                            own_action_mass_1,
-                        ])
-                    else:
-                        r_attn_self_per_actor = jnp.zeros(num_actors)
-
-                    r_attn_shaping = (
-                        r_attn_match_per_actor
-                        + r_attn_self_per_actor
-                    )
-                else:
-                    r_attn_shaping = jnp.zeros(num_actors)
-                    r_attn_match_per_actor = jnp.zeros(num_actors)
-                    r_attn_self_per_actor = jnp.zeros(num_actors)
-                if ja_gaze_pick_active:
-                    action_canonical_per_actor = jnp.concatenate([action_0_gt, action_1_gt])
-                    picked_partner_mass = jnp.take_along_axis(
-                        prev_partner_phys_for_actor,
-                        action_canonical_per_actor[:, None],
-                        axis=1,
-                    ).squeeze(-1)
-                    # Gate by "emitted action is a real card pick" — under
-                    # gaze_mode this restricts gaze_pick to the decision step;
-                    # with gaze_mode off it fires every step.
-                    action_is_card = jnp.concatenate([pick_0_is_card, pick_1_is_card])
-                    gaze_pick_ok = prev_partner_valid_for_actor & action_is_card
-                    r_gaze_pick_per_actor = jnp.where(
-                        gaze_pick_ok,
-                        ja_gaze_pick_coef * picked_partner_mass,
-                        0.0,
-                    )
-                    gaze_pick_match_per_actor = jnp.where(
-                        gaze_pick_ok, picked_partner_mass, 0.0
-                    )
-                else:
-                    r_gaze_pick_per_actor = jnp.zeros(num_actors)
-                    gaze_pick_match_per_actor = jnp.zeros(num_actors)
-                r_attn_shaping = jax.lax.stop_gradient(r_attn_shaping)
-                r_attn_match_per_actor = jax.lax.stop_gradient(r_attn_match_per_actor)
-                r_attn_self_per_actor = jax.lax.stop_gradient(r_attn_self_per_actor)
-                r_gaze_pick_per_actor = jax.lax.stop_gradient(r_gaze_pick_per_actor)
-                gaze_pick_match_per_actor = jax.lax.stop_gradient(gaze_pick_match_per_actor)
+                (
+                    r_attn_shaping,
+                    r_attn_match_per_actor,
+                    r_attn_self_per_actor,
+                    r_gaze_pick_per_actor,
+                ) = _compute_attention_shaping_rewards(
+                    q_phys_0,
+                    q_phys_1,
+                    prev_partner_phys_for_actor,
+                    prev_partner_valid_for_actor,
+                    action_0_gt,
+                    action_1_gt,
+                    pick_0_is_card,
+                    pick_1_is_card,
+                )
 
                 plh_a_stored = prev_plh_actor if query_partner_lstm else jnp.zeros((num_actors,))
                 plh_c_stored = prev_plh_critic if query_partner_lstm else jnp.zeros((num_actors,))
@@ -809,7 +872,6 @@ def make_train_loop(config, env):
                 )
 
                 if feed_other_attn:
-                    new_done_batch = batchify(new_done, env.agents, num_actors).squeeze()
                     new_other_attn = _swap_and_reset_attn(attn_map, new_done_batch)
                     runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng, new_other_attn)
                 elif ja_card_partner_feed:
@@ -857,16 +919,14 @@ def make_train_loop(config, env):
                                      ja_card_reward, card_jsd_step_mean,
                                      r_attn_shaping,
                                      r_attn_match_per_actor,
-                                     r_attn_self_per_actor, r_gaze_pick_per_actor,
-                                     gaze_pick_match_per_actor)
+                                     r_attn_self_per_actor, r_gaze_pick_per_actor)
 
             runner_state, (traj_batch, intrinsic_batch, comm_reward_batch,
                            comm_match_batch, comm_stable_batch, comm_follow_batch,
                            ja_card_reward_batch, card_jsd_batch,
                            r_attn_shaping_batch,
                            r_attn_match_batch,
-                           r_attn_self_batch, r_gaze_pick_batch,
-                           gaze_pick_match_batch) = jax.lax.scan(
+                           r_attn_self_batch, r_gaze_pick_batch) = jax.lax.scan(
                 _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
             )
 
@@ -1070,63 +1130,6 @@ def make_train_loop(config, env):
     return init, make_step_fn, init_policy, init_state
 
 
-def _push_chunk_to_wandb(chunk_metrics, env_step, seed_idx, logger):
-    """Push aggregated chunk metrics to wandb live, once per training chunk.
-
-    The training loop is sequential per seed, so live curves grow seed-by-seed under
-    `LiveTrain/seed_<i>/...`. Step axis is env_step; chunk-mean for scalars; mask-weighted
-    mean for episodic returns (skips chunks with zero completed episodes).
-    """
-    if logger is None or getattr(logger, "run", None) is None:
-        return
-
-    m = chunk_metrics
-    returned = np.asarray(m["returned_episode"])
-    returns = np.asarray(m["returned_episode_returns"])
-    n_ep = float(returned.sum())
-    if n_ep > 0:
-        mean = float((returns * returned).sum() / n_ep)
-        sq = float(((returns - mean) ** 2 * returned).sum() / n_ep)
-        std = float(np.sqrt(max(sq, 0.0)))
-    else:
-        mean = float("nan")
-        std = float("nan")
-
-    data: dict[str, float | int] = {
-        f"LiveTrain/seed_{seed_idx}/return_mean": mean,
-        f"LiveTrain/seed_{seed_idx}/return_std": std,
-        f"LiveTrain/seed_{seed_idx}/n_episodes": int(n_ep),
-        "env_step": int(env_step),
-    }
-
-    scalar_keys = [
-        ("ja_beta",              "JA/beta"),
-        ("comm_scale",           "Comm/scale"),
-        ("jsd_mean",             "JA/jsd"),
-        ("card_jsd_mean",        "JA/card_jsd"),
-        ("ja_attn_shaping_mean",         "JA/total_shaping"),
-        ("ja_attn_match_mean",           "JA/own_attn_matches_prev_partner_attn"),
-        ("ja_attn_self_mean",            "JA/action_matches_own_attn"),
-        ("ja_gaze_pick_mean",            "JA/action_matches_prev_partner_attn"),
-        ("aux_partner_argmax_loss",      "JA/aux_partner_argmax_nll"),
-        ("loss_total",           "Loss/total"),
-        ("loss_value",           "Loss/value"),
-        ("loss_policy",          "Loss/policy"),
-        ("entropy",              "Loss/entropy"),
-        ("grad_norm",            "Loss/grad_norm"),
-        ("approx_kl",            "Loss/approx_kl"),
-        ("clip_frac",            "Loss/clip_frac"),
-        ("explained_var",        "Loss/explained_var"),
-        ("raw_env_reward_mean",  "Reward/env_raw"),
-        ("comm_reward_mean",     "Reward/comm"),
-    ]
-    for key, name in scalar_keys:
-        if key in m:
-            data[f"LiveTrain/seed_{seed_idx}/{name}"] = float(np.asarray(m[key]).mean())
-
-    logger.log(data, commit=True)
-
-
 def _select_best_per_seed_ckpt(out, chunk_boundaries):
     """Score each saved checkpoint by mean episodic return over the chunk that produced it.
 
@@ -1249,7 +1252,7 @@ def run_ja_ippo(config, logger):
             print(f"[ja_ippo]   step {steps_done}/{num_updates}")
 
             if live_wandb:
-                _push_chunk_to_wandb(
+                log_live_chunk_metrics(
                     chunk_metrics,
                     env_step=steps_done * env_steps_per_update,
                     seed_idx=seed_idx,
@@ -1338,7 +1341,7 @@ def run_ja_ippo(config, logger):
         }, _fh, indent=2)
     print(f"[ja_ippo] Wrote per-checkpoint scores: {scores_path}")
 
-    log_metrics(config, out, logger)
+    report_ja_training_outputs(config, out, logger)
 
     eval_out = {**out, "final_params": best_params} if use_best else out
     log_greedy_eval(algorithm_config, env, eval_out, logger)
@@ -1409,171 +1412,3 @@ def log_xp_eval(algorithm_config, env, out):
         greedy_eval=True,
         wb_prefix="XP_NO_OP",
     )
-
-
-
-def log_metrics(config, out, logger):
-    '''Save train run output, export CSV, and log mean+/-std to wandb.'''
-    import csv
-
-    train_metrics = out["metrics"]
-    metric_names = get_metric_names(config["ENV_NAME"])
-    train_stats = get_stats(train_metrics, metric_names)
-
-    algorithm_config = dict(config.algorithm)
-    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    rollout_length = int(algorithm_config["ROLLOUT_LENGTH"])
-    num_envs = int(algorithm_config["NUM_ENVS"])
-
-    # Save mean+/-std training curve PNGs
-    plot_seed_aggregate(
-        train_stats,
-        num_rollout_steps=rollout_length,
-        num_envs=num_envs,
-        savedir=savedir,
-        savename="train_curve",
-    )
-    import wandb as _wandb
-    for name in train_stats:
-        png_path = os.path.join(savedir, f"train_curve_{name}.png")
-        if os.path.exists(png_path):
-            logger.log_item(f"Plots/train_curve_{name}", _wandb.Image(png_path), commit=False)
-
-    num_seeds = train_metrics["returned_episode"].shape[0]
-    num_updates = train_metrics["returned_episode"].shape[1]
-
-    # Compute cross-seed mean and std from per-seed means
-    # train_stats[k] shape: (num_seeds, num_updates, 2) where [:,:,0] = per-seed mean
-    episode_stats_mean = {}
-    for k, v in train_stats.items():
-        v_arr = np.array(v)
-        seed_means = v_arr[:, :, 0]
-        episode_stats_mean[k] = np.stack([
-            seed_means.mean(axis=0),
-            seed_means.std(axis=0),
-        ], axis=-1)
-
-    # Scalar metrics: (metric_key, wandb_name)
-    scalar_keys = [
-        ("ja_beta",              "JA/beta"),
-        ("comm_scale",           "Comm/scale"),
-        ("jsd_mean",             "JA/jsd"),
-        ("card_jsd_mean",        "JA/card_jsd"),
-        ("ja_attn_shaping_mean",         "JA/total_shaping"),
-        ("ja_attn_match_mean",           "JA/own_attn_matches_prev_partner_attn"),
-        ("ja_attn_self_mean",            "JA/action_matches_own_attn"),
-        ("ja_gaze_pick_mean",            "JA/action_matches_prev_partner_attn"),
-        ("aux_partner_argmax_loss",      "JA/aux_partner_argmax_nll"),
-        ("raw_env_reward_mean",  "Reward/env_raw"),
-        ("combined_reward_mean", "Reward/combined_raw"),
-        ("comm_reward_mean",                     "Reward/comm"),
-        ("comm_match_bonus_mean",               "Reward/comm_match_bonus"),
-        ("comm_stability_bonus_mean",           "Reward/comm_stability_bonus"),
-        ("comm_follow_bonus_agent0_mean",       "Reward/comm_follow_bonus_agent0"),
-        ("comm_follow_bonus_agent1_mean",       "Reward/comm_follow_bonus_agent1"),
-        ("loss_total",           "Loss/total"),
-        ("loss_value",           "Loss/value"),
-        ("loss_policy",          "Loss/policy"),
-        ("entropy",              "Loss/entropy"),
-        ("grad_norm",            "Loss/grad_norm"),
-        ("approx_kl",           "Loss/approx_kl"),
-        ("approx_kl_all",       "Loss/approx_kl_all"),
-        ("approx_kl_max",       "Loss/approx_kl_max"),
-        ("clip_frac",           "Loss/clip_frac"),
-        ("ratio_mean",          "Loss/ratio_mean"),
-        ("ratio_std",           "Loss/ratio_std"),
-        ("explained_var",       "Loss/explained_var"),
-        ("advantage_std",       "Loss/advantage_std"),
-        ("value_mean",           "Value/mean"),
-    ]
-    scalar_mean = {}
-    scalar_std = {}
-    for key, _ in scalar_keys:
-        if key in train_metrics:
-            vals = np.array(train_metrics[key])
-            scalar_mean[key] = np.mean(vals, axis=0)
-            scalar_std[key] = np.std(vals, axis=0)
-
-    # --- Export CSV ---
-    csv_header = ["update", "timestep"]
-    for name in metric_names:
-        csv_header.extend([f"{name}_mean", f"{name}_std"])
-    if config.task["ENV_NAME"] == "overcooked-v1" and "base_return" in metric_names:
-        csv_header.append("soups_delivered")
-    for key, _ in scalar_keys:
-        if key in scalar_mean:
-            csv_header.extend([f"{key}_mean", f"{key}_std"])
-
-    csv_path = os.path.join(savedir, "train_stats.csv")
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(csv_header)
-        for step in range(num_updates):
-            row = [step, (step + 1) * rollout_length * num_envs]
-            for name in metric_names:
-                stat_data = np.array(train_stats[name])
-                seed_means = stat_data[:, step, 0]
-                row.extend([float(seed_means.mean()), float(seed_means.std())])
-            if config.task["ENV_NAME"] == "overcooked-v1" and "base_return" in metric_names:
-                base_data = np.array(train_stats["base_return"])
-                row.append(float(base_data[:, step, 0].mean()) / 20.0)
-            for key, _ in scalar_keys:
-                if key in scalar_mean:
-                    row.extend([float(scalar_mean[key][step]), float(scalar_std[key][step])])
-            writer.writerow(row)
-
-    print(f"[log_metrics] CSV: {csv_path} ({num_updates} updates, {num_seeds} seeds, {len(csv_header)} cols)")
-    import wandb as _wandb
-    _wandb.save(csv_path, base_path=savedir)
-
-    # --- Log to wandb ---
-    print_interval = max(1, num_updates // 20)
-
-    for step in range(num_updates):
-        step_data = {"train_step": step}
-
-        # Episode metrics
-        for stat_name, stat_data in episode_stats_mean.items():
-            step_data[f"Train/{stat_name}_mean"] = float(stat_data[step, 0])
-            if num_seeds > 1:
-                step_data[f"Train/{stat_name}_std"] = float(stat_data[step, 1])
-        if "base_return" in episode_stats_mean and config.task["ENV_NAME"] == "overcooked-v1":
-            step_data["Train/soups_delivered"] = float(episode_stats_mean["base_return"][step, 0] / 20.0)
-
-        # Scalar metrics
-        for key, wandb_name in scalar_keys:
-            if key in scalar_mean:
-                step_data[f"{wandb_name}/mean"] = float(scalar_mean[key][step])
-                if num_seeds > 1:
-                    step_data[f"{wandb_name}/std"] = float(scalar_std[key][step])
-
-        # Per-seed curves for cross-seed analysis
-        for stat_name in train_stats:
-            stat_data = np.array(train_stats[stat_name])
-            for seed_idx in range(num_seeds):
-                step_data[f"Seeds/{stat_name}/seed_{seed_idx}"] = float(stat_data[seed_idx, step, 0])
-
-        logger.log(step_data, commit=True)
-
-        if step % print_interval == 0 or step == num_updates - 1:
-            env_steps = (step + 1) * rollout_length * num_envs
-            pct = (step + 1) / num_updates * 100
-            ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in episode_stats_mean.items())
-            jsd = float(scalar_mean.get("jsd_mean", np.zeros(num_updates))[step])
-            beta = float(scalar_mean.get("ja_beta", np.zeros(num_updates))[step])
-            loss = float(scalar_mean.get("loss_total", np.zeros(num_updates))[step])
-            grad = float(scalar_mean.get("grad_norm", np.zeros(num_updates))[step])
-            extra = ""
-            if "base_return" in episode_stats_mean and config.task["ENV_NAME"] == "overcooked-v1":
-                soups = episode_stats_mean["base_return"][step, 0] / 20.0
-                extra = f"  soups={soups:.1f}"
-            print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  "
-                  f"{ret_str}{extra}  jsd={jsd:.4f}  beta={beta:.4f}  loss={loss:.4f}  grad={grad:.3f}")
-
-    logger.commit()
-
-    out_savepath = save_train_run(out, savedir, savename="saved_train_run")
-    if config["logger"]["log_train_out"]:
-        logger.log_artifact(name="saved_train_run", path=out_savepath, type_name="train_run")
-    if not config["local_logger"]["save_train_out"]:
-        shutil.rmtree(out_savepath)

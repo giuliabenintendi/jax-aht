@@ -5,18 +5,14 @@ Ablation baseline for JA-IPPO. Same ResNet encoder, same LSTM, same PPO
 hyperparameters — but no attention mechanism and no JSD intrinsic reward.
 Uses parameter sharing (single network for both agents, like standard IPPO).
 '''
-import shutil
-
 import hydra
-import numpy as np
 import jax
 import jax.numpy as jnp
 import optax
 from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_image_agent
-from common.plot_utils import get_stats, get_metric_names
-from common.save_load_utils import save_train_run
+from common.train_logging import IMAGE_IPPO_SCALAR_KEYS, report_basic_training_outputs
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
@@ -325,7 +321,13 @@ def run_image_ippo(config, logger):
     out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
 
     log_eval_video(algorithm_config, env, out, logger)
-    log_metrics(config, out, logger)
+    report_basic_training_outputs(
+        config,
+        out,
+        logger,
+        scalar_keys=IMAGE_IPPO_SCALAR_KEYS,
+        print_prefix="image_ippo",
+    )
     return out
 
 
@@ -401,65 +403,3 @@ def log_eval_video(algorithm_config, env, out, logger):
     clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
                          bitrate='8000k', preset='slow')
     logger.log_video("Eval/episode_video", video_path, commit=False)
-
-
-def log_metrics(config, out, logger):
-    '''Save train run output and log all metrics to wandb.'''
-    train_metrics = out["metrics"]
-    metric_names = get_metric_names(config["ENV_NAME"])
-    train_stats = get_stats(train_metrics, metric_names)
-
-    train_stats = {k: np.mean(np.array(v), axis=0) for k, v in train_stats.items()}
-
-    scalar_keys = [
-        ("loss_total", "Losses"),
-        ("loss_value", "Losses"),
-        ("loss_policy", "Losses"),
-        ("entropy", "Losses"),
-        ("grad_norm", "Losses"),
-        ("value_mean", "Values"),
-    ]
-
-    scalar_data = {}
-    for key, _ in scalar_keys:
-        if key in train_metrics:
-            scalar_data[key] = np.mean(np.array(train_metrics[key]), axis=0)
-
-    num_updates = train_metrics["returned_episode"].shape[1]
-    print_interval = max(1, num_updates // 20)
-
-    for step in range(num_updates):
-        for stat_name, stat_data in train_stats.items():
-            logger.log_item(f"Train/{stat_name}", stat_data[step, 0], train_step=step, commit=False)
-        if "base_return" in train_stats and config.task["ENV_NAME"] == "overcooked-v1":
-            soups = train_stats["base_return"][step, 0] / 20.0
-            logger.log_item("Train/soups_delivered", soups, train_step=step, commit=False)
-
-        for key, prefix in scalar_keys:
-            if key in scalar_data:
-                logger.log_item(f"{prefix}/{key}", float(scalar_data[key][step]),
-                                train_step=step, commit=False)
-
-        logger.log({}, step=step, commit=True)
-
-        if step % print_interval == 0 or step == num_updates - 1:
-            env_steps = (step + 1) * int(config.algorithm["ROLLOUT_LENGTH"]) * int(config.algorithm["NUM_ENVS"])
-            pct = (step + 1) / num_updates * 100
-            ret_str = "  ".join(f"{sn}={sd[step, 0]:.2f}" for sn, sd in train_stats.items())
-            loss = float(scalar_data.get("loss_total", np.zeros(num_updates))[step])
-            grad = float(scalar_data.get("grad_norm", np.zeros(num_updates))[step])
-            extra = ""
-            if "base_return" in train_stats and config.task["ENV_NAME"] == "overcooked-v1":
-                soups = train_stats["base_return"][step, 0] / 20.0
-                extra = f"  soups={soups:.1f}"
-            print(f"[{pct:5.1f}%] step={step}/{num_updates}  env_steps={env_steps}  "
-                  f"{ret_str}{extra}  loss={loss:.4f}  grad={grad:.3f}")
-
-    logger.commit()
-
-    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    out_savepath = save_train_run(out, savedir, savename="saved_train_run")
-    if config["logger"]["log_train_out"]:
-        logger.log_artifact(name="saved_train_run", path=out_savepath, type_name="train_run")
-    if not config["local_logger"]["save_train_out"]:
-        shutil.rmtree(out_savepath)
