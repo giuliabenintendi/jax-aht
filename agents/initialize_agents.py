@@ -176,7 +176,6 @@ def initialize_ja_image_agent(config, env, rng):
         scalar_dim=num_scalars,
         scalar_embed_dim=config.get("JA_SCALAR_EMBED_DIM", 5),
         query_partner_lstm=config.get("QUERY_PARTNER_LSTM", False),
-        feed_partner_to_query=config.get("JA_FEED_PARTNER_TO_QUERY", False),
     )
 
     rng, init_rng = jax.random.split(rng)
