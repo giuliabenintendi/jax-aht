@@ -57,6 +57,11 @@ class JAImageScannedLSTM(nn.Module):
     scalar_dim: int = 0   # >0 appends extra scalar features after any message suffix
     scalar_embed_dim: int = 5
     query_partner_lstm: bool = False
+    # When True, the scalar suffix (partner_feed) is also concatenated into the
+    # attention query input, so the attention can react to partner_feed in the
+    # same forward pass instead of via one-step LSTM memorization. The suffix is
+    # still also fed downstream into the LSTM via `scalar_embed`.
+    feed_partner_to_query: bool = False
 
     def setup(self):
         self.feat_h, self.feat_w = _compute_resnet_output_dims(
@@ -128,13 +133,28 @@ class JAImageScannedLSTM(nn.Module):
         )(features_with_pos)
         values = values.reshape(batch_size, fh * fw, m, cm)
 
-        # Query from own LSTM state (+ partner's actor h when enabled)
+        # Optionally make the partner_feed available to the attention query so
+        # the attention can peak on the partner-attended card in the same
+        # forward pass (rather than via one-step LSTM memorization).
+        if self.feed_partner_to_query and self.scalar_dim > 0:
+            scalar_for_query_start = self._img_flat_dim + (
+                self.message_dim if self.message_dim > 0 else 0
+            )
+            scalar_for_query = obs_flat[
+                :, scalar_for_query_start:scalar_for_query_start + self.scalar_dim
+            ]
+        else:
+            scalar_for_query = None
+
+        # Query from own LSTM state (+ partner_feed when enabled, + partner's
+        # actor h when enabled)
+        own_state_parts = [lstm_h, lstm_c]
+        if scalar_for_query is not None:
+            own_state_parts.append(scalar_for_query)
         if self.query_partner_lstm:
             partner_lstm_h = jnp.where(dones[:, np.newaxis], 0.0, partner_lstm_h)
-            own_state = jnp.concatenate(
-                [lstm_h, lstm_c, jax.lax.stop_gradient(partner_lstm_h)], axis=-1)
-        else:
-            own_state = jnp.concatenate([lstm_h, lstm_c], axis=-1)
+            own_state_parts.append(jax.lax.stop_gradient(partner_lstm_h))
+        own_state = jnp.concatenate(own_state_parts, axis=-1)
         queries = nn.Dense(
             m * cm, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
             name="query_ffn",
@@ -223,6 +243,7 @@ class JAImageActorCritic(nn.Module):
     scalar_dim: int = 0
     scalar_embed_dim: int = 5
     query_partner_lstm: bool = False
+    feed_partner_to_query: bool = False
 
     @nn.compact
     def __call__(self, hidden, x):
@@ -251,6 +272,7 @@ class JAImageActorCritic(nn.Module):
             scalar_dim=self.scalar_dim,
             scalar_embed_dim=self.scalar_embed_dim,
             query_partner_lstm=self.query_partner_lstm,
+            feed_partner_to_query=self.feed_partner_to_query,
         )
 
         def _scan_input(partner_lstm_h=None):
