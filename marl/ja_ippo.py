@@ -315,6 +315,9 @@ def make_train_loop(config, env):
                         )
                         if ja_aux_partner_argmax_active:
                             attn_2d = attn_map_apply.mean(axis=-1)              # (T, num_actors, fh, fw)
+                            # Take the agent's attention map, multiply it
+                            # element-wise by card c's binary mask, and sum
+                            # the result. Repeated for every card c.
                             per_card_attn = jnp.einsum(
                                 "tahw,chw->tac", attn_2d, _card_masks,
                             )                                                   # (T, num_actors, 5)
