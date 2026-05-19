@@ -48,7 +48,6 @@ class JATransition(NamedTuple):
     partner_argmax: jnp.ndarray        # (NUM_ACTORS,) int — aux target aligned to this observation
     partner_argmax_valid: jnp.ndarray  # (NUM_ACTORS,) bool — False when no causal target exists yet
     partner_argmax_weight: jnp.ndarray # (NUM_ACTORS,) float — mass-based reliability weight for aux target
-    partner_target_dist: jnp.ndarray   # (NUM_ACTORS, 5) float — partner's full per-card distribution in agent's view-slot frame (CGL-style soft target)
 
 
 class RewardNormState(NamedTuple):
@@ -159,11 +158,6 @@ def make_train_loop(config, env):
     # not create arbitrary supervision.
     ja_aux_partner_argmax_coef = config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0)
     ja_aux_partner_argmax_active = ja_aux_partner_argmax_coef > 0
-    # When True, the aux loss uses cross-entropy against partner's full per-card
-    # distribution (CGL-style soft target) instead of NLL on partner's argmax.
-    # Same supervised tensor (the per-card attention pool) — only the target form
-    # changes.
-    ja_aux_soft_target = config.get("JA_AUX_SOFT_TARGET", False)
     # When True, compute the OP-corrected card-level JSD as a diagnostic metric
     # without feeding partner attention back into the obs and without applying
     # any shaping reward. Same OP requirements as JA_CARD_ATTN.
@@ -265,12 +259,10 @@ def make_train_loop(config, env):
             init_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
             init_partner_argmax_valid = jnp.zeros((num_actors,), dtype=bool)
             init_partner_argmax_weight = jnp.zeros((num_actors,), dtype=jnp.float32)
-            init_partner_target_dist = jnp.zeros((num_actors, 5), dtype=jnp.float32)
             runner_state = runner_state + (
                 init_partner_argmax,
                 init_partner_argmax_valid,
                 init_partner_argmax_weight,
-                init_partner_target_dist,
             )
         if query_partner_lstm:
             init_plh_a = jnp.zeros((num_actors, lstm_hidden_dim))
@@ -334,21 +326,11 @@ def make_train_loop(config, env):
                                 own_card_mass[..., None] + 1e-8
                             )
                             log_probs = jnp.log(per_card_norm + 1e-8)
+                            partner_target_flat = traj_batch.partner_argmax.reshape(-1)
                             log_probs_flat = log_probs.reshape(-1, log_probs.shape[-1])
-                            if ja_aux_soft_target:
-                                # CGL-style: cross-entropy on partner's full
-                                # per-card distribution (in agent's view-slot
-                                # frame). Gradient flows to all cards weighted
-                                # by partner's mass on each.
-                                target_dist_flat = traj_batch.partner_target_dist.reshape(
-                                    -1, log_probs.shape[-1],
-                                )
-                                nll_flat = -(target_dist_flat * log_probs_flat).sum(axis=-1)
-                            else:
-                                partner_target_flat = traj_batch.partner_argmax.reshape(-1)
-                                nll_flat = -jnp.take_along_axis(
-                                    log_probs_flat, partner_target_flat[:, None], axis=-1,
-                                ).squeeze(-1)
+                            nll_flat = -jnp.take_along_axis(
+                                log_probs_flat, partner_target_flat[:, None], axis=-1,
+                            ).squeeze(-1)
                             aux_weight_flat = (
                                 traj_batch.partner_argmax_valid.reshape(-1).astype(jnp.float32)
                                 * traj_batch.partner_argmax_weight.reshape(-1)
@@ -560,21 +542,12 @@ def make_train_loop(config, env):
             partner_argmax_per_actor = jnp.concatenate(
                 [partner_argmax_in_ego_view_0, partner_argmax_in_ego_view_1]
             ).astype(jnp.int32)
-            # Partner's full per-card distribution translated into agent's own
-            # view-slot frame. partner_dist_view[i] = partner's normalized
-            # attention mass on the canonical card sitting at view-slot i.
-            partner_dist_view_0 = jnp.take_along_axis(q_phys_1, perm_0, axis=1)
-            partner_dist_view_1 = jnp.take_along_axis(q_phys_0, perm_1, axis=1)
-            partner_target_dist_per_actor = jnp.concatenate(
-                [partner_dist_view_0, partner_dist_view_1], axis=0,
-            )
             current_partner_phys_for_actor = jnp.concatenate([q_phys_1, q_phys_0], axis=0)
             current_partner_mass_per_actor = jnp.concatenate([m_1, m_0])
             return (
                 jax.lax.stop_gradient(partner_argmax_per_actor),
                 jax.lax.stop_gradient(current_partner_phys_for_actor.astype(jnp.float32)),
                 jax.lax.stop_gradient(current_partner_mass_per_actor.astype(jnp.float32)),
-                jax.lax.stop_gradient(partner_target_dist_per_actor.astype(jnp.float32)),
             )
 
         def _compute_attention_shaping_rewards(
@@ -683,14 +656,12 @@ def make_train_loop(config, env):
                         prev_partner_argmax,
                         prev_partner_argmax_valid,
                         prev_partner_argmax_weight,
-                        prev_partner_target_dist,
                     ) = runner_state_core
                     runner_state_core = tuple(rest)
                 else:
                     prev_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
                     prev_partner_argmax_valid = jnp.zeros((num_actors,), dtype=bool)
                     prev_partner_argmax_weight = jnp.zeros((num_actors,), dtype=jnp.float32)
-                    prev_partner_target_dist = jnp.zeros((num_actors, 5), dtype=jnp.float32)
                 if ja_prev_partner_phys_active:
                     (
                         *rest,
@@ -833,7 +804,6 @@ def make_train_loop(config, env):
                         partner_argmax_per_actor,
                         current_partner_phys_for_actor,
                         current_partner_mass_per_actor,
-                        partner_target_dist_per_actor,
                     ) = _compute_partner_argmax_targets(
                         phys_0, phys_1, q_phys_0, q_phys_1, perm_0, perm_1, m_0, m_1,
                     )
@@ -841,18 +811,15 @@ def make_train_loop(config, env):
                     partner_argmax_per_actor = jnp.zeros(num_actors, dtype=jnp.int32)
                     current_partner_phys_for_actor = jnp.zeros((num_actors, num_cards), dtype=jnp.float32)
                     current_partner_mass_per_actor = jnp.zeros(num_actors, dtype=jnp.float32)
-                    partner_target_dist_per_actor = jnp.zeros((num_actors, num_cards), dtype=jnp.float32)
 
                 if ja_aux_partner_argmax_active and ja_card_partner_feed:
                     aux_partner_argmax = prev_partner_argmax
                     aux_partner_argmax_valid = prev_partner_argmax_valid
                     aux_partner_argmax_weight = prev_partner_argmax_weight
-                    aux_partner_target_dist = prev_partner_target_dist
                 else:
                     aux_partner_argmax = partner_argmax_per_actor
                     aux_partner_argmax_valid = jnp.ones((num_actors,), dtype=bool)
                     aux_partner_argmax_weight = current_partner_mass_per_actor
-                    aux_partner_target_dist = partner_target_dist_per_actor
 
                 env_idx = jnp.arange(num_envs)
                 pick_0_view = action[:num_envs]
@@ -905,7 +872,6 @@ def make_train_loop(config, env):
                     partner_argmax=aux_partner_argmax,
                     partner_argmax_valid=aux_partner_argmax_valid,
                     partner_argmax_weight=aux_partner_argmax_weight,
-                    partner_target_dist=aux_partner_target_dist,
                 )
 
                 if feed_other_attn:
@@ -935,14 +901,10 @@ def make_train_loop(config, env):
                     new_partner_argmax_weight = jnp.where(
                         new_done_batch_aux, 0.0, current_partner_mass_per_actor
                     ).astype(jnp.float32)
-                    new_partner_target_dist = jnp.where(
-                        new_done_batch_aux[:, None], 0.0, partner_target_dist_per_actor
-                    ).astype(jnp.float32)
                     runner_state = runner_state + (
                         new_partner_argmax,
                         new_partner_argmax_valid,
                         new_partner_argmax_weight,
-                        new_partner_target_dist,
                     )
                 if query_partner_lstm:
                     # Extract actor h and critic h from packed hstate, swap halves
@@ -980,7 +942,6 @@ def make_train_loop(config, env):
                     prev_partner_argmax,
                     prev_partner_argmax_valid,
                     prev_partner_argmax_weight,
-                    prev_partner_target_dist,
                 ) = runner_state
                 runner_state = tuple(rest)
             if ja_prev_partner_phys_active:
@@ -1137,7 +1098,6 @@ def make_train_loop(config, env):
                     prev_partner_argmax,
                     prev_partner_argmax_valid,
                     prev_partner_argmax_weight,
-                    prev_partner_target_dist,
                 )
             if query_partner_lstm:
                 runner_state = runner_state + (prev_plh_actor, prev_plh_critic)
