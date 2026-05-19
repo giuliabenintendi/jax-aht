@@ -63,4 +63,5 @@ JA_PARTNER_FEED_PER_HEAD: false  # if True, partner card attention is fed per-he
 JA_ATTN_MATCH_COEF: 0.0         # per-step lagged attention following: coef * (1 - JSD(q_own_t, q_partner_{t-1})/log 2) on OP-corrected 5-way card attention
 JA_ATTN_SELF_COEF: 0.0          # per-agent per-step own-attention/action consistency: coef * q_own_t[action_t] in canonical frame
 JA_AUX_PARTNER_ARGMAX_COEF: 0.0  # aux NLL on attention pool: force attention to peak at partner argmax view-slot
+JA_AUX_SOFT_TARGET: false        # if True, aux uses cross-entropy on partner's full per-card distribution (CGL-style soft target) instead of NLL on argmax
 JA_GAZE_PICK_COEF: 0.0          # optional direct per-agent per-step reward: partner previous-step canonical attention mass on the emitted action
