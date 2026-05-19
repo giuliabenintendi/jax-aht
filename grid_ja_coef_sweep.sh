@@ -21,7 +21,7 @@
 set -u
 
 NUM_SEEDS=1
-TOTAL_STEPS=4e6
+TOTAL_STEPS=10e6
 
 run_cell() {
   local gpu="$1"
