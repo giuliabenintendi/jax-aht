@@ -514,7 +514,11 @@ def _log_card_game_action_distributions(
             ja_card_masks=ja_card_masks,
             partner_feed_dim=partner_feed_dim,
         )
-        n_steps = min(len(ep_messages), len(ep_actions))
+        # `ep_messages` is only populated when env communication is on; in
+        # delib-actions mode (comm off, gaze off) the deliberation action is
+        # still recorded in `ep_actions[t]` for non-final steps.
+        has_messages = len(ep_messages) > 0
+        n_steps = len(ep_actions)
         for t in range(n_steps):
             is_decision = (t == n_steps - 1)
             # On the decision step the env auto-resets, so use the prior
@@ -528,7 +532,12 @@ def _log_card_game_action_distributions(
             perm_state = _walk(action_state, "per_agent_perm")
             recol_state = _walk(action_state, "per_agent_recolouring")
             for ai in (0, 1):
-                gt = int(ep_actions[t][ai]) if is_decision else int(ep_messages[t][ai])
+                if is_decision:
+                    gt = int(ep_actions[t][ai])
+                elif has_messages:
+                    gt = int(ep_messages[t][ai])
+                else:
+                    gt = int(ep_actions[t][ai])
                 if gt < 0:
                     continue
                 if perm_state is not None:

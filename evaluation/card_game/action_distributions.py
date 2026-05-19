@@ -146,13 +146,22 @@ def _collect_one_seed(rng_key, inner_env, params, policy, max_steps,
             feed_other_attn_dims=feed_attn_dims,
             ja_card_masks=ja_card_masks,
         )
-        n_steps = min(len(ep_messages), len(ep_actions))
+        # `ep_messages` is only populated when the env has `communication=True`
+        # (the dot-rendering flag). In delib-actions mode comm is off but
+        # deliberation actions still exist — they are recorded in `ep_actions`
+        # at every non-final step, with the final step being the pick.
+        has_messages = len(ep_messages) > 0
+        n_steps = len(ep_actions)
         for t in range(n_steps):
             is_decision = (t == n_steps - 1)
             action_state = _state_for_recorded_action(ep_states, t, is_decision)
             for ai in (0, 1):
-                gt = (int(ep_actions[t][ai]) if is_decision
-                      else int(ep_messages[t][ai]))
+                if is_decision:
+                    gt = int(ep_actions[t][ai])
+                elif has_messages:
+                    gt = int(ep_messages[t][ai])
+                else:
+                    gt = int(ep_actions[t][ai])
                 if gt < 0:
                     continue
                 pos_perm = _per_agent_perm(action_state, ai)
