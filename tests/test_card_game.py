@@ -208,25 +208,31 @@ def test_comm_decision_pick_reward():
     assert float(reward["agent_0"]) == 1.0
 
 
-def test_gaze_mode_allows_card_actions_during_deliberation():
-    """Gaze mode keeps the card action space active on every step."""
+def test_gaze_mode_action_space_and_avail_masks():
+    """Gaze mode adds a trailing noop slot: the action space is NUM_CARDS + 1,
+    deliberation exposes only the noop action, the decision step only the picks."""
     env = make_env("card-game", {"max_steps": 2, "gaze_mode": True, "shuffle": False})
     key = jax.random.PRNGKey(21)
     obs, state = env.reset(key)
 
-    expected_mask = jnp.ones(NUM_CARDS, dtype=jnp.float32)
-    assert env.action_space("agent_0").n == NUM_CARDS
-    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
+    assert env.action_space("agent_0").n == NUM_CARDS + 1
 
+    delib_mask = jnp.array([0.0] * NUM_CARDS + [1.0], dtype=jnp.float32)
+    decision_mask = jnp.array([1.0] * NUM_CARDS + [0.0], dtype=jnp.float32)
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], delib_mask)
+
+    # A deliberation step (noop action) advances toward the decision step
+    # without committing a pick or a message.
     key, subkey = jax.random.split(key)
+    noop = jnp.int32(NUM_CARDS)
     obs, state, reward, dones, _ = env.step(
-        subkey, state, {"agent_0": jnp.int32(1), "agent_1": jnp.int32(4)}
+        subkey, state, {"agent_0": noop, "agent_1": noop}
     )
     assert not dones["__all__"]
     assert float(reward["agent_0"]) == 0.0
-    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
     assert int(state.env_state.messages[0]) == -1
     assert int(state.env_state.messages[1]) == -1
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], decision_mask)
 
 
 def test_gaze_mode_deliberation_actions_are_ignored_until_decision():
@@ -313,11 +319,26 @@ def test_following_partner_message_is_chance_without_follow_reward():
     assert reward_sum / num_pairs == 1.0 / NUM_CARDS
 
 
-def test_ego_highlight():
-    """Each agent's observation should differ (different ego borders)."""
-    env = make_env("card-game", {})
+def test_communication_dot_makes_agent_obs_differ():
+    """The only per-agent difference in the observation is the partner-message
+    dot: with communication off both agents see the same frame; with it on,
+    the frames diverge once the agents have sent distinct messages."""
     key = jax.random.PRNGKey(0)
-    obs, state = env.reset(key)
+
+    env_off = make_env("card-game", {"max_steps": 10, "shuffle": False})
+    obs_off, _ = env_off.reset(key)
+    assert jnp.array_equal(obs_off["agent_0"], obs_off["agent_1"])
+
+    env_on = make_env(
+        "card-game", {"max_steps": 10, "shuffle": False, "communication": True}
+    )
+    obs, state = env_on.reset(key)
+    assert jnp.array_equal(obs["agent_0"], obs["agent_1"])  # no message sent yet
+
+    key, subkey = jax.random.split(key)
+    obs, state, _, _, _ = env_on.step(
+        subkey, state, {"agent_0": jnp.int32(0), "agent_1": jnp.int32(3)}
+    )
     assert not jnp.array_equal(obs["agent_0"], obs["agent_1"])
 
 
