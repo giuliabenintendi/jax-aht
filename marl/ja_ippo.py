@@ -20,7 +20,7 @@ import optax
 from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent, _get_image_dims
-from agents.ja_image_actor_critic import _compute_resnet_output_dims
+from agents.ja_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence, build_card_masks
 from common.save_load_utils import REPO_PATH, save_train_run
 from common.train_logging import log_live_chunk_metrics, report_ja_training_outputs

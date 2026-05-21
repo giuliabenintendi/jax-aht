@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from agents.initialize_agents import initialize_ja_agent, initialize_ja_image_agent, _get_image_dims
-from agents.ja_image_actor_critic import _compute_resnet_output_dims
+from agents.ja_actor_critic import _compute_resnet_output_dims
 from agents.ja_utils import jsd_divergence, augment_obs_for_eval
 from marl.eval_card_game import (
     _log_card_game_action_distributions,

@@ -1,6 +1,6 @@
 """Image Actor-Critic network (no attention baseline).
 
-Same ResNet encoder as `ja_image_actor_critic.py` but without spatial
+Same ResNet encoder as the JA image path in `ja_actor_critic.py` but without spatial
 attention. The image trunk is shared between actor and critic:
 
   obs (flat) -> unpack image (H_px, W_px, 3)

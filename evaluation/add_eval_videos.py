@@ -137,7 +137,7 @@ def main():
         feed_attn_dims = None
         ja_card_masks = None
         if feed_attn or ja_card_partner_feed:
-            from agents.ja_image_actor_critic import _compute_resnet_output_dims
+            from agents.ja_actor_critic import _compute_resnet_output_dims
             from agents.ja_utils import build_card_masks
             img_h = inner_env.grid_height * inner_env.tile_size
             img_w = inner_env.grid_width * inner_env.tile_size

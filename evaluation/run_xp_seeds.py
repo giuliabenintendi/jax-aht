@@ -759,7 +759,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     feed_attn_dims = None
     if feed_attn:
         from agents.initialize_agents import _get_image_dims
-        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        from agents.ja_actor_critic import _compute_resnet_output_dims
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(
             _img_h, _img_w,
@@ -774,7 +774,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     ja_card_masks = None
     if algo_cfg.get("JA_CARD_ATTN", False) or algo_cfg.get("JA_CARD_METRIC", False):
         from agents.initialize_agents import _get_image_dims
-        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        from agents.ja_actor_critic import _compute_resnet_output_dims
         from agents.ja_utils import build_card_masks
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(
@@ -1218,7 +1218,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     feed_attn_dims = None
     if feed_attn:
         from agents.initialize_agents import _get_image_dims
-        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        from agents.ja_actor_critic import _compute_resnet_output_dims
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(
             _img_h, _img_w,
@@ -1233,7 +1233,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     ja_card_masks = None
     if algo_cfg.get("JA_CARD_ATTN", False) or algo_cfg.get("JA_CARD_METRIC", False):
         from agents.initialize_agents import _get_image_dims
-        from agents.ja_image_actor_critic import _compute_resnet_output_dims
+        from agents.ja_actor_critic import _compute_resnet_output_dims
         from agents.ja_utils import build_card_masks
         _img_h, _img_w, _ = _get_image_dims(env)
         _feat_h, _feat_w = _compute_resnet_output_dims(

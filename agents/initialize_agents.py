@@ -5,8 +5,7 @@ from agents.mlp_actor_critic_agent import MLPActorCriticPolicy, ActorWithDoubleC
     PseudoActorWithConditionalCriticPolicy
 from agents.rnn_actor_critic_agent import RNNActorCriticPolicy
 from agents.s5_actor_critic_agent import S5ActorCriticPolicy
-from agents.ja_actor_critic_agent import JAActorCriticPolicy
-from agents.ja_image_actor_critic_agent import JAImageActorCriticPolicy
+from agents.ja_actor_critic_agent import JAActorCriticPolicy, JAImageActorCriticPolicy
 from agents.image_actor_critic_agent import ImageActorCriticPolicy
 from envs.base_env import get_inner_env
 from agents.liam_agent import LIAMPolicy, initialize_liam_encoder_decoder
