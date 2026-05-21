@@ -1,13 +1,17 @@
 """Card Game environment for testing joint attention (static positions).
 
-Two agents observe 5 shuffled colored cards at fixed positions (row 1)
-for several deliberation steps, then simultaneously pick a color.
-Reward +1 if both pick the same color, 0 otherwise.
+Two agents observe 5 shuffled colored cards for several deliberation steps,
+then simultaneously pick a color. Reward +1 if both pick the same color,
+0 otherwise.
 
-Layout (3×5 grid, TILE_PIXELS=7 → 21×35 px):
-  Row 0: [ ] [ ] [agent_0 ▽] [ ] [ ]
-  Row 1: [card] [card] [card] [card] [card]
-  Row 2: [ ] [ ] [agent_1 △] [ ] [ ]
+Current policy observations are cards-only image renders:
+  - five card rectangles centred in the frame
+  - a 2-digit timestep counter in the top-left
+  - optionally a white partner-message dot on the referenced card
+
+The older full-scene render with agent triangles still exists only as a
+debug/eval helper in `rendering.py`; it is not the observation emitted by
+this environment.
 
 Actions: a single Discrete(NUM_CARDS) at every step. Outside gaze mode the
 same emitted card is interpreted as a deliberation message when not on the
@@ -54,7 +58,8 @@ class CardGameEnv(BaseEnv):
     """Card coordination game with image observations.
 
     Exposes grid_height, grid_width, tile_size for compatibility with
-    the JA-IPPO agent initialization pipeline.
+    the JA-IPPO agent initialization pipeline. Observations contain only the
+    card strip, timestep counter, and optional partner-message dot.
     """
 
     def __init__(self, max_steps: int = 10, shuffle: bool = True,

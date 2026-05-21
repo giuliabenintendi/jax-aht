@@ -288,8 +288,8 @@ class CardGameRecolouringWrapper:
         """Swap card RGB values in the card row of the observation image.
 
         Matches each pixel against all 5 CARD_COLORS simultaneously and
-        replaces with the recoloured version. Non-card pixels (agent colors,
-        communication dots, ego borders, decision indicator) are untouched.
+        replaces with the recoloured version. The timestep digits and optional
+        partner-message dot are untouched.
         """
         img = (flat_obs * 255.0).astype(jnp.uint8).reshape(
             self._env._img_h, self._env._img_w, 3,

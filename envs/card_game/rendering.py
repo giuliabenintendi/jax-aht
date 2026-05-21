@@ -1,12 +1,10 @@
-"""JAX tile-based renderer for the Card Game environment.
+"""JAX renderers for the Card Game environment.
 
-Produces a (3*TILE_PIXELS, 5*TILE_PIXELS, 3) uint8 RGB image:
-  Row 0: empty | empty | agent_0 (▽) | empty | empty
-  Row 1: card  | card  | card         | card  | card
-  Row 2: empty | empty | agent_1 (△) | empty | empty
-
-Cards are colored rectangles (5 maximally distinct colors).
-Agents are triangles pointing toward the cards.
+There are two render paths in this module:
+- `render_card_game_minimal`: the current observation render used by policies.
+  It contains only the card row plus a timestep counter.
+- `render_card_game`: a fuller scene render with agent triangles, kept for
+  debugging/eval visualizations and legacy inspection.
 """
 import jax
 import jax.numpy as jnp
@@ -25,7 +23,7 @@ _Y, _X = jnp.meshgrid(
 # Card: 5×5 filled rectangle (rows 1-5, cols 1-5)
 _CARD_MASK = (_Y >= 1) & (_Y <= 5) & (_X >= 1) & (_X <= 5)
 
-# Down-pointing triangle (agent 0, top — points toward cards below)
+# Down-pointing triangle used only by the full-scene debug render.
 #   . . . . . . .
 #   . X X X X X .
 #   . X X X X X .
@@ -41,7 +39,7 @@ _DOWN_TRI_MASK = (
     | ((_Y == 5) & (_X == 3))
 )
 
-# Up-pointing triangle (agent 1, bottom — points toward cards above)
+# Up-pointing triangle used only by the full-scene debug render.
 #   . . . . . . .
 #   . . . X . . .
 #   . . X X X . .
@@ -120,7 +118,10 @@ def _render_tile(mask, color):
 
 
 def render_card_game(card_permutation: jnp.ndarray, revealed=None) -> jnp.ndarray:
-    """Render the card game scene.
+    """Render the full card-game scene with agent triangles.
+
+    This helper is not the observation render used by the environment; policy
+    observations come from `render_card_game_minimal`.
 
     Args:
         card_permutation: (5,) int array — card identity at each position.
@@ -198,8 +199,8 @@ def render_card_game_minimal(
     pixel-art step counter.
 
     Layout (21x35 px):
-      Top-left: 2-digit timestep counter (white, 3x4 LCD-style)
-      Center:   5 vertical rounded-corner card rectangles (5w x 9h)
+      Top-left: 2-digit timestep counter (white, 3x5 pixel digits)
+      Center:   5 vertical card rectangles (5w x 7h)
       Else:     black background
     """
     # Coerce so callers can pass plain numpy arrays — `jax.lax.scan` would
@@ -228,30 +229,6 @@ def render_card_game_minimal(
 
     img, _ = jax.lax.scan(draw_card, img, jnp.arange(NUM_CARDS))
     img = _draw_timestep(img, step_count)
-    return img
-
-
-def _draw_choice_border(img, card_pos, color, thickness=2):
-    """Draw a thick border around a card tile (row=1) to indicate an agent's choice.
-
-    Works on the upscaled image. card_pos is the column index (0-4).
-    """
-    import numpy as np
-
-    h, w = img.shape[:2]
-    tile_h = h // GRID_ROWS
-    tile_w = w // GRID_COLS
-
-    y0 = tile_h  # card row = 1
-    x0 = card_pos * tile_w
-
-    # Top and bottom edges
-    img[y0:y0 + thickness, x0:x0 + tile_w] = color
-    img[y0 + tile_h - thickness:y0 + tile_h, x0:x0 + tile_w] = color
-    # Left and right edges
-    img[y0:y0 + tile_h, x0:x0 + thickness] = color
-    img[y0:y0 + tile_h, x0 + tile_w - thickness:x0 + tile_w] = color
-
     return img
 
 
