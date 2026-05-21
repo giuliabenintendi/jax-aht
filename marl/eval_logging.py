@@ -29,7 +29,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
     import wandb
     if init_fn is None:
         obs_type = _get_obs_type(algorithm_config)
-        init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
+        init_fn = initialize_ja_image_agent if obs_type == "image" else initialize_ja_agent
     rng = jax.random.PRNGKey(0)
     policy, _ = init_fn(algorithm_config, env, rng)
 
@@ -340,7 +340,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
 
     if init_fn is None:
         obs_type = _get_obs_type(algorithm_config)
-        init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
+        init_fn = initialize_ja_image_agent if obs_type == "image" else initialize_ja_agent
 
     # Reconstruct policy (same for both agents -- shared params)
     rng = jax.random.PRNGKey(0)

@@ -4,7 +4,6 @@ fully cooperative multi-agent environment. Note that this code is only compatibl
 '''
 import jax
 import jax.numpy as jnp
-import optax
 from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_s5_agent, initialize_mlp_agent, \
@@ -12,7 +11,14 @@ from agents.initialize_agents import initialize_s5_agent, initialize_mlp_agent, 
 from common.train_logging import report_basic_training_outputs
 from envs import make_env
 from envs.log_wrapper import LogWrapper
-from marl.ppo_utils import Transition, batchify, unbatchify, _create_minibatches
+from marl.ippo_core import (
+    calculate_gae,
+    compute_last_value,
+    configure_training_dims,
+    make_optimizer,
+    run_ppo_epochs,
+)
+from marl.ppo_utils import Transition, batchify, unbatchify
 
 
 def initialize_agent(actor_type, algorithm_config, env, init_rng):
@@ -29,36 +35,17 @@ def initialize_agent(actor_type, algorithm_config, env, init_rng):
     return policy, init_params
 
 def make_train(config, env):
-    config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
-    config["NUM_UPDATES"] = (
-        config["TOTAL_TIMESTEPS"] // config["ROLLOUT_LENGTH"] // config["NUM_ENVS"]
-    )
-    config["MINIBATCH_SIZE"] = (
-        config["NUM_ACTORS"] * config["ROLLOUT_LENGTH"] // config["NUM_MINIBATCHES"]
-    )
-
-    def linear_schedule(count):
-        frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
-        return config["LR"] * frac
+    configure_training_dims(config, env)
 
     def train(rng):
         # INIT NETWORK
         rng, init_rng = jax.random.split(rng)
         policy, init_params = initialize_agent(config["ACTOR_TYPE"], config, env, init_rng)
 
-        if config["ANNEAL_LR"]:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            )
-        else:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), 
-                optax.adam(config["LR"], eps=1e-5))
         train_state = TrainState.create(
             apply_fn=policy.network.apply,
             params=init_params,
-            tx=tx,
+            tx=make_optimizer(config),
         )
 
         # INIT ENV
@@ -136,117 +123,22 @@ def make_train(config, env):
             last_avail_batch = jax.lax.stop_gradient(batchify(last_avail_batch, 
                 env.agents, config["NUM_ACTORS"]).astype(jnp.float32))
             
-            _, last_val, _, _ = policy.get_action_value_policy(
-                params=train_state.params,
-                obs=last_obs_batch,
-                done=last_done_batch,
-                avail_actions=last_avail_batch,
-                hstate=last_hstate,
-                rng=jax.random.PRNGKey(0)  # Dummy key since we're just extracting the value
+            last_val = compute_last_value(
+                policy,
+                train_state.params,
+                last_obs_batch,
+                last_done_batch,
+                last_avail_batch,
+                last_hstate,
+                config["NUM_ACTORS"],
             )
-            last_val = last_val.squeeze()
-
-            def _calculate_gae(traj_batch, last_val):
-                def _get_advantages(gae_and_next_value, transition):
-                    gae, next_value = gae_and_next_value
-                    done, value, reward = (
-                        transition.done,
-                        transition.value,
-                        transition.reward,
-                    )
-                    delta = reward + config["GAMMA"] * next_value * (1 - done) - value
-                    gae = (
-                        delta
-                        + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
-                    )
-                    return (gae, value), gae
-
-                _, advantages = jax.lax.scan(
-                    _get_advantages,
-                    (jnp.zeros_like(last_val), last_val),
-                    traj_batch,
-                    reverse=True,
-                    unroll=16,
-                )
-                return advantages, advantages + traj_batch.value
-
-            advantages, targets = _calculate_gae(traj_batch, last_val)
-
-            def _update_epoch(update_state, unused):
-                def _update_minbatch(train_state, batch_info):
-                    init_hstate, traj_batch, advantages, targets = batch_info
-                    def _loss_fn(params, traj_batch, gae, targets):
-                        # RERUN NETWORK
-                        _, value, pi, _ = policy.get_action_value_policy(
-                            params=params,
-                            obs=traj_batch.obs,
-                            done=traj_batch.done,
-                            avail_actions=traj_batch.avail_actions,
-                            hstate=init_hstate,
-                            rng=jax.random.PRNGKey(0) # only used for action sampling, which is unused here
-                        )
-                        log_prob = pi.log_prob(traj_batch.action)
-
-                        # CALCULATE VALUE LOSS
-                        value_pred_clipped = traj_batch.value + (
-                            value - traj_batch.value
-                        ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
-                        value_losses = jnp.square(value - targets)
-                        value_losses_clipped = jnp.square(value_pred_clipped - targets)
-                        value_loss = (
-                            jnp.maximum(value_losses, value_losses_clipped).mean()
-                        )
-
-                        # CALCULATE ACTOR LOSS
-                        ratio = jnp.exp(log_prob - traj_batch.log_prob)
-                        gae = (gae - gae.mean()) / (gae.std() + 1e-8)
-                        loss_actor1 = ratio * gae
-                        loss_actor2 = (
-                            jnp.clip(
-                                ratio,
-                                1.0 - config["CLIP_EPS"],
-                                1.0 + config["CLIP_EPS"],
-                            )
-                            * gae
-                        )
-                        loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
-                        loss_actor = loss_actor.mean()
-                        entropy = pi.entropy().mean()
-
-                        total_loss = (
-                            loss_actor
-                            + config["VF_COEF"] * value_loss
-                            - config["ENT_COEF"] * entropy
-                        )
-                        return total_loss, (value_loss, loss_actor, entropy)
-
-                    grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
-                    total_loss, grads = grad_fn(
-                        train_state.params, traj_batch, advantages, targets
-                    )
-                    train_state = train_state.apply_gradients(grads=grads)
-                    return train_state, total_loss
-
-                train_state, init_hstate, traj_batch, advantages, targets, rng = update_state
-                rng, perm_rng = jax.random.split(rng)
-                minibatches = _create_minibatches(traj_batch, advantages, targets, init_hstate, 
-                                                  config["NUM_ACTORS"], config["NUM_MINIBATCHES"], perm_rng)
-
-                train_state, total_loss = jax.lax.scan(
-                    _update_minbatch, train_state, minibatches
-                )
-                update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
-                return update_state, total_loss
-            init_hstate = policy.init_hstate(config["NUM_ACTORS"])
-            update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
-            update_state, loss_info = jax.lax.scan(
-                _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
+            advantages, targets = calculate_gae(config, traj_batch, last_val)
+            train_state, loss_info, rng = run_ppo_epochs(
+                config, policy, train_state, traj_batch, advantages, targets, rng, config["NUM_ACTORS"]
             )
-            train_state = update_state[0]
             metric = traj_batch.info
             metric["update_steps"] = update_steps
             
-            rng = update_state[-1]
             update_steps += 1
             runner_state = (train_state, env_state, last_obs, last_done, last_hstate, rng)
             return (runner_state, update_steps), metric

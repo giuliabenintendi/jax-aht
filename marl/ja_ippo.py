@@ -178,7 +178,7 @@ def make_train_loop(config, env):
 
     # Precompute image and feature-map dimensions (only needed for image obs)
     obs_type = _get_obs_type(config)
-    if obs_type in ("image", "fov"):
+    if obs_type == "image":
         img_h, img_w, _ = _get_image_dims(env)
         feat_h, feat_w = _compute_resnet_output_dims(
             img_h, img_w,
@@ -205,7 +205,7 @@ def make_train_loop(config, env):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
         return config["LR"] * frac
 
-    agent_init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
+    agent_init_fn = initialize_ja_image_agent if obs_type == "image" else initialize_ja_agent
 
     def init_policy(rng):
         """Create the policy object (called once, not vmapped)."""
@@ -1376,7 +1376,7 @@ def log_xp_eval(algorithm_config, env, out):
     from evaluation.run_xp_seeds import run_xp_from_params
 
     obs_type = _get_obs_type(algorithm_config)
-    init_fn = initialize_ja_image_agent if obs_type in ("image", "fov") else initialize_ja_agent
+    init_fn = initialize_ja_image_agent if obs_type == "image" else initialize_ja_agent
     rng = jax.random.PRNGKey(0)
     policy, _ = init_fn(algorithm_config, env, rng)
 
