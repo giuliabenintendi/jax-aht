@@ -1262,15 +1262,22 @@ def run_ja_ippo(config, logger):
                     logger=logger,
                 )
 
-        all_seed_final_params.append(runner_state[0].params)
+        # Pull per-seed outputs to the host as each seed finishes -- holding
+        # all seeds' metrics/checkpoints on-device and stacking them at the
+        # end OOMs the GPU once NUM_SEEDS is large.
+        all_seed_final_params.append(jax.device_get(runner_state[0].params))
         # Concatenate chunk metrics along the update axis (axis 0)
-        all_seed_metrics.append(jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *seed_metrics))
-        all_seed_ckpts.append(jax.tree.map(lambda *xs: jnp.stack(xs), *seed_ckpts))
+        all_seed_metrics.append(jax.device_get(
+            jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *seed_metrics)))
+        all_seed_ckpts.append(jax.device_get(
+            jax.tree.map(lambda *xs: jnp.stack(xs), *seed_ckpts)))
 
-    # Stack across seeds: (num_seeds, ...)
-    stacked_params = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_final_params)
-    stacked_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_metrics)
-    stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *all_seed_ckpts)
+    # Stack across seeds on the host: (num_seeds, ...). np.stack, not jnp --
+    # the per-seed leaves are already host arrays (device_get above) and a
+    # large device stack of full metrics/checkpoints exhausts GPU memory.
+    stacked_params = jax.tree.map(lambda *xs: np.stack(xs), *all_seed_final_params)
+    stacked_metrics = jax.tree.map(lambda *xs: np.stack(xs), *all_seed_metrics)
+    stacked_ckpts = jax.tree.map(lambda *xs: np.stack(xs), *all_seed_ckpts)
 
     print("[ja_ippo] Training complete.")
     out = {
