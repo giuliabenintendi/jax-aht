@@ -87,26 +87,24 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         env_kwargs_copy["layout"] = layout
 
         obs_type = env_kwargs_copy.pop("obs_type", "symbolic")
-        po_mode = env_kwargs_copy.pop("po_mode", "none")
-        po_keys = ("fov_range", "fov_slope", "use_occlusion", "soft_view", "dist_sigma", "ang_sigma")
-        if obs_type == "fov":
-            from envs.overcooked.overcooked_fov_wrapper import OvercookedFOVWrapper
-            for k in po_keys:
-                env_kwargs_copy.pop(k, None)
-            env = OvercookedFOVWrapper(**env_kwargs_copy)
-        elif obs_type == "image":
+        # Strip deprecated Overcooked PO/FOV kwargs so old configs still load.
+        deprecated_obs_keys = (
+            "po_mode",
+            "fov_range",
+            "fov_slope",
+            "use_occlusion",
+            "soft_view",
+            "dist_sigma",
+            "ang_sigma",
+        )
+        for k in deprecated_obs_keys:
+            env_kwargs_copy.pop(k, None)
+
+        if obs_type == "image":
             from envs.overcooked.overcooked_image_wrapper import OvercookedImageWrapper
-            for k in po_keys:
-                env_kwargs_copy.pop(k, None)
             env = OvercookedImageWrapper(**env_kwargs_copy)
-        elif po_mode != "none":
-            from envs.overcooked.overcooked_po_wrapper import OvercookedPOWrapper
-            env_kwargs_copy["po_mode"] = po_mode
-            env = OvercookedPOWrapper(**env_kwargs_copy)
         else:
             from envs.overcooked.overcooked_wrapper import OvercookedWrapper
-            for k in po_keys:
-                env_kwargs_copy.pop(k, None)
             env = OvercookedWrapper(**env_kwargs_copy)
     
     elif env_name == 'card-game':

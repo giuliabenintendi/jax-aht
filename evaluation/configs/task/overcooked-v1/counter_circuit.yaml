@@ -3,7 +3,6 @@ ROLLOUT_LENGTH: 400 # rollout length must be greater than episode length
 ENV_KWARGS:
   layout: counter_circuit
   random_obj_state: true
-  po_mode: cone
   do_reward_shaping: true
   reward_shaping_params:
     PLACEMENT_IN_POT_REW: .5 # reward for putting ingredients 

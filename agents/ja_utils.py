@@ -6,13 +6,13 @@ Implements the approach from Lee et al. (2021):
 Provides:
 - JSD (Jensen-Shannon Divergence) between attention distributions
 - Sinusoidal 2D spatial basis (positional encoding)
-- Inferred attention map from agent (position, direction) — used by PO ego training
+- Inferred attention map from agent (position, direction)
 - Eval obs augmentation for FEED_OTHER_ATTN
 """
 import jax
 import jax.numpy as jnp
 
-from envs.overcooked.po_utils import cone_forward_lateral
+from envs.overcooked.attention_geometry import forward_lateral_from_pose
 
 
 def jsd_divergence(p: jnp.ndarray, q: jnp.ndarray, eps: float = 1e-7) -> jnp.ndarray:
@@ -117,7 +117,7 @@ def inferred_attention(
     with Gaussian decay in distance and off-axis angle. The result is normalized
     to form a proper probability distribution over (H, W).
 
-    Used by PO ego training (ppo_ego.py) for inferred partner attention.
+    Used by ego training (ppo_ego.py) for inferred partner attention.
     Not used by the FO JA-IPPO path, which compares learned attention maps.
 
     Args:
@@ -131,7 +131,7 @@ def inferred_attention(
     Returns:
         Normalized attention map of shape (H, W), sums to 1.
     """
-    forward, lateral = cone_forward_lateral(h, w, pos_xy, dir_idx)
+    forward, lateral = forward_lateral_from_pose(h, w, pos_xy, dir_idx)
 
     forward_pos = jnp.maximum(forward, 0.0)
     # Distance weight: stronger close, decays with forward distance

@@ -1,13 +1,8 @@
-"""Grid geometry utilities for partial observability and attention.
-
-Provides the world-to-agent coordinate transform used by both
-the PO environment wrapper (FOV masking) and the JA mechanism
-(inferred partner attention).
-"""
+"""Pose-to-grid geometry utilities for attention inference."""
 import jax.numpy as jnp
 
 
-def cone_forward_lateral(
+def forward_lateral_from_pose(
     h: int, w: int, pos_xy: jnp.ndarray, dir_idx: jnp.ndarray
 ):
     """Transform grid displacements into agent-relative (forward, lateral).
@@ -29,8 +24,8 @@ def cone_forward_lateral(
         Positive forward = ahead of agent, negative = behind.
     """
     x0, y0 = pos_xy[0], pos_xy[1]
-    xs = jnp.arange(w)[None, :]  # columns = x
-    ys = jnp.arange(h)[:, None]  # rows = y
+    xs = jnp.arange(w)[None, :]
+    ys = jnp.arange(h)[:, None]
     dx = xs - x0
     dy = ys - y0
 
@@ -50,18 +45,3 @@ def cone_forward_lateral(
         default=l_e,
     )
     return forward, lateral
-
-
-def fov_cone_mask(
-    h: int, w: int, pos_xy: jnp.ndarray, dir_idx: jnp.ndarray,
-    fov_range: int, fov_slope: float = 0.7,
-) -> jnp.ndarray:
-    """Boolean FOV mask (H, W) for the cone geometry.
-
-    A cell is visible if it is in front, within range, and inside the cone angle.
-    """
-    forward, lateral = cone_forward_lateral(h, w, pos_xy, dir_idx)
-    in_front = forward >= 0
-    in_range = forward <= fov_range
-    in_cone = jnp.abs(lateral) <= (fov_slope * forward + 1.0)
-    return in_front & in_range & in_cone

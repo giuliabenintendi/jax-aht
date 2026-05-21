@@ -111,10 +111,9 @@ def initialize_ja_agent(config, env, rng):
     return policy, init_params
 
 def _get_image_dims(env):
-    """Extract image dimensions from an image/FOV wrapper.
+    """Extract image dimensions from an image-observation wrapper.
 
-    Both wrappers now produce image-only obs (no appended scalars).
-    Works for OvercookedImageWrapper, OvercookedFOVWrapper, and LBFImageWrapper.
+    Image wrappers produce image-only obs with no appended scalars.
     """
     wrapper = env._env if hasattr(env, '_env') else env
     num_scalars = getattr(wrapper, 'num_scalar_obs', 0)
