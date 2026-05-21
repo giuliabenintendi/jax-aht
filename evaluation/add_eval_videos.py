@@ -259,7 +259,7 @@ def main():
         os.makedirs(video_dir, exist_ok=True)
 
         # Render frames
-        if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
+        if env_name in ("lbf", "lbf-reward-shaping"):
             from marl.eval_lbf import _render_lbf_eval_frames
             frames = _render_lbf_eval_frames(inner_env, ep_states)
         else:

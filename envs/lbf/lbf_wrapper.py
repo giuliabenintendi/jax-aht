@@ -48,7 +48,7 @@ class LBFWrapper(BaseEnv):
     @partial(jax.jit, static_argnums=(0,))
     def reset(self, key: chex.PRNGKey):
         env_state, timestep = self.env.reset(key)
-        obs = self._extract_observations(timestep.observation)
+        obs = self._extract_observations(timestep.observation, env_state)
         state = WrappedEnvState(env_state, 
                                 jnp.zeros(self.num_agents),
                                 self._extract_avail_actions(timestep),
@@ -73,7 +73,7 @@ class LBFWrapper(BaseEnv):
         avail_actions = self._extract_avail_actions(timestep)
 
         state_st = WrappedEnvState(env_state, jnp.zeros(self.num_agents), avail_actions, timestep.observation.step_count)
-        obs_st = self._extract_observations(timestep.observation)
+        obs_st = self._extract_observations(timestep.observation, env_state)
         reward = self._extract_rewards(timestep.reward)
         done = self._extract_dones(timestep)
         info  = self._extract_infos(timestep)
@@ -101,7 +101,7 @@ class LBFWrapper(BaseEnv):
         """Returns the step count of the environment."""
         return state.step
 
-    def _extract_observations(self, observation):
+    def _extract_observations(self, observation, env_state=None):
         '''Extract per-agent observations and flatten them into arrays'''
         obs = {}
         for i in range(self.num_agents):

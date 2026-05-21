@@ -90,7 +90,7 @@ class RewardShapingLBFWrapper(LBFWrapper):
     def reset(self, key, params=None):
         env_state, timestep = self.env.reset(key)
         init_targets = self._compute_initial_targets(env_state)
-        obs = self._extract_observations(timestep.observation)
+        obs = self._extract_observations(timestep.observation, env_state)
         state = RewardShapingEnvState(env_state, 
                                       env_state,
                                       target_food_idx=init_targets,
@@ -108,7 +108,7 @@ class RewardShapingLBFWrapper(LBFWrapper):
         next_env_state, timestep = self.env.step(state.env_state, actions_array)
         avail_actions = self._extract_avail_actions(timestep)
         
-        next_obs = self._extract_observations(timestep.observation)
+        next_obs = self._extract_observations(timestep.observation, next_env_state)
         reward = self._extract_rewards(timestep.reward)
         done = self._extract_dones(timestep)
         info = self._extract_infos(timestep)

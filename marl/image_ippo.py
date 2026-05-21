@@ -379,7 +379,7 @@ def log_eval_video(algorithm_config, env, out, logger):
     video_path = f"{video_dir}/eval_final.mp4"
 
     env_name = algorithm_config["ENV_NAME"]
-    if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
+    if env_name in ("lbf", "lbf-reward-shaping"):
         frames = _render_lbf_eval_frames(inner_env, ep_states)
     elif env_name == "card-game":
         from envs.card_game.rendering import render_card_game_eval_frames

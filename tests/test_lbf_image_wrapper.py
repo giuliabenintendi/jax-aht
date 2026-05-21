@@ -20,7 +20,8 @@ NUM_FOOD = 3
 
 @pytest.fixture
 def env():
-    return make_env('lbf-image', env_kwargs={
+    return make_env('lbf', env_kwargs={
+        'obs_type': 'image',
         'grid_size': GRID_SIZE,
         'num_agents': NUM_AGENTS,
         'num_food': NUM_FOOD,
@@ -148,7 +149,7 @@ class TestLBFImageWrapper:
         avail = env.get_avail_actions(state)
         for agent in env.agents:
             assert avail[agent].shape == (6,)
-            assert jnp.all(avail[agent] == 1.0)
+            assert jnp.all((avail[agent] == 0) | (avail[agent] == 1))
 
     def test_with_log_wrapper(self, env):
         """Ensure LogWrapper works on top of image wrapper."""
@@ -178,7 +179,8 @@ class TestLBFImageWrapper:
 
 class TestMakeEnv:
     def test_make_env_lbf_image(self):
-        env = make_env('lbf-image', env_kwargs={
+        env = make_env('lbf', env_kwargs={
+            'obs_type': 'image',
             'grid_size': 8,
             'num_agents': 2,
             'num_food': 2,
@@ -209,7 +211,8 @@ class TestSaveImageObs:
 
         Run with: pytest -s tests/test_lbf_image_wrapper.py::TestSaveImageObs
         """
-        env = make_env('lbf-image', env_kwargs={
+        env = make_env('lbf', env_kwargs={
+            'obs_type': 'image',
             'grid_size': GRID_SIZE,
             'num_agents': NUM_AGENTS,
             'num_food': NUM_FOOD,

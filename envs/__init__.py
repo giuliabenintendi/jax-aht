@@ -18,7 +18,7 @@ def process_default_args(env_kwargs: dict, default_args: dict):
     return default_args_copy, env_kwargs_copy
 
 def make_env(env_name: str, env_kwargs: dict = {}):
-    if env_name in ['lbf', 'lbf-reward-shaping', 'lbf-image']:
+    if env_name in ['lbf', 'lbf-reward-shaping']:
         default_generator_args = {
             "grid_size": 7,
             "fov": 7,
@@ -46,7 +46,7 @@ def make_env(env_name: str, env_kwargs: dict = {}):
                             viewer=AdHocLBFViewer(grid_size=generator_args["grid_size"],
                                                   **viewer_args))
 
-        if env_name == 'lbf-image' or obs_type == 'image':
+        if obs_type == 'image':
             from envs.lbf.lbf_image_wrapper import LBFImageWrapper
             env = LBFImageWrapper(jumanji_env, share_rewards=True)
         elif env_name == 'lbf-reward-shaping':

@@ -430,7 +430,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             os.makedirs(video_dir, exist_ok=True)
 
             # Render frames from episode states
-            if env_name in ("lbf", "lbf-image", "lbf-reward-shaping"):
+            if env_name in ("lbf", "lbf-reward-shaping"):
                 frames = _render_lbf_eval_frames(inner_env, ep_states)
             elif env_name == "card-game":
                 from envs.card_game.rendering import (
