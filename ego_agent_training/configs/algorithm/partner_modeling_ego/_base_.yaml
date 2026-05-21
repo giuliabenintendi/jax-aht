@@ -1,0 +1,31 @@
+# @package algorithm
+ALG: partner_modeling_ego
+ENCODER_TYPE: lstm
+EGO_ACTOR_TYPE: mlp
+NUM_EGO_TRAIN_SEEDS: 1
+TOTAL_TIMESTEPS: 1e7
+NUM_CHECKPOINTS: 5
+NUM_ENVS: 8
+LR: 3e-4
+ENCODER_DECODER_LR: 7e-4
+UPDATE_EPOCHS: 15
+NUM_MINIBATCHES: 4
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+CLIP_EPS: 0.05
+ENT_COEF: 0.01
+VF_COEF: 0.5
+RECON_COEF: 1.0
+MAX_GRAD_NORM: 0.5
+ANNEAL_LR: false
+
+ENCODER_HIDDEN_DIM: 64
+ENCODER_OUTPUT_DIM: 20
+DECODER_HIDDEN_DIM: 64
+
+partner_agent:
+  ippo:
+    path: null
+    actor_type: mlp
+    ckpt_key: final_params
+    idx_list: [0]

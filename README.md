@@ -46,7 +46,7 @@ Our modularization is restricted to environments, agents, and populations, which
 | Category | Algorithm | Description | Paper |
 |----------|-----------|-------------|-------|
 | **Ego Agent Training** | PPO Ego | Trains a PPO agent against a population of homogeneous partner agents. | - |
-| | LIAM Ego | Trains a LIAM agent against a population of homogeneous partner agents. | [Papoudakis et al. 2021](https://arxiv.org/abs/2006.09447) |
+| | Partner-Modeling Ego | Trains an ego agent with an auxiliary partner-modeling loss against a population of homogeneous partner agents. | [Papoudakis et al. 2021](https://arxiv.org/abs/2006.09447) |
 | | MeLIBA Ego | Trains a MeLIBA agent against a population of homogeneous partner agents. | [Zintgraf et al. 2022](https://arxiv.org/abs/2101.03864) |
 | **Teammate Generation** | FCP (Fictitious Co-Play) | Generates diverse teammates using varying seeds and checkpoints of IPPO. | [Strouse et al. 2021](https://proceedings.neurips.cc/paper/2021/hash/797134c3e42371bb4979a462eb2f042a-Abstract.html) |
 | | BRDiv | Generates diverse teammates using best response diversity (BRDiv) metric. | [Rahman et al. 2022](https://arxiv.org/abs/2207.14138) |
@@ -131,7 +131,7 @@ The project structure is described here. Additional notes about some folders are
 - `common/`: Shared utilities and common code.
 - `envs/`: Environment implementations and wrappers.
 - `evaluation/`: Evaluation and visualization scripts.
-- `ego_agent_training/`: All ego agent learning implementations (PPO, LIAM, and MeLIBA).
+- `ego_agent_training/`: All ego agent learning implementations (PPO, partner-modeling, and MeLIBA).
 - `marl/`: MARL algorithm implementations. Currently only supports IPPO.
 - `open_ended_training/`: Open-ended learning methods (ROTATE, PAIRED, Minimax Return).
 - `teammate_generation/`: Teammate generation algorithms (BRDiv, FCP, CoMeDi).

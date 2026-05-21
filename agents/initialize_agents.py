@@ -8,7 +8,6 @@ from agents.s5_actor_critic_agent import S5ActorCriticPolicy
 from agents.ja_actor_critic_agent import JAActorCriticPolicy, JAImageActorCriticPolicy
 from agents.image_actor_critic_agent import ImageActorCriticPolicy
 from envs.base_env import get_inner_env
-from agents.liam_agent import LIAMPolicy, initialize_liam_encoder_decoder
 from agents.meliba_agent import MeLIBAPolicy, initialize_meliba_encoder_decoder
 
 def initialize_s5_agent(config, env, rng):
@@ -269,41 +268,6 @@ def initialize_pseudo_actor_with_conditional_critic(config, env, rng):
 
     return policy, init_params
 
-def initialize_liam_agent(config, env, rng):
-    """Initialize the LIAM ego agent with the given config.
-
-    Args:
-        config: dict, config for the agent
-        env: gymnasium environment
-        rng: jax.random.PRNGKey, random key for initialization
-
-    Returns:
-        liam: LIAMPolicy, the policy object
-        params: tuple, initial parameters for the {encoder, decoder} and policy
-    """
-    rng, init_encoder_decoder_rng, init_policy_rng = jax.random.split(rng, 3)
-
-    # Initialize the policy based on the specified type
-    if config["EGO_ACTOR_TYPE"] == "s5":
-        ego_policy, init_ego_params = initialize_s5_agent(config, env, init_policy_rng)
-    elif config["EGO_ACTOR_TYPE"] == "mlp":
-        ego_policy, init_ego_params = initialize_mlp_agent(config, env, init_policy_rng)
-    elif config["EGO_ACTOR_TYPE"] == "rnn":
-        ego_policy, init_ego_params = initialize_rnn_agent(config, env, init_policy_rng)
-
-    # Initialize the encoder and decoder for LIAM
-    encoder, decoder, init_encoder_decoder_params = initialize_liam_encoder_decoder(config, env, init_encoder_decoder_rng)
-
-    liam = LIAMPolicy(
-        policy=ego_policy,
-        encoder=encoder,
-        decoder=decoder
-    )
-    params = {'encoder': init_encoder_decoder_params['encoder'],
-              'decoder': init_encoder_decoder_params['decoder'],
-              'policy': init_ego_params}
-    return liam, params
-
 def initialize_meliba_agent(config, env, rng):
     """Initialize the MeLIBA ego agent with the given config.
 
@@ -326,7 +290,7 @@ def initialize_meliba_agent(config, env, rng):
     elif config["EGO_ACTOR_TYPE"] == "rnn":
         ego_policy, init_ego_params = initialize_rnn_agent(config, env, init_policy_rng)
 
-    # Initialize the encoder and decoder for LIAM
+    # Initialize the auxiliary encoder and decoder
     encoder, decoder, init_encoder_decoder_params = initialize_meliba_encoder_decoder(config, env, init_encoder_decoder_rng)
 
     meliba = MeLIBAPolicy(

@@ -1,5 +1,5 @@
 '''
-Script for training a MeLIBA ego agent against a population of homogeneous partner agents.
+Script for training an ego agent with an auxiliary partner-modeling loss.
 
 
 
@@ -7,15 +7,15 @@ Only supports a population of homogeneous RL partner agents.
 
 
 
-Command to run MeLIBA ego training:
+Command to run partner-modeling ego training:
 
-python ego_agent_training/run.py algorithm=meliba_ego/lbf task=lbf label=test_meliba_ego
+python ego_agent_training/run.py algorithm=partner_modeling_ego/lbf task=lbf label=test_partner_modeling_ego
 
 
 
 Suggested debug command:
 
-python ego_agent_training/run.py algorithm=meliba_ego/lbf task=lbf logger.mode=disabled label=debug algorithm.TOTAL_TIMESTEPS=1e5
+python ego_agent_training/run.py algorithm=partner_modeling_ego/lbf task=lbf logger.mode=disabled label=debug algorithm.TOTAL_TIMESTEPS=1e5
 '''
 import shutil
 import time
@@ -27,7 +27,6 @@ import numpy as np
 import optax
 import hydra
 
-from agents.initialize_agents import initialize_meliba_agent
 from agents.population_interface import AgentPopulation
 from common.plot_utils import get_stats, get_metric_names
 from common.save_load_utils import save_train_run
@@ -36,28 +35,32 @@ from envs.log_wrapper import LogWrapper
 from common.agent_loader_from_config import initialize_rl_agent_from_config
 from marl.ppo_utils import unbatchify
 from ego_agent_training.auxiliary_ego_driver import train_auxiliary_ego_agent
-from ego_agent_training.meliba_utils import Transition
+from ego_agent_training.partner_modeling_utils import (
+    PartnerModelingPolicy,
+    Transition,
+    initialize_partner_modeling_auxiliaries,
+)
+from ego_agent_training.utils import initialize_ego_agent
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def train_meliba_ego_agent(config, env, train_rng,
-                        ego_policy, init_ego_params, n_ego_train_seeds,
-                        partner_population: AgentPopulation,
-                        partner_params
-                        ):
-    """Train MeLIBA ego agent using the given partner checkpoints and initial ego parameters."""
+def train_partner_modeling_ego_agent(config, env, train_rng,
+                                     ego_policy, init_ego_params, n_ego_train_seeds,
+                                     partner_population: AgentPopulation,
+                                     partner_params):
+    """Train an ego agent with an auxiliary partner-modeling loss."""
 
     def make_policy_tx(config, linear_schedule):
         if config["ANNEAL_LR"]:
             return optax.chain(
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.rmsprop(learning_rate=linear_schedule),
+                optax.adam(learning_rate=linear_schedule, eps=1e-5),
             )
         return optax.chain(
             optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            optax.rmsprop(config["LR"]),
+            optax.adam(config["LR"], eps=1e-5),
         )
 
     def init_rollout_runner_state(
@@ -71,7 +74,6 @@ def train_meliba_ego_agent(config, env, train_rng,
         partner_indices,
         rng,
     ):
-        init_reward = {k: jnp.zeros((config["NUM_ENVS"])) for k in env.agents}
         init_act_onehot = {
             k: jnp.zeros((config["NUM_ENVS"], env.action_space(env.agents[i]).n))
             for i, k in enumerate(env.agents)
@@ -82,7 +84,6 @@ def train_meliba_ego_agent(config, env, train_rng,
             init_env_state,
             init_obs,
             init_done,
-            init_reward,
             init_act_onehot,
             init_ego_hstate,
             init_partner_hstate,
@@ -97,8 +98,7 @@ def train_meliba_ego_agent(config, env, train_rng,
             env_state,
             prev_obs,
             prev_done,
-            prev_reward,
-            prev_act_onehot,
+            act_onehot,
             ego_hstate,
             partner_hstate,
             partner_indices,
@@ -121,13 +121,6 @@ def train_meliba_ego_agent(config, env, train_rng,
             partner_indices,
         )
 
-        prev_joint_act_onehot = jnp.concatenate(
-            (
-                prev_act_onehot["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"], -1),
-                prev_act_onehot["agent_1"].reshape(1, config["NUM_CONTROLLED_ACTORS"], -1),
-            ),
-            axis=-1,
-        )
         act_0, val_0, pi_0, new_ego_hstate = ego_policy.get_action_value_policy(
             params={
                 "encoder": encoder_decoder_train_state.params["encoder"],
@@ -139,7 +132,7 @@ def train_meliba_ego_agent(config, env, train_rng,
             avail_actions=avail_actions_0,
             hstate=ego_hstate,
             rng=actor_rng,
-            aux_obs=(None, prev_joint_act_onehot, prev_reward["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"], 1)),
+            aux_obs=(act_onehot["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"], -1), None, None),
         )
         logp_0 = pi_0.log_prob(act_0)
         act_0 = act_0.squeeze()
@@ -183,9 +176,8 @@ def train_meliba_ego_agent(config, env, train_rng,
             obs=prev_obs["agent_0"],
             info=info_0,
             avail_actions=avail_actions_0,
-            joint_act_onehot=jnp.concatenate((env_act_onehot["agent_0"], env_act_onehot["agent_1"]), axis=-1),
-            prev_action_onehot=prev_act_onehot["agent_0"],
-            partner_action=act_1,
+            prev_action_onehot=act_onehot["agent_0"],
+            partner_obs=prev_obs["agent_1"],
             partner_action_onehot=env_act_onehot["agent_1"],
         )
         new_runner_state = (
@@ -194,7 +186,6 @@ def train_meliba_ego_agent(config, env, train_rng,
             env_state_next,
             obs_next,
             done_next,
-            reward,
             env_act_onehot,
             new_ego_hstate,
             new_partner_hstate,
@@ -210,7 +201,6 @@ def train_meliba_ego_agent(config, env, train_rng,
             env_state,
             obs,
             done,
-            reward,
             act_onehot,
             ego_hstate,
             _partner_hstate,
@@ -218,13 +208,6 @@ def train_meliba_ego_agent(config, env, train_rng,
             _rng,
         ) = runner_state
         avail_actions_0 = jax.vmap(env.get_avail_actions)(env_state.env_state)["agent_0"].astype(jnp.float32)
-        joint_act_onehot = jnp.concatenate(
-            (
-                act_onehot["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"], -1),
-                act_onehot["agent_1"].reshape(1, config["NUM_CONTROLLED_ACTORS"], -1),
-            ),
-            axis=-1,
-        )
         _, last_val, _, _ = ego_policy.get_action_value_policy(
             params={
                 "encoder": encoder_decoder_train_state.params["encoder"],
@@ -236,12 +219,12 @@ def train_meliba_ego_agent(config, env, train_rng,
             avail_actions=jax.lax.stop_gradient(avail_actions_0),
             hstate=ego_hstate,
             rng=jax.random.PRNGKey(0),
-            aux_obs=(None, joint_act_onehot, reward["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"], 1)),
+            aux_obs=(act_onehot["agent_0"].reshape(1, config["NUM_CONTROLLED_ACTORS"], -1), None, None),
         )
         return last_val.squeeze()
 
     def aux_loss_fn(params, encoder_decoder_params, init_ego_hstate, traj_batch, gae, target_v):
-        _, value, pi, kl_loss, recon_loss, _ = ego_policy.compute_decoder_losses(
+        _, value, pi, recon_loss1, recon_loss2, _ = ego_policy.compute_decoder_losses(
             params={
                 "encoder": encoder_decoder_params["encoder"],
                 "decoder": encoder_decoder_params["decoder"],
@@ -252,10 +235,12 @@ def train_meliba_ego_agent(config, env, train_rng,
             avail_actions=traj_batch.avail_actions,
             hstate=init_ego_hstate,
             rng=jax.random.PRNGKey(0),
-            aux_obs=(None, traj_batch.joint_act_onehot, traj_batch.reward),
-            partner_action=traj_batch.partner_action,
+            aux_obs=(traj_batch.prev_action_onehot, None, None),
+            modelled_agent_obs=traj_batch.partner_obs,
+            modelled_agent_act=traj_batch.partner_action_onehot,
         )
         log_prob = pi.log_prob(traj_batch.action)
+        recon_loss = recon_loss1 + recon_loss2
 
         value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(
             -config["CLIP_EPS"],
@@ -272,23 +257,20 @@ def train_meliba_ego_agent(config, env, train_rng,
         pg_loss = -jnp.mean(jnp.minimum(pg_loss_1, pg_loss_2))
         entropy = jnp.mean(pi.entropy())
 
-        elbo = (config["DECODER_KL_WEIGHT"] * kl_loss) + (config["DECODER_LOSS_COEFF"] * recon_loss)
         total_loss = (
             pg_loss
-            + (config["VF_COEF"] * value_loss)
-            - (config["ENT_COEF"] * entropy)
-            + elbo
+            + config["VF_COEF"] * value_loss
+            - config["ENT_COEF"] * entropy
+            + config["RECON_COEF"] * recon_loss
         )
-        return total_loss, (value_loss, pg_loss, entropy, kl_loss, recon_loss, elbo)
+        return total_loss, (value_loss, pg_loss, entropy, recon_loss)
 
     def metric_from_loss_terms(loss_terms):
         return {
             "actor_loss": loss_terms[1],
             "value_loss": loss_terms[0],
             "entropy_loss": loss_terms[2],
-            "kl_divergence_loss": loss_terms[3],
-            "reconstruction_loss": loss_terms[4],
-            "elbo_loss": loss_terms[5],
+            "reconstruction_loss": loss_terms[3],
         }
 
     return train_auxiliary_ego_agent(
@@ -320,9 +302,9 @@ def run_ego_training(config, wandb_logger):
     env = make_env(algorithm_config["ENV_NAME"], algorithm_config["ENV_KWARGS"])
     env = LogWrapper(env)
 
-    # Set the policy input dimension for the meliba policy
-    # (Latent dim * 4) + observation dimension
-    algorithm_config['POLICY_INPUT_DIM'] = (algorithm_config['ENCODER_LATENT_DIM'] * 4) + env.observation_space(env.agents[0]).shape[0]
+    # Set the policy input dimension for the wrapped ego policy
+    # Embedding dimension + observation dimension
+    algorithm_config['POLICY_INPUT_DIM'] = algorithm_config['ENCODER_OUTPUT_DIM'] + env.observation_space(env.agents[0]).shape[0]
 
     rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
     rng, init_partner_rng, init_ego_rng, train_rng = jax.random.split(rng, 4)
@@ -345,14 +327,33 @@ def run_ego_training(config, wandb_logger):
         policy_cls=partner_policy
     )
 
-    # Initialize ego agent policy
-    ego_policy, init_ego_params = initialize_meliba_agent(algorithm_config, env, init_ego_rng)
+    rng, init_aux_rng, init_policy_rng = jax.random.split(init_ego_rng, 3)
+    base_ego_policy, init_base_ego_params = initialize_ego_agent(
+        algorithm_config,
+        env,
+        init_policy_rng,
+    )
+    encoder, decoder, init_aux_params = initialize_partner_modeling_auxiliaries(
+        algorithm_config,
+        env,
+        init_aux_rng,
+    )
+    ego_policy = PartnerModelingPolicy(
+        policy=base_ego_policy,
+        encoder=encoder,
+        decoder=decoder,
+    )
+    init_ego_params = {
+        "encoder": init_aux_params["encoder"],
+        "decoder": init_aux_params["decoder"],
+        "policy": init_base_ego_params,
+    }
 
     log.info("Starting ego agent training...")
     start_time = time.time()
 
     # Run the training
-    out = train_meliba_ego_agent(
+    out = train_partner_modeling_ego_agent(
         config=algorithm_config,
         env=env,
         train_rng=train_rng,
@@ -390,9 +391,7 @@ def log_metrics(config, train_out, logger, metric_names: tuple):
     all_ego_value_losses = np.asarray(train_metrics["value_loss"]) # shape (n_ego_train_seeds, num_updates, num_partners, num_minibatches)
     all_ego_actor_losses = np.asarray(train_metrics["actor_loss"]) # shape (n_ego_train_seeds, num_updates, num_partners, num_minibatches)
     all_ego_entropy_losses = np.asarray(train_metrics["entropy_loss"]) # shape (n_ego_train_seeds, num_updates, num_partners, num_minibatches)
-    all_ego_kl_divergence_losses = np.asarray(train_metrics["kl_divergence_loss"]) # shape (n_ego_train_seeds, num_updates, num_partners, num_minibatches)
     all_ego_reconstruction_losses = np.asarray(train_metrics["reconstruction_loss"]) # shape (n_ego_train_seeds, num_updates, num_partners, num_minibatches)
-    all_ego_elbo_losses = np.asarray(train_metrics["elbo_loss"]) # shape (n_ego_train_seeds, num_updates, num_partners, num_minibatches)
     all_ego_grad_norms = np.asarray(train_metrics["avg_grad_norm"]) # shape (n_ego_train_seeds, num_updates, num_partners, num_minibatches)
     all_ego_encoder_grad_norms = np.asarray(train_metrics["encoder_avg_grad_norm"]) # shape (n_ego_train_seeds, num_updates, num_partners, num_minibatches)
     all_ego_decoder_grad_norms = np.asarray(train_metrics["decoder_avg_grad_norm"]) # shape (n_ego_train_seeds, num_updates, num_partners, num_minibatches)
@@ -406,9 +405,7 @@ def log_metrics(config, train_out, logger, metric_names: tuple):
     average_ego_value_losses = np.mean(all_ego_value_losses, axis=(0, 2, 3))
     average_ego_actor_losses = np.mean(all_ego_actor_losses, axis=(0, 2, 3))
     average_ego_entropy_losses = np.mean(all_ego_entropy_losses, axis=(0, 2, 3))
-    average_ego_kl_divergence_losses = np.mean(all_ego_kl_divergence_losses, axis=(0, 2, 3))
     average_ego_reconstruction_losses = np.mean(all_ego_reconstruction_losses, axis=(0, 2, 3))
-    average_ego_elbo_losses = np.mean(all_ego_elbo_losses, axis=(0, 2, 3))
     average_ego_grad_norms = np.mean(all_ego_grad_norms, axis=(0, 2, 3))
     average_ego_encoder_grad_norms = np.mean(all_ego_encoder_grad_norms, axis=(0, 2, 3))
     average_ego_decoder_grad_norms = np.mean(all_ego_decoder_grad_norms, axis=(0, 2, 3))
@@ -425,9 +422,7 @@ def log_metrics(config, train_out, logger, metric_names: tuple):
         logger.log_item("Train/EgoValueLoss", average_ego_value_losses[step], train_step=step, commit=True)
         logger.log_item("Train/EgoActorLoss", average_ego_actor_losses[step], train_step=step, commit=True)
         logger.log_item("Train/EgoEntropyLoss", average_ego_entropy_losses[step], train_step=step, commit=True)
-        logger.log_item("Train/EgoKLDivergenceLoss", average_ego_kl_divergence_losses[step], train_step=step, commit=True)
         logger.log_item("Train/EgoReconstructionLoss", average_ego_reconstruction_losses[step], train_step=step, commit=True)
-        logger.log_item("Train/EgoELBOLoss", average_ego_elbo_losses[step], train_step=step, commit=True)
         logger.log_item("Train/EgoGradNorm", average_ego_grad_norms[step], train_step=step, commit=True)
         logger.log_item("Train/EgoEncoderGradNorm", average_ego_encoder_grad_norms[step], train_step=step, commit=True)
         logger.log_item("Train/EgoDecoderGradNorm", average_ego_decoder_grad_norms[step], train_step=step, commit=True)

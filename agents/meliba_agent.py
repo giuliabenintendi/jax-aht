@@ -491,8 +491,8 @@ class MeLIBAPolicy(AgentPolicy):
         """
         Args:
             policy: the policy model
-            encoder: the LIAM encoder model
-            decoder: the LIAM decoder model
+            encoder: the auxiliary encoder model
+            decoder: the auxiliary decoder model
         """
         super().__init__(action_dim=policy.action_dim, obs_dim=policy.obs_dim)
         self.policy = policy
