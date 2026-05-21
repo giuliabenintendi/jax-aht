@@ -7,11 +7,10 @@
 #   op + comm         card-game-op                15M  12 seeds  comm on, match 0.1, follow 0,   stability 0
 #   op + comm shaped  card-game-op                5M   12 seeds  comm on, match 0.1, follow 0.5, stability 0
 #
-# 3-GPU layout (one chain per GPU, chains run in parallel):
-#   GPU_A  op + ja                                 ~52h
-#   GPU_B  op + ja shaped                          ~49h
-#   GPU_C  op only -> op+comm -> op+comm shaped     ~15h + ~11h + ~4h
-# Longest chain ~52h (~2.2 days) -> fits a 3-day weekend.
+# 2-GPU layout (one chain per GPU, chains run in parallel):
+#   GPU_A  op + ja        -> op only                    ~52h + ~15h        = ~67h
+#   GPU_B  op + ja shaped -> op+comm -> op+comm shaped   ~49h + ~11h + ~4h  = ~64h
+# Longest chain ~67h (~2.8 days) -> fits a 3-day weekend.
 #
 # Requires the ja_ippo end-of-run OOM fix (commit 0a44124): per-seed train
 # outputs are aggregated on the host, so NUM_SEEDS is not GPU-memory-bound.
@@ -21,14 +20,13 @@
 # Smoke-test the full pipeline first -- exercises the 48-seed aggregation /
 # eval / XP path that OOM'd, with tiny timesteps (minutes, not days):
 #   SEEDS=48 STEPS_LONG=1e5 STEPS_SHORT=1e5 ./grid_48seed_significance.sh
-# Override device IDs if 1/4/7 are not free:
-#   GPU_A=0 GPU_B=2 GPU_C=6 ./grid_48seed_significance.sh
+# Override device IDs if 4/7 are not free:
+#   GPU_A=0 GPU_B=2 ./grid_48seed_significance.sh
 
 set -u
 
-GPU_A="${GPU_A:-1}"                          # op + ja
-GPU_B="${GPU_B:-4}"                          # op + ja shaped
-GPU_C="${GPU_C:-7}"                          # op only -> op+comm -> op+comm shaped
+GPU_A="${GPU_A:-4}"                          # op + ja -> op only
+GPU_B="${GPU_B:-7}"                          # op + ja shaped -> op+comm -> op+comm shaped
 SEEDS="${SEEDS:-48}"                         # op only, op+ja, op+ja shaped
 COMM_SEEDS="${COMM_SEEDS:-12}"               # op+comm, op+comm shaped
 STEPS_LONG="${STEPS_LONG:-15e6}"             # op+ja, op+ja shaped, op+comm
@@ -39,10 +37,10 @@ EVAL_VIDEO_SEEDS="${EVAL_VIDEO_SEEDS:-0}"    # 0 = no eval videos rendered/saved
 
 ts() { date +%Y-%m-%d_%H:%M:%S; }
 
-echo "[$(ts)] launching 5-run card-game sweep"
-echo "  GPU ${GPU_A}: op+ja   GPU ${GPU_B}: op+ja shaped   GPU ${GPU_C}: op only -> op+comm -> op+comm shaped"
+echo "[$(ts)] launching 5-run card-game sweep (2 GPUs)"
+echo "  GPU ${GPU_A}: op+ja -> op only    GPU ${GPU_B}: op+ja shaped -> op+comm -> op+comm shaped"
 
-# --- GPU_A : op + ja  (self=0) ----------------------------------------------
+# --- GPU_A : op + ja  ->  op only -------------------------------------------
 (
   echo "[$(ts)] [start]  op+ja  (GPU ${GPU_A})"
   ./run_gpu.sh "${GPU_A}" marl.run \
@@ -58,10 +56,21 @@ echo "  GPU ${GPU_A}: op+ja   GPU ${GPU_B}: op+ja shaped   GPU ${GPU_C}: op only
     algorithm.JA_PARTNER_FEED_PER_HEAD=false \
     algorithm.EVAL_VIDEO_NUM_SEEDS="${EVAL_VIDEO_SEEDS}"
   echo "[$(ts)] [finish] op+ja  (exit $?)"
-) > batch48_op_ja.log 2>&1 &
+
+  echo "[$(ts)] [start]  op only  (GPU ${GPU_A})"
+  ./run_gpu.sh "${GPU_A}" marl.run \
+    task=card-game-op \
+    algorithm=ja_ippo/card-game-op \
+    label=op_only_48s \
+    algorithm.NUM_SEEDS="${SEEDS}" \
+    algorithm.TOTAL_TIMESTEPS="${STEPS_SHORT}" \
+    algorithm.COMMUNICATION=false \
+    algorithm.EVAL_VIDEO_NUM_SEEDS="${EVAL_VIDEO_SEEDS}"
+  echo "[$(ts)] [finish] op only  (exit $?)"
+) > batch48_ja_oponly.log 2>&1 &
 PID_A=$!
 
-# --- GPU_B : op + ja shaped  (self=0.20) ------------------------------------
+# --- GPU_B : op + ja shaped  ->  op + comm  ->  op + comm shaped -------------
 (
   echo "[$(ts)] [start]  op+ja shaped  (GPU ${GPU_B})"
   ./run_gpu.sh "${GPU_B}" marl.run \
@@ -77,24 +86,9 @@ PID_A=$!
     algorithm.JA_PARTNER_FEED_PER_HEAD=false \
     algorithm.EVAL_VIDEO_NUM_SEEDS="${EVAL_VIDEO_SEEDS}"
   echo "[$(ts)] [finish] op+ja shaped  (exit $?)"
-) > batch48_op_ja_shaped.log 2>&1 &
-PID_B=$!
 
-# --- GPU_C : op only  ->  op + comm  ->  op + comm shaped --------------------
-(
-  echo "[$(ts)] [start]  op only  (GPU ${GPU_C})"
-  ./run_gpu.sh "${GPU_C}" marl.run \
-    task=card-game-op \
-    algorithm=ja_ippo/card-game-op \
-    label=op_only_48s \
-    algorithm.NUM_SEEDS="${SEEDS}" \
-    algorithm.TOTAL_TIMESTEPS="${STEPS_SHORT}" \
-    algorithm.COMMUNICATION=false \
-    algorithm.EVAL_VIDEO_NUM_SEEDS="${EVAL_VIDEO_SEEDS}"
-  echo "[$(ts)] [finish] op only  (exit $?)"
-
-  echo "[$(ts)] [start]  op+comm  (GPU ${GPU_C})"
-  ./run_gpu.sh "${GPU_C}" marl.run \
+  echo "[$(ts)] [start]  op+comm  (GPU ${GPU_B})"
+  ./run_gpu.sh "${GPU_B}" marl.run \
     task=card-game-op \
     algorithm=ja_ippo/card-game-op \
     label=op_comm_noshape_15M_12s \
@@ -107,8 +101,8 @@ PID_B=$!
     algorithm.EVAL_VIDEO_NUM_SEEDS="${EVAL_VIDEO_SEEDS}"
   echo "[$(ts)] [finish] op+comm  (exit $?)"
 
-  echo "[$(ts)] [start]  op+comm shaped  (GPU ${GPU_C})"
-  ./run_gpu.sh "${GPU_C}" marl.run \
+  echo "[$(ts)] [start]  op+comm shaped  (GPU ${GPU_B})"
+  ./run_gpu.sh "${GPU_B}" marl.run \
     task=card-game-op \
     algorithm=ja_ippo/card-game-op \
     label=op_comm_shaped_5M_12s \
@@ -120,11 +114,11 @@ PID_B=$!
     task.ENV_KWARGS.stability_coef=0.0 \
     algorithm.EVAL_VIDEO_NUM_SEEDS="${EVAL_VIDEO_SEEDS}"
   echo "[$(ts)] [finish] op+comm shaped  (exit $?)"
-) > batch48_op_only_comm.log 2>&1 &
-PID_C=$!
+) > batch48_jashaped_comm.log 2>&1 &
+PID_B=$!
 
-echo "[$(ts)] PIDs:  A=${PID_A} (op+ja)   B=${PID_B} (op+ja shaped)   C=${PID_C} (op only->comm)"
-echo "[$(ts)] monitor:  tail -f batch48_op_ja.log batch48_op_ja_shaped.log batch48_op_only_comm.log"
+echo "[$(ts)] PIDs:  A=${PID_A} (GPU ${GPU_A})   B=${PID_B} (GPU ${GPU_B})"
+echo "[$(ts)] monitor:  tail -f batch48_ja_oponly.log batch48_jashaped_comm.log"
 
-wait "${PID_A}" "${PID_B}" "${PID_C}"
+wait "${PID_A}" "${PID_B}"
 echo "[$(ts)] all chains finished."
