@@ -234,9 +234,13 @@ class CardGameEnv(BaseEnv):
         return jnp.where(is_decision & success, 1.0, 0.0)
 
     def _comm_shaping(self, prev_messages, new_messages, picks, is_decision):
-        """Comm-shaping rewards: match (shared), stability (shared), follow (per-agent).
+        """Comm-shaping rewards: match (per-agent), stability (shared), follow (per-agent).
 
-        - match: +match_coef per non-decision step when new messages agree (shared).
+        - match (per-agent): +match_coef per non-decision step when agent i's current
+          message equals the partner's previous message. Mirrors the JA match
+          mechanism — alignment to the partner's previous-step signal, since an
+          agent cannot observe the partner's current message. No reward on the
+          first step, where no previous partner message exists.
         - stability: +stability_coef per non-decision step when prev msgs matched, new msgs
           still match, and both agents kept their own message (shared; rewards committed
           persistence, discriminates against oscillation or synchronised flips).
@@ -270,7 +274,10 @@ class CardGameEnv(BaseEnv):
             & jnp.equal(new_msg_1, prev_msg_1)
         )
 
-        match_val = jnp.where(new_match & ~is_decision, self.match_coef, 0.0)
+        match_ok_0 = ~is_decision & (prev_msg_1 >= 0) & jnp.equal(new_msg_0, prev_msg_1)
+        match_ok_1 = ~is_decision & (prev_msg_0 >= 0) & jnp.equal(new_msg_1, prev_msg_0)
+        match_val_0 = jnp.where(match_ok_0, self.match_coef, 0.0)
+        match_val_1 = jnp.where(match_ok_1, self.match_coef, 0.0)
         stable_val = jnp.where(
             prev_match & new_match & both_held & ~is_decision,
             self.stability_coef,
@@ -284,7 +291,7 @@ class CardGameEnv(BaseEnv):
 
         broadcast = lambda x: jnp.array([x, x])
         return (
-            broadcast(match_val),
+            jnp.array([match_val_0, match_val_1]),
             broadcast(stable_val),
             jnp.array([follow_val_0, follow_val_1]),
         )

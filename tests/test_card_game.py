@@ -105,6 +105,37 @@ def test_mismatching_reward():
     assert dones["__all__"]
 
 
+def test_match_reward_mirrors_partner_previous_message():
+    """match shaping rewards agent i when its current message equals the
+    partner's previous message — lagged and per-agent (see _comm_shaping)."""
+    env = make_env("card-game", {"max_steps": 10, "communication": True,
+                                 "match_coef": 0.1})
+    key = jax.random.PRNGKey(0)
+    obs, state = env.reset(key)
+
+    # Step 1: no previous partner message exists yet -> no match reward.
+    key, subkey = jax.random.split(key)
+    obs, state, _, _, info = env.step(
+        subkey, state, {"agent_0": jnp.int32(2), "agent_1": jnp.int32(2)})
+    assert float(info["comm_reward_match"][0]) == 0.0
+    assert float(info["comm_reward_match"][1]) == 0.0
+
+    # Step 2: each agent's current message equals the partner's previous (2).
+    key, subkey = jax.random.split(key)
+    obs, state, _, _, info = env.step(
+        subkey, state, {"agent_0": jnp.int32(2), "agent_1": jnp.int32(2)})
+    assert float(info["comm_reward_match"][0]) > 0.0
+    assert float(info["comm_reward_match"][1]) > 0.0
+
+    # Step 3: only agent 1 still sends the partner's previous message (2) ->
+    # the reward is assigned per agent.
+    key, subkey = jax.random.split(key)
+    obs, state, _, _, info = env.step(
+        subkey, state, {"agent_0": jnp.int32(4), "agent_1": jnp.int32(2)})
+    assert float(info["comm_reward_match"][0]) == 0.0
+    assert float(info["comm_reward_match"][1]) > 0.0
+
+
 def test_auto_reset():
     """After episode ends, state should auto-reset (new permutation possible)."""
     env = make_env("card-game", {"max_steps": 10})
