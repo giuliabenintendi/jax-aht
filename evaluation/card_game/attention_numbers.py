@@ -27,6 +27,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from envs.card_game.rendering import (
+    AGENT_0_COLOR, AGENT_1_COLOR,
+    _A0_PATTERN_SMALL, _A1_PATTERN_SMALL, _draw_card_border_upscaled,
+    _stamp_label_np,
     CARD_COLORS, NUM_CARDS, TILE_PIXELS, render_card_game_minimal,
 )
 from agents.ja_utils import build_card_masks
@@ -78,21 +81,15 @@ def _render_agent_view(state, agent_key: str, step_count: int) -> np.ndarray:
     return base.astype(np.float32) / 255.0
 
 
-def _format_attn_grid(attn_2d: np.ndarray, decimals: int = 3) -> str:
-    """Render a 2D attention grid as an aligned text table."""
-    h, w = attn_2d.shape
-    width = decimals + 3  # leading "0." + decimals + space
-    rows = []
-    rows.append("     " + "  ".join(f"c{c:<{width-2}}" for c in range(w)))
-    for r in range(h):
-        cells = "  ".join(f"{attn_2d[r, c]:.{decimals}f}" for c in range(w))
-        rows.append(f"r{r}: {cells}")
-    return "\n".join(rows)
-
-
-def _entropy(p: np.ndarray, eps: float = 1e-12) -> float:
-    p = np.clip(p, eps, 1.0)
-    return float(-(p * np.log(p)).sum())
+def _draw_own_action_dot_raw(base: np.ndarray, view_col: int, agent_idx: int) -> np.ndarray:
+    """Draw a 2x2 dot of the agent's own colour at the chosen card."""
+    if view_col < 0:
+        return base
+    color = np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8)
+    cx = int(view_col * TILE_PIXELS + TILE_PIXELS / 2)
+    cy = int(TILE_PIXELS + TILE_PIXELS / 2)
+    base[max(0, cy - 1): cy + 1, max(0, cx - 1): cx + 1] = color
+    return base
 
 
 def _save_per_head_action_overlay(
@@ -351,98 +348,50 @@ def _propagate_card_attention(
 
 def _save_attn_strip(
     attn_2d_seq: np.ndarray,
-    entropies: list,
     obs_seq: np.ndarray,
+    action_view_slots: list[int],
     out_path: Path,
     title: str,
+    agent_idx: int,
     img_h: int = 21,
     img_w: int = 35,
 ) -> None:
-    """Save a 3xT panel:
-      row 0 = raw 6x9 grid with values
-      row 1 = bilinear-upsampled attention overlaid on the agent's own-frame obs
-      row 2 = propagated attention (on-card running max, off-card current only)
-              overlaid on the obs
-
-    Args:
-        attn_2d_seq: (T, fh, fw) attention maps.
-        entropies: list of per-step entropy values (nats).
-        obs_seq: (T, img_h, img_w, 3) per-step agent-view images, [0, 1] float.
-        out_path: PNG path.
-        title: figure suptitle.
-    """
+    """Save a 1xT panel: raw attention overlaid on the agent-view obs."""
     T, fh, fw = attn_2d_seq.shape
-
-    card_pixel_y_lo = 7
-    card_pixel_y_hi = 14
-    # Feature rows fully or mostly overlapping the card pixel row.
-    # With fh=6, img_h=21: r=2 covers y=7-10.5, r=3 covers y=10.5-14. Both on card.
-    card_feat_r_lo = int(round(card_pixel_y_lo * fh / img_h))   # 2
-    card_feat_r_hi = int(round(card_pixel_y_hi * fh / img_h))   # 4
-
-    propagated = _propagate_card_attention(
-        attn_2d_seq, card_feat_r_lo, card_feat_r_hi,
-    )
-
     vmax_raw = float(attn_2d_seq.max())
-    vmax_prop = float(propagated.max())
+    if vmax_raw < 1e-6:
+        vmax_raw = 1.0
 
-    fig, axes = plt.subplots(3, T, figsize=(2.2 * T, 6.0),
-                              gridspec_kw={"height_ratios": [fh / fw, img_h / img_w, img_h / img_w]})
+    fig, axes = plt.subplots(1, T, figsize=(2.2 * T, 2.2))
     if T == 1:
-        axes = axes[:, None]
+        axes = np.asarray([axes])
+
+    label_pattern = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
+    label_color = np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8)
 
     for t in range(T):
         attn = attn_2d_seq[t]
-        prop = propagated[t]
-
-        # --- Row 0: raw 6x9 grid, value-annotated ---
-        ax = axes[0, t]
-        ax.imshow(attn, cmap="hot", vmin=0.0, vmax=vmax_raw,
-                  interpolation="nearest", aspect="equal")
-        for r in range(fh):
-            for c in range(fw):
-                val = attn[r, c]
-                text_color = "black" if val > vmax_raw * 0.6 else "white"
-                ax.text(c, r, f"{val:.2f}", ha="center", va="center",
-                        fontsize=5.5, color=text_color)
-        ax.axhline(y=card_feat_r_lo - 0.5, color="cyan", lw=0.8, alpha=0.9)
-        ax.axhline(y=card_feat_r_hi - 0.5, color="cyan", lw=0.8, alpha=0.9)
-        ax.set_title(f"t={t}\nH={entropies[t]:.2f} nats", fontsize=8)
-        ax.set_xticks(range(fw))
-        ax.set_yticks(range(fh))
-        ax.set_xticklabels([f"c{c}" for c in range(fw)], fontsize=5)
-        ax.set_yticklabels([f"r{r}" for r in range(fh)], fontsize=5)
-        ax.tick_params(length=0, pad=1)
-
-        # --- Row 1: obs + raw attention overlay ---
-        ax2 = axes[1, t]
-        ax2.imshow(obs_seq[t])
+        ax = axes[t]
+        base = (np.clip(obs_seq[t], 0.0, 1.0) * 255.0).astype(np.uint8)
+        base = _stamp_label_np(base.copy(), label_pattern, 1, 27, label_color)
+        slot = int(action_view_slots[t]) if action_view_slots[t] is not None else -1
+        if slot >= 0:
+            if t == T - 1:
+                base = _draw_card_border_upscaled(base, slot, label_color, thickness=2, scale=1, outset_raw=0)
+            else:
+                base = _draw_own_action_dot_raw(base, slot, agent_idx)
+        ax.imshow(base)
         attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
-        ax2.imshow(np.asarray(attn_up), cmap="hot", alpha=0.55,
-                   vmin=0.0, vmax=vmax_raw,
-                   extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
-        ax2.axhline(y=card_pixel_y_lo - 0.5, color="cyan", lw=0.4, alpha=0.7)
-        ax2.axhline(y=card_pixel_y_hi - 0.5, color="cyan", lw=0.4, alpha=0.7)
-        if t == 0:
-            ax2.set_ylabel("raw", fontsize=8)
-        ax2.set_xticks([])
-        ax2.set_yticks([])
+        attn_up_np = np.asarray(attn_up)
+        attn_norm = np.clip(attn_up_np / vmax_raw, 0.0, 1.0)
+        rgba = plt.get_cmap("magma")(attn_norm)
+        rgba[..., 3] = attn_norm * 0.85
+        ax.imshow(rgba, extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
+        ax.set_title(f"t={t}", fontsize=8)
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-        # --- Row 2: obs + propagated attention overlay ---
-        ax3 = axes[2, t]
-        ax3.imshow(obs_seq[t])
-        prop_up = jax.image.resize(jnp.asarray(prop), (img_h, img_w), method="bilinear")
-        ax3.imshow(np.asarray(prop_up), cmap="hot", alpha=0.55,
-                   vmin=0.0, vmax=vmax_prop,
-                   extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
-        ax3.axhline(y=card_pixel_y_lo - 0.5, color="cyan", lw=0.4, alpha=0.7)
-        ax3.axhline(y=card_pixel_y_hi - 0.5, color="cyan", lw=0.4, alpha=0.7)
-        if t == 0:
-            ax3.set_ylabel("propagated", fontsize=8)
-        ax3.set_xticks([])
-        ax3.set_yticks([])
-
+    fig.suptitle(title, fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, dpi=170, bbox_inches="tight")
     plt.close(fig)
@@ -486,7 +435,7 @@ def main() -> None:
 
     for ep in range(args.num_episodes):
         rng = jax.random.PRNGKey(args.episode_rng_base + args.seed_idx * 1000 + ep)
-        ep_states, attn_maps, _, _ = run_episode_with_states(
+        ep_states, attn_maps, ep_actions, _ = run_episode_with_states(
             rng, ev.env, params, ev.policy, params, ev.policy, ev.max_steps,
             collect_attention=True, greedy=greedy,
             ja_card_masks=_use_card_masks,
@@ -497,7 +446,6 @@ def main() -> None:
             png_path = out_dir / f"attn_seed{args.seed_idx}_ep{ep}_{agent_key}.png"
 
             attn_seq = []
-            entropies = []
             num_steps = len(attn_maps[agent_key])
             for t in range(num_steps):
                 raw = np.asarray(attn_maps[agent_key][t]).squeeze()
@@ -507,11 +455,7 @@ def main() -> None:
                     attn_2d = raw
                 else:
                     attn_2d = raw.reshape(6, 9)
-                flat = attn_2d.flatten()
-                flat_sum = float(flat.sum())
-                ent = _entropy(flat / max(flat_sum, 1e-12))
                 attn_seq.append(attn_2d)
-                entropies.append(ent)
 
             attn_seq_np = np.stack(attn_seq, axis=0)
 
@@ -527,12 +471,15 @@ def main() -> None:
                     axis=0,
                 )
 
+            agent_idx = 0 if agent_key == "agent_0" else 1
+            action_slots = [int(a[agent_idx]) for a in ep_actions[:T_attn]]
             _save_attn_strip(
                 attn_seq_np,
-                entropies,
                 obs_seq_np,
+                action_slots,
                 png_path,
                 title=f"seed {args.seed_idx} ep {ep} {agent_key}",
+                agent_idx=agent_idx,
             )
             print(f"[saved {png_path}]")
 
