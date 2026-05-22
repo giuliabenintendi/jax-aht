@@ -28,8 +28,7 @@ import matplotlib.pyplot as plt
 
 from envs.card_game.rendering import (
     AGENT_0_COLOR, AGENT_1_COLOR,
-    _A0_PATTERN_SMALL, _A1_PATTERN_SMALL, _draw_card_border_upscaled,
-    _stamp_label_np,
+    _draw_card_border_upscaled,
     CARD_COLORS, NUM_CARDS, TILE_PIXELS, render_card_game_minimal,
 )
 from agents.ja_utils import build_card_masks
@@ -253,7 +252,7 @@ def _save_per_head_action_overlay(
             ax.set_yticks([])
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=170, bbox_inches="tight")
+    fig.savefig(out_path, dpi=240, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -360,24 +359,37 @@ def _save_attn_strip(
     vmax_raw = float(attn_2d_seq.max())
     if vmax_raw < 1e-6:
         vmax_raw = 1.0
+    cmap_name = "plasma"
+    card_row_lo = 2
+    card_row_hi = 4
 
     fig, axes = plt.subplots(
-        2, T, figsize=(2.2 * T, 4.6),
+        2, T, figsize=(2.0 * T + 0.55, 4.0),
         gridspec_kw={"height_ratios": [fh / fw, img_h / img_w]},
     )
     if T == 1:
         axes = axes[:, None]
 
-    label_pattern = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
     label_color = np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8)
+    label_text = "A0" if agent_idx == 0 else "A1"
 
     for t in range(T):
         attn = attn_2d_seq[t]
         ax_raw = axes[0, t]
         ax = axes[1, t]
 
-        ax_raw.imshow(attn, cmap="magma", vmin=0.0, vmax=vmax_raw,
+        ax_raw.imshow(attn, cmap=cmap_name, vmin=0.0, vmax=vmax_raw,
                       interpolation="nearest", aspect="equal")
+        ax_raw.add_patch(
+            plt.Rectangle(
+                (-0.5, card_row_lo - 0.5),
+                fw,
+                card_row_hi - card_row_lo,
+                fill=False,
+                edgecolor="white",
+                linewidth=1.1,
+            )
+        )
         for r in range(fh):
             for c in range(fw):
                 val = float(attn[r, c])
@@ -397,11 +409,10 @@ def _save_attn_strip(
         ax_raw.tick_params(length=0, pad=1)
 
         base = (np.clip(obs_seq[t], 0.0, 1.0) * 255.0).astype(np.uint8)
-        base = _stamp_label_np(base.copy(), label_pattern, 1, 27, label_color)
         slot = int(action_view_slots[t]) if action_view_slots[t] is not None else -1
         if slot >= 0:
             if t == T - 1:
-                base = _draw_card_border_upscaled(base, slot, label_color, thickness=2, scale=1, outset_raw=0)
+                base = _draw_card_border_upscaled(base, slot, label_color, thickness=1, scale=1, outset_raw=0)
             else:
                 base = _draw_own_action_dot_raw(base, slot, agent_idx)
         base_faded = np.clip(base.astype(np.float32) * 0.45 + 255.0 * 0.55, 0.0, 255.0).astype(np.uint8)
@@ -409,16 +420,34 @@ def _save_attn_strip(
         attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="nearest")
         attn_up_np = np.asarray(attn_up)
         attn_norm = np.clip(attn_up_np / vmax_raw, 0.0, 1.0)
-        rgba = plt.get_cmap("magma")(attn_norm)
+        rgba = plt.get_cmap(cmap_name)(attn_norm)
         rgba[..., 3] = attn_norm * 0.95
         ax.imshow(rgba, extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
+        ax.text(
+            1.0,
+            img_h - 1.4,
+            label_text,
+            color=label_color.astype(np.float32) / 255.0,
+            fontsize=9,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
         if t == 0:
             ax.set_ylabel("obs", fontsize=8)
         ax.set_xticks([])
         ax.set_yticks([])
 
-    fig.suptitle(title, fontsize=10)
-    fig.tight_layout()
+    sm = plt.cm.ScalarMappable(
+        cmap=cmap_name,
+        norm=matplotlib.colors.Normalize(vmin=0.0, vmax=vmax_raw),
+    )
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes, location="right", fraction=0.026, pad=0.012)
+    cbar.ax.tick_params(labelsize=7, length=2)
+    cbar.set_label("attention", fontsize=8)
+
+    fig.subplots_adjust(left=0.045, right=0.93, top=0.97, bottom=0.08, wspace=0.08, hspace=0.08)
     fig.savefig(out_path, dpi=170, bbox_inches="tight")
     plt.close(fig)
 
