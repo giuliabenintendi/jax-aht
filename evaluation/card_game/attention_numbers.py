@@ -356,7 +356,7 @@ def _save_attn_strip(
     img_h: int = 21,
     img_w: int = 35,
 ) -> None:
-    """Save a 2xT panel: raw colored grid + blocky attention over obs."""
+    """Save a 2xT panel: attention heatmap row + separate observation row."""
     T, fh, fw = attn_2d_seq.shape
     vmax_raw = float(attn_2d_seq.max())
     if vmax_raw < 1e-6:
@@ -393,7 +393,7 @@ def _save_attn_strip(
             )
         )
         if t == 0:
-            ax_raw.set_ylabel("raw", fontsize=8)
+            ax_raw.set_ylabel("attn", fontsize=8)
         ax_raw.set_title(f"t={t}", fontsize=8)
         ax_raw.set_xticks([])
         ax_raw.set_yticks([])
@@ -409,18 +409,8 @@ def _save_attn_strip(
                 base = _draw_card_border_upscaled(base, slot, label_color, thickness=1, scale=1, outset_raw=0)
             else:
                 base = _draw_own_action_dot_raw(base, slot, agent_idx)
-        base_faded = np.clip(base.astype(np.float32) * 0.28 + 255.0 * 0.72, 0.0, 255.0).astype(np.uint8)
-        attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="nearest")
-        attn_up_np = np.asarray(attn_up)
-        attn_norm = np.clip(attn_up_np / vmax_raw, 0.0, 1.0)
-        rgba = plt.get_cmap(cmap_name)(attn_norm)
-        rgba[..., 3] = 0.22 + attn_norm * 0.78
-        alpha = rgba[..., 3:4]
-        attn_rgb = (rgba[..., :3] * 255.0).astype(np.float32)
-        composite = base_faded.astype(np.float32) * (1.0 - alpha) + attn_rgb * alpha
-        composite = np.clip(composite, 0.0, 255.0).astype(np.uint8)
-        composite = _stamp_label_np(composite, label_pattern, 1, 27, label_color)
-        ax.imshow(composite)
+        base = _stamp_label_np(base, label_pattern, 1, 27, label_color)
+        ax.imshow(base)
         if t == 0:
             ax.set_ylabel("obs", fontsize=8)
         ax.set_xticks([])
