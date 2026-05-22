@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
-# OP+comm card-game conditions, chained to start after the OP-only job finishes.
+# OP / comm card-game baseline conditions at 48 seeds.
 #
-#   comm WITHOUT shaping   match 0.1, follow 0,   stability 0    15M
-#   comm WITH shaping      match 0.1, follow 0.5, stability 0     5M
+#   op     OP only             COMMUNICATION=false
+#   full   comm fully shaped   match 0.1, follow 0.5, stability 0
+#   match  comm match-only     match 0.1, follow 0,   stability 0
 #
-# Both: COMMUNICATION=true, task card-game-op, 12 seeds. They differ only in
-# the follow term and the step budget. comm-without-shaping gets 15M to match
-# the OP+JA base budget (it is the harder condition; the match-only run
-# 561ukjtx left 2/3 seeds at chance at 10M). comm-with-shaping stays at 5M:
-# it is already saturated there (c77tmvf3 reached 0.91 at 5M).
+# All three: task card-game-op, 48 seeds, 5M steps.
 #
-# Run from the repo root inside tmux/screen.
+# NOTE: match-only is the hard condition -- run 561ukjtx left 2/3 seeds at
+# chance at 10M. The 5M budget here is a deliberate, confirmed choice, not an
+# oversight; expect some seeds to finish at chance.
+#
+# Run from the repo root inside tmux/screen:
 #   ./run_comm_conditions.sh
-# Chain after a running OP-only job by passing its PID (same machine):
+# Run one condition only (to parallelize across GPUs):
+#   COND=op ./run_comm_conditions.sh
+# Override GPU / seeds / steps:
+#   GPU=5 SEEDS=48 STEPS=5e6 ./run_comm_conditions.sh
+# Chain after a running job on the same machine:
 #   WAIT_PID=<pid> ./run_comm_conditions.sh
-# Override GPU / seeds:
-#   GPU=2 SEEDS=12 ./run_comm_conditions.sh
 
 set -u
 
-GPU="${GPU:-0}"
-SEEDS="${SEEDS:-12}"
+GPU="${GPU:-5}"
+SEEDS="${SEEDS:-48}"
+STEPS="${STEPS:-5e6}"
+COND="${COND:-all}"
 WAIT_PID="${WAIT_PID:-}"
 
 [ -f run_gpu.sh ] || { echo "error: run from the repo root (run_gpu.sh not found)"; exit 1; }
@@ -28,37 +33,62 @@ WAIT_PID="${WAIT_PID:-}"
 ts() { date +%Y-%m-%d_%H:%M:%S; }
 
 if [ -n "${WAIT_PID}" ]; then
-  echo "[$(ts)] waiting for OP-only (PID ${WAIT_PID}) to finish..."
+  echo "[$(ts)] waiting for PID ${WAIT_PID} to finish..."
   while kill -0 "${WAIT_PID}" 2>/dev/null; do sleep 60; done
-  echo "[$(ts)] OP-only finished."
+  echo "[$(ts)] PID ${WAIT_PID} finished."
 fi
 
-echo "[$(ts)] [start]  comm WITHOUT shaping  (15M, GPU ${GPU})"
-./run_gpu.sh "${GPU}" marl.run \
-  task=card-game-op \
-  algorithm=ja_ippo/card-game-op \
-  label=op_comm_noshape_15M_${SEEDS}s \
-  algorithm.NUM_SEEDS="${SEEDS}" \
-  algorithm.TOTAL_TIMESTEPS=15e6 \
-  algorithm.COMMUNICATION=true \
-  algorithm.EVAL_VIDEO_NUM_SEEDS=0 \
-  task.ENV_KWARGS.match_coef=0.1 \
-  task.ENV_KWARGS.follow_coef=0.0 \
-  task.ENV_KWARGS.stability_coef=0.0
-echo "[$(ts)] [finish] comm WITHOUT shaping  (exit $?)"
+run_op() {
+  echo "[$(ts)] [start]  OP only  (${STEPS}, GPU ${GPU})"
+  ./run_gpu.sh "${GPU}" marl.run \
+    task=card-game-op \
+    algorithm=ja_ippo/card-game-op \
+    label=comm_rerun/op_only_${SEEDS}s \
+    algorithm.NUM_SEEDS="${SEEDS}" \
+    algorithm.TOTAL_TIMESTEPS="${STEPS}" \
+    algorithm.COMMUNICATION=false \
+    algorithm.EVAL_VIDEO_NUM_SEEDS=0
+  echo "[$(ts)] [finish] OP only  (exit $?)"
+}
 
-echo "[$(ts)] [start]  comm WITH shaping  (5M, GPU ${GPU})"
-./run_gpu.sh "${GPU}" marl.run \
-  task=card-game-op \
-  algorithm=ja_ippo/card-game-op \
-  label=op_comm_shape_5M_${SEEDS}s \
-  algorithm.NUM_SEEDS="${SEEDS}" \
-  algorithm.TOTAL_TIMESTEPS=5e6 \
-  algorithm.COMMUNICATION=true \
-  algorithm.EVAL_VIDEO_NUM_SEEDS=0 \
-  task.ENV_KWARGS.match_coef=0.1 \
-  task.ENV_KWARGS.follow_coef=0.5 \
-  task.ENV_KWARGS.stability_coef=0.0
-echo "[$(ts)] [finish] comm WITH shaping  (exit $?)"
+run_full() {
+  echo "[$(ts)] [start]  comm fully shaped  (${STEPS}, GPU ${GPU})"
+  ./run_gpu.sh "${GPU}" marl.run \
+    task=card-game-op \
+    algorithm=ja_ippo/card-game-op \
+    label=comm_rerun/comm_full_${SEEDS}s \
+    algorithm.NUM_SEEDS="${SEEDS}" \
+    algorithm.TOTAL_TIMESTEPS="${STEPS}" \
+    algorithm.COMMUNICATION=true \
+    algorithm.EVAL_VIDEO_NUM_SEEDS=0 \
+    task.ENV_KWARGS.match_coef=0.1 \
+    task.ENV_KWARGS.follow_coef=0.5 \
+    task.ENV_KWARGS.stability_coef=0.0
+  echo "[$(ts)] [finish] comm fully shaped  (exit $?)"
+}
 
-echo "[$(ts)] all comm conditions finished."
+run_match() {
+  echo "[$(ts)] [start]  comm match-only  (${STEPS}, GPU ${GPU})"
+  ./run_gpu.sh "${GPU}" marl.run \
+    task=card-game-op \
+    algorithm=ja_ippo/card-game-op \
+    label=comm_rerun/comm_matchonly_${SEEDS}s \
+    algorithm.NUM_SEEDS="${SEEDS}" \
+    algorithm.TOTAL_TIMESTEPS="${STEPS}" \
+    algorithm.COMMUNICATION=true \
+    algorithm.EVAL_VIDEO_NUM_SEEDS=0 \
+    task.ENV_KWARGS.match_coef=0.1 \
+    task.ENV_KWARGS.follow_coef=0.0 \
+    task.ENV_KWARGS.stability_coef=0.0
+  echo "[$(ts)] [finish] comm match-only  (exit $?)"
+}
+
+echo "[$(ts)] GPU=${GPU} SEEDS=${SEEDS} STEPS=${STEPS} COND=${COND}"
+case "${COND}" in
+  op)    run_op ;;
+  full)  run_full ;;
+  match) run_match ;;
+  all)   run_op; run_full; run_match ;;
+  *)     echo "unknown COND: ${COND} (use op|full|match|all)"; exit 1 ;;
+esac
+echo "[$(ts)] done."
