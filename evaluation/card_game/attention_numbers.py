@@ -376,16 +376,19 @@ def _save_attn_strip(
     vmax_raw = float(attn_2d_seq.max())
     if vmax_raw < 1e-6:
         vmax_raw = 1.0
-    cmap_name = "inferno"
+    cmap_name = "coolwarm"
     card_boxes = _card_grid_boxes(fh, fw)
 
     fig, axes = plt.subplots(1, T, figsize=(1.78 * T + 0.42, 2.15))
     if T == 1:
         axes = np.asarray([axes])
+    fig.patch.set_facecolor("white")
 
     label_color = np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8)
     label_rgb = tuple((label_color / 255.0).tolist())
     label_text = "A0" if agent_idx == 0 else "A1"
+    guide_color = (0.35, 0.35, 0.35, 0.75)
+    meta_color = (0.32, 0.32, 0.32, 1.0)
 
     for t in range(T):
         attn = attn_2d_seq[t]
@@ -400,23 +403,31 @@ def _save_attn_strip(
                     w,
                     h,
                     fill=False,
-                    edgecolor="white",
-                    linewidth=0.8,
+                    edgecolor=guide_color,
+                    linewidth=0.6,
                 )
             )
-        if t == 0:
-            ax.set_ylabel("attn", fontsize=8)
-        ax.set_title(f"t={t}", fontsize=8)
         ax.text(
             0.04,
-            0.96,
+            1.02,
             label_text,
             transform=ax.transAxes,
             ha="left",
-            va="top",
-            fontsize=8,
-            fontweight="bold",
+            va="bottom",
+            fontsize=7.4,
+            fontweight="normal",
             color=label_rgb,
+        )
+        ax.text(
+            0.96,
+            1.02,
+            f"t={t}",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=7.1,
+            fontweight="normal",
+            color=meta_color,
         )
 
         slot = int(action_view_slots[t]) if action_view_slots[t] is not None else -1
@@ -430,7 +441,7 @@ def _save_attn_strip(
                         h,
                         fill=False,
                         edgecolor=label_rgb,
-                        linewidth=1.6,
+                        linewidth=1.2,
                     )
                 )
             else:
@@ -446,17 +457,22 @@ def _save_attn_strip(
 
         ax.set_xticks(range(fw))
         ax.set_yticks(range(fh))
-        ax.tick_params(labelsize=7, length=0)
+        ax.tick_params(labelsize=6.8, length=0, colors=meta_color)
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.45)
+            spine.set_edgecolor((0.4, 0.4, 0.4, 0.55))
 
     sm = plt.cm.ScalarMappable(
         cmap=cmap_name,
         norm=matplotlib.colors.Normalize(vmin=0.0, vmax=vmax_raw),
     )
     sm.set_array([])
-    cbar = fig.colorbar(sm, ax=axes, location="right", fraction=0.03, pad=0.01)
-    cbar.ax.tick_params(labelsize=7, length=2)
+    cbar = fig.colorbar(sm, ax=axes, location="right", fraction=0.028, pad=0.012)
+    cbar.ax.tick_params(labelsize=6.8, length=2, colors=meta_color)
+    cbar.outline.set_linewidth(0.45)
+    cbar.outline.set_edgecolor((0.4, 0.4, 0.4, 0.55))
 
-    fig.subplots_adjust(left=0.04, right=0.94, top=0.9, bottom=0.09, wspace=0.08)
+    fig.subplots_adjust(left=0.045, right=0.94, top=0.87, bottom=0.1, wspace=0.08)
     fig.savefig(out_path, dpi=240, bbox_inches="tight")
     plt.close(fig)
 
