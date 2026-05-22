@@ -28,7 +28,9 @@ import matplotlib.pyplot as plt
 
 from envs.card_game.rendering import (
     AGENT_0_COLOR, AGENT_1_COLOR,
+    _A0_PATTERN_SMALL, _A1_PATTERN_SMALL,
     _draw_card_border_upscaled,
+    _stamp_label_np,
     CARD_COLORS, NUM_CARDS, TILE_PIXELS, render_card_game_minimal,
 )
 from agents.ja_utils import build_card_masks
@@ -354,24 +356,24 @@ def _save_attn_strip(
     img_h: int = 21,
     img_w: int = 35,
 ) -> None:
-    """Save a 2xT panel: raw numeric grid + blocky attention over dimmed obs."""
+    """Save a 2xT panel: raw colored grid + blocky attention over obs."""
     T, fh, fw = attn_2d_seq.shape
     vmax_raw = float(attn_2d_seq.max())
     if vmax_raw < 1e-6:
         vmax_raw = 1.0
-    cmap_name = "plasma"
+    cmap_name = "inferno"
     card_row_lo = 2
     card_row_hi = 4
 
     fig, axes = plt.subplots(
-        2, T, figsize=(2.0 * T + 0.55, 4.0),
+        2, T, figsize=(1.85 * T, 3.75),
         gridspec_kw={"height_ratios": [fh / fw, img_h / img_w]},
     )
     if T == 1:
         axes = axes[:, None]
 
     label_color = np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8)
-    label_text = "A0" if agent_idx == 0 else "A1"
+    label_pattern = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
 
     for t in range(T):
         attn = attn_2d_seq[t]
@@ -390,23 +392,15 @@ def _save_attn_strip(
                 linewidth=1.1,
             )
         )
-        for r in range(fh):
-            for c in range(fw):
-                val = float(attn[r, c])
-                text_color = "black" if val > vmax_raw * 0.55 else "white"
-                ax_raw.text(
-                    c, r, f"{val:.2f}",
-                    ha="center", va="center",
-                    fontsize=5.5, color=text_color,
-                )
         if t == 0:
             ax_raw.set_ylabel("raw", fontsize=8)
         ax_raw.set_title(f"t={t}", fontsize=8)
-        ax_raw.set_xticks(range(fw))
-        ax_raw.set_yticks(range(fh))
-        ax_raw.set_xticklabels([f"c{c}" for c in range(fw)], fontsize=5)
-        ax_raw.set_yticklabels([f"r{r}" for r in range(fh)], fontsize=5)
-        ax_raw.tick_params(length=0, pad=1)
+        ax_raw.set_xticks([])
+        ax_raw.set_yticks([])
+        ax_raw.set_xticks(np.arange(-0.5, fw, 1), minor=True)
+        ax_raw.set_yticks(np.arange(-0.5, fh, 1), minor=True)
+        ax_raw.grid(which="minor", color=(1, 1, 1, 0.22), linewidth=0.45)
+        ax_raw.tick_params(which="minor", bottom=False, left=False)
 
         base = (np.clip(obs_seq[t], 0.0, 1.0) * 255.0).astype(np.uint8)
         slot = int(action_view_slots[t]) if action_view_slots[t] is not None else -1
@@ -415,40 +409,25 @@ def _save_attn_strip(
                 base = _draw_card_border_upscaled(base, slot, label_color, thickness=1, scale=1, outset_raw=0)
             else:
                 base = _draw_own_action_dot_raw(base, slot, agent_idx)
-        base_faded = np.clip(base.astype(np.float32) * 0.45 + 255.0 * 0.55, 0.0, 255.0).astype(np.uint8)
-        ax.imshow(base_faded)
+        base_faded = np.clip(base.astype(np.float32) * 0.28 + 255.0 * 0.72, 0.0, 255.0).astype(np.uint8)
         attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="nearest")
         attn_up_np = np.asarray(attn_up)
         attn_norm = np.clip(attn_up_np / vmax_raw, 0.0, 1.0)
         rgba = plt.get_cmap(cmap_name)(attn_norm)
-        rgba[..., 3] = attn_norm * 0.95
-        ax.imshow(rgba, extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
-        ax.text(
-            1.0,
-            img_h - 1.4,
-            label_text,
-            color=label_color.astype(np.float32) / 255.0,
-            fontsize=9,
-            fontweight="bold",
-            ha="left",
-            va="center",
-        )
+        rgba[..., 3] = 0.22 + attn_norm * 0.78
+        alpha = rgba[..., 3:4]
+        attn_rgb = (rgba[..., :3] * 255.0).astype(np.float32)
+        composite = base_faded.astype(np.float32) * (1.0 - alpha) + attn_rgb * alpha
+        composite = np.clip(composite, 0.0, 255.0).astype(np.uint8)
+        composite = _stamp_label_np(composite, label_pattern, 1, 27, label_color)
+        ax.imshow(composite)
         if t == 0:
             ax.set_ylabel("obs", fontsize=8)
         ax.set_xticks([])
         ax.set_yticks([])
 
-    sm = plt.cm.ScalarMappable(
-        cmap=cmap_name,
-        norm=matplotlib.colors.Normalize(vmin=0.0, vmax=vmax_raw),
-    )
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=axes, location="right", fraction=0.026, pad=0.012)
-    cbar.ax.tick_params(labelsize=7, length=2)
-    cbar.set_label("attention", fontsize=8)
-
-    fig.subplots_adjust(left=0.045, right=0.93, top=0.97, bottom=0.08, wspace=0.08, hspace=0.08)
-    fig.savefig(out_path, dpi=170, bbox_inches="tight")
+    fig.subplots_adjust(left=0.03, right=0.995, top=0.97, bottom=0.055, wspace=0.04, hspace=0.06)
+    fig.savefig(out_path, dpi=240, bbox_inches="tight")
     plt.close(fig)
 
 
