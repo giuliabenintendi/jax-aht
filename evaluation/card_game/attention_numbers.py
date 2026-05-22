@@ -92,6 +92,24 @@ def _draw_own_action_dot_raw(base: np.ndarray, view_col: int, agent_idx: int) ->
     return base
 
 
+def _card_grid_boxes(feat_h: int, feat_w: int) -> list[tuple[float, float, float, float, float, float]]:
+    """Return per-card boxes and centers in feature-grid coordinates."""
+    masks = np.asarray(build_card_masks(21, 35, feat_h, feat_w))
+    boxes = []
+    for ci in range(masks.shape[0]):
+        rows, cols = np.nonzero(masks[ci] > 0.0)
+        y0 = float(rows.min()) - 0.5
+        y1 = float(rows.max()) + 0.5
+        x0 = float(cols.min()) - 0.5
+        x1 = float(cols.max()) + 0.5
+        weights = masks[ci]
+        rr, cc = np.indices(weights.shape, dtype=np.float32)
+        cy = float((rr * weights).sum() / np.maximum(weights.sum(), 1e-8))
+        cx = float((cc * weights).sum() / np.maximum(weights.sum(), 1e-8))
+        boxes.append((x0, y0, x1 - x0, y1 - y0, cx, cy))
+    return boxes
+
+
 def _save_per_head_action_overlay(
     per_head_seq: np.ndarray,
     obs_seq: np.ndarray,
@@ -348,75 +366,97 @@ def _propagate_card_attention(
 
 def _save_attn_strip(
     attn_2d_seq: np.ndarray,
-    obs_seq: np.ndarray,
     action_view_slots: list[int],
     out_path: Path,
     title: str,
     agent_idx: int,
-    img_h: int = 21,
-    img_w: int = 35,
 ) -> None:
-    """Save a 2xT panel: attention heatmap row + separate observation row."""
+    """Save a 1xT panel: attention heatmaps with card regions and action markers."""
     T, fh, fw = attn_2d_seq.shape
     vmax_raw = float(attn_2d_seq.max())
     if vmax_raw < 1e-6:
         vmax_raw = 1.0
     cmap_name = "inferno"
-    card_row_lo = 2
-    card_row_hi = 4
+    card_boxes = _card_grid_boxes(fh, fw)
 
-    fig, axes = plt.subplots(
-        2, T, figsize=(1.85 * T, 3.75),
-        gridspec_kw={"height_ratios": [fh / fw, img_h / img_w]},
-    )
+    fig, axes = plt.subplots(1, T, figsize=(1.78 * T + 0.42, 2.15))
     if T == 1:
-        axes = axes[:, None]
+        axes = np.asarray([axes])
 
     label_color = np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8)
-    label_pattern = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
+    label_rgb = tuple((label_color / 255.0).tolist())
+    label_text = "A0" if agent_idx == 0 else "A1"
 
     for t in range(T):
         attn = attn_2d_seq[t]
-        ax_raw = axes[0, t]
-        ax = axes[1, t]
+        ax = axes[t]
 
-        ax_raw.imshow(attn, cmap=cmap_name, vmin=0.0, vmax=vmax_raw,
-                      interpolation="nearest", aspect="equal")
-        ax_raw.add_patch(
-            plt.Rectangle(
-                (-0.5, card_row_lo - 0.5),
-                fw,
-                card_row_hi - card_row_lo,
-                fill=False,
-                edgecolor="white",
-                linewidth=1.1,
+        ax.imshow(attn, cmap=cmap_name, vmin=0.0, vmax=vmax_raw,
+                  interpolation="nearest", aspect="equal")
+        for x0, y0, w, h, _, _ in card_boxes:
+            ax.add_patch(
+                plt.Rectangle(
+                    (x0, y0),
+                    w,
+                    h,
+                    fill=False,
+                    edgecolor="white",
+                    linewidth=0.8,
+                )
             )
+        if t == 0:
+            ax.set_ylabel("attn", fontsize=8)
+        ax.set_title(f"t={t}", fontsize=8)
+        ax.text(
+            0.04,
+            0.96,
+            label_text,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8,
+            fontweight="bold",
+            color=label_rgb,
         )
-        if t == 0:
-            ax_raw.set_ylabel("attn", fontsize=8)
-        ax_raw.set_title(f"t={t}", fontsize=8)
-        ax_raw.set_xticks([])
-        ax_raw.set_yticks([])
-        ax_raw.set_xticks(np.arange(-0.5, fw, 1), minor=True)
-        ax_raw.set_yticks(np.arange(-0.5, fh, 1), minor=True)
-        ax_raw.grid(which="minor", color=(1, 1, 1, 0.22), linewidth=0.45)
-        ax_raw.tick_params(which="minor", bottom=False, left=False)
 
-        base = (np.clip(obs_seq[t], 0.0, 1.0) * 255.0).astype(np.uint8)
         slot = int(action_view_slots[t]) if action_view_slots[t] is not None else -1
-        if slot >= 0:
+        if 0 <= slot < len(card_boxes):
+            x0, y0, w, h, cx, cy = card_boxes[slot]
             if t == T - 1:
-                base = _draw_card_border_upscaled(base, slot, label_color, thickness=1, scale=1, outset_raw=0)
+                ax.add_patch(
+                    plt.Rectangle(
+                        (x0, y0),
+                        w,
+                        h,
+                        fill=False,
+                        edgecolor=label_rgb,
+                        linewidth=1.6,
+                    )
+                )
             else:
-                base = _draw_own_action_dot_raw(base, slot, agent_idx)
-        base = _stamp_label_np(base, label_pattern, 1, 27, label_color)
-        ax.imshow(base)
-        if t == 0:
-            ax.set_ylabel("obs", fontsize=8)
-        ax.set_xticks([])
-        ax.set_yticks([])
+                ax.add_patch(
+                    plt.Circle(
+                        (cx, cy),
+                        radius=0.22,
+                        facecolor=label_rgb,
+                        edgecolor="white",
+                        linewidth=0.5,
+                    )
+                )
 
-    fig.subplots_adjust(left=0.03, right=0.995, top=0.97, bottom=0.055, wspace=0.04, hspace=0.06)
+        ax.set_xticks(range(fw))
+        ax.set_yticks(range(fh))
+        ax.tick_params(labelsize=7, length=0)
+
+    sm = plt.cm.ScalarMappable(
+        cmap=cmap_name,
+        norm=matplotlib.colors.Normalize(vmin=0.0, vmax=vmax_raw),
+    )
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes, location="right", fraction=0.03, pad=0.01)
+    cbar.ax.tick_params(labelsize=7, length=2)
+
+    fig.subplots_adjust(left=0.04, right=0.94, top=0.9, bottom=0.09, wspace=0.08)
     fig.savefig(out_path, dpi=240, bbox_inches="tight")
     plt.close(fig)
 
@@ -459,7 +499,7 @@ def main() -> None:
 
     for ep in range(args.num_episodes):
         rng = jax.random.PRNGKey(args.episode_rng_base + args.seed_idx * 1000 + ep)
-        ep_states, attn_maps, ep_actions, _ = run_episode_with_states(
+        _, attn_maps, ep_actions, _ = run_episode_with_states(
             rng, ev.env, params, ev.policy, params, ev.policy, ev.max_steps,
             collect_attention=True, greedy=greedy,
             ja_card_masks=_use_card_masks,
@@ -483,23 +523,12 @@ def main() -> None:
 
             attn_seq_np = np.stack(attn_seq, axis=0)
 
-            obs_seq = []
-            for t in range(len(ep_states)):
-                obs_seq.append(_render_agent_view(ep_states[t], agent_key, t))
-            obs_seq_np = np.stack(obs_seq, axis=0)
             T_attn = attn_seq_np.shape[0]
-            T_obs = obs_seq_np.shape[0]
-            if T_obs != T_attn:
-                obs_seq_np = obs_seq_np[:T_attn] if T_obs > T_attn else np.concatenate(
-                    [obs_seq_np, np.zeros((T_attn - T_obs, 21, 35, 3), dtype=np.float32)],
-                    axis=0,
-                )
 
             agent_idx = 0 if agent_key == "agent_0" else 1
             action_slots = [int(a[agent_idx]) for a in ep_actions[:T_attn]]
             _save_attn_strip(
                 attn_seq_np,
-                obs_seq_np,
                 action_slots,
                 png_path,
                 title=f"seed {args.seed_idx} ep {ep} {agent_key}",
