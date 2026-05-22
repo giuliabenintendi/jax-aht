@@ -10,8 +10,8 @@ Provides:
 
 For a multi-slot dialogue (our card game emits one message per deliberation
 step, K messages before a single decision-step pick per agent), we report
-both metrics slot-by-slot. See `compute_sc_slotwise` and the CIC-side driver
-in `evaluation.card_game.eval_comm_cic` for the per-slot extensions.
+both metrics slot-by-slot. `compute_sc_slotwise` provides the maintained
+slotwise SC path; CIC helpers remain here only as low-level utilities.
 """
 
 from __future__ import annotations
