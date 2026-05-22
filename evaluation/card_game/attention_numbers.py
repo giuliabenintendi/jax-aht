@@ -50,8 +50,7 @@ def _render_agent_view(state, agent_key: str, step_count: int) -> np.ndarray:
     Uses render_card_game_minimal as the base (cards + timestep counter, no
     agent indicators), then applies OP position-shuffle and recolouring.
     Skips the partner-message dot (it would require digging out the previous
-    step's messages; the cyan card-row lines in the final plot are enough
-    to read where the heat is falling).
+    step's messages; this script is focused on the raw attention panels).
     """
     card_state = _walk_to_card_state(state)
     card_perm = np.asarray(card_state.card_permutation)
@@ -356,22 +355,47 @@ def _save_attn_strip(
     img_h: int = 21,
     img_w: int = 35,
 ) -> None:
-    """Save a 1xT panel: raw attention overlaid on the agent-view obs."""
+    """Save a 2xT panel: raw numeric grid + blocky attention over dimmed obs."""
     T, fh, fw = attn_2d_seq.shape
     vmax_raw = float(attn_2d_seq.max())
     if vmax_raw < 1e-6:
         vmax_raw = 1.0
 
-    fig, axes = plt.subplots(1, T, figsize=(2.2 * T, 2.2))
+    fig, axes = plt.subplots(
+        2, T, figsize=(2.2 * T, 4.6),
+        gridspec_kw={"height_ratios": [fh / fw, img_h / img_w]},
+    )
     if T == 1:
-        axes = np.asarray([axes])
+        axes = axes[:, None]
 
     label_pattern = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
     label_color = np.asarray(AGENT_0_COLOR if agent_idx == 0 else AGENT_1_COLOR, dtype=np.uint8)
 
     for t in range(T):
         attn = attn_2d_seq[t]
-        ax = axes[t]
+        ax_raw = axes[0, t]
+        ax = axes[1, t]
+
+        ax_raw.imshow(attn, cmap="magma", vmin=0.0, vmax=vmax_raw,
+                      interpolation="nearest", aspect="equal")
+        for r in range(fh):
+            for c in range(fw):
+                val = float(attn[r, c])
+                text_color = "black" if val > vmax_raw * 0.55 else "white"
+                ax_raw.text(
+                    c, r, f"{val:.2f}",
+                    ha="center", va="center",
+                    fontsize=5.5, color=text_color,
+                )
+        if t == 0:
+            ax_raw.set_ylabel("raw", fontsize=8)
+        ax_raw.set_title(f"t={t}", fontsize=8)
+        ax_raw.set_xticks(range(fw))
+        ax_raw.set_yticks(range(fh))
+        ax_raw.set_xticklabels([f"c{c}" for c in range(fw)], fontsize=5)
+        ax_raw.set_yticklabels([f"r{r}" for r in range(fh)], fontsize=5)
+        ax_raw.tick_params(length=0, pad=1)
+
         base = (np.clip(obs_seq[t], 0.0, 1.0) * 255.0).astype(np.uint8)
         base = _stamp_label_np(base.copy(), label_pattern, 1, 27, label_color)
         slot = int(action_view_slots[t]) if action_view_slots[t] is not None else -1
@@ -380,14 +404,16 @@ def _save_attn_strip(
                 base = _draw_card_border_upscaled(base, slot, label_color, thickness=2, scale=1, outset_raw=0)
             else:
                 base = _draw_own_action_dot_raw(base, slot, agent_idx)
-        ax.imshow(base)
-        attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
+        base_faded = np.clip(base.astype(np.float32) * 0.45 + 255.0 * 0.55, 0.0, 255.0).astype(np.uint8)
+        ax.imshow(base_faded)
+        attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="nearest")
         attn_up_np = np.asarray(attn_up)
         attn_norm = np.clip(attn_up_np / vmax_raw, 0.0, 1.0)
         rgba = plt.get_cmap("magma")(attn_norm)
-        rgba[..., 3] = attn_norm * 0.85
+        rgba[..., 3] = attn_norm * 0.95
         ax.imshow(rgba, extent=(-0.5, img_w - 0.5, img_h - 0.5, -0.5))
-        ax.set_title(f"t={t}", fontsize=8)
+        if t == 0:
+            ax.set_ylabel("obs", fontsize=8)
         ax.set_xticks([])
         ax.set_yticks([])
 
