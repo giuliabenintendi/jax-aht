@@ -144,35 +144,43 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
 
 
-def _log_card_game_view_attn_filmstrip(
-    attn_data, ep_actions, ep_states, ep_obs, ja_card_masks,
+def _log_card_game_gt_attn_filmstrip(
+    attn_data, ep_actions, ep_states, ja_card_masks,
     video_dir, out_name, tag="filmstrip", logger=None,
+    ep_messages=None,
 ):
-    """2xT per-agent view-slot filmstrip with within-card attention heatmaps.
+    """2xT GT-frame filmstrip with within-card spatial attention heatmaps.
 
-    Each row is an agent (0 top, 1 bottom). Every cell uses the agent's own
-    OP-shuffled+recoloured observation as the backdrop (matching the eval
-    videos) and replaces each card rectangle's interior with the head-
-    averaged spatial attention pattern within that card, mapped through
-    `coolwarm`. Values are normalized to the *filmstrip's* peak attention,
-    so colours are comparable cell-to-cell within one PNG (the colorbar on
-    the right reads 0 = none, 1 = filmstrip peak).
+    Each row is an agent (0 top, 1 bottom). Cells render the canonical
+    (un-OP'd) scene as backdrop — cards in GT colours at their physical
+    positions, plus the timestep counter — and replace each card
+    rectangle's interior with the agent's head-averaged spatial attention,
+    translated from the agent's view-slot frame to the GT frame via
+    `per_agent_perm[view_slot] = physical_pos`. Both rows therefore share
+    the same physical card layout, so attention can be compared card by
+    card across rows.
 
-    Only the decision-step pick is drawn, as a bounding box around the
-    agent's picked view-slot column in the agent's own colour (orange A0,
-    magenta A1). Deliberation steps are intentionally unmarked.
+    Values are normalized to the filmstrip's peak attention; the colorbar
+    on the right reads 0 = none, 1 = filmstrip peak.
 
-    `ja_card_masks` is accepted for signature parity with callers but the
-    spatial heatmap path does not use it — attention is upsampled directly
-    from the (fh, fw) policy output to the obs resolution.
+    Decoration is OWN-only on each row:
+      - At non-decision steps, a coloured dot on the GT card the agent's
+        action / message indicates (own colour).
+      - At the decision step, a bounding box around the agent's picked GT
+        card (orange A0, magenta A1) — no dot.
+
+    `ja_card_masks` is accepted for signature parity but the spatial-
+    heatmap path does not use it (attention is upsampled directly from
+    the (fh, fw) policy output and rearranged by per_agent_perm).
     """
     import matplotlib.cm as cm
     from envs.card_game.rendering import (
+        render_card_game_minimal,
         _stamp_label_np,
         _A0_PATTERN_SMALL,
         _A1_PATTERN_SMALL,
         _draw_card_border_upscaled,
-        _gt_pick_to_view_col,
+        _unwrap_card_game_state,
         CARD_RECT_W,
         CARD_RECT_H,
         CARD_RECT_Y,
@@ -183,15 +191,15 @@ def _log_card_game_view_attn_filmstrip(
         AGENT_0_COLOR,
         AGENT_1_COLOR,
     )
-    del ja_card_masks  # unused in the spatial-heatmap path
+    del ja_card_masks  # not used on the spatial-heatmap path
 
     maps_0 = attn_data.get("agent_0", [])
     maps_1 = attn_data.get("agent_1", [])
-    if not maps_0 or not maps_1 or not ep_obs:
-        print("[card_game] Missing attention/obs, skipping view-attn filmstrip.")
+    if not maps_0 or not maps_1:
+        print("[card_game] Missing attention maps, skipping GT-attn filmstrip.")
         return None
 
-    n_steps = min(len(maps_0), len(maps_1), len(ep_obs), len(ep_states))
+    n_steps = min(len(maps_0), len(maps_1), len(ep_states))
     if n_steps == 0:
         return None
 
@@ -203,6 +211,7 @@ def _log_card_game_view_attn_filmstrip(
     a0_color = np.array(AGENT_0_COLOR, dtype=np.uint8)
     a1_color = np.array(AGENT_1_COLOR, dtype=np.uint8)
     last_action = ep_actions[-1] if ep_actions else (-1, -1)
+    has_messages = bool(ep_messages)
 
     def _head_avg(a):
         a_sq = np.asarray(a).squeeze()
@@ -210,9 +219,27 @@ def _log_card_game_view_attn_filmstrip(
             a_sq = a_sq.mean(axis=-1)
         return a_sq
 
+    def _agent_perm(state, agent_idx):
+        s = state
+        while s is not None:
+            if hasattr(s, "per_agent_perm"):
+                return np.asarray(s.per_agent_perm[f"agent_{agent_idx}"])
+            s = getattr(s, "env_state", None)
+        return np.arange(NUM_CARDS)
+
+    def _own_action_gt(t, agent_idx):
+        # GT colour id the agent emitted at step t. Under comm runs the
+        # deliberation intent is in ep_messages; under no-comm runs it's
+        # in ep_actions (alongside the decision-step pick).
+        if has_messages and t < len(ep_messages):
+            return int(ep_messages[t][agent_idx])
+        if t < len(ep_actions):
+            return int(ep_actions[t][agent_idx])
+        return -1
+
     # Per-filmstrip global normalization keeps the colorbar interpretable
-    # across all (2 * n_steps) cells in this PNG — the value at colorbar
-    # 1.0 is the peak head-averaged attention attained anywhere in the
+    # across all (2 * n_steps) cells in this PNG — value 1.0 on the bar
+    # is the peak head-averaged attention attained anywhere in the
     # episode for either agent.
     head_avg_attn = [_head_avg(maps_0[t]) for t in range(n_steps)] + \
                     [_head_avg(maps_1[t]) for t in range(n_steps)]
@@ -220,20 +247,26 @@ def _log_card_game_view_attn_filmstrip(
     attn_global_max = max(attn_global_max, 1e-8)
 
     def _build_cell(t, agent_idx, attn_map, own_color):
-        # Backdrop: agent's own obs (already OP-shuffled / recoloured). No
-        # partner message recolouring — this view is OWN-frame only.
-        agent_key = f"agent_{agent_idx}"
-        obs_t = np.asarray(ep_obs[t][agent_key])
-        base = (obs_t.reshape(h_px, w_px, 3) * 255.0).astype(np.uint8)
+        state = ep_states[t]
+        inner = _unwrap_card_game_state(state)
+        card_perm = np.asarray(inner.card_permutation)   # phys_pos -> GT id
+        pos_perm = _agent_perm(state, agent_idx)          # view_slot -> phys_pos
+
+        # Canonical scene backdrop: GT colours at physical positions, plus
+        # the timestep counter. Same chrome as the eval-video GT row.
+        base = np.array(render_card_game_minimal(
+            inner.card_permutation, int(inner.step_count) + 1,
+        )).astype(np.uint8)
         up = np.array(Image.fromarray(base).resize(
             (w_px * scale, h_px * scale), Image.NEAREST,
         ))
 
-        # Head-averaged spatial attention normalised globally per filmstrip,
-        # upsampled to the upscaled obs resolution and rendered through
-        # coolwarm. We then overwrite each card rectangle's interior with
-        # the heatmap pixels — background / agent corners / dots stay as
-        # the obs so position context is preserved.
+        # Head-averaged spatial attention, normalised globally per
+        # filmstrip, upsampled, then rendered through coolwarm. The
+        # attention map is in the agent's view-slot frame; we copy each
+        # view-slot's card rectangle into its GT physical position. OP
+        # preserves within-card pixel patterns (it only shuffles whole
+        # tiles and recolours), so block-copy per view-slot is exact.
         a_norm = np.clip(_head_avg(attn_map) / attn_global_max, 0.0, 1.0)
         a_full = np.array(Image.fromarray(a_norm.astype(np.float32), mode="F").resize(
             (w_px * scale, h_px * scale), Image.NEAREST,
@@ -243,32 +276,43 @@ def _log_card_game_view_attn_filmstrip(
         card_w_up = CARD_RECT_W * scale
         card_h_up = CARD_RECT_H * scale
         card_y_up = CARD_RECT_Y * scale
-        for k in range(NUM_CARDS):
-            card_x_up = (1 + k * (CARD_RECT_W + 2)) * scale
+        for view_slot in range(NUM_CARDS):
+            phys = int(pos_perm[view_slot])
+            x_view = (1 + view_slot * (CARD_RECT_W + 2)) * scale
+            x_gt = (1 + phys * (CARD_RECT_W + 2)) * scale
             up[
                 card_y_up:card_y_up + card_h_up,
-                card_x_up:card_x_up + card_w_up,
+                x_gt:x_gt + card_w_up,
             ] = heatmap_rgb[
                 card_y_up:card_y_up + card_h_up,
-                card_x_up:card_x_up + card_w_up,
+                x_view:x_view + card_w_up,
             ]
 
         is_decision = (t == n_steps - 1)
+
+        # Own-action dot at non-decision steps. The recorded action is in
+        # GT colour-id space; convert to physical position via card_perm.
+        if not is_decision:
+            gt = _own_action_gt(t, agent_idx)
+            if gt >= 0:
+                matches = np.where(card_perm == gt)[0]
+                if len(matches):
+                    phys = int(matches[0])
+                    dot_up = 2 * scale
+                    card_x_up = (1 + phys * (CARD_RECT_W + 2)) * scale
+                    dot_y = card_y_up + (card_h_up - dot_up) // 2
+                    dot_x = card_x_up + (card_w_up - dot_up) // 2
+                    up[dot_y:dot_y + dot_up, dot_x:dot_x + dot_up] = own_color
 
         pat = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
         _stamp_label_np(up, pat, 1, 27, own_color, scale=scale)
 
         if is_decision and int(last_action[agent_idx]) >= 0:
-            # Env auto-reset re-samples the perm at the end of the decision
-            # step, so the perm for "what the agent picked" lives on the
-            # pre-decision state.
-            state_for_perm = ep_states[t - 1] if t > 0 else ep_states[t]
-            own_view = _gt_pick_to_view_col(
-                state_for_perm, agent_idx, int(last_action[agent_idx]),
-            )
-            if own_view >= 0:
+            gt_pick = int(last_action[agent_idx])
+            matches = np.where(card_perm == gt_pick)[0]
+            if len(matches):
                 up = _draw_card_border_upscaled(
-                    up, own_view, own_color,
+                    up, int(matches[0]), own_color,
                     2 * scale, scale, outset_raw=1,
                 )
         return up
@@ -299,13 +343,13 @@ def _log_card_game_view_attn_filmstrip(
     grid_path = f"{video_dir}/{out_name}"
     Image.fromarray(final).save(grid_path)
     print(
-        f"[card_game] Saved view-attn filmstrip: {grid_path} "
+        f"[card_game] Saved GT-attn filmstrip: {grid_path} "
         f"({final.shape[1]}x{grid_h} px)"
     )
 
     if logger is not None:
         import wandb
-        logger.log({f"{tag}/view_attn_filmstrip": wandb.Image(grid_path)}, commit=False)
+        logger.log({f"{tag}/gt_attn_filmstrip": wandb.Image(grid_path)}, commit=False)
     return grid_path
 
 

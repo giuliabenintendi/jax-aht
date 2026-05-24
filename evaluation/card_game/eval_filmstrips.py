@@ -38,7 +38,7 @@ from evaluation.card_game.eval_time_to_agree import (
 from evaluation.vis_episodes import run_episode_with_states
 from marl.eval_card_game import (
     _log_card_game_attention_grid,
-    _log_card_game_view_attn_filmstrip,
+    _log_card_game_gt_attn_filmstrip,
 )
 
 
@@ -84,14 +84,15 @@ def _save_strip(attn_maps, ep_actions, ep_messages, ep_obs, ep_states,
     )
 
 
-def _save_view_strip(attn_maps, ep_actions, ep_obs, ep_states,
-                     viz_card_masks, out_dir: Path, out_name: str) -> None:
-    """Render and save one 2xT per-agent view-slot coolwarm attention filmstrip
-    PNG with per-head card stripes."""
-    _log_card_game_view_attn_filmstrip(
+def _save_gt_strip(attn_maps, ep_actions, ep_messages, ep_states,
+                   viz_card_masks, out_dir: Path, out_name: str) -> None:
+    """Render and save one 2xT GT-frame coolwarm within-card spatial
+    attention filmstrip PNG."""
+    _log_card_game_gt_attn_filmstrip(
         attn_data=attn_maps, ep_actions=ep_actions, ep_states=ep_states,
-        ep_obs=ep_obs, ja_card_masks=viz_card_masks,
-        video_dir=str(out_dir), out_name=out_name, tag="filmstrip", logger=None,
+        ja_card_masks=viz_card_masks, video_dir=str(out_dir),
+        out_name=out_name, tag="filmstrip", logger=None,
+        ep_messages=ep_messages or None,
     )
 
 
@@ -151,10 +152,10 @@ def main() -> None:
             out_name = f"filmstrip_{tag}_ep{ep}.png"
             _save_strip(attn_maps, ep_actions, ep_messages, ep_obs, ep_states,
                         out_dir, out_name)
-            view_out_name = f"view_filmstrip_{tag}_ep{ep}.png"
-            _save_view_strip(
-                attn_maps, ep_actions, ep_obs, ep_states,
-                viz_card_masks, out_dir, view_out_name,
+            gt_out_name = f"gt_filmstrip_{tag}_ep{ep}.png"
+            _save_gt_strip(
+                attn_maps, ep_actions, ep_messages, ep_states,
+                viz_card_masks, out_dir, gt_out_name,
             )
             settle_str = str(settle) if success else "never"
             summary.append(
@@ -162,7 +163,7 @@ def main() -> None:
                 f"success={'yes' if success else 'no'}"
             )
             print(f"[saved] {out_dir / out_name}  (settle={settle_str})")
-            print(f"[saved] {out_dir / view_out_name}")
+            print(f"[saved] {out_dir / gt_out_name}")
 
     for s in sp_seeds:
         params = jax.tree.map(lambda x: x[s], ev.params)
