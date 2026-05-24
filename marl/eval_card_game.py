@@ -148,21 +148,23 @@ def _log_card_game_view_attn_filmstrip(
     attn_data, ep_actions, ep_states, ep_obs, ja_card_masks,
     video_dir, out_name, tag="filmstrip", logger=None,
 ):
-    """2xT per-agent view-slot filmstrip with per-head attention stripes.
+    """2xT per-agent view-slot filmstrip with within-card attention heatmaps.
 
     Each row is an agent (0 top, 1 bottom). Every cell uses the agent's own
     OP-shuffled+recoloured observation as the backdrop (matching the eval
-    videos) and replaces each card rectangle with `NUM_HEADS` vertical
-    stripes coloured by `coolwarm(per-head per-card attention mass)` in
-    fixed [0, 1] — so the spread across heads is visible card by card, not
-    collapsed to the head-average. Deliberation-step intent is intentionally
-    not marked; only the decision-step pick is drawn, as a bounding box
-    around the agent's picked view-slot column in the agent's own colour
-    (orange for A0, magenta for A1).
+    videos) and replaces each card rectangle's interior with the head-
+    averaged spatial attention pattern within that card, mapped through
+    `coolwarm`. Values are normalized to the *filmstrip's* peak attention,
+    so colours are comparable cell-to-cell within one PNG (the colorbar on
+    the right reads 0 = none, 1 = filmstrip peak).
 
-    `ja_card_masks` must be the (5, fh, fw) view-slot card masks from
-    `build_card_masks` — attention is integrated against them in the
-    agent's own view-slot frame, so no GT translation is needed.
+    Only the decision-step pick is drawn, as a bounding box around the
+    agent's picked view-slot column in the agent's own colour (orange A0,
+    magenta A1). Deliberation steps are intentionally unmarked.
+
+    `ja_card_masks` is accepted for signature parity with callers but the
+    spatial heatmap path does not use it — attention is upsampled directly
+    from the (fh, fw) policy output to the obs resolution.
     """
     import matplotlib.cm as cm
     from envs.card_game.rendering import (
@@ -181,6 +183,7 @@ def _log_card_game_view_attn_filmstrip(
         AGENT_0_COLOR,
         AGENT_1_COLOR,
     )
+    del ja_card_masks  # unused in the spatial-heatmap path
 
     maps_0 = attn_data.get("agent_0", [])
     maps_1 = attn_data.get("agent_1", [])
@@ -192,7 +195,6 @@ def _log_card_game_view_attn_filmstrip(
     if n_steps == 0:
         return None
 
-    card_masks_np = np.asarray(ja_card_masks)  # (5, fh, fw), view-slot frame
     coolwarm = cm.coolwarm
     scale = 32
     padding = 4
@@ -202,14 +204,20 @@ def _log_card_game_view_attn_filmstrip(
     a1_color = np.array(AGENT_1_COLOR, dtype=np.uint8)
     last_action = ep_actions[-1] if ep_actions else (-1, -1)
 
-    def _per_head_view_card_mass(attn):
-        # Returns (num_heads, NUM_CARDS) of per-head mass on each view-slot
-        # card. Single-head attention is treated as one head — the row will
-        # render as a single wide stripe.
-        a = np.asarray(attn).squeeze()
-        if a.ndim == 2:
-            a = a[..., None]
-        return np.einsum("hwk,chw->kc", a, card_masks_np)
+    def _head_avg(a):
+        a_sq = np.asarray(a).squeeze()
+        if a_sq.ndim == 3:
+            a_sq = a_sq.mean(axis=-1)
+        return a_sq
+
+    # Per-filmstrip global normalization keeps the colorbar interpretable
+    # across all (2 * n_steps) cells in this PNG — the value at colorbar
+    # 1.0 is the peak head-averaged attention attained anywhere in the
+    # episode for either agent.
+    head_avg_attn = [_head_avg(maps_0[t]) for t in range(n_steps)] + \
+                    [_head_avg(maps_1[t]) for t in range(n_steps)]
+    attn_global_max = max(float(np.asarray(a).max()) for a in head_avg_attn)
+    attn_global_max = max(attn_global_max, 1e-8)
 
     def _build_cell(t, agent_idx, attn_map, own_color):
         # Backdrop: agent's own obs (already OP-shuffled / recoloured). No
@@ -221,32 +229,30 @@ def _log_card_game_view_attn_filmstrip(
             (w_px * scale, h_px * scale), Image.NEAREST,
         ))
 
-        # Per-head stripes inside each card rectangle, painted at upscaled
-        # resolution so each stripe is many pixels wide and the per-head
-        # spread is readable. Stripe widths derived by integer division so
-        # they exactly tile the card width with no leftover pixels.
-        per_head = np.clip(_per_head_view_card_mass(attn_map), 0.0, 1.0)
-        num_heads = per_head.shape[0]
+        # Head-averaged spatial attention normalised globally per filmstrip,
+        # upsampled to the upscaled obs resolution and rendered through
+        # coolwarm. We then overwrite each card rectangle's interior with
+        # the heatmap pixels — background / agent corners / dots stay as
+        # the obs so position context is preserved.
+        a_norm = np.clip(_head_avg(attn_map) / attn_global_max, 0.0, 1.0)
+        a_full = np.array(Image.fromarray(a_norm.astype(np.float32), mode="F").resize(
+            (w_px * scale, h_px * scale), Image.NEAREST,
+        ))
+        heatmap_rgb = (np.asarray(coolwarm(a_full)[..., :3]) * 255.0).astype(np.uint8)
+
         card_w_up = CARD_RECT_W * scale
         card_h_up = CARD_RECT_H * scale
         card_y_up = CARD_RECT_Y * scale
-        stripe_edges = [(card_w_up * h) // num_heads for h in range(num_heads + 1)]
         for k in range(NUM_CARDS):
             card_x_up = (1 + k * (CARD_RECT_W + 2)) * scale
-            for h in range(num_heads):
-                rgba = coolwarm(float(per_head[h, k]))
-                rgb = (np.asarray(rgba[:3]) * 255.0).astype(np.uint8)
-                x0 = card_x_up + stripe_edges[h]
-                x1 = card_x_up + stripe_edges[h + 1]
-                up[
-                    card_y_up:card_y_up + card_h_up,
-                    x0:x1,
-                ] = rgb
+            up[
+                card_y_up:card_y_up + card_h_up,
+                card_x_up:card_x_up + card_w_up,
+            ] = heatmap_rgb[
+                card_y_up:card_y_up + card_h_up,
+                card_x_up:card_x_up + card_w_up,
+            ]
 
-        # Deliberation intent is intentionally left unmarked — the agent's
-        # current intent reads from the per-head stripes on its current
-        # view-slot column. Only the decision-step pick is drawn, as a
-        # bounding box (not a dot).
         is_decision = (t == n_steps - 1)
 
         pat = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
@@ -282,7 +288,7 @@ def _log_card_game_view_attn_filmstrip(
         grid[0:cell_h, x:x + cell_w] = row_0[t]
         grid[cell_h + padding:, x:x + cell_w] = row_1[t]
 
-    cbar = _render_vertical_colorbar(coolwarm, grid_h)
+    cbar = _render_vertical_colorbar("coolwarm", grid_h)
     cbar_gap = 16
     final_w = grid_w + cbar_gap + cbar.shape[1]
     final = np.full((grid_h, final_w, 3), pad_color, dtype=np.uint8)
@@ -303,39 +309,40 @@ def _log_card_game_view_attn_filmstrip(
     return grid_path
 
 
-def _render_vertical_colorbar(cmap, height_px, bar_w=24, gap=8, label_w=72):
-    """Build a vertical colorbar strip in `cmap` for the [0, 1] range.
+def _render_vertical_colorbar(cmap_name, height_px):
+    """Render a matplotlib `ColorbarBase` for the [0, 1] range.
 
-    Returns `(height_px, bar_w + gap + label_w, 3)` uint8. Top = 1.0,
-    bottom = 0.0. Five tick labels (0.00 / 0.25 / 0.50 / 0.75 / 1.00) drawn
-    in the gutter on the right. Font scales with `height_px` so it stays
-    legible across filmstrip sizes.
+    Matches the styling of `fig.colorbar` calls elsewhere in the eval code
+    (e.g. the XP heatmap in `evaluation/run_xp_seeds.py`) — DejaVu Sans
+    tick labels, default tick lines, no axes frame outside the bar.
+    Returned as `(height_px, W, 3)` uint8 — width is whatever the
+    matplotlib layout produces, scaled so the final image is exactly
+    `height_px` rows tall.
     """
-    from PIL import Image, ImageDraw, ImageFont
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colorbar import ColorbarBase
+    from matplotlib.colors import Normalize
+    from io import BytesIO
+    from PIL import Image
 
-    grad = np.linspace(1.0, 0.0, height_px)
-    rgb_col = (np.asarray([cmap(float(v))[:3] for v in grad]) * 255.0).astype(np.uint8)
-    bar = np.broadcast_to(rgb_col[:, None, :], (height_px, bar_w, 3)).copy()
-
-    total = np.full((height_px, bar_w + gap + label_w, 3), 255, dtype=np.uint8)
-    total[:, :bar_w] = bar
-    img = Image.fromarray(total)
-    draw = ImageDraw.Draw(img)
-    font_size = max(14, min(48, height_px // 30))
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", size=font_size)
-    except OSError:
-        font = ImageFont.load_default()
-
-    for v in (1.0, 0.75, 0.5, 0.25, 0.0):
-        y = int((1.0 - v) * (height_px - 1))
-        x_tick = bar_w
-        draw.line([(x_tick, y), (x_tick + 6, y)], fill="black", width=2)
-        text = f"{v:.2f}"
-        ascent, descent = font.getmetrics()
-        ty = max(0, min(height_px - (ascent + descent), y - (ascent + descent) // 2))
-        draw.text((x_tick + 10, ty), text, fill="black", font=font)
-
+    dpi = 100
+    fig, ax = plt.subplots(figsize=(0.9, height_px / dpi), dpi=dpi)
+    ColorbarBase(
+        ax,
+        cmap=cmap_name,
+        norm=Normalize(vmin=0.0, vmax=1.0),
+        orientation="vertical",
+        ticks=[0.0, 0.25, 0.5, 0.75, 1.0],
+    )
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.1)
+    plt.close(fig)
+    buf.seek(0)
+    img = Image.open(buf).convert("RGB")
+    new_w = max(1, img.width * height_px // img.height)
+    img = img.resize((new_w, height_px), Image.LANCZOS)
     return np.array(img)
 
 
