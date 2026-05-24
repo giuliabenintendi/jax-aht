@@ -282,15 +282,61 @@ def _log_card_game_view_attn_filmstrip(
         grid[0:cell_h, x:x + cell_w] = row_0[t]
         grid[cell_h + padding:, x:x + cell_w] = row_1[t]
 
+    cbar = _render_vertical_colorbar(coolwarm, grid_h)
+    cbar_gap = 16
+    final_w = grid_w + cbar_gap + cbar.shape[1]
+    final = np.full((grid_h, final_w, 3), pad_color, dtype=np.uint8)
+    final[:, :grid_w] = grid
+    final[:, grid_w + cbar_gap:] = cbar
+
     os.makedirs(video_dir, exist_ok=True)
     grid_path = f"{video_dir}/{out_name}"
-    Image.fromarray(grid).save(grid_path)
-    print(f"[card_game] Saved view-attn filmstrip: {grid_path} ({grid_w}x{grid_h} px)")
+    Image.fromarray(final).save(grid_path)
+    print(
+        f"[card_game] Saved view-attn filmstrip: {grid_path} "
+        f"({final.shape[1]}x{grid_h} px)"
+    )
 
     if logger is not None:
         import wandb
         logger.log({f"{tag}/view_attn_filmstrip": wandb.Image(grid_path)}, commit=False)
     return grid_path
+
+
+def _render_vertical_colorbar(cmap, height_px, bar_w=24, gap=8, label_w=72):
+    """Build a vertical colorbar strip in `cmap` for the [0, 1] range.
+
+    Returns `(height_px, bar_w + gap + label_w, 3)` uint8. Top = 1.0,
+    bottom = 0.0. Five tick labels (0.00 / 0.25 / 0.50 / 0.75 / 1.00) drawn
+    in the gutter on the right. Font scales with `height_px` so it stays
+    legible across filmstrip sizes.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    grad = np.linspace(1.0, 0.0, height_px)
+    rgb_col = (np.asarray([cmap(float(v))[:3] for v in grad]) * 255.0).astype(np.uint8)
+    bar = np.broadcast_to(rgb_col[:, None, :], (height_px, bar_w, 3)).copy()
+
+    total = np.full((height_px, bar_w + gap + label_w, 3), 255, dtype=np.uint8)
+    total[:, :bar_w] = bar
+    img = Image.fromarray(total)
+    draw = ImageDraw.Draw(img)
+    font_size = max(14, min(48, height_px // 30))
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", size=font_size)
+    except OSError:
+        font = ImageFont.load_default()
+
+    for v in (1.0, 0.75, 0.5, 0.25, 0.0):
+        y = int((1.0 - v) * (height_px - 1))
+        x_tick = bar_w
+        draw.line([(x_tick, y), (x_tick + 6, y)], fill="black", width=2)
+        text = f"{v:.2f}"
+        ascent, descent = font.getmetrics()
+        ty = max(0, min(height_px - (ascent + descent), y - (ascent + descent) // 2))
+        draw.text((x_tick + 10, ty), text, fill="black", font=font)
+
+    return np.array(img)
 
 
 def _log_card_game_own_vs_partner_panel(
