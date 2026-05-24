@@ -14,6 +14,7 @@ returned dataclass instead of duplicating this boilerplate.
 from __future__ import annotations
 
 import os
+import pickle
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,7 +22,7 @@ import jax
 import numpy as np
 from omegaconf import OmegaConf
 
-from common.save_load_utils import load_train_run
+from common.save_load_utils import load_train_run_no_convert
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 
@@ -111,7 +112,44 @@ def select_best_per_seed_params(run_data, alg_config: dict):
     return best_params, best_idx, per_ckpt_return
 
 
-def load_card_game_eval(checkpoint_path: str) -> CardGameEval:
+_CACHE_FILENAME = "eval_params_cache.pkl"
+
+
+def _cache_path(checkpoint_path: str) -> str:
+    return os.path.join(os.path.dirname(checkpoint_path), _CACHE_FILENAME)
+
+
+def _build_eval_from_params(cfg, alg_config, env_kwargs, best_params,
+                            best_idx, per_ckpt_return) -> CardGameEval:
+    from agents.initialize_agents import (
+        initialize_ja_agent,
+        initialize_ja_image_agent,
+    )
+
+    env = make_env(alg_config["ENV_NAME"], env_kwargs)
+    env_wrapped = LogWrapper(env)
+    obs_type = _get_obs_type(alg_config)
+    init_fn = initialize_ja_image_agent if obs_type == "image" else initialize_ja_agent
+    policy, _ = init_fn(alg_config, env_wrapped, jax.random.PRNGKey(0))
+
+    num_seeds = int(jax.tree.leaves(best_params)[0].shape[0])
+    max_steps = int(env_kwargs.get("max_steps", 8))
+    label = cfg.get("label", "(unlabeled)")
+
+    return CardGameEval(
+        cfg=cfg, alg_config=alg_config, env_kwargs=env_kwargs,
+        env=env, env_wrapped=env_wrapped, policy=policy,
+        params=best_params, num_seeds=num_seeds,
+        max_steps=max_steps, label=label,
+        best_idx=best_idx, per_ckpt_return=per_ckpt_return,
+    )
+
+
+def load_card_game_eval(
+    checkpoint_path: str,
+    use_cache: bool = True,
+    use_latest: bool = False,
+) -> CardGameEval:
     """Load a card-game checkpoint and prepare everything an eval driver needs.
 
     - Reads `<run_dir>/.hydra/config.yaml`.
@@ -119,14 +157,26 @@ def load_card_game_eval(checkpoint_path: str) -> CardGameEval:
       wrapped copy used only for policy init.
     - Initializes the right policy class (JA / JA-image) based on `OBS_TYPE`.
     - Loads the saved train run and selects the best per-seed checkpoint by
-      mean episodic return. Final params are never used.
+      mean episodic return (or the latest chunk slice when `use_latest`).
     - Forces `scramble_partner_msg` to False at eval time so interventions
       are deterministic.
+
+    When `use_cache=True` (default), writes a small pickle
+    `<run_dir>/eval_params_cache.pkl` after a slow orbax restore and reuses
+    it on subsequent calls — eval iterations after the first one cost
+    seconds, not the multi-GB orbax restore.
     """
-    from agents.initialize_agents import (
-        initialize_ja_agent,
-        initialize_ja_image_agent,
-    )
+    cache_path = _cache_path(checkpoint_path)
+    if use_cache and os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            snap = pickle.load(f)
+        print(f"[card_game] Loaded eval params cache: {cache_path}")
+        return _build_eval_from_params(
+            cfg=snap["cfg"], alg_config=snap["alg_config"],
+            env_kwargs=snap["env_kwargs"], best_params=snap["best_params"],
+            best_idx=snap.get("best_idx"),
+            per_ckpt_return=snap.get("per_ckpt_return"),
+        )
 
     run_dir = os.path.dirname(checkpoint_path)
     cfg = OmegaConf.to_container(
@@ -140,29 +190,32 @@ def load_card_game_eval(checkpoint_path: str) -> CardGameEval:
         env_kwargs["communication"] = True
     env_kwargs["scramble_partner_msg"] = False
 
-    env = make_env(alg_config["ENV_NAME"], env_kwargs)
-    env_wrapped = LogWrapper(env)
-
-    obs_type = _get_obs_type(alg_config)
-    if obs_type in ("image", "fov"):
-        init_fn = initialize_ja_image_agent
+    run_data = load_train_run_no_convert(checkpoint_path)
+    stacked_ckpts = run_data["checkpoints"]
+    if use_latest:
+        # Last saved chunk per seed. Skips per-ckpt scoring — fine for any
+        # qualitative analysis where "trained policy" is enough.
+        best_params = jax.tree.map(lambda c: np.asarray(c)[:, -1], stacked_ckpts)
+        best_idx = None
+        per_ckpt_return = None
     else:
-        init_fn = initialize_ja_agent
+        best_params, best_idx, per_ckpt_return = select_best_per_seed_params(
+            run_data, alg_config,
+        )
 
-    policy, _ = init_fn(alg_config, env_wrapped, jax.random.PRNGKey(0))
+    if use_cache:
+        snap = {
+            "cfg": cfg, "alg_config": alg_config, "env_kwargs": env_kwargs,
+            "best_params": jax.tree.map(lambda x: np.asarray(x), best_params),
+            "best_idx": best_idx, "per_ckpt_return": per_ckpt_return,
+            "source": "latest" if use_latest else "best",
+        }
+        with open(cache_path, "wb") as f:
+            pickle.dump(snap, f)
+        print(f"[card_game] Wrote eval params cache: {cache_path}")
 
-    run_data = load_train_run(checkpoint_path)
-    best_params, best_idx, per_ckpt_return = select_best_per_seed_params(
-        run_data, alg_config,
-    )
-    num_seeds = int(jax.tree.leaves(best_params)[0].shape[0])
-    max_steps = int(env_kwargs.get("max_steps", 8))
-    label = cfg.get("label", "(unlabeled)")
-
-    return CardGameEval(
+    return _build_eval_from_params(
         cfg=cfg, alg_config=alg_config, env_kwargs=env_kwargs,
-        env=env, env_wrapped=env_wrapped, policy=policy,
-        params=best_params, num_seeds=num_seeds,
-        max_steps=max_steps, label=label,
-        best_idx=best_idx, per_ckpt_return=per_ckpt_return,
+        best_params=best_params, best_idx=best_idx,
+        per_ckpt_return=per_ckpt_return,
     )

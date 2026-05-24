@@ -48,7 +48,7 @@ def load_checkpoints(path, ckpt_key="checkpoints", custom_loader_cfg: dict=None)
         raise ValueError(f"Invalid custom loader name: {custom_loader_cfg['name']}")
 
 def load_train_run(path):
-    '''Load checkpoints from orbax checkpoint. 
+    '''Load checkpoints from orbax checkpoint.
     Orbax requires absolute paths, so we compute the absolute path to the repo root.'''
     # determine whether path is relative or absolute
     if not os.path.isabs(path):
@@ -62,6 +62,22 @@ def load_train_run(path):
         restored
     )
     return restored
+
+
+def load_train_run_no_convert(path):
+    '''Restore an orbax checkpoint as numpy arrays — skip the eager
+    `jnp.array(x)` materialization that `load_train_run` does on every leaf.
+
+    For runs with stacked `(num_seeds, num_ckpts, ...)` checkpoint tensors
+    that materialization triggers a multi-GB host->device transfer per leaf
+    and dominates load time. Eval scripts that only need to read metrics +
+    select a single chunk slice can stay in numpy: JAX converts lazily when
+    the slice is first used by `policy.get_action`.
+    '''
+    if not os.path.isabs(path):
+        path = os.path.join(REPO_PATH, path)
+    checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+    return checkpointer.restore(path)
 
 def save_train_run_as_pickle(out, savedir, savename):
     if not os.path.exists(savedir):
