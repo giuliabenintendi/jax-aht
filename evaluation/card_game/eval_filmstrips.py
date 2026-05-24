@@ -114,15 +114,9 @@ def main() -> None:
     parser.add_argument("--latest", action="store_true",
                         help="Use the last saved chunk per seed instead of "
                              "the best-by-return checkpoint.")
-    parser.add_argument("--no-cache", action="store_true",
-                        help="Skip reading/writing <run_dir>/eval_params_cache.pkl.")
     args = parser.parse_args()
 
-    ev = load_card_game_eval(
-        args.checkpoint,
-        use_cache=not args.no_cache,
-        use_latest=args.latest,
-    )
+    ev = load_card_game_eval(args.checkpoint, use_latest=args.latest)
     greedy = not args.sampled
     T = ev.max_steps
     partner_feed_dim, card_masks = setup_card_feed(ev)
