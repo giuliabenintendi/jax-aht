@@ -84,7 +84,7 @@ def _save_strip(attn_maps, ep_actions, ep_messages, ep_obs, ep_states,
     )
 
 
-def _save_view_strip(attn_maps, ep_actions, ep_messages, ep_obs, ep_states,
+def _save_view_strip(attn_maps, ep_actions, ep_obs, ep_states,
                      viz_card_masks, out_dir: Path, out_name: str) -> None:
     """Render and save one 2xT per-agent view-slot coolwarm attention filmstrip
     PNG with per-head card stripes."""
@@ -92,7 +92,6 @@ def _save_view_strip(attn_maps, ep_actions, ep_messages, ep_obs, ep_states,
         attn_data=attn_maps, ep_actions=ep_actions, ep_states=ep_states,
         ep_obs=ep_obs, ja_card_masks=viz_card_masks,
         video_dir=str(out_dir), out_name=out_name, tag="filmstrip", logger=None,
-        ep_messages=ep_messages or None,
     )
 
 
@@ -154,7 +153,7 @@ def main() -> None:
                         out_dir, out_name)
             view_out_name = f"view_filmstrip_{tag}_ep{ep}.png"
             _save_view_strip(
-                attn_maps, ep_actions, ep_messages, ep_obs, ep_states,
+                attn_maps, ep_actions, ep_obs, ep_states,
                 viz_card_masks, out_dir, view_out_name,
             )
             settle_str = str(settle) if success else "never"

@@ -147,7 +147,6 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 def _log_card_game_view_attn_filmstrip(
     attn_data, ep_actions, ep_states, ep_obs, ja_card_masks,
     video_dir, out_name, tag="filmstrip", logger=None,
-    ep_messages=None,
 ):
     """2xT per-agent view-slot filmstrip with per-head attention stripes.
 
@@ -156,9 +155,9 @@ def _log_card_game_view_attn_filmstrip(
     videos) and replaces each card rectangle with `NUM_HEADS` vertical
     stripes coloured by `coolwarm(per-head per-card attention mass)` in
     fixed [0, 1] — so the spread across heads is visible card by card, not
-    collapsed to the head-average. Only the agent's own intent is drawn:
-    a coloured dot at its current view-slot column during deliberation, and
-    a bounding box around its picked view-slot column at the decision step
+    collapsed to the head-average. Deliberation-step intent is intentionally
+    not marked; only the decision-step pick is drawn, as a bounding box
+    around the agent's picked view-slot column in the agent's own colour
     (orange for A0, magenta for A1).
 
     `ja_card_masks` must be the (5, fh, fw) view-slot card masks from
@@ -202,7 +201,6 @@ def _log_card_game_view_attn_filmstrip(
     a0_color = np.array(AGENT_0_COLOR, dtype=np.uint8)
     a1_color = np.array(AGENT_1_COLOR, dtype=np.uint8)
     last_action = ep_actions[-1] if ep_actions else (-1, -1)
-    has_messages = bool(ep_messages)
 
     def _per_head_view_card_mass(attn):
         # Returns (num_heads, NUM_CARDS) of per-head mass on each view-slot
@@ -212,20 +210,6 @@ def _log_card_game_view_attn_filmstrip(
         if a.ndim == 2:
             a = a[..., None]
         return np.einsum("hwk,chw->kc", a, card_masks_np)
-
-    def _own_intent_view_col(t, agent_idx):
-        # Each row shows only the agent's own intent. Under comm runs the
-        # deliberation-step intent lives in `ep_messages[t]`; under no-comm
-        # delib-actions runs it lives in `ep_actions[t]` (where the decision
-        # step's pick also lives). Both are in the canonical / GT frame, so
-        # we translate to the agent's view-slot.
-        if has_messages and t < len(ep_messages):
-            gt = int(ep_messages[t][agent_idx])
-        elif t < len(ep_actions):
-            gt = int(ep_actions[t][agent_idx])
-        else:
-            return -1
-        return _gt_pick_to_view_col(ep_states[t], agent_idx, gt)
 
     def _build_cell(t, agent_idx, attn_map, own_color):
         # Backdrop: agent's own obs (already OP-shuffled / recoloured). No
@@ -259,18 +243,11 @@ def _log_card_game_view_attn_filmstrip(
                     x0:x1,
                 ] = rgb
 
-        # Own intent during deliberation: a dot at the agent's current
-        # view-slot column, in the agent's own colour. The decision step
-        # gets a bounding box instead.
+        # Deliberation intent is intentionally left unmarked — the agent's
+        # current intent reads from the per-head stripes on its current
+        # view-slot column. Only the decision-step pick is drawn, as a
+        # bounding box (not a dot).
         is_decision = (t == n_steps - 1)
-        if not is_decision:
-            own_view = _own_intent_view_col(t, agent_idx)
-            if own_view >= 0:
-                dot_up = 2 * scale
-                card_x_up = (1 + own_view * (CARD_RECT_W + 2)) * scale
-                dot_y = card_y_up + (card_h_up - dot_up) // 2
-                dot_x = card_x_up + (card_w_up - dot_up) // 2
-                up[dot_y:dot_y + dot_up, dot_x:dot_x + dot_up] = own_color
 
         pat = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
         _stamp_label_np(up, pat, 1, 27, own_color, scale=scale)
