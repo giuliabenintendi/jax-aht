@@ -15,7 +15,8 @@ from marl.eval_utils import (
 
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger,
                                   ep_messages=None, card_permutation=None,
-                                  ep_obs=None, ep_states=None):
+                                  ep_obs=None, ep_states=None,
+                                  out_name="attention_grid.png"):
     """Log a 2xT grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
 
     When `ep_obs` is provided, each cell uses the *agent's own* obs as the
@@ -136,11 +137,166 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
 
     # Save locally and log to wandb
     os.makedirs(video_dir, exist_ok=True)
-    grid_path = f"{video_dir}/attention_grid.png"
+    grid_path = f"{video_dir}/{out_name}"
     Image.fromarray(grid).save(grid_path)
     print(f"[card_game] Saved attention grid: {grid_path} ({grid_w}x{grid_h} px)")
 
     logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
+
+
+def _log_card_game_gt_attn_filmstrip(
+    attn_data, ep_actions, ep_states, ja_card_masks,
+    video_dir, out_name, tag="filmstrip", logger=None,
+):
+    """2xT GT-frame filmstrip: card rectangles repainted by per-card attention.
+
+    Each row is an agent (0 top, 1 bottom). Every cell shows the canonical
+    (un-OP'd) scene — same chrome as the eval videos (timestep counter, A0/A1
+    label, GT-frame message dots in their own colours) — but with each of the
+    5 card rectangles repainted with the `coolwarm` colour corresponding to
+    that agent's per-card attention mass on the GT card sitting at that
+    physical position. Mass is read at face value in [0, 1] (no rescaling).
+    On the decision step the GT card each agent picked is boxed in the
+    agent's own colour (orange A0, magenta A1).
+
+    `ja_card_masks` must be the (5, fh, fw) view-slot card masks from
+    `build_card_masks` — view-slot mass is translated to physical position
+    via `state.per_agent_perm`.
+    """
+    import matplotlib.cm as cm
+    from envs.card_game.rendering import (
+        render_card_game_minimal,
+        _stamp_label_np,
+        _A0_PATTERN_SMALL,
+        _A1_PATTERN_SMALL,
+        _draw_card_border_upscaled,
+        _unwrap_card_game_state,
+        CARD_RECT_W,
+        CARD_RECT_H,
+        CARD_RECT_Y,
+        NUM_CARDS,
+        AGENT_0_COLOR,
+        AGENT_1_COLOR,
+    )
+
+    maps_0 = attn_data.get("agent_0", [])
+    maps_1 = attn_data.get("agent_1", [])
+    if not maps_0 or not maps_1:
+        print("[card_game] Missing attention maps, skipping GT-attn filmstrip.")
+        return None
+
+    n_steps = min(len(maps_0), len(maps_1), len(ep_states))
+    if n_steps == 0:
+        return None
+
+    card_masks_np = np.asarray(ja_card_masks)  # (5, fh, fw), view-slot frame
+    coolwarm = cm.coolwarm
+    scale = 32
+    padding = 4
+    a0_color = np.array(AGENT_0_COLOR, dtype=np.uint8)
+    a1_color = np.array(AGENT_1_COLOR, dtype=np.uint8)
+    last_action = ep_actions[-1] if ep_actions else (-1, -1)
+
+    def _head_avg(a):
+        a_sq = np.asarray(a).squeeze()
+        if a_sq.ndim == 3:
+            a_sq = a_sq.mean(axis=-1)
+        return a_sq
+
+    def _per_view_card_mass(attn_2d):
+        return np.einsum("hw,chw->c", attn_2d, card_masks_np)
+
+    def _agent_perm(state, agent_idx):
+        s = state
+        while s is not None:
+            if hasattr(s, "per_agent_perm"):
+                return np.asarray(s.per_agent_perm[f"agent_{agent_idx}"])
+            s = getattr(s, "env_state", None)
+        return np.arange(NUM_CARDS)
+
+    def _build_cell(t, agent_idx, attn_map, own_color):
+        state = ep_states[t]
+        inner = _unwrap_card_game_state(state)
+        perm_np = np.asarray(inner.card_permutation)
+        pos_perm = _agent_perm(state, agent_idx)
+
+        # Start from the canonical scene (timestep + GT-coloured cards), then
+        # overwrite the card interiors with the coolwarm mapping of each
+        # physical card's attention mass. Re-draw the GT message dots on top
+        # so they remain visible.
+        base = np.array(render_card_game_minimal(
+            inner.card_permutation, int(inner.step_count) + 1,
+        )).astype(np.uint8)
+
+        view_mass = _per_view_card_mass(_head_avg(attn_map))
+        phys_mass = np.zeros(NUM_CARDS, dtype=np.float32)
+        phys_mass[pos_perm] = view_mass
+        phys_mass = np.clip(phys_mass, 0.0, 1.0)
+        for p in range(NUM_CARDS):
+            rgba = coolwarm(float(phys_mass[p]))
+            rgb = (np.asarray(rgba[:3]) * 255.0).astype(np.uint8)
+            x = 1 + p * (CARD_RECT_W + 2)
+            base[
+                CARD_RECT_Y:CARD_RECT_Y + CARD_RECT_H,
+                x:x + CARD_RECT_W,
+            ] = rgb
+
+        msgs = np.asarray(inner.messages)
+        dot_size = 2
+        for ai, dot_color in ((0, a0_color), (1, a1_color)):
+            msg = int(msgs[ai])
+            if msg < 0:
+                continue
+            matches = np.where(perm_np == msg)[0]
+            if not len(matches):
+                continue
+            pos = int(matches[0])
+            card_x = 1 + pos * (CARD_RECT_W + 2)
+            dot_x = card_x + (CARD_RECT_W - dot_size) // 2
+            dot_y = int(CARD_RECT_Y) + (1 if ai == 0 else CARD_RECT_H - dot_size - 1)
+            base[dot_y:dot_y + dot_size, dot_x:dot_x + dot_size] = dot_color
+
+        up = np.array(Image.fromarray(base).resize(
+            (base.shape[1] * scale, base.shape[0] * scale), Image.NEAREST,
+        ))
+
+        pat = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
+        _stamp_label_np(up, pat, 1, 27, own_color, scale=scale)
+
+        if t == n_steps - 1 and int(last_action[agent_idx]) >= 0:
+            gt_pick = int(last_action[agent_idx])
+            matches = np.where(perm_np == gt_pick)[0]
+            if len(matches):
+                up = _draw_card_border_upscaled(
+                    up, int(matches[0]), own_color,
+                    2 * scale, scale, outset_raw=1,
+                )
+        return up
+
+    row_0, row_1 = [], []
+    for t in range(n_steps):
+        row_0.append(_build_cell(t, 0, maps_0[t], a0_color))
+        row_1.append(_build_cell(t, 1, maps_1[t], a1_color))
+
+    pad_color = np.array([255, 255, 255], dtype=np.uint8)
+    cell_h, cell_w = row_0[0].shape[:2]
+    grid_w = n_steps * cell_w + (n_steps - 1) * padding
+    grid_h = 2 * cell_h + padding
+    grid = np.full((grid_h, grid_w, 3), pad_color, dtype=np.uint8)
+    for t in range(n_steps):
+        x = t * (cell_w + padding)
+        grid[0:cell_h, x:x + cell_w] = row_0[t]
+        grid[cell_h + padding:, x:x + cell_w] = row_1[t]
+
+    os.makedirs(video_dir, exist_ok=True)
+    grid_path = f"{video_dir}/{out_name}"
+    Image.fromarray(grid).save(grid_path)
+    print(f"[card_game] Saved GT-attn filmstrip: {grid_path} ({grid_w}x{grid_h} px)")
+
+    if logger is not None:
+        import wandb
+        logger.log({f"{tag}/gt_attn_filmstrip": wandb.Image(grid_path)}, commit=False)
+    return grid_path
 
 
 def _log_card_game_own_vs_partner_panel(
