@@ -150,6 +150,25 @@ def main():
         chunk_indices.append(num_ckpts - 1)  # always include the final chunk
     if args.first_n:
         chunk_indices = chunk_indices[:args.first_n]
+
+    # Resume: drop chunks whose row is already present in the output CSV
+    out_csv = Path(args.out_csv)
+    done_chunks: set[int] = set()
+    if out_csv.exists():
+        with open(out_csv) as fh:
+            reader = csv.DictReader(fh)
+            for r in reader:
+                if r.get("condition") == args.label:
+                    try:
+                        done_chunks.add(int(r["chunk"]))
+                    except (KeyError, ValueError):
+                        pass
+        if done_chunks:
+            before = len(chunk_indices)
+            chunk_indices = [ci for ci in chunk_indices if ci not in done_chunks]
+            print(f"  resume: {len(done_chunks)} chunks already in {out_csv} -> "
+                  f"skipping; {before-len(chunk_indices)} skipped, {len(chunk_indices)} to do")
+
     print(f"[{args.label}] evaluating {len(chunk_indices)}/{num_ckpts} chunks: {chunk_indices}")
 
     # Seed subsampling (stratified by final-ckpt return rank)
@@ -168,10 +187,22 @@ def main():
     eval_root = hydra_dir / "chunk_eval"
     eval_root.mkdir(parents=True, exist_ok=True)
 
+    # Open the output CSV in append mode so each chunk's row persists as soon as
+    # it's evaluated (defensive against mid-run hangs).
+    fieldnames = ["condition", "chunk", "env_step", "sp_mean", "sp_std",
+                  "xp_mean", "xp_std"]
+    csv_exists = out_csv.exists()
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    csv_fh = open(out_csv, "a", newline="")
+    csv_writer = csv.DictWriter(csv_fh, fieldnames=fieldnames)
+    if not csv_exists:
+        csv_writer.writeheader()
+        csv_fh.flush()
+
     # Heavy import: brings JAX + the eval primitive online once
     from evaluation.run_xp_seeds import run_xp_evaluation
 
-    rows: list[dict] = []
+    n_written = 0
     for ci in chunk_indices:
         chunk_dir = eval_root / f"chunk_{ci:02d}"
         chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -226,23 +257,15 @@ def main():
             "xp_mean": float(off.mean()),
             "xp_std": float(off.std(ddof=1)),
         }
-        rows.append(row)
+        csv_writer.writerow(row)
+        csv_fh.flush()
+        n_written += 1
         print(f"  chunk {ci}: env_step={row['env_step']:>10}  "
               f"SP={row['sp_mean']:.3f}±{row['sp_std']:.3f}  "
               f"XP={row['xp_mean']:.3f}±{row['xp_std']:.3f}")
 
-    out_csv = Path(args.out_csv)
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["condition", "chunk", "env_step", "sp_mean", "sp_std", "xp_mean", "xp_std"]
-    write_header = not out_csv.exists()
-    mode = "w" if write_header else "a"
-    with open(out_csv, mode, newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=fieldnames)
-        if write_header:
-            w.writeheader()
-        for r in rows:
-            w.writerow(r)
-    print(f"\nsaved {len(rows)} rows to {out_csv}")
+    csv_fh.close()
+    print(f"\nsaved {n_written} rows to {out_csv}")
 
 
 if __name__ == "__main__":

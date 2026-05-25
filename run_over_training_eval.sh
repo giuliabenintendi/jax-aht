@@ -40,7 +40,8 @@ echo "[$(ts)] --- OP only (drop-op eval) — SP baseline ---"
     --label "OP only (no-OP eval)" \
     --out-csv "$OUT/self_play.csv" \
     --every 1 \
-    --drop-op
+    --drop-op \
+    --select-n 10
 
 # ---- 2. OP + JA + shaping (15M, 77 chunks, eval every 4th, 10-seed subset) ----
 # --select-n 10 picks 10 seeds stratified by final-ckpt return rank so the
