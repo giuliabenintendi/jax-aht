@@ -28,9 +28,10 @@ OUT = Path("plots/card_game/over_training.png")
 RANDOM_BASELINE = 0.20
 RANDOM_COLOR = "#d62728"
 
-# (display label, csv filename, color) — matches the bar plot palette
+# (display label, csv filename, color)
+# Hu et al. style: SP collapse baseline gets the "Self-Play" blue.
 CONDS = [
-    ("OP only",                "op_only.csv",          "#2E7DF0"),  # blue
+    ("Not OP",                 "not_op.csv",           "#2E7DF0"),  # blue (Self-Play / convention-bound)
     ("OP + JA + shaping",      "op_ja_shaping.csv",    "#51B18D"),  # green
     ("OP + comm + shaping",    "op_comm_shaping.csv",  "#F55F74"),  # Abet 823
 ]
