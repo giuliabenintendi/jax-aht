@@ -128,6 +128,10 @@ def main():
                     help="if set, subsample seeds at each chunk: pick k seeds "
                          "stratified by rank of final-ckpt return so the subset "
                          "mean matches the population mean. (Default: use all seeds.)")
+    ap.add_argument("--drop-op", action="store_true",
+                    help="evaluate with OP wrappers off (use for the SP-baseline "
+                         "curve: OP-trained agents reveal their private canonical "
+                         "convention with SP=1.0 / XP=0.2 chance match).")
     args = ap.parse_args()
 
     ckpt_root = Path(args.ckpt_root)
@@ -191,16 +195,20 @@ def main():
         checkpointer.save(str(save_path), out_dict,
                           save_args=orbax_utils.save_args_from_target(out_dict))
 
-        print(f"  chunk {ci}: running eval...")
+        print(f"  chunk {ci}: running eval (drop_op={args.drop_op})...")
         try:
             run_xp_evaluation(task_name=None, checkpoint_path=str(save_path),
-                              greedy_eval=True, use_best=False, drop_op=False,
+                              greedy_eval=True, use_best=False, drop_op=args.drop_op,
                               no_xp_videos=True)
         except Exception as e:
             print(f"    eval failed: {e!r}")
             continue
 
-        matrix_csv = chunk_dir / "xp_results" / "xp_score_matrix.csv"
+        # When drop_op=True the eval writes to a sibling `rerun_no_op/xp_results/`.
+        if args.drop_op:
+            matrix_csv = chunk_dir / "rerun_no_op" / "xp_results" / "xp_score_matrix.csv"
+        else:
+            matrix_csv = chunk_dir / "xp_results" / "xp_score_matrix.csv"
         if not matrix_csv.exists():
             print(f"    no xp_score_matrix.csv at {matrix_csv}")
             continue

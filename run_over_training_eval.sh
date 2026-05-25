@@ -26,19 +26,21 @@ ts() { date +%Y-%m-%d_%H:%M:%S; }
 
 echo "[$(ts)] starting over-training eval on GPU $GPU"
 
-# ---- 1. NOT-OP baseline (5M, eval every chunk) ----
-# After `launch_not_op.sh` finishes, locate its ckpt root and hydra dir:
-#   find /scratch/benintendi/jax-aht/checkpoints -name chunk_scores.json -newer launch_not_op.sh | xargs -I{} dirname {}
-#   find /scratch/benintendi/jax-aht/results/card-game -path "*not_op_48s_5M*" -name config.yaml | head
-# Then fill the two paths below and uncomment the block.
-echo "[$(ts)] --- NOT-OP ---"
-# ./run_gpu.sh "$GPU" evaluation.card_game.eval_over_training \
-#     --ckpt-root  "$CKPT/<RUN_NAME>/not_op_48s_5M_<TIMESTAMP>"   `# FILL-IN` \
-#     --hydra-dir  "$RESULTS/card-game/ja_ippo/not_op_48s/<TIMESTAMP>"   `# FILL-IN` \
-#     --label "Not OP" \
-#     --out-csv "$OUT/not_op.csv" \
-#     --every 1
-echo "    (skipped — fill in NOT-OP ckpt-root + hydra-dir after launch_not_op.sh finishes)"
+# ---- 1. SP-baseline curve: OP-only checkpoints evaluated with OP wrappers off ----
+# This exposes the agent's private canonical-color preference: SP=1.0 (same seed
+# matches itself perfectly), XP=0.2 (different seeds picked different colors,
+# chance match). This is the Hu et al. "Self-Play" line — reproduced via a
+# different procedural route (OP-trained, eval w/o OP) because pure NOT-OP
+# training hits a parameter-sharing symmetry trap without per-agent observation
+# asymmetry. 5M training, ~25 chunks, every chunk, all 48 seeds (cheap).
+echo "[$(ts)] --- OP only (drop-op eval) — SP baseline ---"
+./run_gpu.sh "$GPU" evaluation.card_game.eval_over_training \
+    --ckpt-root "$CKPT/splendid-salad-1474_card-game-op_ja_ippo_comm_rerun/op_only_48s_5M_s48_22052026" \
+    --hydra-dir "$RESULTS/card-game-op/ja_ippo/comm_rerun/op_only_48s/2026-05-22_23-37-00" \
+    --label "OP only (no-OP eval)" \
+    --out-csv "$OUT/self_play.csv" \
+    --every 1 \
+    --drop-op
 
 # ---- 2. OP + JA + shaping (15M, 77 chunks, eval every 4th, 10-seed subset) ----
 # --select-n 10 picks 10 seeds stratified by final-ckpt return rank so the
@@ -62,6 +64,5 @@ echo "[$(ts)] --- OP + comm + shaping ---"
     --every 1 \
     --select-n 10
 
-echo "[$(ts)] OP conditions done."
-echo "When NOT-OP training completes, fill in its paths above and re-run this script."
+echo "[$(ts)] all 3 conditions done."
 echo "Then plot:  uv run python evaluation/card_game/plot_over_training.py"
