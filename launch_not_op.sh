@@ -28,4 +28,5 @@ STEPS=${3:-5e6}
     algorithm.EVAL_VIDEO_NUM_SEEDS=0 \
     algorithm.JA_CARD_METRIC=false \
     algorithm.JA_CARD_ATTN=false \
-    algorithm.JA_CARD_PARTNER_FEED=false
+    algorithm.JA_CARD_PARTNER_FEED=false \
+    task.ENV_KWARGS.shuffle=false
