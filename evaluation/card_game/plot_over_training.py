@@ -29,13 +29,12 @@ RANDOM_BASELINE = 0.20
 RANDOM_COLOR = "#d62728"
 
 # (display label, csv filename, color)
-# Hu et al. style: SP-baseline (private convention, collapses in XP) gets the blue.
-# We produce it by evaluating the OP-only checkpoints with `--drop-op` so the
-# agent's learned canonical preference reveals itself as SP=1, XP=0.2 chance.
+# Divergent palette: teal = SP-baseline (cool / convention-bound, collapses in XP);
+# reds = OP-trained methods (warm / coordination transfers).
 CONDS = [
-    ("OP only (no-OP eval)",   "self_play.csv",        "#2E7DF0"),  # blue — SP baseline
-    ("OP + JA + shaping",      "op_ja_shaping.csv",    "#51B18D"),  # green
-    ("OP + comm + shaping",    "op_comm_shaping.csv",  "#F55F74"),  # Abet 823
+    ("OP only (no-OP eval)",   "self_play.csv",        "#0d7d87"),  # Dark Teal
+    ("OP + JA + shaping",      "op_ja_shaping.csv",    "#c31e23"),  # Dark Red
+    ("OP + comm + shaping",    "op_comm_shaping.csv",  "#ff5a5e"),  # Light Red
 ]
 
 
