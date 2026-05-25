@@ -49,9 +49,9 @@ ROWS = [
     ("OP only",                "op_only.csv",          "#2E7DF0"),  # blue
     ("OP + JA",                "op_ja.csv",            "#F5871F"),  # orange
     ("OP + JA\n+ shaping",     "op_ja_shaping.csv",    "#51B18D"),  # green
-    ("OP + comm",              "op_comm_noshape.csv",  "#8C82F6"),  # light purple
-    ("OP + comm\n+ match",     "op_comm_match.csv",    "#C77FE5"),  # pink-purple
-    ("OP + comm\n+ shaping",   "op_comm_shaping.csv",  "#7B30AC"),  # deep purple
+    ("OP + comm",              "op_comm_noshape.csv",  "#F8A0AE"),  # light pink
+    ("OP + comm\n+ match",     "op_comm_match.csv",    "#F77F92"),  # medium pink
+    ("OP + comm\n+ shaping",   "op_comm_shaping.csv",  "#F55F74"),  # Abet 823 HR-LAQ
 ]
 BASELINE_LABEL = "OP only"
 
@@ -126,13 +126,6 @@ def main() -> None:
         ax.bar(x[i] + w / 2, xp_vals[i], w, color="white",
                hatch=XP_HATCH, edgecolor=base, linewidth=1.2,
                yerr=xp_err[i], error_kw=ekw, zorder=3)
-        if sig_marks[i]:
-            y_star = xp_vals[i] + xp_err[i] + 0.025
-            weight = "bold" if sig_marks[i] != "n.s." else "normal"
-            ax.text(x[i] + w / 2, y_star, sig_marks[i],
-                    ha="center", va="bottom", fontsize=11,
-                    fontweight=weight, zorder=6)
-
     ax.axhline(RANDOM_BASELINE, ls="--", lw=1.8, color=RANDOM_COLOR, zorder=5)
 
     ax.set_xticks(x)
