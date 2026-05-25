@@ -10,13 +10,18 @@
 set -euo pipefail
 
 GPU=${1:-1}
-SEEDS=${2:-48}
+SEEDS=${2:-12}
 STEPS=${3:-5e6}
+
+# Default 12 seeds: NOT-OP is a near-deterministic baseline (each seed locks
+# to a private color convention; SP=1.0, XP=0.2 by chance match), so more
+# seeds wouldn't tighten the curves materially. 12 gives a clean Hu-style
+# learning curve in ~1.5-2.5h.
 
 ./run_gpu.sh "$GPU" marl.run \
     task=card-game \
     algorithm=ja_ippo/card-game-op \
-    label=not_op_48s_5M \
+    label=not_op_${SEEDS}s_5M \
     algorithm.NUM_SEEDS="$SEEDS" \
     algorithm.TOTAL_TIMESTEPS="$STEPS" \
     algorithm.COMMUNICATION=false \
