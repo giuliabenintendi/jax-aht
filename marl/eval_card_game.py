@@ -163,15 +163,13 @@ def _log_card_game_gt_attn_filmstrip(
     Values are normalized to the filmstrip's peak attention; the colorbar
     on the right reads 0 = none, 1 = filmstrip peak.
 
-    Decoration is OWN-only on each row:
-      - At non-decision steps, a coloured dot on the GT card the agent's
-        action / message indicates (own colour).
-      - At the decision step, a bounding box around the agent's picked GT
-        card (orange A0, magenta A1) — no dot.
+    Decoration is OWN-only on each row and limited to the decision step:
+    a thin bounding box around the agent's picked GT card (orange A0,
+    magenta A1). Deliberation steps are intentionally unmarked.
 
-    `ja_card_masks` is accepted for signature parity but the spatial-
-    heatmap path does not use it (attention is upsampled directly from
-    the (fh, fw) policy output and rearranged by per_agent_perm).
+    `ja_card_masks` and `ep_messages` are accepted for caller parity but
+    not currently used here (attention is upsampled directly from the
+    (fh, fw) policy output and rearranged by per_agent_perm).
     """
     import matplotlib.cm as cm
     from envs.card_game.rendering import (
@@ -191,7 +189,7 @@ def _log_card_game_gt_attn_filmstrip(
         AGENT_0_COLOR,
         AGENT_1_COLOR,
     )
-    del ja_card_masks  # not used on the spatial-heatmap path
+    del ja_card_masks, ep_messages  # not used on the spatial-heatmap path
 
     maps_0 = attn_data.get("agent_0", [])
     maps_1 = attn_data.get("agent_1", [])
@@ -211,7 +209,6 @@ def _log_card_game_gt_attn_filmstrip(
     a0_color = np.array(AGENT_0_COLOR, dtype=np.uint8)
     a1_color = np.array(AGENT_1_COLOR, dtype=np.uint8)
     last_action = ep_actions[-1] if ep_actions else (-1, -1)
-    has_messages = bool(ep_messages)
 
     def _head_avg(a):
         a_sq = np.asarray(a).squeeze()
@@ -226,16 +223,6 @@ def _log_card_game_gt_attn_filmstrip(
                 return np.asarray(s.per_agent_perm[f"agent_{agent_idx}"])
             s = getattr(s, "env_state", None)
         return np.arange(NUM_CARDS)
-
-    def _own_action_gt(t, agent_idx):
-        # GT colour id the agent emitted at step t. Under comm runs the
-        # deliberation intent is in ep_messages; under no-comm runs it's
-        # in ep_actions (alongside the decision-step pick).
-        if has_messages and t < len(ep_messages):
-            return int(ep_messages[t][agent_idx])
-        if t < len(ep_actions):
-            return int(ep_actions[t][agent_idx])
-        return -1
 
     # Per-filmstrip global normalization keeps the colorbar interpretable
     # across all (2 * n_steps) cells in this PNG — value 1.0 on the bar
@@ -290,20 +277,6 @@ def _log_card_game_gt_attn_filmstrip(
 
         is_decision = (t == n_steps - 1)
 
-        # Own-action dot at non-decision steps. The recorded action is in
-        # GT colour-id space; convert to physical position via card_perm.
-        if not is_decision:
-            gt = _own_action_gt(t, agent_idx)
-            if gt >= 0:
-                matches = np.where(card_perm == gt)[0]
-                if len(matches):
-                    phys = int(matches[0])
-                    dot_up = 2 * scale
-                    card_x_up = (1 + phys * (CARD_RECT_W + 2)) * scale
-                    dot_y = card_y_up + (card_h_up - dot_up) // 2
-                    dot_x = card_x_up + (card_w_up - dot_up) // 2
-                    up[dot_y:dot_y + dot_up, dot_x:dot_x + dot_up] = own_color
-
         pat = _A0_PATTERN_SMALL if agent_idx == 0 else _A1_PATTERN_SMALL
         _stamp_label_np(up, pat, 1, 27, own_color, scale=scale)
 
@@ -313,7 +286,7 @@ def _log_card_game_gt_attn_filmstrip(
             if len(matches):
                 up = _draw_card_border_upscaled(
                     up, int(matches[0]), own_color,
-                    2 * scale, scale, outset_raw=1,
+                    max(2, scale // 2), scale, outset_raw=1,
                 )
         return up
 
