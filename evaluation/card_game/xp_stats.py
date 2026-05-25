@@ -1,23 +1,24 @@
-"""XP mean and OP-vs-X significance via the delete-one-seed jackknife.
+"""XP mean / SE and OP-vs-X significance.
 
-The XP mean uses ALL cross-play pairs: the mean of every off-diagonal cell of
-the N x N matrix (m[i,j] = score with seed i as agent 0, seed j as agent 1,
-i != j) — the role-symmetric average over all pairs 0-1, 0-2, ..., 0-(N-1),
-1-2, ...
+Two estimators are provided.
 
-A naive t-test on those N(N-1) cells is invalid: each seed appears in 2(N-1)
-of them, so the cells are not independent (pseudoreplication) and the SE comes
-out far too small. The XP mean is a degree-2 U-statistic over the N seeds; the
-textbook standard-error estimator is the delete-one-seed jackknife — drop
-seed k (its whole row AND column), recompute the all-pairs mean -> theta_(-k),
-for every seed; the spread of the N leave-one-out means gives the SE. This
-uses all the pairwise data while keeping the seed as the unit of replication.
+1) For PLOTTING (`xp_mean_se`):
+   All-pairs XP mean (mean of every off-diagonal cell) with delete-one-seed
+   resampling SE. Uses every pairwise observation while keeping the seed as
+   the unit of replication — a degree-2 U-statistic SE.
 
-OP-vs-X significance: Welch t-test on the two conditions' XP means using their
-jackknife SEs (Welch-Satterthwaite df).
+2) For SIGNIFICANCE (`paired_test_vs_baseline`):
+   Disjoint-pair paired t-test (m = N/2 independent samples). For each pair
+   (i, j), score = (M[i,j] + M[j,i]) / 2 (symmetric over role). Paired
+   t-test (one-sided 'greater') between the condition's m samples and the
+   baseline's m samples.
+
+The naive cell-level t-test on N(N-1) off-diagonal entries is invalid
+(pseudoreplication: each seed appears in 2(N-1) cells). Both estimators above
+respect the seed as the unit of independence.
 
 Usage:
-    uv run --no-project --with numpy --with scipy \
+    uv run --no-project --with numpy --with scipy \\
         python evaluation/card_game/xp_stats.py
 """
 from __future__ import annotations
@@ -30,10 +31,12 @@ from scipy import stats
 MATRIX_DIR = Path(__file__).parent / "xp_matrices"
 
 CONDITIONS = [
-    ("OP only", "op_only.csv"),
-    ("OP + JA", "op_ja.csv"),
-    ("OP + JA + shaping", "op_ja_shaping.csv"),
-    ("OP + comm", "op_comm.csv"),
+    ("OP only",                "op_only.csv"),
+    ("OP + JA",                "op_ja.csv"),
+    ("OP + JA + shaping",      "op_ja_shaping.csv"),
+    ("OP + comm",              "op_comm_noshape.csv"),
+    ("OP + comm + match",      "op_comm_match.csv"),
+    ("OP + comm + shaping",    "op_comm_shaping.csv"),
 ]
 BASELINE = "OP only"
 
@@ -63,10 +66,10 @@ def offdiag_mean(mat: np.ndarray) -> float:
     return float(mat[~np.eye(n, dtype=bool)].mean())
 
 
-def jackknife_xp(mat: np.ndarray) -> tuple[float, float, int]:
-    """All-pairs XP mean and its delete-one-seed jackknife SE.
+def xp_mean_se(mat: np.ndarray) -> tuple[float, float, int]:
+    """All-pairs XP mean and its delete-one-seed standard error.
 
-    Returns (xp_mean, jackknife_sem, n_seeds).
+    Returns (xp_mean, sem, n_seeds).
     """
     n = mat.shape[0]
     theta = offdiag_mean(mat)
@@ -80,31 +83,86 @@ def jackknife_xp(mat: np.ndarray) -> tuple[float, float, int]:
     return theta, sem, n
 
 
+def disjoint_pair_samples(mat: np.ndarray) -> np.ndarray:
+    """m = N/2 symmetric XP scores from disjoint pairs (0,1),(2,3),...,(N-2,N-1).
+
+    Each pair (i, j) contributes one sample: 0.5 * (M[i,j] + M[j,i]).
+    """
+    n = mat.shape[0]
+    if n % 2 != 0:
+        raise ValueError(f"need even N for disjoint pairing, got {n}")
+    i_idx = np.arange(0, n, 2)
+    j_idx = np.arange(1, n, 2)
+    return 0.5 * (mat[i_idx, j_idx] + mat[j_idx, i_idx])
+
+
+def paired_test_vs_baseline(mat_cond: np.ndarray, mat_baseline: np.ndarray,
+                             alternative: str = "greater") -> dict:
+    """Paired t-test on m = N/2 disjoint-pair XP samples (condition vs baseline).
+
+    Returns dict with: a_mean, a_std, b_mean, b_std, mean_diff, ci_lo, ci_hi,
+    t, p, n.
+    """
+    a = disjoint_pair_samples(mat_cond)
+    b = disjoint_pair_samples(mat_baseline)
+    if len(a) != len(b):
+        raise ValueError(f"paired test needs equal n; got {len(a)} vs {len(b)}")
+    t, p = stats.ttest_rel(a, b, alternative=alternative)
+    mean_diff = float((a - b).mean())
+    ci_lo, ci_hi = stats.t.interval(0.95, df=len(a) - 1,
+                                    loc=mean_diff,
+                                    scale=stats.sem(a - b))
+    return {
+        "a_mean": float(a.mean()), "a_std": float(a.std(ddof=1)),
+        "b_mean": float(b.mean()), "b_std": float(b.std(ddof=1)),
+        "mean_diff": mean_diff, "ci_lo": float(ci_lo), "ci_hi": float(ci_hi),
+        "t": float(t), "p": float(p), "n": int(len(a)),
+    }
+
+
 def fmt_p(p: float) -> str:
-    """Format a p-value: 4 decimals, or scientific notation when very small."""
     return f"{p:.4f}" if p >= 1e-4 else f"{p:.2e}"
 
 
+def stars(p: float) -> str:
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return "n.s."
+
+
 def main() -> None:
-    data: dict[str, tuple[float, float, int]] = {}
+    mats: dict[str, np.ndarray] = {}
     for label, fname in CONDITIONS:
         path = MATRIX_DIR / fname
         if path.exists():
-            data[label] = jackknife_xp(parse_xp_matrix(path))
+            mats[label] = parse_xp_matrix(path)
+        else:
+            print(f"skip (no csv): {label}  [{fname}]")
 
-    if BASELINE not in data:
+    if BASELINE not in mats:
+        print(f"missing baseline ({BASELINE}); cannot run tests")
         return
-    tb, sb, nb = data[BASELINE]
-    for label, (to, so, no) in data.items():
+
+    baseline_mat = mats[BASELINE]
+
+    print(f"\n=== Paired t-test (disjoint pairs, m = N/2, one-sided 'greater') "
+          f"vs {BASELINE} ===")
+    print(f"{'condition':<24s} {'XP':>6s} {'Δ':>7s} {'95% CI':>20s} "
+          f"{'t':>6s} {'p':>10s} {'sig':>5s} {'n':>3s}")
+    for label, mat in mats.items():
         if label == BASELINE:
             continue
-        se = np.sqrt(so ** 2 + sb ** 2)
-        t = (to - tb) / se
-        df = se ** 4 / (so ** 4 / (no - 1) + sb ** 4 / (nb - 1))
-        p_two = 2 * stats.t.sf(abs(t), df)
-        p_greater = stats.t.sf(t, df)
-        print(f"{label} vs {BASELINE}:  "
-              f"p(two-sided)={fmt_p(p_two)}   p(one-sided/greater)={fmt_p(p_greater)}")
+        if mat.shape != baseline_mat.shape:
+            print(f"  {label}: shape {mat.shape} != baseline {baseline_mat.shape}, skipping")
+            continue
+        r = paired_test_vs_baseline(mat, baseline_mat, alternative="greater")
+        ci = f"[{r['ci_lo']:+.3f}, {r['ci_hi']:+.3f}]"
+        print(f"{label:<24s} {r['a_mean']:>6.3f} {r['mean_diff']:>+7.3f} {ci:>20s} "
+              f"{r['t']:>6.2f} {fmt_p(r['p']):>10s} {stars(r['p']):>5s} {r['n']:>3d}")
 
 
 if __name__ == "__main__":
