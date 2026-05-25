@@ -129,10 +129,10 @@ def main() -> None:
     ax.axhline(RANDOM_BASELINE, ls="--", lw=1.8, color=RANDOM_COLOR, zorder=5)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=14)
-    ax.set_ylabel("Episode return", fontsize=15)
+    ax.set_xticklabels(labels, fontsize=18)
+    ax.set_ylabel("Episode return", fontsize=20)
     ax.set_ylim(0, 1.12)
-    ax.tick_params(axis="y", labelsize=13)
+    ax.tick_params(axis="y", labelsize=16)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
@@ -143,7 +143,7 @@ def main() -> None:
         Line2D([0], [0], color=RANDOM_COLOR, ls="--", lw=1.8,
                label="Random baseline"),
     ]
-    ax.legend(handles=handles, frameon=False, fontsize=13, loc="upper left")
+    ax.legend(handles=handles, frameon=False, fontsize=16, loc="upper left")
 
     fig.tight_layout()
     OUT.parent.mkdir(parents=True, exist_ok=True)
