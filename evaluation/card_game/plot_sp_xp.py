@@ -114,6 +114,18 @@ def main() -> None:
         xp_vals.append(xpm); xp_err.append(xpe)
         sig_marks.append(mark)
 
+    # Extra pairwise XP comparisons (besides each-vs-baseline tested above)
+    extras = [("OP + comm", "OP + JA")]   # (better/higher, baseline-in-comparison)
+    for hi, lo in extras:
+        if hi in mats and lo in mats and mats[hi].shape == mats[lo].shape:
+            r1 = paired_test_vs_baseline(mats[hi], mats[lo], alternative="greater")
+            r2 = paired_test_vs_baseline(mats[hi], mats[lo], alternative="two-sided")
+            print(f"\n{hi:>10s}  vs  {lo:<10s}  XP paired-t (m={r1['n']} disjoint pairs)")
+            print(f"  means:  {hi}={r1['a_mean']:.3f}   {lo}={r1['b_mean']:.3f}")
+            print(f"  Δ = {r1['mean_diff']:+.4f}   95% CI = [{r1['ci_lo']:+.4f}, {r1['ci_hi']:+.4f}]")
+            print(f"  one-sided ({hi} > {lo}):  t={r1['t']:.3f}  p={r1['p']:.4g}  {stars(r1['p'])}")
+            print(f"  two-sided:                t={r2['t']:.3f}  p={r2['p']:.4g}  {stars(r2['p'])}")
+
     x = np.arange(len(labels))
     w = 0.38
     ekw = dict(ecolor="black", elinewidth=1.4, capsize=5, capthick=1.4)
