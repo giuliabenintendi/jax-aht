@@ -47,7 +47,10 @@ def main() -> None:
             print(f"skip: {label}  (no {path})")
             continue
         df = pd.read_csv(path).sort_values("env_step").reset_index(drop=True)
-        x = df["env_step"].values
+        # Normalize x to fraction of this condition's training (0 -> 1) so
+        # the 5M and 15M runs are visually comparable end-to-end.
+        env_step = df["env_step"].values
+        x = env_step / env_step.max()
         sp_m, sp_s = df["sp_mean"].values, df["sp_std"].values
         xp_m, xp_s = df["xp_mean"].values, df["xp_std"].values
 
@@ -58,12 +61,13 @@ def main() -> None:
         ax_xp.fill_between(x, xp_m - xp_s, xp_m + xp_s,
                            color=color, alpha=0.20, zorder=3)
         print(f"{label:<24s} final SP={sp_m[-1]:.3f}  XP={xp_m[-1]:.3f}  "
-              f"(n_chunks={len(x)})")
+              f"(n_chunks={len(x)}, max env_step={int(env_step.max()):,})")
 
     for ax, title in [(ax_sp, "Training"), (ax_xp, "Testing (Zero-Shot)")]:
         ax.axhline(RANDOM_BASELINE, ls="--", lw=1.5, color=RANDOM_COLOR, zorder=2)
         ax.set_title(title, fontsize=16)
-        ax.set_xlabel("Environment steps", fontsize=14)
+        ax.set_xlabel("Training progress", fontsize=14)
+        ax.set_xlim(0, 1.0)
         ax.set_ylim(0, 1.05)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
