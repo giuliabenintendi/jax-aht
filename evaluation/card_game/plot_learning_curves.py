@@ -33,7 +33,7 @@ RANDOM_BASELINE = 0.20
 ROWS = [
     ("OP only",                "6d93i8mc", "#2E7DF0", "op_only.csv"),
     ("OP + JA",                "mpzaww7r", "#F5871F", "op_ja.csv"),
-    ("OP + comm",              "bota0h7c", "#F8A0AE", "op_comm_noshape.csv"),
+    ("OP + comm",              "bota0h7c", "#8C82F6", "op_comm_noshape.csv"),
     ("OP + JA + shaping",      "dx04ii07", "#51B18D", "op_ja_shaping.csv"),
     ("OP + comm + match",      "p2p1x7ez", "#F77F92", "op_comm_match.csv"),
     ("OP + comm + shaping",    "p94s92du", "#F55F74", "op_comm_shaping.csv"),
