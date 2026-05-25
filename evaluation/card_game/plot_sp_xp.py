@@ -48,8 +48,8 @@ XP_HATCH = "//"
 ROWS = [
     ("OP only",                "op_only.csv",          "#2E7DF0"),  # blue
     ("OP + JA",                "op_ja.csv",            "#F5871F"),  # orange
-    ("OP + JA\n+ shaping",     "op_ja_shaping.csv",    "#51B18D"),  # green
     ("OP + comm",              "op_comm_noshape.csv",  "#F8A0AE"),  # light pink
+    ("OP + JA\n+ shaping",     "op_ja_shaping.csv",    "#51B18D"),  # green
     ("OP + comm\n+ match",     "op_comm_match.csv",    "#F77F92"),  # medium pink
     ("OP + comm\n+ shaping",   "op_comm_shaping.csv",  "#F55F74"),  # Abet 823 HR-LAQ
 ]
