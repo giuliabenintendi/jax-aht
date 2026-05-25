@@ -40,23 +40,27 @@ echo "[$(ts)] --- NOT-OP ---"
 #     --every 1
 echo "    (skipped — fill in NOT-OP ckpt-root + hydra-dir after launch_not_op.sh finishes)"
 
-# ---- 2. OP + JA + shaping (15M, 77 chunks, eval every 4th) ----
+# ---- 2. OP + JA + shaping (15M, 77 chunks, eval every 4th, 10-seed subset) ----
+# --select-n 10 picks 10 seeds stratified by final-ckpt return rank so the
+# subset's mean ≈ the 48-seed mean (preserves both center and shape).
 echo "[$(ts)] --- OP + JA + shaping ---"
 ./run_gpu.sh "$GPU" evaluation.card_game.eval_over_training \
     --ckpt-root "$CKPT/likely-thunder-1466_card-game-op-delib-actions_ja_ippo_op_ja_shaped_48s_15M_s48_21052026" \
     --hydra-dir "$RESULTS/card-game-op-delib-actions/ja_ippo/op_ja_shaped_48s/2026-05-21_23-14-01" \
     --label "OP + JA + shaping" \
     --out-csv "$OUT/op_ja_shaping.csv" \
-    --every 4
+    --every 4 \
+    --select-n 10
 
-# ---- 3. OP + comm + shaping (5M, ~25 chunks, eval every chunk) ----
+# ---- 3. OP + comm + shaping (5M, ~25 chunks, eval every chunk, 10-seed subset) ----
 echo "[$(ts)] --- OP + comm + shaping ---"
 ./run_gpu.sh "$GPU" evaluation.card_game.eval_over_training \
     --ckpt-root "$CKPT/cosmic-thunder-1475_card-game-op_ja_ippo_comm_rerun/comm_full_48s_5M_s48_24052026" \
     --hydra-dir "$RESULTS/card-game-op/ja_ippo/comm_rerun/comm_full_48s/2026-05-24_13-47-51" \
     --label "OP + comm + shaping" \
     --out-csv "$OUT/op_comm_shaping.csv" \
-    --every 1
+    --every 1 \
+    --select-n 10
 
 echo "[$(ts)] OP conditions done."
 echo "When NOT-OP training completes, fill in its paths above and re-run this script."

@@ -54,6 +54,38 @@ def to_numpy_tree(obj):
     return obj
 
 
+def slice_tree_seeds(tree, indices: np.ndarray):
+    """Slice leading-axis (seed dim) of every leaf to the given seed indices."""
+    if isinstance(tree, dict):
+        return {k: slice_tree_seeds(v, indices) for k, v in tree.items()}
+    if isinstance(tree, (list, tuple)):
+        return type(tree)(slice_tree_seeds(x, indices) for x in tree)
+    return tree[indices]
+
+
+def stratified_rank_subset(returns: list, k: int) -> list[int]:
+    """Pick k seed indices stratified by final-return rank.
+
+    Sorts seeds by final-ckpt return, then picks k positions evenly spaced
+    across the sorted order. Preserves both the population mean and the
+    distribution shape (stuck/mid/escape mass) much better than random sampling.
+    """
+    n = len(returns)
+    if k >= n:
+        return list(range(n))
+    sorted_idx = sorted(range(n), key=lambda i: returns[i])
+    positions = [round(i * (n - 1) / (k - 1)) for i in range(k)]
+    # de-dup just in case rounding collides at small k
+    seen = set()
+    picks = []
+    for p in positions:
+        if p in seen:
+            continue
+        seen.add(p)
+        picks.append(sorted_idx[p])
+    return sorted(picks)
+
+
 def load_chunk_numpy(path: str):
     checkpointer = ocp.PyTreeCheckpointer()
     return to_numpy_tree(checkpointer.restore(path))
@@ -92,6 +124,10 @@ def main():
                     help="evaluate every Nth chunk (default 4)")
     ap.add_argument("--first-n", type=int, default=None,
                     help="optional cap on number of chunks to eval")
+    ap.add_argument("--select-n", type=int, default=None,
+                    help="if set, subsample seeds at each chunk: pick k seeds "
+                         "stratified by rank of final-ckpt return so the subset "
+                         "mean matches the population mean. (Default: use all seeds.)")
     args = ap.parse_args()
 
     ckpt_root = Path(args.ckpt_root)
@@ -112,6 +148,19 @@ def main():
         chunk_indices = chunk_indices[:args.first_n]
     print(f"[{args.label}] evaluating {len(chunk_indices)}/{num_ckpts} chunks: {chunk_indices}")
 
+    # Seed subsampling (stratified by final-ckpt return rank)
+    selected_seeds_arr = None
+    if args.select_n:
+        returns = scores["best_chunk_return_per_seed"]
+        picks = stratified_rank_subset(returns, args.select_n)
+        pop_mean = float(np.mean(returns))
+        sub_mean = float(np.mean([returns[i] for i in picks]))
+        selected_seeds_arr = np.asarray(picks, dtype=np.int64)
+        print(f"  seed subset (k={len(picks)}, stratified by final return): {picks}")
+        print(f"    subset mean = {sub_mean:.3f}    population mean = {pop_mean:.3f}")
+    else:
+        print(f"  using all {scores['num_seeds']} seeds")
+
     eval_root = hydra_dir / "chunk_eval"
     eval_root.mkdir(parents=True, exist_ok=True)
 
@@ -129,6 +178,8 @@ def main():
 
         print(f"  chunk {ci}: loading {ckpt_paths[ci]}")
         chunk_params = load_chunk_numpy(ckpt_paths[ci])
+        if selected_seeds_arr is not None:
+            chunk_params = slice_tree_seeds(chunk_params, selected_seeds_arr)
         out_dict = to_numpy_tree({
             "best_params": chunk_params,
             "final_params": chunk_params,
