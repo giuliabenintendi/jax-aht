@@ -29,4 +29,5 @@ STEPS=${3:-5e6}
     algorithm.JA_CARD_METRIC=false \
     algorithm.JA_CARD_ATTN=false \
     algorithm.JA_CARD_PARTNER_FEED=false \
+    algorithm.ENT_COEF=0.0 \
     task.ENV_KWARGS.shuffle=false
