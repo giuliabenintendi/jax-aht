@@ -2,24 +2,63 @@
 Reconstruct best_params from per-chunk folders + chunk_scores.json after a post-train
 crash. Writes a saved_train_run/ that `run_xp_seeds.py --checkpoint --use-best` accepts.
 
-Run from the repo root.
+Pure numpy + orbax (no jax import) so the saved checkpoint is device-agnostic --
+can be loaded on GPU even though this script runs on CPU.
 
-Example:
+Run from the repo root:
     uv run reconstruct_best.py \\
         --ckpt-root /scratch/benintendi/jax-aht/checkpoints/likely-thunder-1466_card-game-op-delib-actions_ja_ippo_op_ja_shaped_48s_15M_s48_21052026 \\
-        --hydra-dir /scratch/benintendi/jax-aht/results/card-game-op-delib-actions/ja_ippo/op_ja_shaped_48s/<TIMESTAMP>
+        --hydra-dir /scratch/benintendi/jax-aht/results/card-game-op-delib-actions/ja_ippo/op_ja_shaped_48s/2026-05-21_23-14-01
 """
 import argparse
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO))
 
-import jax
 import numpy as np
-from common.save_load_utils import load_train_run, save_train_run
+import orbax.checkpoint as ocp
+from flax.training import orbax_utils
+
+
+def to_numpy_tree(obj):
+    """Recursively convert any array-like leaves to numpy. Strips jax sharding info."""
+    if isinstance(obj, dict):
+        return {k: to_numpy_tree(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(to_numpy_tree(x) for x in obj)
+    if isinstance(obj, np.ndarray):
+        return obj
+    if hasattr(obj, "__array__"):
+        return np.asarray(obj)
+    return obj
+
+
+def load_chunk_numpy(path: str):
+    checkpointer = ocp.PyTreeCheckpointer()
+    restored = checkpointer.restore(path)
+    return to_numpy_tree(restored)
+
+
+def gather_seed(s: int, tree):
+    if isinstance(tree, dict):
+        return {k: gather_seed(s, v) for k, v in tree.items()}
+    if isinstance(tree, (list, tuple)):
+        return type(tree)(gather_seed(s, x) for x in tree)
+    return tree[s]
+
+
+def stack_trees(trees):
+    sample = trees[0]
+    if isinstance(sample, dict):
+        return {k: stack_trees([t[k] for t in trees]) for k in sample}
+    if isinstance(sample, (list, tuple)):
+        return type(sample)(stack_trees([t[i] for t in trees]) for i in range(len(sample)))
+    return np.stack(trees)
 
 
 def main():
@@ -37,8 +76,7 @@ def main():
     scores_path = ckpt_root / "chunk_scores.json"
     if not scores_path.exists():
         raise FileNotFoundError(f"no chunk_scores.json at {scores_path}")
-    hydra_cfg = hydra_dir / ".hydra" / "config.yaml"
-    if not hydra_cfg.exists():
+    if not (hydra_dir / ".hydra" / "config.yaml").exists():
         raise FileNotFoundError(f"no .hydra/config.yaml in {hydra_dir}")
 
     scores = json.loads(scores_path.read_text())
@@ -59,19 +97,15 @@ def main():
     for ci in unique:
         path = ckpt_paths[ci]
         print(f"  loading chunk {ci}: {path}")
-        cache[ci] = load_train_run(path)
-
-    def gather(s: int):
-        c = cache[best_idx[s]]
-        return jax.tree.map(lambda x: np.asarray(x)[s], c)
+        cache[ci] = load_chunk_numpy(path)
 
     print("stacking per-seed best params...")
-    per_seed = [gather(s) for s in range(num_seeds)]
-    best_params = jax.tree.map(lambda *xs: np.stack(xs), *per_seed)
+    per_seed = [gather_seed(s, cache[best_idx[s]]) for s in range(num_seeds)]
+    best_params = stack_trees(per_seed)
 
     fci = num_ckpts - 1
     print(f"loading final chunk ({fci}) as final_params...")
-    final_params = cache[fci] if fci in cache else load_train_run(ckpt_paths[fci])
+    final_params = cache[fci] if fci in cache else load_chunk_numpy(ckpt_paths[fci])
 
     out = {
         "best_params": best_params,
@@ -79,8 +113,18 @@ def main():
         "ckpt_env_steps": np.asarray(scores["ckpt_env_steps"], dtype=np.int64),
         "best_ckpt_idx": np.asarray(best_idx, dtype=np.int32),
     }
+    out = to_numpy_tree(out)
 
-    save_path = save_train_run(out, str(hydra_dir), "saved_train_run")
+    save_path = str(hydra_dir / "saved_train_run")
+    if os.path.exists(save_path):
+        print(f"removing existing {save_path}...")
+        shutil.rmtree(save_path)
+
+    print(f"writing saved_train_run to {save_path}...")
+    checkpointer = ocp.PyTreeCheckpointer()
+    save_args = orbax_utils.save_args_from_target(out)
+    checkpointer.save(save_path, out, save_args=save_args)
+
     print()
     print(f"DONE. saved_train_run written to: {save_path}")
     print()
