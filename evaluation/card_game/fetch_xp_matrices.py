@@ -56,10 +56,10 @@ def parse_first_table(path: Path) -> np.ndarray:
 
 
 def looks_like_no_op_overwrite(mat: np.ndarray) -> bool:
-    """Heuristic: diagonal at ~1.0 with bimodal 0/1 off-diag = XP_NO_OP."""
-    diag = np.diag(mat)
-    off = mat[~np.eye(mat.shape[0], dtype=bool)]
-    return diag.mean() > 0.90 and off.std() > 0.20
+    """Heuristic: diagonal at ~1.0 is the giveaway — when OP wrappers are off at eval,
+    deterministic policies match themselves perfectly. The proper XP pass (OP on at
+    eval) has SP at training-time levels, not 1.0."""
+    return float(np.diag(mat).mean()) > 0.95
 
 
 def main() -> None:
