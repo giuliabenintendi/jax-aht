@@ -80,9 +80,13 @@ def main() -> None:
         ax.tick_params(axis="both", labelsize=12)
 
     ax_sp.set_ylabel("Episode return", fontsize=14)
-    ax_xp.legend(frameon=False, fontsize=12, loc="lower right")
 
-    fig.tight_layout()
+    handles, labels = ax_sp.get_legend_handles_labels()
+    fig.legend(handles, labels, frameon=False, fontsize=12,
+               loc="lower center", ncol=len(labels),
+               bbox_to_anchor=(0.5, -0.02))
+
+    fig.tight_layout(rect=(0, 0.06, 1, 1))
     OUT.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT, dpi=300, bbox_inches="tight")
     print(f"\nsaved {OUT}")
