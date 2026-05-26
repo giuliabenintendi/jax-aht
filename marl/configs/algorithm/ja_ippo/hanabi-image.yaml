@@ -5,9 +5,9 @@ defaults:
 # Hyperparameters from JaxMARL's official Hanabi IPPO baseline
 # (baselines/IPPO/config/ippo_rnn_hanabi.yaml), with the project's existing
 # network kept unchanged (FC_HIDDEN_DIM=256, LSTM_HIDDEN_DIM=128, JA heads).
-TOTAL_TIMESTEPS: 1e7        # paper uses 1e10; truncated for iteration
+TOTAL_TIMESTEPS: 1e6        # dev default; bump for real runs (paper uses 1e10)
 NUM_ENVS: 1024
-NUM_SEEDS: 5                # for XP matrix comparison
+NUM_SEEDS: 1                # dev default; bump to 5+ for XP comparison
 LR: 5e-4                    # JaxMARL Hanabi
 GAE_LAMBDA: 0.95            # JaxMARL Hanabi (was 0.8 in ja_ippo base)
 NUM_MINIBATCHES: 4          # JaxMARL Hanabi (was 16 in ja_ippo base)
