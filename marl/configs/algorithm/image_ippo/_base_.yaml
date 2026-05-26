@@ -3,6 +3,7 @@
 # Same architecture and PPO hyperparameters as JA-IPPO minus attention.
 ALG: image_ippo
 NUM_CHECKPOINTS: 5
+CHECKPOINT_FREQ_TIMESTEPS: 0    # >0 to chunk by env steps (mirrors ja_ippo knob); 0 falls back to NUM_CHECKPOINTS-evenly-spaced
 LIVE_WANDB_LOGGING: true    # push chunk-aggregated metrics to wandb every ckpt window
 ANNEAL_LR: True
 MAX_GRAD_NORM: 0.5

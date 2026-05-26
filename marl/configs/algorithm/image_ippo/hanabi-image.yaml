@@ -6,7 +6,7 @@ defaults:
 # (baselines/IPPO/config/ippo_rnn_hanabi.yaml), with the project's existing
 # network kept unchanged (FC_HIDDEN_DIM=256, LSTM_HIDDEN_DIM=128).
 TOTAL_TIMESTEPS: 1e6        # dev default; bump for real runs (paper uses 1e10)
-NUM_ENVS: 1024
+NUM_ENVS: 256               # dev default; bump to 1024 for real runs (memory-bound)
 NUM_SEEDS: 1                # dev default; bump to 5+ for XP comparison
 LR: 5e-4                    # JaxMARL Hanabi
 GAE_LAMBDA: 0.95            # JaxMARL Hanabi (was 0.8 in image_ippo base)

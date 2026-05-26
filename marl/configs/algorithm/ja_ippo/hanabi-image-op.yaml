@@ -7,7 +7,7 @@ defaults:
 # that the OP+JA-shaping condition needs to beat in XP. To enable JA
 # shaping, override JA_*_COEF on the command line or create a third config.
 TOTAL_TIMESTEPS: 1e6        # dev default; bump for real runs
-NUM_ENVS: 1024
+NUM_ENVS: 256               # dev default; bump to 1024 for real runs (memory-bound)
 NUM_SEEDS: 1                # dev default; bump to 5+ for XP comparison
 LR: 5e-4
 GAE_LAMBDA: 0.95

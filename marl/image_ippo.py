@@ -177,10 +177,16 @@ def run_image_ippo(config, logger):
           f"NUM_ENVS={algorithm_config['NUM_ENVS']}")
 
     live_wandb = bool(algorithm_config.get("LIVE_WANDB_LOGGING", True))
+    env_steps_per_update = algorithm_config["ROLLOUT_LENGTH"] * algorithm_config["NUM_ENVS"]
     # Push live chunk-aggregated metrics on the checkpoint cadence so the
     # wandb dashboard updates at the same granularity training progresses at.
-    live_log_interval = max(1, ckpt_interval)
-    env_steps_per_update = algorithm_config["ROLLOUT_LENGTH"] * algorithm_config["NUM_ENVS"]
+    # CHECKPOINT_FREQ_TIMESTEPS > 0 mirrors ja_ippo's chunking knob (lets
+    # smoke runs request fine-grained live points without bumping NUM_CHECKPOINTS).
+    freq_timesteps = float(algorithm_config.get("CHECKPOINT_FREQ_TIMESTEPS", 0) or 0)
+    if freq_timesteps > 0:
+        live_log_interval = max(1, int(freq_timesteps / env_steps_per_update))
+    else:
+        live_log_interval = max(1, ckpt_interval)
 
     seed_outputs = []
     for s in range(num_seeds):
