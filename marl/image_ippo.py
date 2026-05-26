@@ -256,6 +256,9 @@ def log_eval_video(algorithm_config, env, out, logger):
         frames = render_card_game_eval_frames(
             ep_states, scale=32, ep_obs=ep_obs, ep_actions=ep_actions,
         )
+    elif env_name == "hanabi":
+        from envs.hanabi.rendering import render_hanabi_eval_frames
+        frames = render_hanabi_eval_frames(ep_states, scale=8)
     else:
         from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
         viz = AdHocOvercookedVisualizer()

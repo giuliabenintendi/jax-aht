@@ -432,6 +432,10 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             # Render frames from episode states
             if env_name in ("lbf", "lbf-reward-shaping"):
                 frames = _render_lbf_eval_frames(inner_env, ep_states)
+            elif env_name == "hanabi":
+                from envs.hanabi.rendering import render_hanabi_eval_frames
+                frames = render_hanabi_eval_frames(ep_states, scale=8)
+                attn_backdrop_frames = frames
             elif env_name == "card-game":
                 from envs.card_game.rendering import (
                     render_card_game_eval_frames,

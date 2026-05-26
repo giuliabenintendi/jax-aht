@@ -328,6 +328,33 @@ def render_hanabi(state, agent_idx):
     return img
 
 
+def render_hanabi_eval_frames(ep_states, scale: int = 8):
+    """Render a list of wrapped episode states as side-by-side agent_0|agent_1 frames.
+
+    Each frame is `(IMG_H*scale, 2*IMG_W*scale + sep, 3)` uint8. Used by the
+    image_ippo / ja_ippo eval-video path; matches the shape contract that
+    `render_card_game_eval_frames` provides for card-game.
+
+    `ep_states` is a list of `WrappedEnvState`; the inner JaxMARL HanabiState
+    is reached via `state.env_state`. No JAX tracing — this runs on host
+    after the rollout completes.
+    """
+    import numpy as np
+
+    sep = 4
+    frames = []
+    for wrapped in ep_states:
+        inner = wrapped.env_state
+        img0 = np.asarray(render_hanabi(inner, jnp.int32(0)))
+        img1 = np.asarray(render_hanabi(inner, jnp.int32(1)))
+        # upscale by integer kron
+        big0 = np.kron(img0, np.ones((scale, scale, 1), dtype=np.uint8))
+        big1 = np.kron(img1, np.ones((scale, scale, 1), dtype=np.uint8))
+        gap = np.full((big0.shape[0], sep, 3), 40, dtype=np.uint8)
+        frames.append(np.concatenate([big0, gap, big1], axis=1))
+    return frames
+
+
 ## Tests
 
 def _smoke_render_to_png(out_path="/tmp/hanabi_render.png"):
