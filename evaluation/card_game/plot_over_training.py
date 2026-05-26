@@ -71,11 +71,10 @@ def main() -> None:
               f"(n_chunks={len(x)}, max env_step={int(env_step.max()):,})")
 
     for ax, title in [(ax_sp, "Training"), (ax_xp, "Testing (Zero-Shot)")]:
-        ax.axhline(RANDOM_BASELINE, ls="--", lw=1.5, color=RANDOM_COLOR, zorder=2)
         ax.set_title(title, fontsize=16)
         ax.set_xlabel("Training progress", fontsize=14)
         ax.set_xlim(0, 1.0)
-        ax.set_ylim(0.18, 1.05)  # start at chance; below 0.2 isn't meaningful
+        ax.set_ylim(0, 1.05)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.tick_params(axis="both", labelsize=12)
