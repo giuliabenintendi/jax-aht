@@ -17,7 +17,7 @@ import jax.numpy as jnp
 from jaxmarl.environments import spaces as jaxmarl_spaces
 
 from envs.base_env import WrappedEnvState
-from envs.hanabi.hanabi_wrapper import HanabiWrapper
+from envs.hanabi.hanabi_wrapper import HanabiWrapper, _hanabi_metrics
 from envs.hanabi.rendering import (
     GRID_COLS,
     GRID_ROWS,
@@ -88,7 +88,13 @@ class HanabiImageWrapper(HanabiWrapper):
 
         base_reward = jnp.array([rewards[agent] for agent in self.agents])
         base_return_so_far = base_reward + state.base_return_so_far
-        new_info = {**infos, "base_return": base_return_so_far, "base_reward": base_reward}
+        hanabi_metrics = _hanabi_metrics(env_state, actions, self.agents, self.num_agents)
+        new_info = {
+            **infos,
+            "base_return": base_return_so_far,
+            "base_reward": base_reward,
+            **hanabi_metrics,
+        }
         base_return_so_far = jax.lax.select(
             dones["__all__"], jnp.zeros(self.num_agents), base_return_so_far,
         )

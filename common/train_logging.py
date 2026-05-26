@@ -84,6 +84,24 @@ IMAGE_IPPO_SCALAR_KEYS = [
 ]
 
 
+# Hanabi-specific per-step metrics, pushed via log_live_chunk_metrics when
+# the wrapper has populated them in the info dict. Each is averaged across
+# the chunk: `score` and `turn` average the running game state across all
+# steps; `action_*` average to fractions of steps spent in each action class.
+HANABI_LIVE_SCALAR_KEYS = [
+    ("score", "Hanabi/score"),
+    ("lives_remaining", "Hanabi/lives_remaining"),
+    ("info_tokens_remaining", "Hanabi/info_tokens_remaining"),
+    ("turn", "Hanabi/turn"),
+    ("bombed", "Hanabi/bombed_frac"),
+    ("action_discard", "Hanabi/action_discard"),
+    ("action_play", "Hanabi/action_play"),
+    ("action_hint_colour", "Hanabi/action_hint_colour"),
+    ("action_hint_rank", "Hanabi/action_hint_rank"),
+    ("action_noop", "Hanabi/action_noop"),
+]
+
+
 def log_live_chunk_metrics(chunk_metrics, env_step, seed_idx, logger):
     """Push chunk-aggregated training metrics to W&B during training."""
     if logger is None or getattr(logger, "run", None) is None:
@@ -108,6 +126,15 @@ def log_live_chunk_metrics(chunk_metrics, env_step, seed_idx, logger):
     }
 
     for key, name in JA_LIVE_SCALAR_KEYS:
+        if key in chunk_metrics:
+            data[f"LiveTrain/seed_{seed_idx}/{name}"] = float(
+                np.asarray(chunk_metrics[key]).mean()
+            )
+
+    # Hanabi-specific per-step metrics (only present when the Hanabi wrapper
+    # populated them — silently skipped otherwise so this also runs cleanly
+    # for card-game / lbf / overcooked).
+    for key, name in HANABI_LIVE_SCALAR_KEYS:
         if key in chunk_metrics:
             data[f"LiveTrain/seed_{seed_idx}/{name}"] = float(
                 np.asarray(chunk_metrics[key]).mean()

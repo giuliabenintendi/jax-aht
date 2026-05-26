@@ -11,7 +11,11 @@ import jax.numpy as jnp
 from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_image_agent
-from common.train_logging import IMAGE_IPPO_SCALAR_KEYS, report_basic_training_outputs
+from common.train_logging import (
+    IMAGE_IPPO_SCALAR_KEYS,
+    log_live_chunk_metrics,
+    report_basic_training_outputs,
+)
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 from marl.eval_lbf import _render_lbf_eval_frames
@@ -172,6 +176,12 @@ def run_image_ippo(config, logger):
     print(f"[image_ippo] NUM_UPDATES={num_updates}, NUM_SEEDS={num_seeds}, "
           f"NUM_ENVS={algorithm_config['NUM_ENVS']}")
 
+    live_wandb = bool(algorithm_config.get("LIVE_WANDB_LOGGING", True))
+    # Push live chunk-aggregated metrics on the checkpoint cadence so the
+    # wandb dashboard updates at the same granularity training progresses at.
+    live_log_interval = max(1, ckpt_interval)
+    env_steps_per_update = algorithm_config["ROLLOUT_LENGTH"] * algorithm_config["NUM_ENVS"]
+
     seed_outputs = []
     for s in range(num_seeds):
         print(f"[image_ippo] Seed {s+1}/{num_seeds}: initializing...")
@@ -180,12 +190,14 @@ def run_image_ippo(config, logger):
 
         checkpoints = []
         all_metrics = []
+        chunk_buffer = []
         update_steps = jnp.int32(0)
 
         print(f"[image_ippo] Seed {s+1}/{num_seeds}: compiling step fn...")
         for step in range(num_updates):
             runner_state, update_steps, metric = step_fn(runner_state, update_steps)
             all_metrics.append(metric)
+            chunk_buffer.append(metric)
 
             should_ckpt = (step % ckpt_interval == 0) or (step == num_updates - 1)
             if should_ckpt and len(checkpoints) < num_ckpts:
@@ -193,6 +205,19 @@ def run_image_ippo(config, logger):
 
             if step % max(1, num_updates // 10) == 0 or step == num_updates - 1:
                 print(f"[image_ippo] Seed {s+1}/{num_seeds}: step {step+1}/{num_updates}")
+
+            # Live wandb push at the chunk cadence. Stack the buffered per-
+            # update metrics so `log_live_chunk_metrics` can mean-reduce them.
+            is_chunk_end = ((step + 1) % live_log_interval == 0) or (step == num_updates - 1)
+            if live_wandb and is_chunk_end and chunk_buffer:
+                chunk_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *chunk_buffer)
+                log_live_chunk_metrics(
+                    chunk_metrics,
+                    env_step=(step + 1) * env_steps_per_update,
+                    seed_idx=s,
+                    logger=logger,
+                )
+                chunk_buffer = []
 
         stacked_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *all_metrics)
         stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *checkpoints)

@@ -12,6 +12,47 @@ from jaxmarl.environments import spaces
 from ..base_env import BaseEnv
 from ..base_env import WrappedEnvState
 
+
+def _hanabi_metrics(env_state, actions, agents, num_agents):
+    """Per-step Hanabi metrics broadcast to (num_agents,) shape.
+
+    Returns a dict whose keys live alongside `base_return` in the info dict
+    that `LogWrapper` and downstream logging consume. Shape convention matches
+    `LogWrapper.episode_returns` etc. so chunk aggregation just means-reduces.
+
+    Notes on action classes: the action layout is 0-4 discard, 5-9 play,
+    10-14 hint colour, 15-19 hint rank, 20 noop. Non-current players get
+    forced to the noop slot by `get_legal_moves`, so the per-agent action
+    fractions include those forced noops — divide by `(1 - action_noop)` if
+    you want the on-active-turn distribution.
+    """
+    score = jnp.broadcast_to(env_state.score.astype(jnp.float32), (num_agents,))
+    lives = jnp.broadcast_to(env_state.life_tokens.sum().astype(jnp.float32), (num_agents,))
+    info_tokens = jnp.broadcast_to(env_state.info_tokens.sum().astype(jnp.float32), (num_agents,))
+    turn = jnp.broadcast_to(env_state.turn.astype(jnp.float32), (num_agents,))
+    bombed = jnp.broadcast_to(env_state.bombed.astype(jnp.float32), (num_agents,))
+
+    a = jnp.stack([actions[agent].astype(jnp.int32) for agent in agents])  # (num_agents,)
+    action_discard = ((a >= 0) & (a <= 4)).astype(jnp.float32)
+    action_play = ((a >= 5) & (a <= 9)).astype(jnp.float32)
+    action_hint_colour = ((a >= 10) & (a <= 14)).astype(jnp.float32)
+    action_hint_rank = ((a >= 15) & (a <= 19)).astype(jnp.float32)
+    action_noop = (a == 20).astype(jnp.float32)
+
+    return {
+        "score": score,
+        "lives_remaining": lives,
+        "info_tokens_remaining": info_tokens,
+        "turn": turn,
+        "bombed": bombed,
+        "action_discard": action_discard,
+        "action_play": action_play,
+        "action_hint_colour": action_hint_colour,
+        "action_hint_rank": action_hint_rank,
+        "action_noop": action_noop,
+    }
+
+
 class HanabiWrapper(BaseEnv):
     '''Wrapper for the Hanabi environment to ensure that it follows a common interface 
     with other environments provided in this library.
@@ -80,7 +121,8 @@ class HanabiWrapper(BaseEnv):
         # Convert rewards dict to array for tracking
         base_reward = jnp.array([rewards[agent] for agent in self.agents])
         base_return_so_far = base_reward + state.base_return_so_far
-        new_info = {**infos, 'base_return': base_return_so_far, 'base_reward': base_reward}
+        hanabi_metrics = _hanabi_metrics(env_state, actions, self.agents, self.num_agents)
+        new_info = {**infos, 'base_return': base_return_so_far, 'base_reward': base_reward, **hanabi_metrics}
         
         # handle auto-resetting the base return upon episode termination
         base_return_so_far = jax.lax.select(dones['__all__'], jnp.zeros(self.num_agents), base_return_so_far)
