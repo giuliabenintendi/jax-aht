@@ -28,13 +28,17 @@ OUT = Path("plots/card_game/over_training.png")
 RANDOM_BASELINE = 0.20
 RANDOM_COLOR = "#d62728"
 
+# Per-chunk eval subsamples to this many seeds (see run_over_training_eval.sh).
+# Used to convert the CSV's std columns into SEM for the shaded bands.
+N_SEEDS = 10
+
 # (display label, csv filename, color)
-# Divergent palette: teal = SP-baseline (cool / convention-bound, collapses in XP);
-# reds = OP-trained methods (warm / coordination transfers).
+# teal = No-OP baseline (collapses in XP — private color conventions);
+# pink/blue = OP-trained methods (coordination should transfer).
 CONDS = [
-    ("OP only (no-OP eval)",   "self_play.csv",        "#0d7d87"),  # Dark Teal
-    ("OP + JA + shaping",      "op_ja_shaping.csv",    "#c31e23"),  # Dark Red
-    ("OP + comm + shaping",    "op_comm_shaping.csv",  "#ff5a5e"),  # Light Red
+    ("No OP",                  "self_play.csv",        "#0d7d87"),  # teal
+    ("OP + JA + shaping",      "op_ja_shaping.csv",    "#f77f74"),  # pink
+    ("OP + comm + shaping",    "op_comm_shaping.csv",  "#8cc5e3"),  # blue
 ]
 
 
@@ -51,14 +55,17 @@ def main() -> None:
         # the 5M and 15M runs are visually comparable end-to-end.
         env_step = df["env_step"].values
         x = env_step / env_step.max()
-        sp_m, sp_s = df["sp_mean"].values, df["sp_std"].values
-        xp_m, xp_s = df["xp_mean"].values, df["xp_std"].values
+        sp_m = df["sp_mean"].values
+        xp_m = df["xp_mean"].values
+        # CSV stores std; convert to SEM across the N_SEEDS evaluated per chunk.
+        sp_e = df["sp_std"].values / np.sqrt(N_SEEDS)
+        xp_e = df["xp_std"].values / np.sqrt(N_SEEDS)
 
         ax_sp.plot(x, sp_m, color=color, lw=2.4, label=label, zorder=4)
-        ax_sp.fill_between(x, sp_m - sp_s, sp_m + sp_s,
+        ax_sp.fill_between(x, sp_m - sp_e, sp_m + sp_e,
                            color=color, alpha=0.20, zorder=3)
         ax_xp.plot(x, xp_m, color=color, lw=2.4, label=label, zorder=4)
-        ax_xp.fill_between(x, xp_m - xp_s, xp_m + xp_s,
+        ax_xp.fill_between(x, xp_m - xp_e, xp_m + xp_e,
                            color=color, alpha=0.20, zorder=3)
         print(f"{label:<24s} final SP={sp_m[-1]:.3f}  XP={xp_m[-1]:.3f}  "
               f"(n_chunks={len(x)}, max env_step={int(env_step.max()):,})")
@@ -68,7 +75,7 @@ def main() -> None:
         ax.set_title(title, fontsize=16)
         ax.set_xlabel("Training progress", fontsize=14)
         ax.set_xlim(0, 1.0)
-        ax.set_ylim(0, 1.05)
+        ax.set_ylim(0.18, 1.05)  # start at chance; below 0.2 isn't meaningful
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.tick_params(axis="both", labelsize=12)
