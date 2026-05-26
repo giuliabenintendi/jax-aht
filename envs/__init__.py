@@ -1,8 +1,11 @@
 import copy
 import numpy as np
 
-import jumanji
-from jumanji.environments.routing.lbf.generator import RandomGenerator as LbfGenerator
+# jumanji is imported lazily inside the 'lbf' branch of make_env. Importing it
+# at module level forces a jax-array construction in jumanji/types.py at
+# import time, which initialises the JAX backend before any user code runs —
+# any cuDNN/GPU misconfiguration then aborts pytest collection for unrelated
+# tests (e.g. Hanabi). Keeping it lazy isolates lbf's import cost to lbf.
 
 def process_default_args(env_kwargs: dict, default_args: dict):
     '''Helper function to process generator and viewer args for Jumanji environments. 
@@ -19,6 +22,9 @@ def process_default_args(env_kwargs: dict, default_args: dict):
 
 def make_env(env_name: str, env_kwargs: dict = {}):
     if env_name in ['lbf', 'lbf-reward-shaping']:
+        import jumanji
+        from jumanji.environments.routing.lbf.generator import RandomGenerator as LbfGenerator
+
         default_generator_args = {
             "grid_size": 7,
             "fov": 7,
