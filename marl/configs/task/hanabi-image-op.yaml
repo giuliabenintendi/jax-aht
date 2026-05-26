@@ -1,0 +1,11 @@
+ENV_NAME: hanabi
+ROLLOUT_LENGTH: 128
+ENV_KWARGS:
+  obs_type: image
+  other_play_recolouring: true
+  num_agents: 2
+  num_colors: 5
+  num_ranks: 5
+  max_info_tokens: 8
+  max_life_tokens: 3
+TASK_NAME: hanabi-image-op

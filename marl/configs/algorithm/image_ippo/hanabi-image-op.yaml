@@ -1,0 +1,13 @@
+defaults:
+  - image_ippo/_base_
+  - _self_
+
+# Other-Play baseline for Hanabi image obs. Same hyperparams as the SP
+# hanabi-image config; only the env-side OP recolouring differs.
+TOTAL_TIMESTEPS: 1e6        # dev default; bump for real runs
+NUM_ENVS: 1024
+NUM_SEEDS: 1                # dev default; bump to 5+ for XP comparison
+LR: 5e-4                    # JaxMARL Hanabi
+GAE_LAMBDA: 0.95            # JaxMARL Hanabi
+NUM_MINIBATCHES: 4          # JaxMARL Hanabi
+ENT_COEF: 0.01
