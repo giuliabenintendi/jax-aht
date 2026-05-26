@@ -330,6 +330,19 @@ def render_hanabi(state, agent_idx):
     return img
 
 
+def _unwrap_hanabi_state(state):
+    """Descend through nested `env_state` fields until the inner HanabiState.
+
+    The same renderer is used by the no-OP path (state is a `WrappedEnvState`)
+    and the OP path (state is an `OPHanabiRecolouringState` wrapping the
+    `WrappedEnvState`). Stops when there's no `env_state` attribute, which is
+    the contract the inner JaxMARL `HanabiState` satisfies.
+    """
+    while hasattr(state, "env_state"):
+        state = state.env_state
+    return state
+
+
 def render_hanabi_eval_frames(ep_states, scale: int = 8):
     """Render a list of wrapped episode states as side-by-side agent_0|agent_1 frames.
 
@@ -337,16 +350,16 @@ def render_hanabi_eval_frames(ep_states, scale: int = 8):
     image_ippo / ja_ippo eval-video path; matches the shape contract that
     `render_card_game_eval_frames` provides for card-game.
 
-    `ep_states` is a list of `WrappedEnvState`; the inner JaxMARL HanabiState
-    is reached via `state.env_state`. No JAX tracing — this runs on host
-    after the rollout completes.
+    Renders in ground-truth colours, ignoring any per-agent OP recolouring;
+    that's intentional — the OP recolouring is per-agent and the side-by-side
+    view shows the public game state.
     """
     import numpy as np
 
     sep = 4
     frames = []
     for wrapped in ep_states:
-        inner = wrapped.env_state
+        inner = _unwrap_hanabi_state(wrapped)
         img0 = np.asarray(render_hanabi(inner, jnp.int32(0)))
         img1 = np.asarray(render_hanabi(inner, jnp.int32(1)))
         # upscale by integer kron

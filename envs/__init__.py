@@ -140,6 +140,7 @@ def make_env(env_name: str, env_kwargs: dict = {}):
 
         env_kwargs_copy = dict(copy.deepcopy(env_kwargs))
         obs_type = env_kwargs_copy.pop("obs_type", "symbolic")
+        op_recolour = env_kwargs_copy.pop("other_play_recolouring", False)
         # caller kwargs override defaults
         merged_kwargs = {**default_env_kwargs, **env_kwargs_copy}
 
@@ -149,6 +150,14 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         else:
             from envs.hanabi.hanabi_wrapper import HanabiWrapper
             env = HanabiWrapper(**merged_kwargs)
+        if op_recolour:
+            if obs_type != "image":
+                raise ValueError(
+                    "hanabi other_play_recolouring requires obs_type=image "
+                    "(pixel-based recolouring; the symbolic obs has no colour pixels)."
+                )
+            from envs.hanabi.other_play import HanabiColourPermutationWrapper
+            env = HanabiColourPermutationWrapper(env)
 
     else:
         raise NotImplementedError(f"Environment {env_name} not implemented in make_env.")
