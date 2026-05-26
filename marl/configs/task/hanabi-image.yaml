@@ -1,0 +1,13 @@
+ENV_NAME: hanabi
+# Hanabi episodes under random-legal play average ~14 turns and reach a p95 of
+# ~27; trained policies push episodes closer to 60-80 turns by avoiding bomb-outs.
+# 128 keeps several episodes per env per rollout for stable GAE.
+ROLLOUT_LENGTH: 128
+ENV_KWARGS:
+  obs_type: image
+  num_agents: 2
+  num_colors: 5
+  num_ranks: 5
+  max_info_tokens: 8
+  max_life_tokens: 3
+TASK_NAME: hanabi-image

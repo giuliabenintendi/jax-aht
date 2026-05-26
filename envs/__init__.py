@@ -132,9 +132,17 @@ def make_env(env_name: str, env_kwargs: dict = {}):
             "num_cards_of_rank": np.array([3, 2, 2, 2, 1]),
         }
 
-        from envs.hanabi.hanabi_wrapper import HanabiWrapper
-        env_kwargs = default_env_kwargs
-        env = HanabiWrapper(**env_kwargs)
+        env_kwargs_copy = dict(copy.deepcopy(env_kwargs))
+        obs_type = env_kwargs_copy.pop("obs_type", "symbolic")
+        # caller kwargs override defaults
+        merged_kwargs = {**default_env_kwargs, **env_kwargs_copy}
+
+        if obs_type == "image":
+            from envs.hanabi.hanabi_image_wrapper import HanabiImageWrapper
+            env = HanabiImageWrapper(**merged_kwargs)
+        else:
+            from envs.hanabi.hanabi_wrapper import HanabiWrapper
+            env = HanabiWrapper(**merged_kwargs)
 
     else:
         raise NotImplementedError(f"Environment {env_name} not implemented in make_env.")

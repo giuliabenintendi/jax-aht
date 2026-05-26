@@ -2,10 +2,6 @@ import jax
 import jax.numpy as jnp
 from envs import make_env
 
-# Disable JIT for Hanabi testing due to JaxMARL bugs
-# TODO: look into this
-jax.config.update('jax_disable_jit', True)
-
 env = make_env(
     env_name='hanabi',
     env_kwargs={
