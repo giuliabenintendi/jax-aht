@@ -12,8 +12,17 @@ Outputs (when run as a script or via the visual test):
 The pytest invariants below run without producing files: shape, dtype,
 egocentric divergence, and palette purity (every coloured pixel matches
 `HANABI_COLORS` or one of the documented auxiliary constants).
+
+Forces CPU JAX at import time. The renderer/wrapper are pure computation
+and don't need a GPU; without this, importing jaxmarl triggers a
+module-level `jnp.array(...)` in `jaxmarl/environments/mpe/simple_push.py`
+that pulls in the GPU backend, which aborts collection on any node with
+GPU OOM or a cuDNN/CUDA mismatch.
 """
 from __future__ import annotations
+
+import os
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 from pathlib import Path
 
