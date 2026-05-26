@@ -170,12 +170,14 @@ def _render_card_cell(img, row_idx, slot_idx, fill_color, rank_idx, show_rank,
     img = _paint_rect(img, y0 + CARD_RECT_Y0, x0 + CARD_RECT_X0,
                       CARD_RECT_H, CARD_RECT_W, fill_color)
 
-    # rank digit (centered in the 12-wide rect)
+    # rank digit (centered in the 12-wide rect).
+    # rank_idx is 0-indexed (0..NUM_RANKS-1); Hanabi displays ranks 1..NUM_RANKS,
+    # so stamp the glyph for rank_idx + 1.
     img = _stamp_digit(
         img,
         y0 + CARD_RECT_Y0 + DIGIT_Y_IN_CELL,
         x0 + DIGIT_X_IN_CELL,
-        rank_idx,
+        rank_idx + 1,
         BACKGROUND_COLOR,  # punch the digit out of the coloured fill
         on_when=show_rank,
     )
