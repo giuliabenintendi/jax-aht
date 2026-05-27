@@ -18,7 +18,14 @@ from jaxmarl.environments import spaces as jaxmarl_spaces
 
 from envs.base_env import WrappedEnvState
 from envs.hanabi.hanabi_wrapper import HanabiWrapper, _hanabi_metrics
-from envs.hanabi.rendering import IMG_H, IMG_W, render_hanabi
+from envs.hanabi.rendering import (
+    IMG_H,
+    IMG_W,
+    SYMBOLIC_OBS_SIZE,
+    SYMBOLIC_ROWS,
+    SYMBOLIC_Y0,
+    render_hanabi,
+)
 
 
 def _validate_default_two_player_hanabi(env):
@@ -60,9 +67,23 @@ class HanabiImageWrapper(HanabiWrapper):
     def observation_space(self, agent: str):
         return jaxmarl_spaces.Box(0.0, 1.0, (self._obs_dim,))
 
+    @staticmethod
+    def _render_symbolic_panel(img: jnp.ndarray, symbolic_obs: jnp.ndarray) -> jnp.ndarray:
+        """Overlay the exact JaxMARL symbolic obs as a binary pixel panel."""
+        padded_len = SYMBOLIC_ROWS * IMG_W
+        bits = jnp.pad(
+            symbolic_obs.astype(jnp.float32),
+            (0, padded_len - SYMBOLIC_OBS_SIZE),
+        )
+        panel = bits.reshape(SYMBOLIC_ROWS, IMG_W)
+        panel_rgb = jnp.broadcast_to(panel[:, :, None] * 255.0, (SYMBOLIC_ROWS, IMG_W, 3))
+        panel_rgb = panel_rgb.astype(jnp.uint8)
+        return jax.lax.dynamic_update_slice(img, panel_rgb, (SYMBOLIC_Y0, 0, 0))
+
     def _make_image_obs(
         self,
         env_state,
+        symbolic_obs: Optional[Dict[str, jnp.ndarray]] = None,
         old_env_state=None,
         action=None,
         show_last_action=False,
@@ -77,13 +98,15 @@ class HanabiImageWrapper(HanabiWrapper):
                 action=action,
                 show_last_action=show_last_action,
             )
+            if symbolic_obs is not None:
+                img = self._render_symbolic_panel(img, symbolic_obs[agent])
             obs[agent] = img.flatten().astype(jnp.float32) / 255.0
         return obs
 
     @partial(jax.jit, static_argnums=(0,))
     def reset(self, key: chex.PRNGKey) -> Tuple[Dict[str, chex.Array], WrappedEnvState]:
-        _, env_state = self.env.reset(key)
-        img_obs = self._make_image_obs(env_state)
+        symbolic_obs, env_state = self.env.reset(key)
+        img_obs = self._make_image_obs(env_state, symbolic_obs=symbolic_obs)
         avail_actions = self.env.get_legal_moves(env_state)
         return img_obs, WrappedEnvState(
             env_state=env_state,
@@ -106,7 +129,7 @@ class HanabiImageWrapper(HanabiWrapper):
         action_array = jnp.array([actions[agent] for agent in self.agents])
         acting_action = action_array[actor_idx].astype(jnp.int32)
 
-        _, env_state, rewards, dones, infos = self.env.step(
+        symbolic_obs, env_state, rewards, dones, infos = self.env.step(
             key, state.env_state, actions, reset_env_state,
         )
 
@@ -125,6 +148,7 @@ class HanabiImageWrapper(HanabiWrapper):
 
         img_obs = self._make_image_obs(
             env_state,
+            symbolic_obs=symbolic_obs,
             old_env_state=old_env_state,
             action=acting_action,
             show_last_action=~dones["__all__"],
