@@ -1400,6 +1400,13 @@ def log_xp_eval(algorithm_config, env, out):
     if not op_was_on:
         return
 
+    # Hanabi: skip the no-op sanity-check pass. We agreed to evaluate Hanabi
+    # only under the OP regime it was trained in — running it through
+    # ground-truth-colour obs creates a train/eval distribution mismatch and
+    # the resulting number isn't informative for the OP-vs-OP+JA comparison.
+    if algorithm_config.get("ENV_NAME") == "hanabi":
+        return
+
     no_op_kwargs = dict(train_kwargs)
     no_op_kwargs["other_play_position_shuffle"] = False
     no_op_kwargs["other_play_recolouring"] = False
