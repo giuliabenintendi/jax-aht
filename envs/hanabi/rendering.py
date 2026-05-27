@@ -27,7 +27,6 @@ import jax.numpy as jnp
 
 TILE_PIXELS = 7
 
-GRID_ROWS = 10
 GRID_COLS = 10
 
 HAND_SIZE = 5
@@ -36,22 +35,27 @@ NUM_RANKS = 5
 MAX_INFO_TOKENS = 8
 MAX_LIFE_TOKENS = 3
 
-IMG_H = GRID_ROWS * TILE_PIXELS  # 70
+# Layout — symbolic-style thermometers for deck remaining and discards,
+# matching the canonical 658-dim Hanabi obs encoding (Bard et al. 2020):
+#   y=0..27   four card rows of 7 px each: partner / fireworks / tokens / own
+#   y=28..31  deck-remaining thermometer (4 px tall horizontal bar)
+#   y=32..51  discard pile (50 bits): 5 colour columns × 10 rows × 2 px each
+#             — rows within a column index the 10 possible card occurrences
+#             per colour, fill order matching `num_cards_of_rank=[3,2,2,2,1]`.
 IMG_W = GRID_COLS * TILE_PIXELS  # 70
-
-# Row layout (top to bottom):
-#   0  partner hand                          5 cells × 14w × 7h
-#   1  fireworks                             5 cells × 14w × 7h
-#   2  info + life token strip                          70w × 7h
-#   3  own hand (card-backs + hint tints)    5 cells × 14w × 7h
-#   4  deck remaining thermometer (NEW v2)              70w × 7h
-#   5-9 discard grid (NEW v2)                5 ranks × 5 colours × 14w × 7h
 ROW_PARTNER = 0
 ROW_FIREWORKS = 1
 ROW_TOKENS = 2
 ROW_OWN = 3
-ROW_DECK = 4
-ROW_DISCARD_START = 5  # spans rows 5..9
+DECK_Y0 = 28
+DECK_H = 4
+DISCARD_Y0 = 32
+DISCARD_CELL_W = IMG_W // NUM_COLORS  # 14
+DISCARD_CELL_H = 2                    # px per bit cell
+DISCARD_BITS_PER_COLOUR = 10          # = sum(num_cards_of_rank) for canonical
+RANK_CELL_OFFSETS = [0, 3, 5, 7, 9]   # cumulative start within colour column
+RANK_INSTANCE_COUNTS = [3, 2, 2, 2, 1]
+IMG_H = DISCARD_Y0 + DISCARD_BITS_PER_COLOUR * DISCARD_CELL_H  # 52
 
 CELL_W = 14  # 2 cols
 CELL_H = 7   # 1 row
@@ -331,59 +335,57 @@ def _render_own_row(img, state, agent_idx):
     return img
 
 
-def _render_deck_row(img, state):
-    """Render `state.remaining_deck_size` as a horizontal thermometer bar.
+def _render_deck_bar(img, state):
+    """Horizontal deck-remaining thermometer bar.
 
-    The thermometer length comes from `state.remaining_deck_size.shape[0]`
-    (a static int = total deck size minus the cards dealt to all starting
-    hands; 40 for canonical 2-player Hanabi). The bar fills proportionally
-    from the left and uses `DECK_BAR_COLOR` (teal, outside HANABI_COLORS)
-    so OP recolouring leaves it untouched.
+    Width is proportional to `remaining / initial_deck_count`; initial deck
+    count is `total_deck_capacity - num_agents * hand_size` (40 for canonical
+    2P). Uses `DECK_BAR_COLOR` (teal, outside HANABI_COLORS) so OP recolouring
+    leaves it untouched.
     """
-    bar_h = 3
-    y0 = _row_y(ROW_DECK) + (CELL_H - bar_h) // 2
-
-    # `remaining_deck_size.shape[0]` is the total deck capacity (e.g. 50 for
-    # canonical 2P); the bar should be "full" at reset (post-dealing) when
-    # `remaining = total - num_agents * hand_size` (e.g. 40 for 2P). The 2
-    # below is hardcoded to canonical 2-player Hanabi.
     deck_max = state.remaining_deck_size.shape[0] - 2 * HAND_SIZE
     remaining = state.remaining_deck_size.sum().astype(jnp.int32)
     bar_w = (remaining * IMG_W) // deck_max
-    # JAX needs static slice sizes, so build a mask of length IMG_W and where-blend.
     mask = jnp.arange(IMG_W) < bar_w
-    full_bar = jnp.broadcast_to(DECK_BAR_COLOR, (bar_h, IMG_W, 3))
-    region = jax.lax.dynamic_slice(img, (y0, 0, 0), (bar_h, IMG_W, 3))
+    full_bar = jnp.broadcast_to(DECK_BAR_COLOR, (DECK_H, IMG_W, 3))
+    region = jax.lax.dynamic_slice(img, (DECK_Y0, 0, 0), (DECK_H, IMG_W, 3))
     new_region = jnp.where(mask[None, :, None], full_bar, region)
-    return jax.lax.dynamic_update_slice(img, new_region, (y0, 0, 0))
+    return jax.lax.dynamic_update_slice(img, new_region, (DECK_Y0, 0, 0))
 
 
-def _render_discard_grid(img, state):
-    """Render the discard pile as a 5-rank by 5-colour grid.
+def _render_discard_thermometer(img, state):
+    """Discard pile as a 50-bit thermometer matching the canonical encoding.
 
-    Rows index rank (1 at top, 5 at bottom); columns index colour (R Y G W B
-    left to right, matching the fireworks row above). Each cell is coloured
-    `HANABI_COLORS[c]` with a digit stamping the count of (colour c, rank r)
-    cards discarded so far; empty cells (count = 0) render as background.
+    Layout: 5 colour columns (matching the fireworks colour axis above),
+    each column has 10 cells stacked vertically. The 10 cells per colour
+    correspond to the 10 possible card occurrences for that colour given
+    `num_cards_of_rank=[3,2,2,2,1]`: cells [0,3) are rank-1 instances,
+    [3,5) rank-2, [5,7) rank-3, [7,9) rank-4, [9,10) rank-5. A cell lights
+    up when that specific instance has been discarded; rank-r cells fill
+    in order as discards of rank r accumulate.
 
-    `state.discard_pile` has shape `(deck_size, num_colors, num_ranks)` with
-    each non-zero entry being a one-hot discarded card. Summing along the
-    deck axis gives a `(num_colors, num_ranks)` count tensor.
+    Each cell is `DISCARD_CELL_H` × `DISCARD_CELL_W` pixels (2×14 for the
+    canonical 70px-wide image), filled with `HANABI_COLORS[colour]` when
+    lit. Cell colours are inside `HANABI_COLORS` so the OP wrapper permutes
+    them in lockstep with the card and fireworks rows above.
     """
     counts = state.discard_pile.sum(axis=0).astype(jnp.int32)  # (num_colors, num_ranks)
-    for rank in range(NUM_RANKS):
-        for colour in range(NUM_COLORS):
-            count = counts[colour, rank]
-            present = count > 0
-            fill = jnp.where(present, HANABI_COLORS[colour], BACKGROUND_COLOR)
-            # _render_card_cell stamps PIXEL_DIGITS[rank_idx + 1]; for a count
-            # display we want the digit = count, so pass count - 1.
-            img = _render_card_cell(
-                img, row_idx=ROW_DISCARD_START + rank, slot_idx=colour,
-                fill_color=fill, rank_idx=count - 1, show_rank=present,
-                colour_hint=jnp.int32(0), has_colour_hint=jnp.bool_(False),
-                has_rank_hint=jnp.bool_(False),
-            )
+    for c in range(NUM_COLORS):
+        x0 = c * DISCARD_CELL_W
+        for r in range(NUM_RANKS):
+            count = counts[c, r]
+            offset = RANK_CELL_OFFSETS[r]
+            for i in range(RANK_INSTANCE_COUNTS[r]):
+                lit = i < count
+                y0 = DISCARD_Y0 + (offset + i) * DISCARD_CELL_H
+                patch = jnp.broadcast_to(
+                    HANABI_COLORS[c], (DISCARD_CELL_H, DISCARD_CELL_W, 3),
+                )
+                region = jax.lax.dynamic_slice(
+                    img, (y0, x0, 0), (DISCARD_CELL_H, DISCARD_CELL_W, 3),
+                )
+                new_region = jnp.where(lit, patch, region)
+                img = jax.lax.dynamic_update_slice(img, new_region, (y0, x0, 0))
     return img
 
 
@@ -398,8 +400,8 @@ def render_hanabi(state, agent_idx):
     img = _render_fireworks_row(img, state)
     img = _render_token_row(img, state)
     img = _render_own_row(img, state, agent_idx)
-    img = _render_deck_row(img, state)
-    img = _render_discard_grid(img, state)
+    img = _render_deck_bar(img, state)
+    img = _render_discard_thermometer(img, state)
     return img
 
 
