@@ -19,8 +19,11 @@ from jaxmarl.environments import spaces as jaxmarl_spaces
 from envs.base_env import WrappedEnvState
 from envs.hanabi.hanabi_wrapper import HanabiWrapper, _hanabi_metrics
 from envs.hanabi.rendering import (
+    GRID_COLS,
+    GRID_ROWS,
     IMG_H,
     IMG_W,
+    TILE_PIXELS,
     render_hanabi,
 )
 
@@ -37,13 +40,9 @@ class HanabiImageWrapper(HanabiWrapper):
         # Set image-wrapper constants before super().__init__ so the parent's
         # observation_spaces dict-comp (which calls our overridden
         # observation_space) sees the image obs shape, not the symbolic one.
-        # `_get_image_dims` in agents/initialize_agents computes
-        # `img_h = grid_height * tile_size`. v3 uses mixed-height rows
-        # (card rows 7 px, deck bar 4 px, discard cells 2 px) so there's no
-        # uniform tile size; we expose tile_size=1 so the product equals IMG_H.
-        self.grid_height = IMG_H
-        self.grid_width = IMG_W
-        self.tile_size = 1
+        self.grid_height = GRID_ROWS
+        self.grid_width = GRID_COLS
+        self.tile_size = TILE_PIXELS
         self.num_scalar_obs = 0
         self._img_h = IMG_H
         self._img_w = IMG_W

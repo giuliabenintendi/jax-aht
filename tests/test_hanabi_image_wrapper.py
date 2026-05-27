@@ -26,7 +26,6 @@ from envs.hanabi.hanabi_image_wrapper import HanabiImageWrapper
 from envs.hanabi.rendering import (
     BACKGROUND_COLOR,
     CARD_BACK_COLOR,
-    DECK_BAR_COLOR,
     HANABI_COLORS,
     IMG_H,
     IMG_W,
@@ -66,7 +65,6 @@ def _palette() -> np.ndarray:
         np.asarray(INFO_TOKEN_COLOR)[None],
         np.asarray(LIFE_TOKEN_COLOR)[None],
         np.asarray(RANK_HINT_COLOR)[None],
-        np.asarray(DECK_BAR_COLOR)[None],
         np.asarray(BACKGROUND_COLOR)[None],
     ])
 
