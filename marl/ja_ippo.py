@@ -1366,11 +1366,8 @@ def run_ja_ippo(config, logger):
 def log_xp_eval(algorithm_config, env, out):
     """Run greedy cross-play evaluation when NUM_SEEDS > 1.
 
-    Two passes for OP-trained card-game runs:
-      - XP/...        eval under the training OP regime (shuffle + recolouring)
-      - XP_NO_OP/...  eval with the OP wrappers off — used as a sanity check
-                      (an OP-trained policy should match its own XP score
-                      regardless of whether OP is applied at eval time)
+    Evaluates under the training OP regime (the wrappers active during
+    training). Results are logged to wandb under the `XP/` prefix.
     """
     import wandb
     from evaluation.run_xp_seeds import run_xp_from_params
@@ -1382,7 +1379,7 @@ def log_xp_eval(algorithm_config, env, out):
 
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
 
-    print("[xp_eval] Running greedy XP (training OP regime)...")
+    print("[xp_eval] Running greedy XP (training regime)...")
     run_xp_from_params(
         env, policy, out["final_params"], algorithm_config,
         savedir=savedir,
@@ -1390,42 +1387,4 @@ def log_xp_eval(algorithm_config, env, out):
         wb_run=wandb.run,
         greedy_eval=True,
         wb_prefix="XP",
-    )
-
-    train_kwargs = algorithm_config.get("ENV_KWARGS", {})
-    op_was_on = bool(
-        train_kwargs.get("other_play_position_shuffle", False)
-        or train_kwargs.get("other_play_recolouring", False)
-    )
-    if not op_was_on:
-        return
-
-    # Hanabi: skip the no-op sanity-check pass. We agreed to evaluate Hanabi
-    # only under the OP regime it was trained in — running it through
-    # ground-truth-colour obs creates a train/eval distribution mismatch and
-    # the resulting number isn't informative for the OP-vs-OP+JA comparison.
-    if algorithm_config.get("ENV_NAME") == "hanabi":
-        return
-
-    no_op_kwargs = dict(train_kwargs)
-    no_op_kwargs["other_play_position_shuffle"] = False
-    no_op_kwargs["other_play_recolouring"] = False
-    # Keep env-internal shuffle on so layouts still vary per episode.
-    no_op_kwargs["shuffle"] = True
-    if algorithm_config.get("COMMUNICATION", False):
-        no_op_kwargs["communication"] = True
-    if algorithm_config.get("ENV_NAME") == "card-game":
-        no_op_kwargs["scramble_partner_msg"] = False
-
-    no_op_env = LogWrapper(make_env(algorithm_config["ENV_NAME"], no_op_kwargs))
-    no_op_savedir = os.path.join(savedir, "xp_no_op")
-    os.makedirs(no_op_savedir, exist_ok=True)
-    print("[xp_eval] Running greedy XP without OP wrappers (sanity check)...")
-    run_xp_from_params(
-        no_op_env, policy, out["final_params"], algorithm_config,
-        savedir=no_op_savedir,
-        task_name=algorithm_config.get("ENV_NAME"),
-        wb_run=wandb.run,
-        greedy_eval=True,
-        wb_prefix="XP_NO_OP",
     )

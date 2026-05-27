@@ -1002,18 +1002,15 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
 
 
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True,
-                      use_best: bool = False, drop_op: bool = False,
+                      use_best: bool = False,
                       wb_prefix: str | None = None,
                       xp_video_max_pairs: int | None = None,
                       no_xp_videos: bool = False):
     """Standalone XP evaluation from a saved checkpoint.
 
     `use_best` selects `best_params` over `final_params` (per-seed best checkpoint).
-    `drop_op` forces `other_play_*` env_kwargs off so OP wrappers are not applied at eval —
-    useful for probing whether agents trained under OP actually generalize, or just collapsed
-    to a fixed convention in the recoloured/permuted frame. A fresh wandb run is created with
-    `wb_prefix` (default `XP_NO_OP` when `drop_op` else `XP`); the original training run is
-    untouched.
+    Results land under the run's `xp_results/` directory and are logged to a
+    fresh wandb run with `wb_prefix` (default `XP`).
     """
     greedy_eval = True
     hydra_cfg = _load_hydra_config(checkpoint_path)
@@ -1036,13 +1033,6 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
         env_kwargs["communication"] = True
     if task_cfg["ENV_NAME"] == "card-game":
         env_kwargs["scramble_partner_msg"] = False
-    if drop_op:
-        env_kwargs["other_play_position_shuffle"] = False
-        env_kwargs["other_play_recolouring"] = False
-        # Keep env-internal shuffle on so SP/XP without OP still varies card layout per episode
-        # (matches what the env would have done in a no-OP training run).
-        env_kwargs["shuffle"] = True
-        print("[xp_seeds] --drop-op: OP wrappers disabled at eval; env shuffle=True")
     env = make_env(task_cfg["ENV_NAME"], env_kwargs)
     env = LogWrapper(env)
 
@@ -1059,16 +1049,11 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
 
     run_dir = os.path.dirname(checkpoint_path)
     if wb_prefix is None:
-        wb_prefix = "XP_NO_OP" if drop_op else "XP"
+        wb_prefix = "XP"
     # Avoid overwriting the original training run's xp_results/ when re-evaluating with overrides.
     savedir = run_dir
-    if drop_op or use_best:
-        suffix_parts = []
-        if drop_op:
-            suffix_parts.append("no_op")
-        if use_best:
-            suffix_parts.append("best")
-        savedir = os.path.join(run_dir, "rerun_" + "_".join(suffix_parts))
+    if use_best:
+        savedir = os.path.join(run_dir, "rerun_best")
         os.makedirs(savedir, exist_ok=True)
         print(f"[xp_seeds] writing rerun outputs to {savedir}")
     if no_xp_videos:
@@ -1309,8 +1294,6 @@ if __name__ == "__main__":
                         help="Paths to multiple 1-seed checkpoints for multi-checkpoint XP")
     parser.add_argument("--use-best", action="store_true",
                         help="Use best_params (per-seed best checkpoint) instead of final_params")
-    parser.add_argument("--drop-op", action="store_true",
-                        help="Disable Other-Play wrappers at eval (overrides ENV_KWARGS)")
     parser.add_argument("--xp-video-max-pairs", type=int, default=None,
                         help="Override the cap on number of XP video pairs (default 3 from "
                              "config). Pass 0 (or any non-positive) to render every "
@@ -1324,13 +1307,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.checkpoints:
-        if args.use_best or args.drop_op:
-            parser.error("--use-best/--drop-op are only supported with --checkpoint (single multi-seed run)")
+        if args.use_best:
+            parser.error("--use-best is only supported with --checkpoint (single multi-seed run)")
         run_xp_multi_checkpoint(args.task, args.checkpoints)
     elif args.checkpoint:
         max_pairs = 0 if args.xp_video_all_pairs else args.xp_video_max_pairs
         run_xp_evaluation(args.task, args.checkpoint, greedy_eval=True,
-                          use_best=args.use_best, drop_op=args.drop_op,
+                          use_best=args.use_best,
                           xp_video_max_pairs=max_pairs,
                           no_xp_videos=args.no_xp_videos)
     else:

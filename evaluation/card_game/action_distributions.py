@@ -488,18 +488,14 @@ def _print_per_seed_equivariance_xp(label: str, pairs, all_dists, num_seeds) -> 
         print(f"  {k:>4}  {cells[0]:>20}  {cells[1]:>20}  {cells[2]:>20}  {cells[3]:>20}")
 
 
-def _build_env_and_policy(alg_config_template: dict, drop_op: bool):
-    """Construct env (with/without OP) and policy for one mode."""
+def _build_env_and_policy(alg_config_template: dict):
+    """Construct env and policy under the training OP regime."""
     alg_config = dict(alg_config_template)
     env_kwargs = dict(alg_config_template["ENV_KWARGS"])
     if alg_config.get("COMMUNICATION", False):
         env_kwargs["communication"] = True
     if alg_config["ENV_NAME"] == "card-game":
         env_kwargs["scramble_partner_msg"] = False
-    if drop_op:
-        env_kwargs["other_play_position_shuffle"] = False
-        env_kwargs["other_play_recolouring"] = False
-        env_kwargs["shuffle"] = True
     alg_config["ENV_KWARGS"] = env_kwargs
 
     env = make_env(alg_config["ENV_NAME"], alg_config["ENV_KWARGS"])
@@ -541,15 +537,14 @@ def _build_env_and_policy(alg_config_template: dict, drop_op: bool):
 
 
 def _run_mode(args, alg_config_template, final_params, num_seeds, seed_indices,
-              greedy, drop_op, xp_mode, output_dir, mode_label):
-    """Build env+policy for the given (drop_op, xp_mode), run analysis, print stats."""
+              greedy, xp_mode, output_dir, mode_label):
+    """Build env+policy and run analysis under the training OP regime."""
     output_dir.mkdir(parents=True, exist_ok=True)
     inner_env, policy, max_steps, feed_attn_dims, ja_card_masks = _build_env_and_policy(
-        alg_config_template, drop_op,
+        alg_config_template,
     )
-    op_label = "off" if drop_op else "on"
     eval_label = "XP" if xp_mode else "SP"
-    print(f"\n[action_distributions] mode: {eval_label} + OP {op_label}  "
+    print(f"\n[action_distributions] mode: {eval_label}  "
           f"(out: {output_dir.resolve()})")
 
     if xp_mode:
@@ -649,10 +644,6 @@ def main():
     parser.add_argument("--episode-rng-base", type=int, default=200)
     parser.add_argument("--sampled", action="store_true",
                         help="Sample actions instead of using greedy argmax")
-    parser.add_argument("--drop-op", action="store_true",
-                        help="Force other_play_position_shuffle=False and "
-                             "other_play_recolouring=False at eval. Card-game only. "
-                             "Useful to compare OP-on vs OP-off behavior of the same policy.")
     parser.add_argument("--xp-mode", action="store_true",
                         help="Cross-play: collect distributions over (i,j) seed pairs "
                              "(agent 0 = seed_i, agent 1 = seed_j) instead of self-play. "
@@ -661,10 +652,9 @@ def main():
                         help='Explicit XP pairs as "i,j" tokens, e.g. `--xp-pairs 0,1 0,5`. '
                              "Implies --xp-mode.")
     parser.add_argument("--all-modes", action="store_true",
-                        help="Run all four modes (SP+OP, SP+no-OP, XP+OP, XP+no-OP) in "
-                             "one go. Outputs go under {output-dir}/{mode}/. Overrides "
-                             "--drop-op and --xp-mode for this invocation. Implies "
-                             "--all-seeds for SP.")
+                        help="Run both SP and XP modes in one go. Outputs go under "
+                             "{output-dir}/{mode}/. Overrides --xp-mode for this invocation. "
+                             "Implies --all-seeds for SP.")
     args = parser.parse_args()
     if args.xp_pairs:
         args.xp_mode = True
@@ -703,19 +693,17 @@ def main():
 
     if args.all_modes:
         modes = [
-            ("sp_op",    False, False),
-            ("sp_no_op", True,  False),
-            ("xp_op",    False, True),
-            ("xp_no_op", True,  True),
+            ("sp", False),
+            ("xp", True),
         ]
     else:
-        modes = [(None, args.drop_op, args.xp_mode)]
+        modes = [(None, args.xp_mode)]
 
-    for mode_label, drop_op, xp_mode in modes:
+    for mode_label, xp_mode in modes:
         sub_dir = base_output_dir / mode_label if mode_label else base_output_dir
         _run_mode(
             args, alg_config_template, final_params, num_seeds, seed_indices,
-            greedy, drop_op, xp_mode, sub_dir, mode_label,
+            greedy, xp_mode, sub_dir, mode_label,
         )
 
     print(f"\nDone. Outputs under {base_output_dir.resolve()}/")
