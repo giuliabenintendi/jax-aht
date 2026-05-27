@@ -1,11 +1,13 @@
 """JAX renderer for the Hanabi environment.
 
 Produces per-agent egocentric image observations from a JaxMARL `HanabiState`.
-The image is laid out as four rows of fixed-size cells:
+The image is laid out as public-state bands:
   - row 0: partner hand (5 cells, full identity visible)
   - row 1: fireworks (5 stacks, one per colour, showing the top placed rank)
   - row 2: info + life token strip (thermometer-style dots)
   - row 3: own hand (5 cells; identity hidden unless hints reveal it)
+  - row 4: last action summary
+  - rows 5+: deck remaining and discard pile
 
 Each card cell is 14 wide x 7 tall. Within a cell a 12x5 coloured rectangle
 sits at the top, a 1-pixel gap follows, and a 1-pixel hint stripe at the
@@ -27,7 +29,6 @@ import jax.numpy as jnp
 
 TILE_PIXELS = 7
 
-GRID_ROWS = 4
 GRID_COLS = 10
 
 HAND_SIZE = 5
@@ -35,9 +36,23 @@ NUM_COLORS = 5
 NUM_RANKS = 5
 MAX_INFO_TOKENS = 8
 MAX_LIFE_TOKENS = 3
+DECK_MAX = 40
 
-IMG_H = GRID_ROWS * TILE_PIXELS  # 28
 IMG_W = GRID_COLS * TILE_PIXELS  # 70
+ROW_PARTNER = 0
+ROW_FIREWORKS = 1
+ROW_TOKENS = 2
+ROW_OWN = 3
+ROW_LAST_ACTION = 4
+DECK_Y0 = 35
+DECK_H = 4
+DISCARD_Y0 = 39
+DISCARD_CELL_W = IMG_W // NUM_COLORS  # 14
+DISCARD_CELL_H = 2
+DISCARD_BITS_PER_COLOUR = 10
+RANK_CELL_OFFSETS = [0, 3, 5, 7, 9]
+RANK_INSTANCE_COUNTS = [3, 2, 2, 2, 1]
+IMG_H = DISCARD_Y0 + DISCARD_BITS_PER_COLOUR * DISCARD_CELL_H  # 59
 
 CELL_W = 14  # 2 cols
 CELL_H = 7   # 1 row
@@ -68,6 +83,13 @@ CARD_BACK_COLOR = jnp.array([90, 90, 90], dtype=jnp.uint8)
 INFO_TOKEN_COLOR = jnp.array([170, 170, 170], dtype=jnp.uint8)
 LIFE_TOKEN_COLOR = jnp.array([180, 0, 0], dtype=jnp.uint8)
 RANK_HINT_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)  # rank-known indicator
+DECK_BAR_COLOR = jnp.array([50, 180, 180], dtype=jnp.uint8)
+ACTION_DISCARD_COLOR = jnp.array([180, 90, 0], dtype=jnp.uint8)
+ACTION_PLAY_COLOR = jnp.array([120, 60, 200], dtype=jnp.uint8)
+ACTION_HINT_COLOR = jnp.array([0, 160, 160], dtype=jnp.uint8)
+ACTION_NOOP_COLOR = jnp.array([60, 60, 60], dtype=jnp.uint8)
+ACTION_MARK_COLOR = jnp.array([255, 140, 0], dtype=jnp.uint8)
+ACTION_SCORE_COLOR = jnp.array([0, 220, 120], dtype=jnp.uint8)
 BACKGROUND_COLOR = jnp.array([0, 0, 0], dtype=jnp.uint8)
 
 
@@ -215,7 +237,7 @@ def _render_partner_row(img, state, partner_idx):
         # absent (padding) cards render as a black cell — fill becomes background
         fill = jnp.where(present, HANABI_COLORS[colour], BACKGROUND_COLOR)
         img = _render_card_cell(
-            img, row_idx=0, slot_idx=slot,
+            img, row_idx=ROW_PARTNER, slot_idx=slot,
             fill_color=fill, rank_idx=rank, show_rank=present,
             colour_hint=col_hint_idx, has_colour_hint=has_col_hint,
             has_rank_hint=has_rank_hint,
@@ -230,7 +252,7 @@ def _render_fireworks_row(img, state):
         fill = jnp.where(any_played, HANABI_COLORS[colour], BACKGROUND_COLOR)
         # no hint stripes on fireworks cells; pass dummy values gated off
         img = _render_card_cell(
-            img, row_idx=1, slot_idx=colour,
+            img, row_idx=ROW_FIREWORKS, slot_idx=colour,
             fill_color=fill, rank_idx=top_rank, show_rank=any_played,
             colour_hint=jnp.int32(0), has_colour_hint=jnp.bool_(False),
             has_rank_hint=jnp.bool_(False),
@@ -245,7 +267,7 @@ def _render_token_row(img, state):
     Info tokens span the left third of the row; life tokens the right third.
     Thermometer count = number of filled blocks.
     """
-    row_y = _row_y(2)
+    row_y = _row_y(ROW_TOKENS)
     n_info = state.info_tokens.sum().astype(jnp.int32)
     n_life = state.life_tokens.sum().astype(jnp.int32)
 
@@ -307,7 +329,7 @@ def _render_own_row(img, state, agent_idx):
         fill = jnp.where(present, fill, BACKGROUND_COLOR)
 
         img = _render_card_cell(
-            img, row_idx=3, slot_idx=slot,
+            img, row_idx=ROW_OWN, slot_idx=slot,
             fill_color=fill, rank_idx=rank_hint_idx,
             show_rank=present & has_rank_hint,
             colour_hint=col_hint_idx, has_colour_hint=has_col_hint,
@@ -316,17 +338,146 @@ def _render_own_row(img, state, agent_idx):
     return img
 
 
-def render_hanabi(state, agent_idx):
+def _render_deck_bar(img, state):
+    """Horizontal deck-remaining thermometer bar."""
+    remaining = state.deck.sum().astype(jnp.int32)
+    bar_w = (remaining * IMG_W) // DECK_MAX
+    mask = jnp.arange(IMG_W) < bar_w
+    full_bar = jnp.broadcast_to(DECK_BAR_COLOR, (DECK_H, IMG_W, 3))
+    region = jax.lax.dynamic_slice(img, (DECK_Y0, 0, 0), (DECK_H, IMG_W, 3))
+    new_region = jnp.where(mask[None, :, None], full_bar, region)
+    return jax.lax.dynamic_update_slice(img, new_region, (DECK_Y0, 0, 0))
+
+
+def _render_discard_thermometer(img, state):
+    """Discard pile as a 50-bit thermometer matching canonical Hanabi counts."""
+    counts = state.discard_pile.sum(axis=0).astype(jnp.int32)  # (colour, rank)
+    for colour in range(NUM_COLORS):
+        x0 = colour * DISCARD_CELL_W
+        for rank in range(NUM_RANKS):
+            count = counts[colour, rank]
+            offset = RANK_CELL_OFFSETS[rank]
+            for i in range(RANK_INSTANCE_COUNTS[rank]):
+                lit = jnp.int32(i) < count
+                y0 = DISCARD_Y0 + (offset + i) * DISCARD_CELL_H
+                patch = jnp.broadcast_to(
+                    HANABI_COLORS[colour], (DISCARD_CELL_H, DISCARD_CELL_W, 3),
+                )
+                region = jax.lax.dynamic_slice(
+                    img, (y0, x0, 0), (DISCARD_CELL_H, DISCARD_CELL_W, 3),
+                )
+                new_region = jnp.where(lit, patch, region)
+                img = jax.lax.dynamic_update_slice(img, new_region, (y0, x0, 0))
+    return img
+
+
+def _action_type_color(action):
+    is_discard = (action >= 0) & (action < HAND_SIZE)
+    is_play = (action >= HAND_SIZE) & (action < 2 * HAND_SIZE)
+    is_hint = (action >= 2 * HAND_SIZE) & (action < 2 * HAND_SIZE + NUM_COLORS + NUM_RANKS)
+    color = jnp.where(is_discard, ACTION_DISCARD_COLOR, ACTION_NOOP_COLOR)
+    color = jnp.where(is_play, ACTION_PLAY_COLOR, color)
+    return jnp.where(is_hint, ACTION_HINT_COLOR, color)
+
+
+def _render_last_action_row(img, state, agent_idx, old_state, action, show_last_action):
+    """Compact summary of JaxMARL's last-action features.
+
+    Slot 0 marks actor-relative-to-viewer, slot 1 marks move type, slots 2-6
+    mark affected/played hand positions, slot 7 shows hinted colour/rank or
+    played/discarded card identity, and slots 8-9 mark play score / info gain.
+    """
+    row_y = _row_y(ROW_LAST_ACTION)
+    original_region = jax.lax.dynamic_slice(img, (row_y, 0, 0), (CELL_H, IMG_W, 3))
+
+    actor_idx = jnp.nonzero(old_state.cur_player_idx, size=1)[0][0]
+    target_idx = 1 - actor_idx
+    actor_is_self = actor_idx == agent_idx
+    actor_fill = jnp.where(actor_is_self, INFO_TOKEN_COLOR, LIFE_TOKEN_COLOR)
+    img = _render_card_cell(
+        img, ROW_LAST_ACTION, 0, actor_fill, jnp.int32(0), jnp.bool_(False),
+        jnp.int32(0), jnp.bool_(False), jnp.bool_(False),
+    )
+
+    action = jnp.asarray(action, dtype=jnp.int32)
+    is_discard = (action >= 0) & (action < HAND_SIZE)
+    is_play = (action >= HAND_SIZE) & (action < 2 * HAND_SIZE)
+    is_hint_color = (action >= 2 * HAND_SIZE) & (action < 2 * HAND_SIZE + NUM_COLORS)
+    is_hint_rank = (
+        (action >= 2 * HAND_SIZE + NUM_COLORS)
+        & (action < 2 * HAND_SIZE + NUM_COLORS + NUM_RANKS)
+    )
+    is_hint = is_hint_color | is_hint_rank
+
+    img = _render_card_cell(
+        img, ROW_LAST_ACTION, 1, _action_type_color(action), jnp.int32(0),
+        jnp.bool_(False), jnp.int32(0), jnp.bool_(False), jnp.bool_(False),
+    )
+
+    pos = action % HAND_SIZE
+    hint_idx = jnp.where(is_hint_color, action - 2 * HAND_SIZE, action - 2 * HAND_SIZE - NUM_COLORS)
+    safe_hint_idx = jnp.clip(hint_idx, 0, NUM_COLORS - 1)
+    target_hand = state.player_hands[target_idx]
+    colour_reveal = target_hand.sum(axis=2)[:, safe_hint_idx]
+    rank_reveal = target_hand.sum(axis=1)[:, safe_hint_idx]
+    reveal_outcome = jnp.where(is_hint_color, colour_reveal, rank_reveal) > 0
+
+    for slot in range(HAND_SIZE):
+        affected = jnp.where(is_hint, reveal_outcome[slot], jnp.int32(slot) == pos)
+        fill = jnp.where(affected, ACTION_MARK_COLOR, BACKGROUND_COLOR)
+        img = _render_card_cell(
+            img, ROW_LAST_ACTION, slot + 2, fill, jnp.int32(0), jnp.bool_(False),
+            jnp.int32(0), jnp.bool_(False), jnp.bool_(False),
+        )
+
+    played_card = old_state.player_hands[actor_idx, pos]
+    played_colour, played_rank, played_present = _decode_card(played_card)
+    detail_colour = jnp.where(is_hint_color, HANABI_COLORS[safe_hint_idx], CARD_BACK_COLOR)
+    detail_colour = jnp.where(is_play | is_discard, HANABI_COLORS[played_colour], detail_colour)
+    detail_rank = jnp.where(is_hint_rank, safe_hint_idx, played_rank)
+    show_detail_rank = is_hint_rank | ((is_play | is_discard) & played_present)
+    img = _render_card_cell(
+        img, ROW_LAST_ACTION, 7, detail_colour, detail_rank, show_detail_rank,
+        jnp.int32(0), jnp.bool_(False), jnp.bool_(False),
+    )
+
+    card_played_score = state.fireworks.sum() > old_state.fireworks.sum()
+    added_info_tokens = state.info_tokens.sum() > old_state.info_tokens.sum()
+    score_fill = jnp.where(is_play & card_played_score, ACTION_SCORE_COLOR, BACKGROUND_COLOR)
+    info_fill = jnp.where(is_play & added_info_tokens, INFO_TOKEN_COLOR, BACKGROUND_COLOR)
+    img = _render_card_cell(
+        img, ROW_LAST_ACTION, 8, score_fill, jnp.int32(0), jnp.bool_(False),
+        jnp.int32(0), jnp.bool_(False), jnp.bool_(False),
+    )
+    img = _render_card_cell(
+        img, ROW_LAST_ACTION, 9, info_fill, jnp.int32(0), jnp.bool_(False),
+        jnp.int32(0), jnp.bool_(False), jnp.bool_(False),
+    )
+
+    rendered_region = jax.lax.dynamic_slice(img, (row_y, 0, 0), (CELL_H, IMG_W, 3))
+    blended_region = jnp.where(show_last_action, rendered_region, original_region)
+    return jax.lax.dynamic_update_slice(img, blended_region, (row_y, 0, 0))
+
+
+def render_hanabi(state, agent_idx, old_state=None, action=None, show_last_action=False):
     """Render agent_idx's egocentric view of `state` as an (IMG_H, IMG_W, 3) uint8 image.
 
-    For 2-player Hanabi only — `partner_idx` is inferred as `1 - agent_idx`.
+    For default 2-player Hanabi only — `partner_idx` is inferred as
+    `1 - agent_idx`.
     """
+    if old_state is None:
+        old_state = state
+    if action is None:
+        action = jnp.int32(20)
     partner_idx = 1 - agent_idx
     img = jnp.broadcast_to(BACKGROUND_COLOR, (IMG_H, IMG_W, 3)).astype(jnp.uint8)
     img = _render_partner_row(img, state, partner_idx)
     img = _render_fireworks_row(img, state)
     img = _render_token_row(img, state)
     img = _render_own_row(img, state, agent_idx)
+    img = _render_last_action_row(img, state, agent_idx, old_state, action, show_last_action)
+    img = _render_deck_bar(img, state)
+    img = _render_discard_thermometer(img, state)
     return img
 
 

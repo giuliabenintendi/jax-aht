@@ -81,6 +81,11 @@ class HanabiColourPermutationWrapper:
 
     def __init__(self, env):
         self._env = env
+        if self._env.num_agents != 2 or self._env.action_space(self._env.agents[0]).n != 21:
+            raise ValueError(
+                "HanabiColourPermutationWrapper currently supports only "
+                "canonical 2-player Hanabi with 21 actions."
+            )
         self.all_perms = jnp.array(
             list(permutations(range(NUM_COLORS))), dtype=jnp.int32,
         )
@@ -132,16 +137,20 @@ class HanabiColourPermutationWrapper:
         true_action = self._invert_actions(action, state)
 
         env_key, wrap_key = jax.random.split(key)
+        inner_reset_state = reset_state.env_state if reset_state is not None else None
         obs, env_state, reward, done, info = self._env.step(
-            env_key, state.env_state, true_action,
+            env_key, state.env_state, true_action, inner_reset_state,
         )
 
         # On auto-reset (episode done), sample new per-agent recolourings.
         keys = jax.random.split(wrap_key, self._env.num_agents)
-        new_recolourings = {
-            a: self._sample_recolouring(keys[i])
-            for i, a in enumerate(self._env.agents)
-        }
+        if reset_state is None:
+            new_recolourings = {
+                a: self._sample_recolouring(keys[i])
+                for i, a in enumerate(self._env.agents)
+            }
+        else:
+            new_recolourings = reset_state.per_agent_recolouring
         is_done = done["__all__"]
         current_recolourings = {
             a: jnp.where(is_done, new_recolourings[a],

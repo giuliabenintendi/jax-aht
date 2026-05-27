@@ -25,7 +25,14 @@ from PIL import Image
 from envs.hanabi.hanabi_image_wrapper import HanabiImageWrapper
 from envs.hanabi.rendering import (
     BACKGROUND_COLOR,
+    ACTION_DISCARD_COLOR,
+    ACTION_HINT_COLOR,
+    ACTION_MARK_COLOR,
+    ACTION_NOOP_COLOR,
+    ACTION_PLAY_COLOR,
+    ACTION_SCORE_COLOR,
     CARD_BACK_COLOR,
+    DECK_BAR_COLOR,
     HANABI_COLORS,
     IMG_H,
     IMG_W,
@@ -65,6 +72,13 @@ def _palette() -> np.ndarray:
         np.asarray(INFO_TOKEN_COLOR)[None],
         np.asarray(LIFE_TOKEN_COLOR)[None],
         np.asarray(RANK_HINT_COLOR)[None],
+        np.asarray(DECK_BAR_COLOR)[None],
+        np.asarray(ACTION_DISCARD_COLOR)[None],
+        np.asarray(ACTION_PLAY_COLOR)[None],
+        np.asarray(ACTION_HINT_COLOR)[None],
+        np.asarray(ACTION_NOOP_COLOR)[None],
+        np.asarray(ACTION_MARK_COLOR)[None],
+        np.asarray(ACTION_SCORE_COLOR)[None],
         np.asarray(BACKGROUND_COLOR)[None],
     ])
 

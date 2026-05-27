@@ -18,14 +18,18 @@ from jaxmarl.environments import spaces as jaxmarl_spaces
 
 from envs.base_env import WrappedEnvState
 from envs.hanabi.hanabi_wrapper import HanabiWrapper, _hanabi_metrics
-from envs.hanabi.rendering import (
-    GRID_COLS,
-    GRID_ROWS,
-    IMG_H,
-    IMG_W,
-    TILE_PIXELS,
-    render_hanabi,
-)
+from envs.hanabi.rendering import IMG_H, IMG_W, render_hanabi
+
+
+def _validate_default_two_player_hanabi(env):
+    """The image renderer hard-codes the canonical 2P Hanabi geometry."""
+    if env.num_agents != 2:
+        raise ValueError("HanabiImageWrapper currently supports only num_agents=2.")
+    if env.num_colors != 5 or env.num_ranks != 5 or env.hand_size != 5:
+        raise ValueError(
+            "HanabiImageWrapper currently supports only the default "
+            "5-colour, 5-rank, 5-card-hand Hanabi setup."
+        )
 
 
 class HanabiImageWrapper(HanabiWrapper):
@@ -40,24 +44,39 @@ class HanabiImageWrapper(HanabiWrapper):
         # Set image-wrapper constants before super().__init__ so the parent's
         # observation_spaces dict-comp (which calls our overridden
         # observation_space) sees the image obs shape, not the symbolic one.
-        self.grid_height = GRID_ROWS
-        self.grid_width = GRID_COLS
-        self.tile_size = TILE_PIXELS
+        # The renderer has mixed-height bands, so expose exact pixels via
+        # tile_size=1 for agents.initialize_agents._get_image_dims.
+        self.grid_height = IMG_H
+        self.grid_width = IMG_W
+        self.tile_size = 1
         self.num_scalar_obs = 0
         self._img_h = IMG_H
         self._img_w = IMG_W
         self._obs_dim = IMG_H * IMG_W * 3
 
         super().__init__(*args, **kwargs)
+        _validate_default_two_player_hanabi(self.env)
 
     def observation_space(self, agent: str):
         return jaxmarl_spaces.Box(0.0, 1.0, (self._obs_dim,))
 
-    def _make_image_obs(self, env_state) -> Dict[str, jnp.ndarray]:
+    def _make_image_obs(
+        self,
+        env_state,
+        old_env_state=None,
+        action=None,
+        show_last_action=False,
+    ) -> Dict[str, jnp.ndarray]:
         """Render per-agent images and flatten to float32 in [0, 1]."""
         obs = {}
         for i, agent in enumerate(self.agents):
-            img = render_hanabi(env_state, jnp.int32(i))
+            img = render_hanabi(
+                env_state,
+                jnp.int32(i),
+                old_state=old_env_state,
+                action=action,
+                show_last_action=show_last_action,
+            )
             obs[agent] = img.flatten().astype(jnp.float32) / 255.0
         return obs
 
@@ -82,6 +101,11 @@ class HanabiImageWrapper(HanabiWrapper):
         reset_state: Optional[WrappedEnvState] = None,
     ) -> Tuple[Dict[str, chex.Array], WrappedEnvState, Dict[str, float], Dict[str, bool], Dict]:
         reset_env_state = reset_state.env_state if reset_state is not None else None
+        old_env_state = state.env_state
+        actor_idx = jnp.nonzero(old_env_state.cur_player_idx, size=1)[0][0]
+        action_array = jnp.array([actions[agent] for agent in self.agents])
+        acting_action = action_array[actor_idx].astype(jnp.int32)
+
         _, env_state, rewards, dones, infos = self.env.step(
             key, state.env_state, actions, reset_env_state,
         )
@@ -99,7 +123,12 @@ class HanabiImageWrapper(HanabiWrapper):
             dones["__all__"], jnp.zeros(self.num_agents), base_return_so_far,
         )
 
-        img_obs = self._make_image_obs(env_state)
+        img_obs = self._make_image_obs(
+            env_state,
+            old_env_state=old_env_state,
+            action=acting_action,
+            show_last_action=~dones["__all__"],
+        )
         avail_actions = self.env.get_legal_moves(env_state)
         new_state = WrappedEnvState(
             env_state=env_state,
