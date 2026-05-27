@@ -27,7 +27,7 @@ import jax.numpy as jnp
 
 TILE_PIXELS = 7
 
-GRID_ROWS = 4
+GRID_ROWS = 10
 GRID_COLS = 10
 
 HAND_SIZE = 5
@@ -36,8 +36,22 @@ NUM_RANKS = 5
 MAX_INFO_TOKENS = 8
 MAX_LIFE_TOKENS = 3
 
-IMG_H = GRID_ROWS * TILE_PIXELS  # 28
+IMG_H = GRID_ROWS * TILE_PIXELS  # 70
 IMG_W = GRID_COLS * TILE_PIXELS  # 70
+
+# Row layout (top to bottom):
+#   0  partner hand                          5 cells × 14w × 7h
+#   1  fireworks                             5 cells × 14w × 7h
+#   2  info + life token strip                          70w × 7h
+#   3  own hand (card-backs + hint tints)    5 cells × 14w × 7h
+#   4  deck remaining thermometer (NEW v2)              70w × 7h
+#   5-9 discard grid (NEW v2)                5 ranks × 5 colours × 14w × 7h
+ROW_PARTNER = 0
+ROW_FIREWORKS = 1
+ROW_TOKENS = 2
+ROW_OWN = 3
+ROW_DECK = 4
+ROW_DISCARD_START = 5  # spans rows 5..9
 
 CELL_W = 14  # 2 cols
 CELL_H = 7   # 1 row
@@ -68,6 +82,7 @@ CARD_BACK_COLOR = jnp.array([90, 90, 90], dtype=jnp.uint8)
 INFO_TOKEN_COLOR = jnp.array([170, 170, 170], dtype=jnp.uint8)
 LIFE_TOKEN_COLOR = jnp.array([180, 0, 0], dtype=jnp.uint8)
 RANK_HINT_COLOR = jnp.array([255, 255, 255], dtype=jnp.uint8)  # rank-known indicator
+DECK_BAR_COLOR = jnp.array([50, 180, 180], dtype=jnp.uint8)  # deck-remaining thermometer
 BACKGROUND_COLOR = jnp.array([0, 0, 0], dtype=jnp.uint8)
 
 
@@ -203,7 +218,7 @@ def _render_card_cell(img, row_idx, slot_idx, fill_color, rank_idx, show_rank,
 
 
 def _render_partner_row(img, state, partner_idx):
-    """Render partner_idx's hand into row 0 — full identity visible."""
+    """Render partner_idx's hand into the partner-hand row — full identity visible."""
     for slot in range(HAND_SIZE):
         card = state.player_hands[partner_idx, slot]
         colour, rank, present = _decode_card(card)
@@ -215,7 +230,7 @@ def _render_partner_row(img, state, partner_idx):
         # absent (padding) cards render as a black cell — fill becomes background
         fill = jnp.where(present, HANABI_COLORS[colour], BACKGROUND_COLOR)
         img = _render_card_cell(
-            img, row_idx=0, slot_idx=slot,
+            img, row_idx=ROW_PARTNER, slot_idx=slot,
             fill_color=fill, rank_idx=rank, show_rank=present,
             colour_hint=col_hint_idx, has_colour_hint=has_col_hint,
             has_rank_hint=has_rank_hint,
@@ -230,7 +245,7 @@ def _render_fireworks_row(img, state):
         fill = jnp.where(any_played, HANABI_COLORS[colour], BACKGROUND_COLOR)
         # no hint stripes on fireworks cells; pass dummy values gated off
         img = _render_card_cell(
-            img, row_idx=1, slot_idx=colour,
+            img, row_idx=ROW_FIREWORKS, slot_idx=colour,
             fill_color=fill, rank_idx=top_rank, show_rank=any_played,
             colour_hint=jnp.int32(0), has_colour_hint=jnp.bool_(False),
             has_rank_hint=jnp.bool_(False),
@@ -245,7 +260,7 @@ def _render_token_row(img, state):
     Info tokens span the left third of the row; life tokens the right third.
     Thermometer count = number of filled blocks.
     """
-    row_y = _row_y(2)
+    row_y = _row_y(ROW_TOKENS)
     n_info = state.info_tokens.sum().astype(jnp.int32)
     n_life = state.life_tokens.sum().astype(jnp.int32)
 
@@ -307,12 +322,68 @@ def _render_own_row(img, state, agent_idx):
         fill = jnp.where(present, fill, BACKGROUND_COLOR)
 
         img = _render_card_cell(
-            img, row_idx=3, slot_idx=slot,
+            img, row_idx=ROW_OWN, slot_idx=slot,
             fill_color=fill, rank_idx=rank_hint_idx,
             show_rank=present & has_rank_hint,
             colour_hint=col_hint_idx, has_colour_hint=has_col_hint,
             has_rank_hint=has_rank_hint,
         )
+    return img
+
+
+def _render_deck_row(img, state):
+    """Render `state.remaining_deck_size` as a horizontal thermometer bar.
+
+    The thermometer length comes from `state.remaining_deck_size.shape[0]`
+    (a static int = total deck size minus the cards dealt to all starting
+    hands; 40 for canonical 2-player Hanabi). The bar fills proportionally
+    from the left and uses `DECK_BAR_COLOR` (teal, outside HANABI_COLORS)
+    so OP recolouring leaves it untouched.
+    """
+    bar_h = 3
+    y0 = _row_y(ROW_DECK) + (CELL_H - bar_h) // 2
+
+    # `remaining_deck_size.shape[0]` is the total deck capacity (e.g. 50 for
+    # canonical 2P); the bar should be "full" at reset (post-dealing) when
+    # `remaining = total - num_agents * hand_size` (e.g. 40 for 2P). The 2
+    # below is hardcoded to canonical 2-player Hanabi.
+    deck_max = state.remaining_deck_size.shape[0] - 2 * HAND_SIZE
+    remaining = state.remaining_deck_size.sum().astype(jnp.int32)
+    bar_w = (remaining * IMG_W) // deck_max
+    # JAX needs static slice sizes, so build a mask of length IMG_W and where-blend.
+    mask = jnp.arange(IMG_W) < bar_w
+    full_bar = jnp.broadcast_to(DECK_BAR_COLOR, (bar_h, IMG_W, 3))
+    region = jax.lax.dynamic_slice(img, (y0, 0, 0), (bar_h, IMG_W, 3))
+    new_region = jnp.where(mask[None, :, None], full_bar, region)
+    return jax.lax.dynamic_update_slice(img, new_region, (y0, 0, 0))
+
+
+def _render_discard_grid(img, state):
+    """Render the discard pile as a 5-rank by 5-colour grid.
+
+    Rows index rank (1 at top, 5 at bottom); columns index colour (R Y G W B
+    left to right, matching the fireworks row above). Each cell is coloured
+    `HANABI_COLORS[c]` with a digit stamping the count of (colour c, rank r)
+    cards discarded so far; empty cells (count = 0) render as background.
+
+    `state.discard_pile` has shape `(deck_size, num_colors, num_ranks)` with
+    each non-zero entry being a one-hot discarded card. Summing along the
+    deck axis gives a `(num_colors, num_ranks)` count tensor.
+    """
+    counts = state.discard_pile.sum(axis=0).astype(jnp.int32)  # (num_colors, num_ranks)
+    for rank in range(NUM_RANKS):
+        for colour in range(NUM_COLORS):
+            count = counts[colour, rank]
+            present = count > 0
+            fill = jnp.where(present, HANABI_COLORS[colour], BACKGROUND_COLOR)
+            # _render_card_cell stamps PIXEL_DIGITS[rank_idx + 1]; for a count
+            # display we want the digit = count, so pass count - 1.
+            img = _render_card_cell(
+                img, row_idx=ROW_DISCARD_START + rank, slot_idx=colour,
+                fill_color=fill, rank_idx=count - 1, show_rank=present,
+                colour_hint=jnp.int32(0), has_colour_hint=jnp.bool_(False),
+                has_rank_hint=jnp.bool_(False),
+            )
     return img
 
 
@@ -327,6 +398,8 @@ def render_hanabi(state, agent_idx):
     img = _render_fireworks_row(img, state)
     img = _render_token_row(img, state)
     img = _render_own_row(img, state, agent_idx)
+    img = _render_deck_row(img, state)
+    img = _render_discard_grid(img, state)
     return img
 
 
