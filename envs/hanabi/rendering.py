@@ -7,7 +7,7 @@ The image is laid out as public-state bands:
   - row 2: info + life token strip (thermometer-style dots)
   - row 3: own hand (5 cells; identity hidden unless hints reveal it)
   - row 4: last action summary
-  - rows 5+: deck remaining and discard pile
+  - rows 5+: deck remaining and discard count grid
 
 Each card cell is 14 wide x 7 tall. Within a cell a 12x5 coloured rectangle
 sits at the top, a 1-pixel gap follows, and a 1-pixel hint stripe at the
@@ -48,11 +48,7 @@ DECK_Y0 = 35
 DECK_H = 4
 DISCARD_Y0 = 39
 DISCARD_CELL_W = IMG_W // NUM_COLORS  # 14
-DISCARD_CELL_H = 2
-DISCARD_BITS_PER_COLOUR = 10
-RANK_CELL_OFFSETS = [0, 3, 5, 7, 9]
-RANK_INSTANCE_COUNTS = [3, 2, 2, 2, 1]
-IMG_H = DISCARD_Y0 + DISCARD_BITS_PER_COLOUR * DISCARD_CELL_H  # 59
+IMG_H = DISCARD_Y0 + NUM_RANKS * CELL_H  # 74
 
 CELL_W = 14  # 2 cols
 CELL_H = 7   # 1 row
@@ -349,25 +345,36 @@ def _render_deck_bar(img, state):
     return jax.lax.dynamic_update_slice(img, new_region, (DECK_Y0, 0, 0))
 
 
-def _render_discard_thermometer(img, state):
-    """Discard pile as a 50-bit thermometer matching canonical Hanabi counts."""
+def _render_discard_grid(img, state):
+    """Discard pile as a 5-rank by 5-colour count grid.
+
+    Rows are ranks 1..5, columns are colours R/Y/G/W/B. A non-empty cell is
+    filled with that card colour and stamped with the discarded count.
+    """
     counts = state.discard_pile.sum(axis=0).astype(jnp.int32)  # (colour, rank)
-    for colour in range(NUM_COLORS):
-        x0 = colour * DISCARD_CELL_W
-        for rank in range(NUM_RANKS):
+    for rank in range(NUM_RANKS):
+        y0 = DISCARD_Y0 + rank * CELL_H
+        for colour in range(NUM_COLORS):
+            x0 = colour * CELL_W
             count = counts[colour, rank]
-            offset = RANK_CELL_OFFSETS[rank]
-            for i in range(RANK_INSTANCE_COUNTS[rank]):
-                lit = jnp.int32(i) < count
-                y0 = DISCARD_Y0 + (offset + i) * DISCARD_CELL_H
-                patch = jnp.broadcast_to(
-                    HANABI_COLORS[colour], (DISCARD_CELL_H, DISCARD_CELL_W, 3),
-                )
-                region = jax.lax.dynamic_slice(
-                    img, (y0, x0, 0), (DISCARD_CELL_H, DISCARD_CELL_W, 3),
-                )
-                new_region = jnp.where(lit, patch, region)
-                img = jax.lax.dynamic_update_slice(img, new_region, (y0, x0, 0))
+            present = count > 0
+            fill = jnp.where(present, HANABI_COLORS[colour], BACKGROUND_COLOR)
+            img = _paint_rect(
+                img,
+                y0 + CARD_RECT_Y0,
+                x0 + CARD_RECT_X0,
+                CARD_RECT_H,
+                CARD_RECT_W,
+                fill,
+            )
+            img = _stamp_digit(
+                img,
+                y0 + CARD_RECT_Y0 + DIGIT_Y_IN_CELL,
+                x0 + DIGIT_X_IN_CELL,
+                count,
+                BACKGROUND_COLOR,
+                on_when=present,
+            )
     return img
 
 
@@ -477,7 +484,7 @@ def render_hanabi(state, agent_idx, old_state=None, action=None, show_last_actio
     img = _render_own_row(img, state, agent_idx)
     img = _render_last_action_row(img, state, agent_idx, old_state, action, show_last_action)
     img = _render_deck_bar(img, state)
-    img = _render_discard_thermometer(img, state)
+    img = _render_discard_grid(img, state)
     return img
 
 
