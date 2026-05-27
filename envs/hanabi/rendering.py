@@ -8,7 +8,6 @@ The image is laid out as public-state bands:
   - row 3: own hand (5 cells; identity hidden unless hints reveal it)
   - row 4: last action summary
   - rows 5+: deck remaining and discard count grid
-  - bottom rows: exact JaxMARL symbolic observation rasterized as bits
 
 Each card cell is 14 wide x 7 tall. Within a cell a 12x5 coloured rectangle
 sits at the top, a 1-pixel gap follows, and a 1-pixel hint stripe at the
@@ -38,7 +37,6 @@ NUM_RANKS = 5
 MAX_INFO_TOKENS = 8
 MAX_LIFE_TOKENS = 3
 DECK_MAX = 40
-SYMBOLIC_OBS_SIZE = 658
 
 IMG_W = GRID_COLS * TILE_PIXELS  # 70
 CELL_W = 14  # 2 cols
@@ -53,9 +51,7 @@ DECK_H = 4
 DISCARD_Y0 = 39
 DISCARD_CELL_W = IMG_W // NUM_COLORS  # 14
 VISUAL_IMG_H = DISCARD_Y0 + NUM_RANKS * CELL_H  # 74
-SYMBOLIC_Y0 = VISUAL_IMG_H
-SYMBOLIC_ROWS = (SYMBOLIC_OBS_SIZE + IMG_W - 1) // IMG_W
-IMG_H = VISUAL_IMG_H + SYMBOLIC_ROWS  # 84
+IMG_H = VISUAL_IMG_H
 
 # Per-cell internal geometry
 CARD_RECT_X0 = 1

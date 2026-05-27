@@ -30,14 +30,10 @@ from envs.hanabi.rendering import (
     HANABI_COLORS,
     IMG_H,
     IMG_W,
-    NUM_COLORS,
-    NUM_RANKS,
-    SYMBOLIC_OBS_SIZE,
-    SYMBOLIC_ROWS,
-    SYMBOLIC_Y0,
 )
 
 
+NUM_COLORS = 5
 # Hanabi action layout (2-player defaults):
 #   0-4   discard slot N
 #   5-9   play slot N
@@ -46,97 +42,6 @@ from envs.hanabi.rendering import (
 #   20    noop
 HINT_COLOR_START = 10
 HINT_COLOR_END = 14  # inclusive
-HAND_SIZE = 5
-MISSING_CARDS_SIZE = 2
-DECK_SIZE = 40
-INFO_TOKENS_SIZE = 8
-LIFE_TOKENS_SIZE = 3
-DISCARD_BITS_PER_COLOR = 10
-
-
-def _permute_color_rank(flat, inv):
-    return flat.reshape(NUM_COLORS, NUM_RANKS)[inv, :].reshape(-1)
-
-
-def _permute_symbolic_obs_bits(bits, recolouring):
-    """Convert exact symbolic obs from true-colour frame to visual-colour frame."""
-    inv = jnp.zeros(NUM_COLORS, dtype=jnp.int32).at[recolouring].set(
-        jnp.arange(NUM_COLORS, dtype=jnp.int32),
-    )
-
-    cursor = 0
-    other_hands = bits[cursor:cursor + HAND_SIZE * NUM_COLORS * NUM_RANKS]
-    other_hands = other_hands.reshape(HAND_SIZE, NUM_COLORS, NUM_RANKS)[:, inv, :].reshape(-1)
-    cursor += HAND_SIZE * NUM_COLORS * NUM_RANKS
-
-    missing_cards = bits[cursor:cursor + MISSING_CARDS_SIZE]
-    cursor += MISSING_CARDS_SIZE
-
-    deck = bits[cursor:cursor + DECK_SIZE]
-    cursor += DECK_SIZE
-    fireworks = bits[cursor:cursor + NUM_COLORS * NUM_RANKS]
-    fireworks = _permute_color_rank(fireworks, inv)
-    cursor += NUM_COLORS * NUM_RANKS
-    info_tokens = bits[cursor:cursor + INFO_TOKENS_SIZE]
-    cursor += INFO_TOKENS_SIZE
-    life_tokens = bits[cursor:cursor + LIFE_TOKENS_SIZE]
-    cursor += LIFE_TOKENS_SIZE
-
-    discards = bits[cursor:cursor + NUM_COLORS * DISCARD_BITS_PER_COLOR]
-    discards = discards.reshape(NUM_COLORS, DISCARD_BITS_PER_COLOR)[inv, :].reshape(-1)
-    cursor += NUM_COLORS * DISCARD_BITS_PER_COLOR
-
-    actor = bits[cursor:cursor + 2]
-    cursor += 2
-    move_type = bits[cursor:cursor + 4]
-    cursor += 4
-    target = bits[cursor:cursor + 2]
-    cursor += 2
-    color_revealed = bits[cursor:cursor + NUM_COLORS][inv]
-    cursor += NUM_COLORS
-    rank_revealed = bits[cursor:cursor + NUM_RANKS]
-    cursor += NUM_RANKS
-    reveal_outcome = bits[cursor:cursor + HAND_SIZE]
-    cursor += HAND_SIZE
-    pos_played_discarded = bits[cursor:cursor + HAND_SIZE]
-    cursor += HAND_SIZE
-    played_discarded_card = _permute_color_rank(
-        bits[cursor:cursor + NUM_COLORS * NUM_RANKS], inv,
-    )
-    cursor += NUM_COLORS * NUM_RANKS
-    card_played_score = bits[cursor:cursor + 1]
-    cursor += 1
-    added_info_tokens = bits[cursor:cursor + 1]
-    cursor += 1
-
-    belief = bits[cursor:cursor + 2 * HAND_SIZE * (NUM_COLORS * NUM_RANKS + NUM_COLORS + NUM_RANKS)]
-    belief = belief.reshape(2, HAND_SIZE, NUM_COLORS * NUM_RANKS + NUM_COLORS + NUM_RANKS)
-    belief_cards = belief[:, :, :NUM_COLORS * NUM_RANKS].reshape(2, HAND_SIZE, NUM_COLORS, NUM_RANKS)
-    belief_cards = belief_cards[:, :, inv, :].reshape(2, HAND_SIZE, NUM_COLORS * NUM_RANKS)
-    belief_colours = belief[:, :, NUM_COLORS * NUM_RANKS:NUM_COLORS * NUM_RANKS + NUM_COLORS][:, :, inv]
-    belief_ranks = belief[:, :, NUM_COLORS * NUM_RANKS + NUM_COLORS:]
-    belief = jnp.concatenate((belief_cards, belief_colours, belief_ranks), axis=-1).reshape(-1)
-
-    return jnp.concatenate((
-        other_hands,
-        missing_cards,
-        deck,
-        fireworks,
-        info_tokens,
-        life_tokens,
-        discards,
-        actor,
-        move_type,
-        target,
-        color_revealed,
-        rank_revealed,
-        reveal_outcome,
-        pos_played_discarded,
-        played_discarded_card,
-        card_played_score,
-        added_info_tokens,
-        belief,
-    ))
 
 
 def remap_recoloured_action(action, inv_recolouring):
@@ -335,18 +240,6 @@ class HanabiColourPermutationWrapper:
 
         any_match = jnp.any(matches, axis=-1, keepdims=True)
         new_img = jnp.where(any_match, recoloured, img)
-
-        symbolic_panel = new_img[SYMBOLIC_Y0:SYMBOLIC_Y0 + SYMBOLIC_ROWS, :, 0]
-        symbolic_bits = (symbolic_panel.reshape(-1)[:SYMBOLIC_OBS_SIZE] > 127).astype(jnp.float32)
-        symbolic_bits = _permute_symbolic_obs_bits(symbolic_bits, recolouring)
-        padded_len = SYMBOLIC_ROWS * IMG_W
-        symbolic_bits = jnp.pad(symbolic_bits, (0, padded_len - SYMBOLIC_OBS_SIZE))
-        new_panel = symbolic_bits.reshape(SYMBOLIC_ROWS, IMG_W)
-        new_panel_rgb = jnp.broadcast_to(
-            new_panel[:, :, None] * 255.0,
-            (SYMBOLIC_ROWS, IMG_W, 3),
-        ).astype(jnp.uint8)
-        new_img = jax.lax.dynamic_update_slice(new_img, new_panel_rgb, (SYMBOLIC_Y0, 0, 0))
         return new_img.flatten().astype(jnp.float32) / 255.0
 
     # -- pass-through --------------------------------------------------------
