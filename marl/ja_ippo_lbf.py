@@ -390,6 +390,8 @@ def make_train(config, env):
             train_state, loss_info, rng = _run_ppo_aux_epochs(
                 config, policy, train_state, traj_batch, advantages, targets,
                 rng, num_actors,
+                tile_size=tile_size, feat_h=feat_h, feat_w=feat_w,
+                img_h=img_h, img_w=img_w,
                 aux_coef=aux_coef, aux_active=aux_active,
             )
 
@@ -421,9 +423,17 @@ def make_train(config, env):
 
 def _run_ppo_aux_epochs(
     config, policy, train_state, traj_batch, advantages, targets, rng, num_actors,
-    *, aux_coef, aux_active,
+    *, tile_size, feat_h, feat_w, img_h, img_w,
+    aux_coef, aux_active,
 ):
-    """PPO update with optional aux loss on spatial partner attention."""
+    """PPO update with optional per-fruit soft cross-entropy aux loss.
+
+    Aux compares per-fruit attention distributions (point-gathered from spatial
+    attention maps for both agent and partner). The gradient back into the conv
+    layers is thin — only the N fruit cells contribute — which keeps cuDNN happy
+    at large NUM_ENVS. Partner's spatial map is still fed online as the 4th obs
+    channel via FEED_OTHER_ATTN.
+    """
 
     def _update_epoch(update_state, unused):
         def _update_minbatch(train_state, batch_info):
@@ -457,19 +467,32 @@ def _run_ppo_aux_epochs(
                 policy_loss = -jnp.minimum(loss_actor1, loss_actor2).mean()
                 entropy = pi.entropy().mean()
 
-                # --- Aux loss: SOFT cross-entropy across the full spatial attention
-                # map between own current attention and partner's prev attention
-                # (stop-grad target). No per-fruit reduction — same shape both sides.
+                # --- Aux loss: per-fruit SOFT cross-entropy ---
+                # Point-gather both agent's and partner's spatial attention to
+                # per-fruit distributions (length N) at each fruit's centre cell,
+                # then soft CE: -sum_k partner[k] * log(agent[k]).
+                # Gradient on attn_2d flows only through the N fruit cells, not all
+                # feat_h*feat_w — keeps the conv backward light.
                 if aux_active:
-                    # attn_map_apply: (T, actors, fh, fw).
                     attn_2d = _attention_2d(attn_map_apply)            # (T, A, fh, fw)
-                    log_probs = jnp.log(attn_2d + 1e-8)                # (T, A, fh, fw)
-                    target_soft = jax.lax.stop_gradient(
+                    agent_per_fruit, agent_on_mass = _per_fruit_attn(
+                        attn_2d, traj_batch.food_pos, traj_batch.food_eaten,
+                        tile_size, feat_h, feat_w, img_h, img_w,
+                    )                                                  # (T, A, N), (T, A)
+                    partner_per_fruit, _ = _per_fruit_attn(
                         traj_batch.partner_prev_spatial,
-                    )                                                  # (T, A, fh, fw)
-                    nll_per_step = -(target_soft * log_probs).sum(axis=(-2, -1))  # (T, A)
+                        traj_batch.food_pos, traj_batch.food_eaten,
+                        tile_size, feat_h, feat_w, img_h, img_w,
+                    )                                                  # (T, A, N)
+                    target_soft = jax.lax.stop_gradient(partner_per_fruit)
+
+                    log_probs = jnp.log(agent_per_fruit + 1e-8)        # (T, A, N)
+                    nll_per_step = -(target_soft * log_probs).sum(axis=-1)  # (T, A)
                     nll_flat = nll_per_step.reshape(-1)
-                    aux_weight = traj_batch.partner_prev_valid.reshape(-1).astype(jnp.float32)
+                    aux_weight = (
+                        traj_batch.partner_prev_valid.reshape(-1).astype(jnp.float32)
+                        * agent_on_mass.reshape(-1)
+                    )
                     aux_weight = jax.lax.stop_gradient(aux_weight)
                     aux_denom = jnp.maximum(aux_weight.sum(), 1e-8)
                     aux_loss = (nll_flat * aux_weight).sum() / aux_denom
