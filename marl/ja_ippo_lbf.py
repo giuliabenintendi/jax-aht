@@ -32,7 +32,6 @@ from marl.eval_lbf import _render_lbf_eval_frames
 from marl.ippo_core import (
     PPOLossStats,
     calculate_gae,
-    compute_last_value,
     configure_training_dims,
     make_optimizer,
 )
@@ -126,6 +125,19 @@ def _swap_partner(x, num_agents):
         raise NotImplementedError("ja_ippo_lbf assumes 2 agents (parameter-shared).")
     half = x.shape[0] // 2
     return jnp.concatenate([x[half:], x[:half]], axis=0)
+
+
+def _compute_last_value_ja(policy, params, last_obs_batch, last_done_batch, last_avail_batch, hstate, num_actors):
+    """JA-aware variant of compute_last_value: unpacks the 5-tuple from get_action_value_policy."""
+    _, last_val, _, _, _ = policy.get_action_value_policy(
+        params=params,
+        obs=last_obs_batch.reshape(1, num_actors, -1),
+        done=last_done_batch.reshape(1, num_actors),
+        avail_actions=last_avail_batch.reshape(1, num_actors, -1),
+        hstate=hstate,
+        rng=jax.random.PRNGKey(0),
+    )
+    return last_val.squeeze()
 
 
 def _agent_positions_from_log_state(log_state):
@@ -331,7 +343,7 @@ def make_train(config, env):
             last_avail_batch = jax.lax.stop_gradient(
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32),
             )
-            last_val = compute_last_value(
+            last_val = _compute_last_value_ja(
                 policy, train_state.params,
                 last_obs_batch, last_done_batch, last_avail_batch, hstate, num_actors,
             )

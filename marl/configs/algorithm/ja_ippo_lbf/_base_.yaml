@@ -35,6 +35,8 @@ CONV_KERNEL_SIZE: 3
 CONV_STRIDE: 2
 CONV_PADDING: SAME
 
-# JA mechanism — START LOW per discussion; raise if signal absent.
+# JA mechanism. Default is aux-only (β₁=0) — cleaner test of whether the
+# attention/aux mechanism alone produces signal vs the baseline. Enable
+# r_shape via CLI override (e.g. algorithm.JA_FRUIT_R_SHAPE_COEF=0.05).
 JA_AUX_PARTNER_ARGMAX_COEF: 0.05    # cross-entropy aux loss weight (λ)
-JA_FRUIT_R_SHAPE_COEF: 0.05         # distance-progress shaping coefficient (β₁)
+JA_FRUIT_R_SHAPE_COEF: 0.0          # distance-progress shaping coefficient (β₁); off by default
