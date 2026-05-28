@@ -138,10 +138,16 @@ def initialize_ja_image_agent(config, env, rng):
     _num_heads_cfg = config.get("JA_NUM_HEADS", 4)
     if _flag_ja_card and _flag_partner_feed:
         num_scalars += 5
+    # Generic per-entity partner-attention feed (used by ja_ippo_lbf for N fruits).
+    # Caller injects the dim through JA_ENTITY_FEED_DIM before init.
+    _entity_feed_dim = int(config.get("JA_ENTITY_FEED_DIM", 0))
+    if _entity_feed_dim > 0:
+        num_scalars += _entity_feed_dim
     obs_dim = img_h * img_w * num_channels + num_scalars
     print(
         f"[initialize_ja_image_agent] JA_CARD_ATTN={_flag_ja_card} "
         f"JA_CARD_PARTNER_FEED={_flag_partner_feed} "
+        f"JA_ENTITY_FEED_DIM={_entity_feed_dim} "
         f"JA_NUM_HEADS={_num_heads_cfg} -> scalar_dim={num_scalars} "
         f"obs_dim={obs_dim} action_dim={env.action_space(env.agents[0]).n}",
         flush=True,
