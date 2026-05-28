@@ -613,11 +613,9 @@ def _log_eval_video(algorithm_config, env, out, logger):
     inner_env = env._env
 
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
-    ep_states, ep_actions, ep_messages, ep_obs = run_episode_with_states(
+    ep_states, _, _ = run_episode_with_states(
         jax.random.PRNGKey(42), inner_env, final_params, policy,
         final_params, policy, max_steps,
-        collect_attention=True,
-        collect_obs=True,
     )
     print(f"[ja_ippo_lbf] Eval episode: {len(ep_states)} frames collected", flush=True)
 
