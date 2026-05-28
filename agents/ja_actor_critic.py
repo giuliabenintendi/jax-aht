@@ -83,7 +83,6 @@ class JAScannedLSTM(nn.Module):
     message_dim: int = 0
     scalar_dim: int = 0
     query_partner_lstm: bool = False
-    keep_attn_heads: bool = False
 
     # Shared JA config.
     conv_filters: int = 64
@@ -267,14 +266,11 @@ class JAScannedLSTM(nn.Module):
         attended = jnp.einsum("bnm,bnmc->bmc", attn_weights, values)
         attended_flat = attended.reshape(batch_size, m * cm)
 
-        if self.keep_attn_heads:
-            attn_map = attn_weights.reshape(batch_size, self._spatial_h, self._spatial_w, m)
-        else:
-            attn_map = attn_weights.mean(axis=-1).reshape(
-                batch_size,
-                self._spatial_h,
-                self._spatial_w,
-            )
+        attn_map = attn_weights.mean(axis=-1).reshape(
+            batch_size,
+            self._spatial_h,
+            self._spatial_w,
+        )
 
         lstm_input = jnp.concatenate([attended_flat] + suffix_parts, axis=-1)
         lstm_input = nn.Dense(
@@ -328,7 +324,6 @@ class JAActorCritic(nn.Module):
     message_dim: int = 0
     scalar_dim: int = 0
     query_partner_lstm: bool = False
-    keep_attn_heads: bool = False
 
     # Shared config.
     conv_filters: int = 64
@@ -374,7 +369,6 @@ class JAActorCritic(nn.Module):
             scalar_dim=self.scalar_dim,
             scalar_embed_dim=self.scalar_embed_dim,
             query_partner_lstm=self.query_partner_lstm,
-            keep_attn_heads=self.keep_attn_heads,
         )
 
         def scan_input(partner_lstm_h=None):

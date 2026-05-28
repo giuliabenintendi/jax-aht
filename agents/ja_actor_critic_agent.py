@@ -37,7 +37,6 @@ class JAActorCriticPolicy(AgentPolicy):
         message_dim: int = 0,
         scalar_dim: int = 0,
         query_partner_lstm: bool = False,
-        keep_attn_heads: bool = False,
         post_lstm_fc_layers: int = 0,
         post_lstm_fc_hidden_dim: int | None = None,
     ):
@@ -67,7 +66,6 @@ class JAActorCriticPolicy(AgentPolicy):
             message_dim=message_dim,
             scalar_dim=scalar_dim,
             query_partner_lstm=query_partner_lstm,
-            keep_attn_heads=keep_attn_heads,
             post_lstm_fc_layers=post_lstm_fc_layers,
             post_lstm_fc_hidden_dim=post_lstm_fc_hidden_dim,
             activation=activation,
@@ -239,6 +237,5 @@ class JAImageActorCriticPolicy(JAActorCriticPolicy):
             scalar_dim=scalar_dim,
             scalar_embed_dim=scalar_embed_dim,
             query_partner_lstm=query_partner_lstm,
-            keep_attn_heads=True,
             post_lstm_fc_layers=2,
         )

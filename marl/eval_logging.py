@@ -14,7 +14,6 @@ from marl.eval_card_game import (
     _log_card_game_attention_grid,
     _log_card_game_eval_video,
     _log_card_game_per_agent_obs_video,
-    _log_card_game_per_head_attn_panel,
     _log_card_game_xp_videos,
 )
 from marl.eval_lbf import _render_lbf_eval_frames
@@ -42,12 +41,7 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
     # JA_CARD_PARTNER_FEED gates whether the partner attention vector is
     # appended to the obs at eval time (must match training).
     ja_card_partner_feed = ja_card_attn and algorithm_config.get("JA_CARD_PARTNER_FEED", True)
-    # Per-head feed: 5 cards * num_heads scalars instead of a head-averaged 5
-    # vector. When enabled, the partner-feed scatter/translate is done per
-    # head and the layout flattens c-order to match marl/ja_ippo.py.
-    ja_partner_feed_per_head = algorithm_config.get("JA_PARTNER_FEED_PER_HEAD", False)
-    _ja_num_heads = algorithm_config.get("JA_NUM_HEADS", 4)
-    partner_feed_dim = (5 * _ja_num_heads) if ja_partner_feed_per_head else 5
+    partner_feed_dim = 5
     query_partner_lstm = algorithm_config.get("QUERY_PARTNER_LSTM", False)
     _lstm_dim = algorithm_config.get("LSTM_HIDDEN_DIM", 128)
     if feed_attn or ja_card_attn:
@@ -168,30 +162,17 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                 if ja_card_partner_feed:
                     # Pool attention to per-card slots, scatter to canonical frame
                     # via each agent's position perm, then translate back into the
-                    # OTHER agent's view-frame. Mirrors the rollout in
-                    # marl/ja_ippo.py — the per-head branch flattens c-order so
-                    # the scalar feed layout matches what training fed the net.
-                    a0_sq = attn_0.squeeze()  # (fh, fw) or (fh, fw, num_heads)
+                    # OTHER agent's view-frame. Mirrors the rollout in marl/ja_ippo.py.
+                    a0_sq = attn_0.squeeze()
                     a1_sq = attn_1.squeeze()
                     perm_0 = env_state.env_state.per_agent_perm["agent_0"]
                     perm_1 = env_state.env_state.per_agent_perm["agent_1"]
-                    if ja_partner_feed_per_head:
-                        cpa_0 = jnp.einsum("hwk,chw->ck", a0_sq, _card_masks_eval)  # (5, num_heads)
-                        cpa_1 = jnp.einsum("hwk,chw->ck", a1_sq, _card_masks_eval)
-                        nh = cpa_0.shape[-1]
-                        phys_0 = jnp.zeros((5, nh)).at[perm_0].set(cpa_0)
-                        phys_1 = jnp.zeros((5, nh)).at[perm_1].set(cpa_1)
-                        prev_partner_card_attn_0 = phys_1[perm_0].reshape(-1)
-                        prev_partner_card_attn_1 = phys_0[perm_1].reshape(-1)
-                    else:
-                        a0_2d = a0_sq.mean(axis=-1) if a0_sq.ndim == 3 else a0_sq
-                        a1_2d = a1_sq.mean(axis=-1) if a1_sq.ndim == 3 else a1_sq
-                        card_attn_0 = jnp.einsum("hw,chw->c", a0_2d, _card_masks_eval)
-                        card_attn_1 = jnp.einsum("hw,chw->c", a1_2d, _card_masks_eval)
-                        phys_0 = jnp.zeros(5).at[perm_0].set(card_attn_0)
-                        phys_1 = jnp.zeros(5).at[perm_1].set(card_attn_1)
-                        prev_partner_card_attn_0 = phys_1[perm_0]
-                        prev_partner_card_attn_1 = phys_0[perm_1]
+                    card_attn_0 = jnp.einsum("hw,chw->c", a0_sq, _card_masks_eval)
+                    card_attn_1 = jnp.einsum("hw,chw->c", a1_sq, _card_masks_eval)
+                    phys_0 = jnp.zeros(5).at[perm_0].set(card_attn_0)
+                    phys_1 = jnp.zeros(5).at[perm_1].set(card_attn_1)
+                    prev_partner_card_attn_0 = phys_1[perm_0]
+                    prev_partner_card_attn_1 = phys_0[perm_1]
                     if done["__all__"]:
                         prev_partner_card_attn_0 = jnp.zeros(partner_feed_dim)
                         prev_partner_card_attn_1 = jnp.zeros(partner_feed_dim)
@@ -353,12 +334,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
     feed_attn = algorithm_config.get("FEED_OTHER_ATTN", False)
     ja_card_attn = algorithm_config.get("JA_CARD_ATTN", False)
     ja_card_partner_feed = ja_card_attn and algorithm_config.get("JA_CARD_PARTNER_FEED", True)
-    # Per-head partner feed dim. Must match training, otherwise the eval
-    # video's per-step obs augmentation will use a different scalar count
-    # than the policy's scalar_embed expects, producing a Flax shape error.
-    _ja_num_heads_v = algorithm_config.get("JA_NUM_HEADS", 4)
-    _per_head_v = algorithm_config.get("JA_PARTNER_FEED_PER_HEAD", False)
-    eval_partner_feed_dim = (5 * _ja_num_heads_v) if _per_head_v else 5
+    eval_partner_feed_dim = 5
     feed_attn_dims = None
     if feed_attn or ja_card_attn:
         ev_img_h, ev_img_w, _ = _get_image_dims(env)
@@ -493,15 +469,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                         ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                         num_episodes=sp_video_episodes, fps=3,
                         partner_feed_dim=eval_partner_feed_dim,
-                    )
-                    _log_card_game_per_head_attn_panel(
-                        inner_env, policy, final_params, max_steps, tag, video_dir, logger,
-                        feed_attn_dims=feed_attn_dims,
-                        ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
-                        partner_feed_dim=eval_partner_feed_dim,
-                        num_episodes=2,
-                        seed_idx=seed_idx,
-                        has_comm=bool(getattr(inner_env, "communication", False)),
                     )
             else:
                 # Other envs: videos + attention overlays

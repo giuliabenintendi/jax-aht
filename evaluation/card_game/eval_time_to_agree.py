@@ -247,27 +247,12 @@ def _build_pair_runner(ev, greedy: bool, partner_feed_dim: int, card_masks):
                 attn_1_sq = attn_1.squeeze()
                 p0 = _get_card_game_position_perm(env_state, "agent_0")
                 p1 = _get_card_game_position_perm(env_state, "agent_1")
-                if partner_feed_dim > 5:
-                    cpa_0 = jnp.einsum("hwk,chw->ck", attn_0_sq, card_masks)
-                    cpa_1 = jnp.einsum("hwk,chw->ck", attn_1_sq, card_masks)
-                    num_heads = cpa_0.shape[-1]
-                    phys_0 = jnp.zeros((5, num_heads)).at[p0].set(cpa_0)
-                    phys_1 = jnp.zeros((5, num_heads)).at[p1].set(cpa_1)
-                    prev_pca_0_next = phys_1[p0].reshape(-1)
-                    prev_pca_1_next = phys_0[p1].reshape(-1)
-                else:
-                    attn_0_2d = (
-                        attn_0_sq.mean(axis=-1) if attn_0_sq.ndim == 3 else attn_0_sq
-                    )
-                    attn_1_2d = (
-                        attn_1_sq.mean(axis=-1) if attn_1_sq.ndim == 3 else attn_1_sq
-                    )
-                    ca0 = jnp.einsum("hw,chw->c", attn_0_2d, card_masks)
-                    ca1 = jnp.einsum("hw,chw->c", attn_1_2d, card_masks)
-                    ph0 = jnp.zeros(5).at[p0].set(ca0)
-                    ph1 = jnp.zeros(5).at[p1].set(ca1)
-                    prev_pca_0_next = ph1[p0]
-                    prev_pca_1_next = ph0[p1]
+                ca0 = jnp.einsum("hw,chw->c", attn_0_sq, card_masks)
+                ca1 = jnp.einsum("hw,chw->c", attn_1_sq, card_masks)
+                ph0 = jnp.zeros(5).at[p0].set(ca0)
+                ph1 = jnp.zeros(5).at[p1].set(ca1)
+                prev_pca_0_next = ph1[p0]
+                prev_pca_1_next = ph0[p1]
             else:
                 prev_pca_0_next = prev_pca_0
                 prev_pca_1_next = prev_pca_1

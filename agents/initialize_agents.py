@@ -79,7 +79,7 @@ def initialize_ja_agent(config, env, rng):
     Mirrors Lee et al. (2021) architecture exactly (Appendix A):
       - Conv(3x3, 64) + spatial basis (depth 8) + 4 heads (depth 16)
       - LSTM cell size 64
-      - Two FC layers hidden size 64 (per head)
+      - Two FC layers hidden size 64
       - Actor and critic: identical architecture, no shared weights
       - Scalar features: direction Dense(5), position Dense(5)
     """
@@ -131,23 +131,17 @@ def initialize_ja_image_agent(config, env, rng):
     num_channels = 4 if config.get("FEED_OTHER_ATTN", False) else 3
     # Communication message is rendered visually (partner border), not as one-hot suffix
     message_dim = 0
-    # JA_CARD_ATTN appends a translated partner-attention vector to the obs.
-    # Default: 5-dim head-averaged canonical card attention.
-    # JA_PARTNER_FEED_PER_HEAD=True: 5 * NUM_HEADS-dim per-head canonical attention.
+    # JA_CARD_ATTN appends a 5-dim translated, averaged partner-attention
+    # vector to the obs.
     _flag_ja_card = config.get("JA_CARD_ATTN", False)
     _flag_partner_feed = config.get("JA_CARD_PARTNER_FEED", True)
-    _flag_per_head = config.get("JA_PARTNER_FEED_PER_HEAD", False)
     _num_heads_cfg = config.get("JA_NUM_HEADS", 4)
     if _flag_ja_card and _flag_partner_feed:
-        if _flag_per_head:
-            num_scalars += 5 * _num_heads_cfg
-        else:
-            num_scalars += 5
+        num_scalars += 5
     obs_dim = img_h * img_w * num_channels + num_scalars
     print(
         f"[initialize_ja_image_agent] JA_CARD_ATTN={_flag_ja_card} "
         f"JA_CARD_PARTNER_FEED={_flag_partner_feed} "
-        f"JA_PARTNER_FEED_PER_HEAD={_flag_per_head} "
         f"JA_NUM_HEADS={_num_heads_cfg} -> scalar_dim={num_scalars} "
         f"obs_dim={obs_dim} action_dim={env.action_space(env.agents[0]).n}",
         flush=True,

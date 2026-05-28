@@ -1,11 +1,8 @@
-"""Visualize head-averaged attention over time for a trained JA checkpoint.
+"""Visualize averaged attention over time for a trained JA checkpoint.
 
 For each of N self-play episodes, run the policy and save one compact strip
 per agent. Each strip shows the agent-view observation at every timestep with
-the head-averaged attention map overlaid.
-
-The file also keeps `_save_per_head_action_overlay`, which is reused by
-`marl.eval_card_game` for training-time visualization.
+the averaged attention map overlaid.
 
 Usage:
     ./run_gpu.sh 5 evaluation.card_game.attention_numbers \\
@@ -28,9 +25,6 @@ import matplotlib.pyplot as plt
 
 from envs.card_game.rendering import (
     AGENT_0_COLOR, AGENT_1_COLOR,
-    _A0_PATTERN_SMALL, _A1_PATTERN_SMALL,
-    _draw_card_border_upscaled,
-    _stamp_label_np,
     CARD_COLORS, NUM_CARDS, TILE_PIXELS, render_card_game_minimal,
 )
 from agents.ja_utils import build_card_masks
@@ -110,8 +104,8 @@ def _card_grid_boxes(feat_h: int, feat_w: int) -> list[tuple[float, float, float
     return boxes
 
 
-def _save_per_head_action_overlay(
-    per_head_seq: np.ndarray,
+def _save_attention_rows_overlay(
+    attention_rows_seq: np.ndarray,
     obs_seq: np.ndarray,
     action_view_slots: list,
     is_decision_seq: list,
@@ -128,27 +122,25 @@ def _save_per_head_action_overlay(
     row_action_slots: list | None = None,
     row_marker_colors: list | None = None,
 ) -> None:
-    """4 rows (one per head) × T columns; obs as background, head-specific
-    attention overlay, and a colored marker on the card the agent acted on
-    (dot for deliberation message, box for decision pick).
+    """Attention rows x T columns; obs as background, attention overlay,
+    and a colored marker on the card the agent acted on.
 
-    Pass `row_labels` (length H) to override the default "head 0", "head 1"… —
-    e.g. ["avg"] for a single head-averaged row.
+    Pass `row_labels` to override default row names.
 
-    Pass `row_card_values` (length H, each None or a (T, 5) array) to render a
+    Pass `row_card_values` (one per row, each None or a (T, 5) array) to render a
     row as per-card numbers instead of a heatmap — the value is printed on each
     of the 5 card cells. Used for the partner-feed row, which is just 5 numbers
     per step and is clearer as text than as a blocky synthetic heatmap.
 
     Args:
-        per_head_seq: (T, fh, fw, num_heads).
+        attention_rows_seq: (T, fh, fw, rows).
         obs_seq: (T, img_h, img_w, 3) agent-frame obs, float [0, 1].
         action_view_slots: per step int in [0, NUM_CARDS) or -1 if invalid.
         is_decision_seq: per step bool — True at the decision step.
         out_path: PNG.
         agent_idx: 0 (orange marker) or 1 (magenta).
     """
-    T, fh, fw, H = per_head_seq.shape
+    T, fh, fw, H = attention_rows_seq.shape
     fig, axes = plt.subplots(H, T, figsize=(2.0 * T, 1.6 * H + 0.4))
     if H == 1:
         axes = axes[None, :]
@@ -206,7 +198,7 @@ def _save_per_head_action_overlay(
                         ),
                     )
             else:
-                attn = per_head_seq[t, :, :, h_idx]
+                attn = attention_rows_seq[t, :, :, h_idx]
                 attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
                 # Per-cell normalization: with global vmax, step 0 (near-uniform
                 # attention from a fresh LSTM state, ~0.02/cell) is invisible
@@ -264,7 +256,7 @@ def _save_per_head_action_overlay(
                 ax.add_patch(p_rect)
 
             if t == 0:
-                label = row_labels[h_idx] if (row_labels and h_idx < len(row_labels)) else f"head {h_idx}"
+                label = row_labels[h_idx] if (row_labels and h_idx < len(row_labels)) else f"row {h_idx}"
                 ax.set_ylabel(label, fontsize=8)
             if h_idx == 0:
                 ax.set_title(f"t={t}", fontsize=8)
@@ -273,59 +265,6 @@ def _save_per_head_action_overlay(
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=240, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _save_per_head_strip(
-    per_head_seq: np.ndarray,
-    out_path: Path,
-    title: str,
-    img_h: int = 21,
-    img_w: int = 35,
-) -> None:
-    """One row per attention head; T columns of bilinear-upsampled heatmaps.
-
-    Args:
-        per_head_seq: (T, fh, fw, num_heads) per-step per-head attention.
-        out_path: PNG path.
-        title: figure suptitle.
-    """
-    T, fh, fw, H = per_head_seq.shape
-    fig, axes = plt.subplots(H, T, figsize=(1.6 * T, 1.3 * H + 0.4))
-    if H == 1:
-        axes = axes[None, :]
-    if T == 1:
-        axes = axes[:, None]
-
-    vmax = float(per_head_seq.max())
-
-    card_pixel_y_lo = 7
-    card_pixel_y_hi = 14
-
-    for h_idx in range(H):
-        for t in range(T):
-            attn = per_head_seq[t, :, :, h_idx]
-            attn_up = jax.image.resize(jnp.asarray(attn), (img_h, img_w), method="bilinear")
-            ax = axes[h_idx, t]
-            ax.imshow(np.asarray(attn_up), cmap="hot", vmin=0.0, vmax=vmax)
-            ax.axhline(y=card_pixel_y_lo - 0.5, color="cyan", lw=0.4, alpha=0.7)
-            ax.axhline(y=card_pixel_y_hi - 0.5, color="cyan", lw=0.4, alpha=0.7)
-            flat = attn.flatten()
-            idx = int(flat.argmax())
-            ar, ac = divmod(idx, fw)
-            cy = ar * (img_h / fh) + (img_h / fh) / 2
-            cx = ac * (img_w / fw) + (img_w / fw) / 2
-            ax.text(cx, cy, f"{flat.max():.2f}", ha="center", va="center",
-                    color="cyan", fontsize=6, fontweight="bold")
-            if t == 0:
-                ax.set_ylabel(f"head {h_idx}", fontsize=8)
-            if h_idx == 0:
-                ax.set_title(f"t={t}", fontsize=8)
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -500,8 +439,8 @@ def main() -> None:
     # 21x35 image, 6x9 feature grid match the JA image agent's downsampling.
     _card_masks_np = np.asarray(build_card_masks(21, 35, 6, 9))
 
-    # Pass per-head partner-feed config to the rollout so obs is augmented as
-    # in training; otherwise scalar_embed param shape doesn't match.
+    # Pass partner-feed config to the rollout so obs is augmented as in training;
+    # otherwise scalar_embed param shape doesn't match.
     _policy_scalar_dim = int(getattr(ev.policy.network, "scalar_dim", 0))
     _partner_feed_dim = _policy_scalar_dim if _policy_scalar_dim > 0 else 5
     _use_card_masks = jnp.asarray(_card_masks_np) if _policy_scalar_dim > 0 else None

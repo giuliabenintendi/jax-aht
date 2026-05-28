@@ -127,9 +127,7 @@ def make_train_loop(config, env):
     # fires but the policy receives no partner info beyond what the message
     # channel and rendered dot already provide.
     ja_card_partner_feed = ja_card_attn and config.get("JA_CARD_PARTNER_FEED", True)
-    ja_partner_feed_per_head = config.get("JA_PARTNER_FEED_PER_HEAD", False)
-    ja_num_heads = config.get("JA_NUM_HEADS", 4)
-    partner_feed_dim = 5 * ja_num_heads if ja_partner_feed_per_head else 5
+    partner_feed_dim = 5
     ja_card_jsd_coef = config.get("JA_CARD_JSD_COEF", 0.0)
     # Two-part JA attention shaping (parallel to comm shaping):
     #   match: per-step lagged similarity between each agent's current
@@ -314,7 +312,7 @@ def make_train_loop(config, env):
                             params, hidden, inputs_apply,
                         )
                         if ja_aux_partner_argmax_active:
-                            attn_2d = attn_map_apply.mean(axis=-1)              # (T, num_actors, fh, fw)
+                            attn_2d = attn_map_apply                            # (T, num_actors, fh, fw)
                             # Take the agent's attention map, multiply it
                             # element-wise by card c's binary mask, and sum
                             # the result. Repeated for every card c.
@@ -435,8 +433,7 @@ def make_train_loop(config, env):
 
         def _swap_and_reset_attn(attn_map, done_batch):
             """Swap attention maps between agents, reset to uniform on done."""
-            # attn_map is now (1, num_actors, feat_h, feat_w, num_heads); collapse heads for feed_other_attn.
-            attn = attn_map.squeeze(0).mean(axis=-1)  # (num_actors, feat_h, feat_w)
+            attn = attn_map.squeeze(0)  # (num_actors, feat_h, feat_w)
             attn_0 = attn[:num_envs]
             attn_1 = attn[num_envs:]
             # Each agent gets the other's attention
@@ -458,8 +455,8 @@ def make_train_loop(config, env):
             )
 
         def _project_card_attention(attn_map, env_state):
-            """Project head-averaged attention into canonical card space."""
-            attn = attn_map.squeeze(0).mean(axis=-1)  # (num_actors, feat_h, feat_w)
+            """Project averaged attention into canonical card space."""
+            attn = attn_map.squeeze(0)  # (num_actors, feat_h, feat_w)
             card_pos_attn = jnp.einsum("ahw,chw->ac", attn, _card_masks)
             card_pos_attn_0 = card_pos_attn[:num_envs]
             card_pos_attn_1 = card_pos_attn[num_envs:]
@@ -496,33 +493,8 @@ def make_train_loop(config, env):
 
         def _build_partner_card_attention_feed(attn_map, new_done_batch, perm_0, perm_1, phys_0, phys_1):
             """Translate partner attention into each agent's own view frame."""
-            batch_idx = jnp.arange(num_envs)[:, None]
-            if ja_partner_feed_per_head:
-                attn_per_head = attn_map.squeeze(0)  # (num_actors, fh, fw, num_heads)
-                card_pos_per_head = jnp.einsum(
-                    "ahwk,chw->ack", attn_per_head, _card_masks,
-                )  # (num_actors, 5, num_heads)
-                cpa0 = card_pos_per_head[:num_envs]
-                cpa1 = card_pos_per_head[num_envs:]
-
-                def _scatter_per_head(card_pos_one_head, perm):
-                    return jnp.zeros((num_envs, _num_cards)).at[batch_idx, perm].set(card_pos_one_head)
-
-                phys_0_ph = jax.vmap(
-                    _scatter_per_head, in_axes=(-1, None), out_axes=-1
-                )(cpa0, perm_0)
-                phys_1_ph = jax.vmap(
-                    _scatter_per_head, in_axes=(-1, None), out_axes=-1
-                )(cpa1, perm_1)
-                translated_for_0 = jnp.take_along_axis(
-                    phys_1_ph, perm_0[..., None], axis=1,
-                ).reshape(num_envs, -1)
-                translated_for_1 = jnp.take_along_axis(
-                    phys_0_ph, perm_1[..., None], axis=1,
-                ).reshape(num_envs, -1)
-            else:
-                translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
-                translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
+            translated_for_0 = jnp.take_along_axis(phys_1, perm_0, axis=1)
+            translated_for_1 = jnp.take_along_axis(phys_0, perm_1, axis=1)
 
             partner_card_attn = jnp.concatenate([translated_for_0, translated_for_1], axis=0)
             return jnp.where(new_done_batch[:, None], 0.0, partner_card_attn)
@@ -740,13 +712,12 @@ def make_train_loop(config, env):
 
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
 
-                # attn_map is (1, num_actors, fh, fw, num_heads); average heads
-                # before computing the spatial-JSD intrinsic reward.
+                # attn_map is (1, num_actors, fh, fw).
                 attn_0 = attn_map[:, :num_envs, ...]
                 attn_1 = attn_map[:, num_envs:, ...]
                 r_ja = -jsd_divergence(
-                    attn_0.squeeze(0).mean(axis=-1),
-                    attn_1.squeeze(0).mean(axis=-1),
+                    attn_0.squeeze(0),
+                    attn_1.squeeze(0),
                 )
                 r_ja = jax.lax.stop_gradient(r_ja)
 

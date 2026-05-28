@@ -130,10 +130,7 @@ def main():
         feed_attn = alg_config.get("FEED_OTHER_ATTN", False)
         ja_card_attn = alg_config.get("JA_CARD_ATTN", False)
         ja_card_partner_feed = ja_card_attn and alg_config.get("JA_CARD_PARTNER_FEED", True)
-        ja_num_heads = int(alg_config.get("JA_NUM_HEADS", 4))
-        partner_feed_dim = (
-            5 * ja_num_heads if alg_config.get("JA_PARTNER_FEED_PER_HEAD", False) else 5
-        )
+        partner_feed_dim = 5
         feed_attn_dims = None
         ja_card_masks = None
         if feed_attn or ja_card_partner_feed:

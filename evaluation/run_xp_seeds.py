@@ -129,7 +129,6 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_action_1 = jnp.zeros((1, 1), dtype=jnp.float32)
 
     _ja_card = ja_card_masks is not None
-    _per_head_feed = partner_feed_dim > 5
     if _ja_card:
         prev_pca_0 = jnp.zeros(partner_feed_dim)
         prev_pca_1 = jnp.zeros(partner_feed_dim)
@@ -175,11 +174,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     )
     act_1 = act_1.squeeze()
 
-    # Flatten attention maps to distributions for JSD. Per-head attention has
-    # an extra trailing axis (num_heads); collapse it before JSD so the metric
-    # stays comparable across per-head and head-avg runs.
-    attn_0_2d = attn_0.mean(axis=-1) if attn_0.ndim == 5 else attn_0
-    attn_1_2d = attn_1.mean(axis=-1) if attn_1.ndim == 5 else attn_1
+    attn_0_2d = attn_0
+    attn_1_2d = attn_1
     attn_0_flat = attn_0_2d.reshape(-1)
     attn_1_flat = attn_1_2d.reshape(-1)
     attn_0_dist = attn_0_flat / (attn_0_flat.sum() + 1e-8)
@@ -224,34 +220,14 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         a1_sq = attn_1.squeeze()
         perm_0 = _get_card_game_position_perm(init_env_state, "agent_0")
         perm_1 = _get_card_game_position_perm(init_env_state, "agent_1")
-        if _per_head_feed:
-            cpa_0 = jnp.einsum("hwk,chw->ck", a0_sq, ja_card_masks)
-            cpa_1 = jnp.einsum("hwk,chw->ck", a1_sq, ja_card_masks)
-            nh = cpa_0.shape[-1]
-            ph_0_full = jnp.zeros((5, nh)).at[perm_0].set(cpa_0)
-            ph_1_full = jnp.zeros((5, nh)).at[perm_1].set(cpa_1)
-            prev_pca_0 = ph_1_full[perm_0].reshape(-1)
-            prev_pca_1 = ph_0_full[perm_1].reshape(-1)
-            # Card-level JSD uses head-averaged distributions (kept stable so
-            # the metric is comparable across per-head and head-avg runs).
-            ca_0_avg = cpa_0.mean(axis=-1)
-            ca_1_avg = cpa_1.mean(axis=-1)
-            ph_0 = ph_0_full.mean(axis=-1)
-            ph_1 = ph_1_full.mean(axis=-1)
-            _m0 = ca_0_avg.sum()
-            _m1 = ca_1_avg.sum()
-        else:
-            # Network output has trailing num_heads axis even when per-head feed is off.
-            a0_avg = a0_sq.mean(axis=-1) if a0_sq.ndim == 3 else a0_sq
-            a1_avg = a1_sq.mean(axis=-1) if a1_sq.ndim == 3 else a1_sq
-            ca_0 = jnp.einsum("hw,chw->c", a0_avg, ja_card_masks)
-            ca_1 = jnp.einsum("hw,chw->c", a1_avg, ja_card_masks)
-            ph_0 = jnp.zeros(5).at[perm_0].set(ca_0)
-            ph_1 = jnp.zeros(5).at[perm_1].set(ca_1)
-            prev_pca_0 = ph_1[perm_0]
-            prev_pca_1 = ph_0[perm_1]
-            _m0 = ca_0.sum()
-            _m1 = ca_1.sum()
+        ca_0 = jnp.einsum("hw,chw->c", a0_sq, ja_card_masks)
+        ca_1 = jnp.einsum("hw,chw->c", a1_sq, ja_card_masks)
+        ph_0 = jnp.zeros(5).at[perm_0].set(ca_0)
+        ph_1 = jnp.zeros(5).at[perm_1].set(ca_1)
+        prev_pca_0 = ph_1[perm_0]
+        prev_pca_1 = ph_0[perm_1]
+        _m0 = ca_0.sum()
+        _m1 = ca_1.sum()
         _q0 = ph_0 / (_m0 + 1e-8)
         _q1 = ph_1 / (_m1 + 1e-8)
         card_jsd_sum = jsd_divergence(_q0[None, :], _q1[None, :])
@@ -320,10 +296,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             )
             act_1 = act_1.squeeze()
 
-            # Compute JSD between attention maps. Head-average if per-head so
-            # the (h, w) reshape stays valid.
-            a0_2d = attn_0.mean(axis=-1) if attn_0.ndim == 5 else attn_0
-            a1_2d = attn_1.mean(axis=-1) if attn_1.ndim == 5 else attn_1
+            a0_2d = attn_0
+            a1_2d = attn_1
             a0 = a0_2d.reshape(-1)
             a1 = a1_2d.reshape(-1)
             a0 = a0 / (a0.sum() + 1e-8)
@@ -350,33 +324,16 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             if _ja_card:
                 p0 = _get_card_game_position_perm(env_state, "agent_0")
                 p1 = _get_card_game_position_perm(env_state, "agent_1")
-                if _per_head_feed:
-                    cpa0 = jnp.einsum("hwk,chw->ck", attn_0.squeeze(), ja_card_masks)
-                    cpa1 = jnp.einsum("hwk,chw->ck", attn_1.squeeze(), ja_card_masks)
-                    nh = cpa0.shape[-1]
-                    ph0_full = jnp.zeros((5, nh)).at[p0].set(cpa0)
-                    ph1_full = jnp.zeros((5, nh)).at[p1].set(cpa1)
-                    next_pca_0 = ph1_full[p0].reshape(-1)
-                    next_pca_1 = ph0_full[p1].reshape(-1)
-                    ca0_avg = cpa0.mean(axis=-1)
-                    ca1_avg = cpa1.mean(axis=-1)
-                    ph0 = ph0_full.mean(axis=-1)
-                    ph1 = ph1_full.mean(axis=-1)
-                    m0 = ca0_avg.sum()
-                    m1 = ca1_avg.sum()
-                else:
-                    a0_sq = attn_0.squeeze()
-                    a1_sq = attn_1.squeeze()
-                    a0_avg = a0_sq.mean(axis=-1) if a0_sq.ndim == 3 else a0_sq
-                    a1_avg = a1_sq.mean(axis=-1) if a1_sq.ndim == 3 else a1_sq
-                    ca0 = jnp.einsum("hw,chw->c", a0_avg, ja_card_masks)
-                    ca1 = jnp.einsum("hw,chw->c", a1_avg, ja_card_masks)
-                    ph0 = jnp.zeros(5).at[p0].set(ca0)
-                    ph1 = jnp.zeros(5).at[p1].set(ca1)
-                    next_pca_0 = ph1[p0]
-                    next_pca_1 = ph0[p1]
-                    m0 = ca0.sum()
-                    m1 = ca1.sum()
+                a0_sq = attn_0.squeeze()
+                a1_sq = attn_1.squeeze()
+                ca0 = jnp.einsum("hw,chw->c", a0_sq, ja_card_masks)
+                ca1 = jnp.einsum("hw,chw->c", a1_sq, ja_card_masks)
+                ph0 = jnp.zeros(5).at[p0].set(ca0)
+                ph1 = jnp.zeros(5).at[p1].set(ca1)
+                next_pca_0 = ph1[p0]
+                next_pca_1 = ph0[p1]
+                m0 = ca0.sum()
+                m1 = ca1.sum()
                 q0 = ph0 / (m0 + 1e-8)
                 q1 = ph1 / (m1 + 1e-8)
                 step_card_jsd = jsd_divergence(q0[None, :], q1[None, :])
@@ -786,11 +743,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         )
         ja_card_masks = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
-    xp_partner_feed_dim = (
-        5 * int(algo_cfg.get("JA_NUM_HEADS", 4))
-        if algo_cfg.get("JA_PARTNER_FEED_PER_HEAD", False)
-        else 5
-    )
+    xp_partner_feed_dim = 5
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
@@ -1230,11 +1183,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
         )
         ja_card_masks = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
-    xp_partner_feed_dim = (
-        5 * int(algo_cfg.get("JA_NUM_HEADS", 4))
-        if algo_cfg.get("JA_PARTNER_FEED_PER_HEAD", False)
-        else 5
-    )
+    xp_partner_feed_dim = 5
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,

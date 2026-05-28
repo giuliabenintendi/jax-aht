@@ -148,7 +148,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
     _ja_card = ja_card_masks is not None
-    _per_head_feed = partner_feed_dim > 5
     if _ja_card:
         prev_pca_0 = jnp.zeros(partner_feed_dim)
         prev_pca_1 = jnp.zeros(partner_feed_dim)
@@ -268,23 +267,12 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             attn_1_sq = attn_1.squeeze()
             p0 = _get_card_game_position_perm(env_state, "agent_0")
             p1 = _get_card_game_position_perm(env_state, "agent_1")
-            if _per_head_feed:
-                cpa_0 = jnp.einsum("hwk,chw->ck", attn_0_sq, ja_card_masks)
-                cpa_1 = jnp.einsum("hwk,chw->ck", attn_1_sq, ja_card_masks)
-                num_heads = cpa_0.shape[-1]
-                phys_0 = jnp.zeros((5, num_heads)).at[p0].set(cpa_0)
-                phys_1 = jnp.zeros((5, num_heads)).at[p1].set(cpa_1)
-                prev_pca_0 = phys_1[p0].reshape(-1)
-                prev_pca_1 = phys_0[p1].reshape(-1)
-            else:
-                attn_0_2d = attn_0_sq.mean(axis=-1) if attn_0_sq.ndim == 3 else attn_0_sq
-                attn_1_2d = attn_1_sq.mean(axis=-1) if attn_1_sq.ndim == 3 else attn_1_sq
-                ca0 = jnp.einsum("hw,chw->c", attn_0_2d, ja_card_masks)
-                ca1 = jnp.einsum("hw,chw->c", attn_1_2d, ja_card_masks)
-                ph0 = jnp.zeros(5).at[p0].set(ca0)
-                ph1 = jnp.zeros(5).at[p1].set(ca1)
-                prev_pca_0 = ph1[p0]
-                prev_pca_1 = ph0[p1]
+            ca0 = jnp.einsum("hw,chw->c", attn_0_sq, ja_card_masks)
+            ca1 = jnp.einsum("hw,chw->c", attn_1_sq, ja_card_masks)
+            ph0 = jnp.zeros(5).at[p0].set(ca0)
+            ph1 = jnp.zeros(5).at[p1].set(ca1)
+            prev_pca_0 = ph1[p0]
+            prev_pca_1 = ph0[p1]
             if done["__all__"]:
                 prev_pca_0 = jnp.zeros(partner_feed_dim)
                 prev_pca_1 = jnp.zeros(partner_feed_dim)
@@ -460,10 +448,6 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
         frames: list of pre-rendered RGB frames (from render_episode_frames).
     """
     import numpy as np
-    try:
-        import wandb
-    except ImportError:
-        return
 
     maps_0 = attn_data.get("agent_0", [])
     maps_1 = attn_data.get("agent_1", [])
@@ -822,10 +806,6 @@ def _overlay_attention(frame, attn, cmap_name, alpha=0.6):
     from PIL import Image
 
     attn = np.array(attn).squeeze()
-    # If the attention map still has a trailing num_heads axis after squeezing,
-    # average over heads so the colormap gets a 2D (fh, fw) input.
-    if attn.ndim == 3:
-        attn = attn.mean(axis=-1)
     a_min, a_max = attn.min(), attn.max()
     if a_max - a_min > 1e-8:
         attn_norm = (attn - a_min) / (a_max - a_min)

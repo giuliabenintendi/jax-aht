@@ -30,7 +30,6 @@ from envs import make_env
 from envs.log_wrapper import LogWrapper
 from marl.eval_lbf import _render_lbf_eval_frames
 from marl.ippo_core import (
-    PPOLossStats,
     calculate_gae,
     configure_training_dims,
     make_optimizer,
@@ -113,6 +112,13 @@ def _pool_per_fruit_rollout(attn_2d, masks_actors):
     on_mass = per_fruit.sum(axis=-1)
     per_fruit_norm = per_fruit / (on_mass[..., None] + 1e-8)
     return per_fruit_norm, on_mass
+
+
+def _attention_2d(attn_map):
+    """Return spatial attention with shape (..., feat_h, feat_w)."""
+    if attn_map.ndim == 4:
+        return attn_map
+    raise ValueError(f"Unexpected attention map rank: {attn_map.ndim}")
 
 
 def _swap_partner(x, num_agents):
@@ -257,8 +263,8 @@ def make_train(config, env):
                 value = value.squeeze()
 
                 # --- Per-fruit attention from current step ---
-                # attn_map: (1, num_actors, feat_h, feat_w, num_heads) -> (num_actors, fh, fw)
-                attn_2d = attn_map.squeeze(0).mean(axis=-1)
+                # attn_map: (1, actors, fh, fw).
+                attn_2d = _attention_2d(attn_map).squeeze(0)
 
                 # Pre-step food state (LBF state shared by both agents in each env)
                 food_pos_env, food_eaten_env = _food_state_from_log_state(env_state)
@@ -424,8 +430,8 @@ def _run_ppo_aux_epochs(
 
                 # --- Aux loss: cross-entropy on per-fruit attention ---
                 if aux_active:
-                    # attn_map_apply: (T, num_actors, feat_h, feat_w, num_heads)
-                    attn_2d = attn_map_apply.mean(axis=-1)  # (T, num_actors, fh, fw)
+                    # attn_map_apply: (T, actors, fh, fw).
+                    attn_2d = _attention_2d(attn_map_apply)
 
                     # Build per-step fruit masks from stored food state
                     masks = _build_fruit_masks(
