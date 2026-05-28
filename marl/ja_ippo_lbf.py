@@ -38,7 +38,7 @@ from marl.ppo_utils import _create_minibatches, batchify, unbatchify
 
 
 JA_LBF_SCALAR_KEYS = list(IMAGE_IPPO_SCALAR_KEYS) + [
-    ("aux_loss", "Losses"),
+    ("aux_partner_argmax_loss", "Losses"),
     ("reward_shaped_mean", "JA"),
 ]
 
@@ -406,7 +406,9 @@ def make_train(config, env):
             metric["entropy"] = loss_info.entropy.mean()
             metric["grad_norm"] = loss_info.grad_norm.mean()
             metric["value_mean"] = traj_batch.value.mean()
-            metric["aux_loss"] = loss_info.aux_loss.mean()
+            # Use the canonical key name so log_live_chunk_metrics picks it up
+            # (JA_LIVE_SCALAR_KEYS in common/train_logging.py expects this exact name).
+            metric["aux_partner_argmax_loss"] = loss_info.aux_loss.mean()
             # Reward includes r_shape; the unshaped task return lives in info
             # under "returned_episode_returns" (LogWrapper). Shaped-reward mean
             # is a coarse proxy for r_shape magnitude this rollout.
