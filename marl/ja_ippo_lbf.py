@@ -59,56 +59,41 @@ class TransitionJA(NamedTuple):
     food_eaten: jnp.ndarray            # (num_actors, N) bool — tiled per actor
 
 
-def _build_fruit_masks(food_pos, food_eaten, tile_size, feat_h, feat_w, img_h, img_w):
-    """Soft overlap masks at feature-map resolution.
+def _per_fruit_attn(
+    attn_2d, food_pos, food_eaten,
+    tile_size, feat_h, feat_w, img_h, img_w,
+):
+    """Point-gather attention at each fruit's centre feature cell.
 
-    food_pos: (..., N, 2) grid positions; food_eaten: (..., N) bool.
-    Returns: (..., N, feat_h, feat_w) float — fraction of each feature cell
-    overlapping each fruit's tile, zeroed for eaten fruits.
+    Map each fruit's tile centre pixel to a single (fr, fc) feature cell and
+    take attn_2d at that cell. Eaten fruits get zero. Renormalise over
+    on-fruit mass.
+
+    Avoids materialising the (..., N, feat_h, feat_w) dense mask tensor used
+    in earlier versions — both the memory and the 5-D einsum that XLA was
+    routing into a cuDNN kernel that failed at larger batch sizes.
+
+    attn_2d:    (..., feat_h, feat_w)        spatial attention
+    food_pos:   (..., N, 2)  int             grid positions of each fruit
+    food_eaten: (..., N)     bool
+
+    Returns:
+        per_fruit_norm: (..., N) — distribution over fruits given on-mass
+        on_mass:        (...,)   — total attention mass that landed on fruits
     """
-    scale_h = img_h / feat_h
-    scale_w = img_w / feat_w
+    centre_r = food_pos[..., 0] * tile_size + tile_size // 2  # (..., N)
+    centre_c = food_pos[..., 1] * tile_size + tile_size // 2
+    fr = jnp.clip(centre_r * feat_h // img_h, 0, feat_h - 1).astype(jnp.int32)
+    fc = jnp.clip(centre_c * feat_w // img_w, 0, feat_w - 1).astype(jnp.int32)
 
-    py_lo = (food_pos[..., 0] * tile_size).astype(jnp.float32)
-    py_hi = py_lo + tile_size
-    px_lo = (food_pos[..., 1] * tile_size).astype(jnp.float32)
-    px_hi = px_lo + tile_size
+    # Flatten spatial dims and gather. attn_2d shape (..., feat_h, feat_w)
+    # → (..., feat_h*feat_w). Same leading dims as flat_idx so take_along_axis works.
+    attn_flat = attn_2d.reshape(*attn_2d.shape[:-2], feat_h * feat_w)
+    flat_idx = fr * feat_w + fc                                 # (..., N)
+    per_fruit = jnp.take_along_axis(attn_flat, flat_idx, axis=-1)
 
-    fr = jnp.arange(feat_h, dtype=jnp.float32)
-    fc = jnp.arange(feat_w, dtype=jnp.float32)
-    # Shape (feat_h, 1) and (1, feat_w) so they broadcast against (..., 1, 1)
-    cell_y_lo = (fr * scale_h).reshape(feat_h, 1)
-    cell_y_hi = ((fr + 1) * scale_h).reshape(feat_h, 1)
-    cell_x_lo = (fc * scale_w).reshape(1, feat_w)
-    cell_x_hi = ((fc + 1) * scale_w).reshape(1, feat_w)
-
-    # py_*: shape (..., N) -> (..., N, 1, 1); broadcasts against cell_y_* (feat_h, 1).
-    # Result: (..., N, feat_h, 1).
-    ov_y = jnp.maximum(
-        0.0,
-        jnp.minimum(py_hi[..., None, None], cell_y_hi)
-        - jnp.maximum(py_lo[..., None, None], cell_y_lo),
-    )
-    # Result: (..., N, 1, feat_w)
-    ov_x = jnp.maximum(
-        0.0,
-        jnp.minimum(px_hi[..., None, None], cell_x_hi)
-        - jnp.maximum(px_lo[..., None, None], cell_x_lo),
-    )
-    cell_area = scale_h * scale_w
-    masks = ov_y * ov_x / cell_area  # (..., N, feat_h, feat_w)
-
-    alive = (1.0 - food_eaten.astype(jnp.float32))[..., None, None]
-    return masks * alive
-
-
-def _pool_per_fruit_rollout(attn_2d, masks_actors):
-    """Pool attention through masks. Shapes:
-    attn_2d: (num_actors, feat_h, feat_w)
-    masks_actors: (num_actors, N, feat_h, feat_w)
-    Returns: per_fruit_norm (num_actors, N), on_mass (num_actors,)
-    """
-    per_fruit = jnp.einsum("ahw,akhw->ak", attn_2d, masks_actors)
+    alive = 1.0 - food_eaten.astype(jnp.float32)
+    per_fruit = per_fruit * alive
     on_mass = per_fruit.sum(axis=-1)
     per_fruit_norm = per_fruit / (on_mass[..., None] + 1e-8)
     return per_fruit_norm, on_mass
@@ -271,12 +256,10 @@ def make_train(config, env):
                 food_pos_actors = _tile_to_actors(food_pos_env)         # (num_actors, N, 2)
                 food_eaten_actors = _tile_to_actors(food_eaten_env)     # (num_actors, N)
 
-                masks_actors = _build_fruit_masks(
-                    food_pos_actors, food_eaten_actors,
+                per_fruit_norm, _on_mass = _per_fruit_attn(
+                    attn_2d, food_pos_actors, food_eaten_actors,
                     tile_size, feat_h, feat_w, img_h, img_w,
-                )                                                        # (num_actors, N, fh, fw)
-
-                per_fruit_norm, on_mass = _pool_per_fruit_rollout(attn_2d, masks_actors)
+                )
                 own_argmax = jnp.argmax(per_fruit_norm, axis=-1).astype(jnp.int32)  # (num_actors,)
 
                 # --- Pre-step positions (per actor) ---
@@ -432,16 +415,10 @@ def _run_ppo_aux_epochs(
                 if aux_active:
                     # attn_map_apply: (T, actors, fh, fw).
                     attn_2d = _attention_2d(attn_map_apply)
-
-                    # Build per-step fruit masks from stored food state
-                    masks = _build_fruit_masks(
-                        traj_batch.food_pos, traj_batch.food_eaten,
+                    per_fruit_norm, on_mass = _per_fruit_attn(
+                        attn_2d, traj_batch.food_pos, traj_batch.food_eaten,
                         tile_size, feat_h, feat_w, img_h, img_w,
-                    )  # (T, num_actors, N, fh, fw)
-
-                    per_fruit = jnp.einsum("tahw,takhw->tak", attn_2d, masks)
-                    on_mass = per_fruit.sum(axis=-1)
-                    per_fruit_norm = per_fruit / (on_mass[..., None] + 1e-8)
+                    )
 
                     log_probs_flat = jnp.log(per_fruit_norm + 1e-8).reshape(-1, num_fruits)
                     target_flat = traj_batch.partner_prev_argmax.reshape(-1)
