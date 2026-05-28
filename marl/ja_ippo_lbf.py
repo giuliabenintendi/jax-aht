@@ -53,11 +53,11 @@ class TransitionJA(NamedTuple):
     info: jnp.ndarray
     avail_actions: jnp.ndarray
     # JA-specific fields, all per-actor
-    partner_prev_fruit_attn: jnp.ndarray  # (num_actors, N) float — soft aux target + obs feed
-    partner_prev_argmax: jnp.ndarray   # (num_actors,) int32 — discrete target for r_shape
-    partner_prev_valid: jnp.ndarray    # (num_actors,) bool — mask aux on invalid steps
-    food_pos: jnp.ndarray              # (num_actors, N, 2) int — tiled per actor
-    food_eaten: jnp.ndarray            # (num_actors, N) bool — tiled per actor
+    partner_prev_spatial: jnp.ndarray   # (num_actors, feat_h, feat_w) float — full partner attention map at t-1
+    partner_prev_argmax: jnp.ndarray    # (num_actors,) int32 — argmax fruit, drives r_shape
+    partner_prev_valid: jnp.ndarray     # (num_actors,) bool — mask aux on invalid steps
+    food_pos: jnp.ndarray               # (num_actors, N, 2) int — tiled per actor
+    food_eaten: jnp.ndarray             # (num_actors, N) bool — tiled per actor
 
 
 def _per_fruit_attn(
@@ -174,11 +174,15 @@ def make_train(config, env):
     aux_coef = float(config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0))
     r_shape_coef = float(config.get("JA_FRUIT_R_SHAPE_COEF", 0.0))
     aux_active = aux_coef > 0.0
-    # Partner per-fruit attention is fed into the obs as an N-dim scalar suffix
-    # so the policy can react to it online. Inject the dim through the same
-    # JA_ENTITY_FEED_DIM knob the init reads.
-    config = dict(config)
-    config["JA_ENTITY_FEED_DIM"] = num_fruits
+
+    # Partner's previous-step spatial attention map is fed online as a 4th image
+    # channel. The flag must be set in the algorithm yaml (FEED_OTHER_ATTN: true)
+    # so both training and eval initialize the policy with num_channels=4.
+    if not config.get("FEED_OTHER_ATTN", False):
+        raise ValueError(
+            "ja_ippo_lbf requires FEED_OTHER_ATTN=true in the algorithm config "
+            "so the policy is initialized with a 4-channel image input."
+        )
 
     print(
         f"[ja_ippo_lbf] grid={img_h}x{img_w} feat={feat_h}x{feat_w} "
@@ -196,6 +200,23 @@ def make_train(config, env):
         reps = (num_agents,) + (1,) * (x_env.ndim - 1)
         return jnp.tile(x_env, reps)
 
+    def _augment_obs_with_attn(obs_batch_2d, partner_spatial):
+        """Append upsampled partner attention as a 4th image channel.
+
+        obs_batch_2d:    (num_actors, img_h*img_w*3) flat image obs
+        partner_spatial: (num_actors, feat_h, feat_w) partner's prev attention map
+        Returns flat obs with 4th channel concatenated.
+        """
+        rgb = obs_batch_2d.reshape(num_actors, img_h, img_w, 3)
+        upsampled = jax.image.resize(
+            partner_spatial, (num_actors, img_h, img_w), method="nearest",
+        )
+        # Per-actor max-normalise so the channel sits roughly in [0, 1] alongside RGB.
+        attn_max = jnp.max(upsampled, axis=(-2, -1), keepdims=True)
+        upsampled = upsampled / jnp.maximum(attn_max, 1e-8)
+        augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
+        return augmented.reshape(num_actors, -1)
+
     def init(rng):
         rng, init_rng = jax.random.split(rng)
         policy, init_params = initialize_ja_image_agent(config, env, init_rng)
@@ -211,18 +232,21 @@ def make_train(config, env):
         init_hstate = policy.init_hstate(num_actors)
         init_done = {k: jnp.zeros((num_envs,), dtype=bool) for k in env.agents + ["__all__"]}
 
-        # Partner's previous-step per-fruit attention vector (length N). Used:
-        #   - as soft cross-entropy target for the aux loss
-        #   - appended to each agent's observation so the policy can react to it online
-        #   - its argmax drives r_shape (which fruit the distance-progress reward targets)
-        # Reset to zeros + invalid on episode boundaries.
-        init_partner_attn = jnp.zeros((num_actors, num_fruits), dtype=jnp.float32)
+        # Partner's previous-step spatial attention map. Used:
+        #   - 4th image channel in each agent's obs (decision-time signal)
+        #   - aux loss target via spatial cross-entropy
+        #   - r_shape target fruit via point-gather argmax
+        # Reset to uniform on episode boundaries.
+        init_partner_spatial = (
+            jnp.ones((num_actors, feat_h, feat_w), dtype=jnp.float32)
+            / (feat_h * feat_w)
+        )
         init_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
         init_partner_valid = jnp.zeros((num_actors,), dtype=bool)
 
         runner_state = (
             train_state, env_state, obsv, init_done, init_hstate, _rng,
-            init_partner_attn, init_partner_argmax, init_partner_valid,
+            init_partner_spatial, init_partner_argmax, init_partner_valid,
         )
         return runner_state, policy
 
@@ -231,17 +255,17 @@ def make_train(config, env):
         def step_fn(runner_state, update_steps):
             def _env_step(runner_state, unused):
                 (train_state, env_state, last_obs, last_done, hstate, rng,
-                 prev_partner_attn, prev_partner_argmax, prev_partner_valid) = runner_state
+                 prev_partner_spatial, prev_partner_argmax, prev_partner_valid) = runner_state
 
                 rng, act_rng = jax.random.split(rng)
 
                 last_obs_batch = batchify(last_obs, env.agents, num_actors)
                 last_done_batch = batchify(last_done, env.agents, num_actors)
 
-                # Append partner's previous-step per-fruit attention as scalar suffix.
-                # The policy network was init'd with obs_dim = img_dim + N to accommodate.
-                obs_with_partner = jnp.concatenate(
-                    [last_obs_batch, prev_partner_attn], axis=-1,
+                # Append partner's previous attention as a 4th image channel
+                # (upsampled to image resolution, max-normalised).
+                obs_with_partner = _augment_obs_with_attn(
+                    last_obs_batch, prev_partner_spatial,
                 )
 
                 avail_actions = jax.vmap(env.get_avail_actions)(env_state)
@@ -316,7 +340,7 @@ def make_train(config, env):
                     obs=obs_with_partner,
                     info=jax.tree.map(lambda x: x.reshape((num_actors,)), info),
                     avail_actions=avail_actions_batch,
-                    partner_prev_fruit_attn=prev_partner_attn,
+                    partner_prev_spatial=prev_partner_spatial,
                     partner_prev_argmax=prev_partner_argmax,
                     partner_prev_valid=prev_partner_valid,
                     food_pos=food_pos_actors.astype(jnp.int32),
@@ -324,19 +348,19 @@ def make_train(config, env):
                 )
 
                 # --- Update partner-attention state for next step ---
-                # Partner's full per-fruit attention vector (swap halves);
-                # argmax is the discrete version used for r_shape.
-                new_partner_attn = _swap_partner(per_fruit_norm, num_agents)
+                # Swap own spatial attention map across agent halves so each agent
+                # gets its partner's map. Reset to uniform on done.
+                swapped_spatial = _swap_partner(attn_2d, num_agents)
+                uniform_spatial = jnp.ones((feat_h, feat_w), dtype=jnp.float32) / (feat_h * feat_w)
+                new_partner_spatial = jnp.where(
+                    done_actors[:, None, None], uniform_spatial[None], swapped_spatial,
+                )
                 new_partner_argmax = _swap_partner(own_argmax, num_agents).astype(jnp.int32)
-                # Valid unless this step's done flips the episode (next step is fresh).
-                # On done, also zero the attention vector so the next step's obs feed is clean.
-                done_mask = done_actors[:, None].astype(jnp.float32)
-                new_partner_attn = new_partner_attn * (1.0 - done_mask)
                 new_partner_valid = ~done_actors
 
                 runner_state = (
                     train_state, new_env_state, new_obs, new_done, new_hstate, rng,
-                    new_partner_attn, new_partner_argmax, new_partner_valid,
+                    new_partner_spatial, new_partner_argmax, new_partner_valid,
                 )
                 return runner_state, transition
 
@@ -345,7 +369,7 @@ def make_train(config, env):
             )
 
             (train_state, env_state, last_obs, last_done, hstate, rng,
-             prev_partner_attn, prev_partner_argmax, prev_partner_valid) = runner_state
+             prev_partner_spatial, prev_partner_argmax, prev_partner_valid) = runner_state
 
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
@@ -354,8 +378,8 @@ def make_train(config, env):
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32),
             )
             # Bootstrap value uses the same augmented obs format the rollout/loss use.
-            last_obs_with_partner = jnp.concatenate(
-                [last_obs_batch, prev_partner_attn], axis=-1,
+            last_obs_with_partner = _augment_obs_with_attn(
+                last_obs_batch, prev_partner_spatial,
             )
             last_val = _compute_last_value_ja(
                 policy, train_state.params,
@@ -366,8 +390,6 @@ def make_train(config, env):
             train_state, loss_info, rng = _run_ppo_aux_epochs(
                 config, policy, train_state, traj_batch, advantages, targets,
                 rng, num_actors,
-                tile_size=tile_size, feat_h=feat_h, feat_w=feat_w,
-                img_h=img_h, img_w=img_w, num_fruits=num_fruits,
                 aux_coef=aux_coef, aux_active=aux_active,
             )
 
@@ -388,7 +410,7 @@ def make_train(config, env):
 
             runner_state = (
                 train_state, env_state, last_obs, last_done, hstate, rng,
-                prev_partner_attn, prev_partner_argmax, prev_partner_valid,
+                prev_partner_spatial, prev_partner_argmax, prev_partner_valid,
             )
             return runner_state, update_steps + 1, metric
 
@@ -399,10 +421,9 @@ def make_train(config, env):
 
 def _run_ppo_aux_epochs(
     config, policy, train_state, traj_batch, advantages, targets, rng, num_actors,
-    *, tile_size, feat_h, feat_w, img_h, img_w, num_fruits,
-    aux_coef, aux_active,
+    *, aux_coef, aux_active,
 ):
-    """PPO update with optional aux loss on per-fruit attention."""
+    """PPO update with optional aux loss on spatial partner attention."""
 
     def _update_epoch(update_state, unused):
         def _update_minbatch(train_state, batch_info):
@@ -436,27 +457,19 @@ def _run_ppo_aux_epochs(
                 policy_loss = -jnp.minimum(loss_actor1, loss_actor2).mean()
                 entropy = pi.entropy().mean()
 
-                # --- Aux loss: SOFT cross-entropy against partner's full per-fruit
-                # attention distribution (stop-grad target). Falls back to one-hot
-                # behaviour when partner attention is concentrated on a single fruit.
+                # --- Aux loss: SOFT cross-entropy across the full spatial attention
+                # map between own current attention and partner's prev attention
+                # (stop-grad target). No per-fruit reduction — same shape both sides.
                 if aux_active:
                     # attn_map_apply: (T, actors, fh, fw).
-                    attn_2d = _attention_2d(attn_map_apply)
-                    per_fruit_norm, on_mass = _per_fruit_attn(
-                        attn_2d, traj_batch.food_pos, traj_batch.food_eaten,
-                        tile_size, feat_h, feat_w, img_h, img_w,
-                    )
-
-                    log_probs = jnp.log(per_fruit_norm + 1e-8)        # (T, A, N)
+                    attn_2d = _attention_2d(attn_map_apply)            # (T, A, fh, fw)
+                    log_probs = jnp.log(attn_2d + 1e-8)                # (T, A, fh, fw)
                     target_soft = jax.lax.stop_gradient(
-                        traj_batch.partner_prev_fruit_attn,
-                    )                                                 # (T, A, N)
-                    nll_per_step = -(target_soft * log_probs).sum(axis=-1)  # (T, A)
+                        traj_batch.partner_prev_spatial,
+                    )                                                  # (T, A, fh, fw)
+                    nll_per_step = -(target_soft * log_probs).sum(axis=(-2, -1))  # (T, A)
                     nll_flat = nll_per_step.reshape(-1)
-                    aux_weight = (
-                        traj_batch.partner_prev_valid.reshape(-1).astype(jnp.float32)
-                        * on_mass.reshape(-1)
-                    )
+                    aux_weight = traj_batch.partner_prev_valid.reshape(-1).astype(jnp.float32)
                     aux_weight = jax.lax.stop_gradient(aux_weight)
                     aux_denom = jnp.maximum(aux_weight.sum(), 1e-8)
                     aux_loss = (nll_flat * aux_weight).sum() / aux_denom
