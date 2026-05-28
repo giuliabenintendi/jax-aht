@@ -633,7 +633,15 @@ def run_ja_ippo_lbf(config, logger):
 
     out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
 
-    _log_eval_video(algorithm_config, env, out, logger)
+    try:
+        _log_eval_video(algorithm_config, env, out, logger)
+    except Exception as e:
+        # The eval-video helper reconstructs the policy from the yaml config and
+        # calls run_episode_with_states, which doesn't know about the per-fruit
+        # scalar suffix we append during training. A clean fix requires augmenting
+        # obs at eval too; for now we just log the error so training output is
+        # preserved.
+        print(f"[ja_ippo_lbf] WARN: eval video failed ({e}); continuing.", flush=True)
     report_basic_training_outputs(
         config, out, logger,
         scalar_keys=JA_LBF_SCALAR_KEYS,
