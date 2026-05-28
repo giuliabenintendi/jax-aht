@@ -187,17 +187,23 @@ def make_train(config, env):
     aux_coef = float(config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0))
     r_shape_coef = float(config.get("JA_FRUIT_R_SHAPE_COEF", 0.0))
     aux_active = aux_coef > 0.0
+    # When true, partner's previous per-fruit attention vector (length N,
+    # lex-sorted) is appended to the agent's obs as a scalar suffix. When
+    # false, the agent receives no online partner-attention info; aux loss
+    # can still operate (its target is stored in the trajectory regardless).
+    partner_feed_active = bool(config.get("JA_FRUIT_PARTNER_FEED", True))
 
-    # Partner's previous per-fruit attention vector (length N, lex-sorted) is
-    # appended to the obs as a scalar suffix. Inject the dim through the same
-    # JA_ENTITY_FEED_DIM hook initialize_ja_image_agent reads.
     config = dict(config)
-    config["JA_ENTITY_FEED_DIM"] = num_fruits
+    if partner_feed_active:
+        config["JA_ENTITY_FEED_DIM"] = num_fruits
+    else:
+        config["JA_ENTITY_FEED_DIM"] = 0
 
     print(
         f"[ja_ippo_lbf] grid={img_h}x{img_w} feat={feat_h}x{feat_w} "
         f"N_fruits={num_fruits} tile={tile_size} "
-        f"aux_coef={aux_coef} r_shape_coef={r_shape_coef}",
+        f"aux_coef={aux_coef} r_shape_coef={r_shape_coef} "
+        f"partner_feed={partner_feed_active}",
         flush=True,
     )
 
@@ -213,10 +219,12 @@ def make_train(config, env):
     def _augment_obs_with_partner_attn(obs_batch_2d, partner_fruit_attn):
         """Append partner's per-fruit attention vector (length N) as scalar suffix.
 
-        obs_batch_2d:        (num_actors, img_h*img_w*3) flat image obs
-        partner_fruit_attn:  (num_actors, N) partner per-fruit attention, lex-sorted
-        Returns flat obs with the N scalars concatenated at the end.
+        When JA_FRUIT_PARTNER_FEED is false, returns the obs unchanged so the
+        policy sees only the image (and the policy was initialised with
+        scalar_dim=0, so shapes match).
         """
+        if not partner_feed_active:
+            return obs_batch_2d
         return jnp.concatenate([obs_batch_2d, partner_fruit_attn], axis=-1)
 
     def init(rng):

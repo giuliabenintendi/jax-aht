@@ -41,7 +41,9 @@ CONV_PADDING: SAME
 # suffix appended to the obs (N injected at runtime by ja_ippo_lbf). Fruits
 # are lex-sorted at every step so slot k = k-th fruit in (row, col) order —
 # the agent can identify which fruit each slot refers to from its image obs.
+# Set false for a clean "JA architecture only" baseline (no online partner info).
 FEED_OTHER_ATTN: false
+JA_FRUIT_PARTNER_FEED: true
 
 # JA mechanism. Defaults are all OFF — explicit override required to enable.
 # Out of the box, ja_ippo_lbf with these defaults trains the JA architecture
