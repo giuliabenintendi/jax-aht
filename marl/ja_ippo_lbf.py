@@ -521,7 +521,7 @@ def run_ja_ippo_lbf(config, logger):
         // algorithm_config["NUM_ENVS"]
     )
     num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
-    ckpt_interval = num_updates // max(1, num_ckpts - 1)
+    ckpt_interval = max(1, num_updates // max(1, num_ckpts - 1))
 
     rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
     rngs = jax.random.split(rng, num_seeds)
