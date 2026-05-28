@@ -232,3 +232,32 @@ class TestSaveImageObs:
             fname = f"lbf_image_obs_{agent}.png"
             Image.fromarray(img_large).save(fname)
             print(f"\nSaved {fname} ({img_large.shape[0]}x{img_large.shape[1]})")
+
+
+class TestSaveImageObs10Food:
+    def test_save_image_obs_10food(self):
+        """Save sample LBF image observations for the 10x10 / 10-food config.
+
+        Run with: pytest -s tests/test_lbf_image_wrapper.py::TestSaveImageObs10Food
+        """
+        env = make_env('lbf', env_kwargs={
+            'obs_type': 'image',
+            'grid_size': 10,
+            'num_agents': 2,
+            'num_food': 10,
+            'max_agent_level': 3,
+            'force_coop': True,
+        })
+        obs, _ = env.reset(jax.random.PRNGKey(0))
+
+        h = env.grid_height * TILE_PIXELS
+        w = env.grid_width * TILE_PIXELS
+        scale = 10
+
+        for agent in env.agents:
+            arr = np.array(obs[agent])
+            img = (arr * 255).astype(np.uint8).reshape(h, w, 3)
+            img_large = np.kron(img, np.ones((scale, scale, 1))).astype(np.uint8)
+            fname = f"lbf_image_obs_10food_{agent}.png"
+            Image.fromarray(img_large).save(fname)
+            print(f"\nSaved {fname} ({img_large.shape[0]}x{img_large.shape[1]})")
