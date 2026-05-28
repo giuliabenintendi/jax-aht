@@ -1,0 +1,40 @@
+# @package algorithm
+# JA-IPPO for LBF: per-fruit attention pool + cross-entropy aux loss + distance-progress shaping.
+# Parallel to ja_ippo but without OP and with dynamic fruit masks.
+
+ALG: ja_ippo_lbf
+NUM_CHECKPOINTS: 5
+CHECKPOINT_FREQ_TIMESTEPS: 200000   # mirrors ja_ippo cadence (25 ckpts over 5M steps)
+LIVE_WANDB_LOGGING: true
+ANNEAL_LR: True
+MAX_GRAD_NORM: 0.5
+
+# PPO — matched to image_ippo baseline for apples-to-apples
+LR: 4e-4
+GAMMA: 0.99
+GAE_LAMBDA: 0.8
+VF_COEF: 0.5
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 16
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+
+# JA network (same as ja_ippo image path)
+ACTIVATION: relu
+JA_NUM_HEADS: 4
+JA_HEAD_FEATURES: 16
+JA_SPATIAL_BASIS_DEPTH: 8
+JA_SCALAR_EMBED_DIM: 5
+FC_HIDDEN_DIM: 256
+LSTM_HIDDEN_DIM: 128
+
+# ResNet CNN encoder (matches image_ippo / ja_ippo image)
+CONV_FILTERS: 32
+CONV_NUM_BLOCKS: 4
+CONV_KERNEL_SIZE: 3
+CONV_STRIDE: 2
+CONV_PADDING: SAME
+
+# JA mechanism — START LOW per discussion; raise if signal absent.
+JA_AUX_PARTNER_ARGMAX_COEF: 0.05    # cross-entropy aux loss weight (λ)
+JA_FRUIT_R_SHAPE_COEF: 0.05         # distance-progress shaping coefficient (β₁)
