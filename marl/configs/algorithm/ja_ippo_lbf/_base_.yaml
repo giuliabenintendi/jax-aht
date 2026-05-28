@@ -43,8 +43,11 @@ CONV_PADDING: SAME
 # the agent can identify which fruit each slot refers to from its image obs.
 FEED_OTHER_ATTN: false
 
-# JA mechanism. Default is aux-only (β₁=0) — cleaner test of whether the
-# attention/aux mechanism alone produces signal vs the baseline. Enable
-# r_shape via CLI override (e.g. algorithm.JA_FRUIT_R_SHAPE_COEF=0.05).
-JA_AUX_PARTNER_ARGMAX_COEF: 0.05    # per-fruit soft cross-entropy aux loss weight (λ)
-JA_FRUIT_R_SHAPE_COEF: 0.0          # distance-progress shaping coefficient (β₁); off by default
+# JA mechanism. Defaults are all OFF — explicit override required to enable.
+# Out of the box, ja_ippo_lbf with these defaults trains the JA architecture
+# (spatial attention + LSTM) on plain PPO with the partner-attention scalar
+# suffix in the obs but no JA-specific loss. Enable via CLI:
+#   algorithm.JA_AUX_PARTNER_ARGMAX_COEF=0.05
+#   algorithm.JA_FRUIT_R_SHAPE_COEF=0.05
+JA_AUX_PARTNER_ARGMAX_COEF: 0.0     # per-fruit soft cross-entropy aux loss weight (λ)
+JA_FRUIT_R_SHAPE_COEF: 0.0          # distance-progress shaping coefficient (β₁)
