@@ -652,12 +652,257 @@ def run_ja_ippo_lbf(config, logger):
         # obs at eval too; for now we just log the error so training output is
         # preserved.
         print(f"[ja_ippo_lbf] WARN: eval video failed ({e}); continuing.", flush=True)
+
+    # XP evaluation — only meaningful with multiple seeds.
+    if num_seeds > 1:
+        try:
+            _log_xp_eval(algorithm_config, env, out, logger)
+        except Exception as e:
+            print(f"[ja_ippo_lbf] WARN: XP eval failed ({e}); continuing.", flush=True)
+
     report_basic_training_outputs(
         config, out, logger,
         scalar_keys=JA_LBF_SCALAR_KEYS,
         print_prefix="ja_ippo_lbf",
     )
     return out
+
+
+def _jsd_spatial(p, q):
+    """Per-row Jensen-Shannon divergence between two (..., H, W) attention maps.
+
+    Returns a tensor with shape (...,) — the JSD averaged over spatial cells.
+    Inputs are assumed to be probability distributions (rows summing to 1
+    along (-2, -1)).
+    """
+    p_flat = p.reshape(p.shape[:-2] + (-1,))
+    q_flat = q.reshape(q.shape[:-2] + (-1,))
+    m = 0.5 * (p_flat + q_flat)
+    eps = 1e-12
+
+    def _kl(a, b):
+        return (a * (jnp.log(a + eps) - jnp.log(b + eps))).sum(axis=-1)
+
+    return 0.5 * _kl(p_flat, m) + 0.5 * _kl(q_flat, m)
+
+
+def _log_xp_eval(algorithm_config, env, out, logger):
+    """Greedy cross-play eval between training seeds.
+
+    Builds NxN matrices for:
+      - mean per-pair episode return (the unshaped task reward)
+      - mean per-pair JSD between agent-0 and agent-1 spatial attention maps
+    Aggregates SP (diagonal) and XP (off-diagonal) scalars, plus the full
+    matrices as wandb tables/images.
+
+    Skipped automatically when NUM_SEEDS < 2 (caller already gates this).
+    """
+    import wandb
+
+    stacked_params = out["final_params"]
+    num_seeds = jax.tree.leaves(stacked_params)[0].shape[0]
+
+    inner = env._env if hasattr(env, "_env") else env
+    tile_size = inner.tile_size
+    num_fruits = inner._num_food
+    img_h, img_w, _ = _get_image_dims(env)
+    feat_h, feat_w = _compute_resnet_output_dims(
+        img_h, img_w,
+        stride=algorithm_config.get("CONV_STRIDE", 2),
+        kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
+        padding=algorithm_config.get("CONV_PADDING", "SAME"),
+        num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
+    )
+    partner_feed_active = bool(algorithm_config.get("JA_FRUIT_PARTNER_FEED", True))
+
+    # Inject the entity-feed dim before init so the eval policy's input shape
+    # matches the trained params.
+    cfg = dict(algorithm_config)
+    cfg["JA_ENTITY_FEED_DIM"] = num_fruits if partner_feed_active else 0
+    policy, _ = initialize_ja_image_agent(cfg, env, jax.random.PRNGKey(0))
+
+    # Eval knobs
+    n_envs = int(algorithm_config.get("XP_NUM_ENVS", 16))
+    max_steps = int(algorithm_config.get("ROLLOUT_LENGTH", 128))
+    n_actors = n_envs * 2  # 2 agents
+
+    def _augment(obs_batch_2d, partner_fruit_attn):
+        if not partner_feed_active:
+            return obs_batch_2d
+        return jnp.concatenate([obs_batch_2d, partner_fruit_attn], axis=-1)
+
+    def _eval_pair(rng_pair, params_0, params_1):
+        """Run n_envs episodes for max_steps with agent_0=params_0, agent_1=params_1.
+
+        Returns: (mean_return, mean_jsd) — both scalars.
+        """
+        rng_pair, reset_rng = jax.random.split(rng_pair)
+        reset_rngs = jax.random.split(reset_rng, n_envs)
+        obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rngs)
+        hstate = policy.init_hstate(n_actors)
+        done = {k: jnp.zeros((n_envs,), dtype=bool) for k in env.agents + ["__all__"]}
+        partner_attn = (
+            jnp.ones((n_actors, num_fruits), dtype=jnp.float32) / float(num_fruits)
+        )
+
+        # Accumulators
+        ret_sum = jnp.zeros((n_actors,), dtype=jnp.float32)
+        ret_count = jnp.zeros((n_actors,), dtype=jnp.float32)
+        jsd_sum = jnp.zeros((), dtype=jnp.float32)
+        jsd_count = jnp.zeros((), dtype=jnp.float32)
+
+        def _xp_step(carry, _):
+            (env_state, last_obs, last_done, hstate, partner_attn, rng,
+             ret_sum, ret_count, jsd_sum, jsd_count) = carry
+
+            rng, act_rng = jax.random.split(rng)
+
+            obs_batch = batchify(last_obs, env.agents, n_actors)
+            done_batch = batchify(last_done, env.agents, n_actors)
+            obs_aug = _augment(obs_batch, partner_attn)
+
+            avail = jax.vmap(env.get_avail_actions)(env_state)
+            avail_batch = batchify(avail, env.agents, n_actors).astype(jnp.float32)
+
+            # Split per agent
+            obs0 = obs_aug[:n_envs].reshape(1, n_envs, -1)
+            obs1 = obs_aug[n_envs:].reshape(1, n_envs, -1)
+            done0 = done_batch[:n_envs].reshape(1, n_envs)
+            done1 = done_batch[n_envs:].reshape(1, n_envs)
+            avail0 = avail_batch[:n_envs].reshape(1, n_envs, -1)
+            avail1 = avail_batch[n_envs:].reshape(1, n_envs, -1)
+            hs0 = hstate[:, :n_envs]
+            hs1 = hstate[:, n_envs:]
+
+            act0, hs0_new, attn0 = policy.get_action_and_attention(
+                params=params_0, obs=obs0, done=done0,
+                avail_actions=avail0, hstate=hs0, rng=act_rng, greedy=True,
+            )
+            act1, hs1_new, attn1 = policy.get_action_and_attention(
+                params=params_1, obs=obs1, done=done1,
+                avail_actions=avail1, hstate=hs1, rng=act_rng, greedy=True,
+            )
+
+            new_hstate = jnp.concatenate([hs0_new, hs1_new], axis=1)
+
+            # Pool per-fruit attention for next step's partner-feed
+            attn2d_0 = _attention_2d(attn0).squeeze(0)      # (n_envs, fh, fw)
+            attn2d_1 = _attention_2d(attn1).squeeze(0)
+            attn_all = jnp.concatenate([attn2d_0, attn2d_1], axis=0)  # (n_actors, fh, fw)
+
+            food_pos_env_raw, food_eaten_env_raw = _food_state_from_log_state(env_state)
+            food_pos_env, food_eaten_env = _lex_sort_food(
+                food_pos_env_raw, food_eaten_env_raw,
+            )
+            reps = (2,) + (1,) * (food_pos_env.ndim - 1)
+            food_pos_actors = jnp.tile(food_pos_env, reps)
+            food_eaten_actors = jnp.tile(food_eaten_env, (2,) + (1,) * (food_eaten_env.ndim - 1))
+
+            per_fruit, _ = _per_fruit_attn(
+                attn_all, food_pos_actors, food_eaten_actors,
+                tile_size, feat_h, feat_w, img_h, img_w,
+            )
+
+            # Step env
+            actions = jnp.concatenate([act0.squeeze(0), act1.squeeze(0)], axis=0)
+            env_act = unbatchify(actions, env.agents, n_envs, env.num_agents)
+            env_act = {k: v.flatten() for k, v in env_act.items()}
+            rng, _rng = jax.random.split(rng)
+            rng_step = jax.random.split(_rng, n_envs)
+            new_obs, new_env_state, reward, new_done, info = jax.vmap(
+                env.step, in_axes=(0, 0, 0),
+            )(rng_step, env_state, env_act)
+
+            # Update partner per-fruit for next step (swap, reset on done)
+            done_actors = batchify(new_done, env.agents, n_actors).squeeze().astype(bool)
+            new_partner_attn = _swap_partner(per_fruit, env.num_agents)
+            uniform_fruit = jnp.ones((num_fruits,), dtype=jnp.float32) / float(num_fruits)
+            new_partner_attn = jnp.where(
+                done_actors[:, None], uniform_fruit[None], new_partner_attn,
+            )
+
+            # Accumulate episode return at episode end. LogWrapper exposes
+            # returned_episode (bool) and returned_episode_returns (float) as
+            # (num_envs, num_agents) arrays. Convert to actor order
+            # [agent_0_envs..., agent_1_envs...] via swap+reshape.
+            returned_arr = info["returned_episode"].astype(jnp.float32)        # (num_envs, num_agents)
+            ep_returns_arr = info["returned_episode_returns"].astype(jnp.float32)
+            returned_actors = jnp.swapaxes(returned_arr, 0, 1).reshape(n_actors)
+            ep_ret_actors = jnp.swapaxes(ep_returns_arr, 0, 1).reshape(n_actors)
+            ret_sum = ret_sum + ep_ret_actors * returned_actors
+            ret_count = ret_count + returned_actors
+
+            # JSD between agent-0 and agent-1 attention this step.
+            jsd_step = _jsd_spatial(attn2d_0, attn2d_1)  # (n_envs,)
+            jsd_sum = jsd_sum + jsd_step.sum()
+            jsd_count = jsd_count + jnp.float32(n_envs)
+
+            new_carry = (
+                new_env_state, new_obs, new_done, new_hstate, new_partner_attn, rng,
+                ret_sum, ret_count, jsd_sum, jsd_count,
+            )
+            return new_carry, None
+
+        carry = (
+            env_state, obsv, done, hstate, partner_attn, rng_pair,
+            ret_sum, ret_count, jsd_sum, jsd_count,
+        )
+        (carry_final, _) = jax.lax.scan(_xp_step, carry, None, length=max_steps)
+        (_, _, _, _, _, _, ret_sum_f, ret_count_f, jsd_sum_f, jsd_count_f) = carry_final
+
+        mean_return = ret_sum_f.sum() / jnp.maximum(ret_count_f.sum(), 1.0)
+        mean_jsd = jsd_sum_f / jnp.maximum(jsd_count_f, 1.0)
+        return mean_return, mean_jsd
+
+    eval_pair_jit = jax.jit(_eval_pair)
+
+    print(f"[ja_ippo_lbf] XP eval: {num_seeds}x{num_seeds} pairs, {n_envs} envs each", flush=True)
+    ret_matrix = np.zeros((num_seeds, num_seeds), dtype=np.float32)
+    jsd_matrix = np.zeros((num_seeds, num_seeds), dtype=np.float32)
+
+    seed_params = [jax.tree.map(lambda x: x[i], stacked_params) for i in range(num_seeds)]
+    for i in range(num_seeds):
+        for j in range(num_seeds):
+            mean_ret, mean_jsd = eval_pair_jit(
+                jax.random.PRNGKey(1000 * (i + 1) + (j + 1)),
+                seed_params[i], seed_params[j],
+            )
+            ret_matrix[i, j] = float(mean_ret)
+            jsd_matrix[i, j] = float(mean_jsd)
+            tag = "SP" if i == j else "XP"
+            print(f"  [{tag}] {i}x{j}: return={ret_matrix[i,j]:.4f} jsd={jsd_matrix[i,j]:.4f}", flush=True)
+
+    sp_returns = np.diag(ret_matrix)
+    xp_mask = ~np.eye(num_seeds, dtype=bool)
+    xp_returns = ret_matrix[xp_mask]
+    sp_jsd = np.diag(jsd_matrix)
+    xp_jsd = jsd_matrix[xp_mask]
+
+    summary = {
+        "XP/return/sp_mean": float(sp_returns.mean()),
+        "XP/return/xp_mean": float(xp_returns.mean()),
+        "XP/return/sp_minus_xp": float(sp_returns.mean() - xp_returns.mean()),
+        "XP/jsd/sp_mean": float(sp_jsd.mean()),
+        "XP/jsd/xp_mean": float(xp_jsd.mean()),
+    }
+    print(f"[ja_ippo_lbf] XP summary: {summary}", flush=True)
+
+    # wandb logging — scalars + matrices as tables
+    run = getattr(logger, "run", None)
+    if run is not None:
+        log_data = dict(summary)
+        # Matrices as tables (easy to view in W&B UI as heatmaps)
+        ret_table = wandb.Table(
+            columns=["seed_i"] + [f"seed_{j}" for j in range(num_seeds)],
+            data=[[i] + ret_matrix[i].tolist() for i in range(num_seeds)],
+        )
+        jsd_table = wandb.Table(
+            columns=["seed_i"] + [f"seed_{j}" for j in range(num_seeds)],
+            data=[[i] + jsd_matrix[i].tolist() for i in range(num_seeds)],
+        )
+        log_data["XP/return_matrix"] = ret_table
+        log_data["XP/jsd_matrix"] = jsd_table
+        run.log(log_data)
 
 
 def _log_eval_video(algorithm_config, env, out, logger):
