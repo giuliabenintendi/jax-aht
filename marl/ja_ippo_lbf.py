@@ -40,8 +40,6 @@ from marl.ppo_utils import _create_minibatches, batchify, unbatchify
 JA_LBF_SCALAR_KEYS = list(IMAGE_IPPO_SCALAR_KEYS) + [
     ("aux_loss", "Losses"),
     ("reward_shaped_mean", "JA"),
-    ("on_fruit_mass_mean", "JA"),
-    ("argmax_agreement_rate", "JA"),
 ]
 
 
@@ -60,9 +58,6 @@ class TransitionJA(NamedTuple):
     partner_prev_valid: jnp.ndarray     # (num_actors,) bool — mask aux on invalid steps
     food_pos: jnp.ndarray               # (num_actors, N, 2) int — LEX SORTED, tiled per actor
     food_eaten: jnp.ndarray             # (num_actors, N) bool — LEX SORTED, tiled per actor
-    # Diagnostics
-    own_argmax: jnp.ndarray             # (num_actors,) int32 — agent's argmax fruit slot this step
-    on_fruit_mass: jnp.ndarray          # (num_actors,) float — total agent attention mass on fruits
 
 
 def _per_fruit_attn(
@@ -302,7 +297,7 @@ def make_train(config, env):
                 food_pos_actors = _tile_to_actors(food_pos_env)         # (num_actors, N, 2)
                 food_eaten_actors = _tile_to_actors(food_eaten_env)     # (num_actors, N)
 
-                per_fruit_norm, own_on_mass = _per_fruit_attn(
+                per_fruit_norm, _on_mass = _per_fruit_attn(
                     attn_2d, food_pos_actors, food_eaten_actors,
                     tile_size, feat_h, feat_w, img_h, img_w,
                 )
@@ -352,8 +347,6 @@ def make_train(config, env):
                     partner_prev_valid=prev_partner_valid,
                     food_pos=food_pos_actors.astype(jnp.int32),
                     food_eaten=food_eaten_actors,
-                    own_argmax=own_argmax,
-                    on_fruit_mass=own_on_mass,
                 )
 
                 # --- Update partner-attention state for next step ---
@@ -418,21 +411,6 @@ def make_train(config, env):
             # under "returned_episode_returns" (LogWrapper). Shaped-reward mean
             # is a coarse proxy for r_shape magnitude this rollout.
             metric["reward_shaped_mean"] = traj_batch.reward.mean()
-
-            # --- JA diagnostics ---
-            # on_fruit_mass averaged over (T, num_actors): how much attention mass
-            # lands on fruit cells. If this stays near 0 the agent isn't looking
-            # at fruits at all.
-            metric["on_fruit_mass_mean"] = traj_batch.on_fruit_mass.mean()
-            # argmax agreement: fraction of *valid* steps where own argmax this
-            # step equals partner argmax last step. Core "joint attention" signal.
-            valid_mask = traj_batch.partner_prev_valid.astype(jnp.float32)
-            agreement = (
-                traj_batch.own_argmax == traj_batch.partner_prev_argmax
-            ).astype(jnp.float32)
-            metric["argmax_agreement_rate"] = (agreement * valid_mask).sum() / jnp.maximum(
-                valid_mask.sum(), 1.0,
-            )
 
             runner_state = (
                 train_state, env_state, last_obs, last_done, hstate, rng,
