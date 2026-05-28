@@ -35,13 +35,14 @@ CONV_KERNEL_SIZE: 3
 CONV_STRIDE: 2
 CONV_PADDING: SAME
 
-# Partner's previous spatial attention map is concatenated to the agent's
-# image obs as a 4th channel (upsampled, max-normalised). Must stay true
-# for ja_ippo_lbf — the policy is initialised with num_channels=4.
-FEED_OTHER_ATTN: true
+# Partner's previous per-fruit attention is fed online as a length-N scalar
+# suffix appended to the obs (N injected at runtime by ja_ippo_lbf). Fruits
+# are lex-sorted at every step so slot k = k-th fruit in (row, col) order —
+# the agent can identify which fruit each slot refers to from its image obs.
+FEED_OTHER_ATTN: false
 
 # JA mechanism. Default is aux-only (β₁=0) — cleaner test of whether the
 # attention/aux mechanism alone produces signal vs the baseline. Enable
 # r_shape via CLI override (e.g. algorithm.JA_FRUIT_R_SHAPE_COEF=0.05).
-JA_AUX_PARTNER_ARGMAX_COEF: 0.05    # spatial cross-entropy aux loss weight (λ)
+JA_AUX_PARTNER_ARGMAX_COEF: 0.05    # per-fruit soft cross-entropy aux loss weight (λ)
 JA_FRUIT_R_SHAPE_COEF: 0.0          # distance-progress shaping coefficient (β₁); off by default

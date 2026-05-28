@@ -52,12 +52,12 @@ class TransitionJA(NamedTuple):
     obs: jnp.ndarray
     info: jnp.ndarray
     avail_actions: jnp.ndarray
-    # JA-specific fields, all per-actor
-    partner_prev_spatial: jnp.ndarray   # (num_actors, feat_h, feat_w) float — full partner attention map at t-1
-    partner_prev_argmax: jnp.ndarray    # (num_actors,) int32 — argmax fruit, drives r_shape
+    # JA-specific fields, all per-actor. Fruit slot ordering is lex by (row, col).
+    partner_prev_fruit_attn: jnp.ndarray  # (num_actors, N) float — per-fruit attention at t-1; aux target + obs feed
+    partner_prev_argmax: jnp.ndarray    # (num_actors,) int32 — argmax fruit slot, drives r_shape
     partner_prev_valid: jnp.ndarray     # (num_actors,) bool — mask aux on invalid steps
-    food_pos: jnp.ndarray               # (num_actors, N, 2) int — tiled per actor
-    food_eaten: jnp.ndarray             # (num_actors, N) bool — tiled per actor
+    food_pos: jnp.ndarray               # (num_actors, N, 2) int — LEX SORTED, tiled per actor
+    food_eaten: jnp.ndarray             # (num_actors, N) bool — LEX SORTED, tiled per actor
 
 
 def _per_fruit_attn(
@@ -98,6 +98,19 @@ def _per_fruit_attn(
     on_mass = per_fruit.sum(axis=-1)
     per_fruit_norm = per_fruit / (on_mass[..., None] + 1e-8)
     return per_fruit_norm, on_mass
+
+
+def _lex_sort_food(food_pos, food_eaten):
+    """Sort fruits by lex (row, col) so slot k = k-th fruit in reading order.
+
+    food_pos: (num_envs, N, 2); food_eaten: (num_envs, N).
+    Returns the same shapes, reordered per env.
+    """
+    def _single(pos, eaten):
+        # lexsort orders by the LAST key as primary -> row primary, col secondary.
+        idx = jnp.lexsort((pos[:, 1], pos[:, 0]))
+        return pos[idx], eaten[idx]
+    return jax.vmap(_single)(food_pos, food_eaten)
 
 
 def _attention_2d(attn_map):
@@ -175,14 +188,11 @@ def make_train(config, env):
     r_shape_coef = float(config.get("JA_FRUIT_R_SHAPE_COEF", 0.0))
     aux_active = aux_coef > 0.0
 
-    # Partner's previous-step spatial attention map is fed online as a 4th image
-    # channel. The flag must be set in the algorithm yaml (FEED_OTHER_ATTN: true)
-    # so both training and eval initialize the policy with num_channels=4.
-    if not config.get("FEED_OTHER_ATTN", False):
-        raise ValueError(
-            "ja_ippo_lbf requires FEED_OTHER_ATTN=true in the algorithm config "
-            "so the policy is initialized with a 4-channel image input."
-        )
+    # Partner's previous per-fruit attention vector (length N, lex-sorted) is
+    # appended to the obs as a scalar suffix. Inject the dim through the same
+    # JA_ENTITY_FEED_DIM hook initialize_ja_image_agent reads.
+    config = dict(config)
+    config["JA_ENTITY_FEED_DIM"] = num_fruits
 
     print(
         f"[ja_ippo_lbf] grid={img_h}x{img_w} feat={feat_h}x{feat_w} "
@@ -200,22 +210,14 @@ def make_train(config, env):
         reps = (num_agents,) + (1,) * (x_env.ndim - 1)
         return jnp.tile(x_env, reps)
 
-    def _augment_obs_with_attn(obs_batch_2d, partner_spatial):
-        """Append upsampled partner attention as a 4th image channel.
+    def _augment_obs_with_partner_attn(obs_batch_2d, partner_fruit_attn):
+        """Append partner's per-fruit attention vector (length N) as scalar suffix.
 
-        obs_batch_2d:    (num_actors, img_h*img_w*3) flat image obs
-        partner_spatial: (num_actors, feat_h, feat_w) partner's prev attention map
-        Returns flat obs with 4th channel concatenated.
+        obs_batch_2d:        (num_actors, img_h*img_w*3) flat image obs
+        partner_fruit_attn:  (num_actors, N) partner per-fruit attention, lex-sorted
+        Returns flat obs with the N scalars concatenated at the end.
         """
-        rgb = obs_batch_2d.reshape(num_actors, img_h, img_w, 3)
-        upsampled = jax.image.resize(
-            partner_spatial, (num_actors, img_h, img_w), method="nearest",
-        )
-        # Per-actor max-normalise so the channel sits roughly in [0, 1] alongside RGB.
-        attn_max = jnp.max(upsampled, axis=(-2, -1), keepdims=True)
-        upsampled = upsampled / jnp.maximum(attn_max, 1e-8)
-        augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
-        return augmented.reshape(num_actors, -1)
+        return jnp.concatenate([obs_batch_2d, partner_fruit_attn], axis=-1)
 
     def init(rng):
         rng, init_rng = jax.random.split(rng)
@@ -232,21 +234,18 @@ def make_train(config, env):
         init_hstate = policy.init_hstate(num_actors)
         init_done = {k: jnp.zeros((num_envs,), dtype=bool) for k in env.agents + ["__all__"]}
 
-        # Partner's previous-step spatial attention map. Used:
-        #   - 4th image channel in each agent's obs (decision-time signal)
-        #   - aux loss target via spatial cross-entropy
-        #   - r_shape target fruit via point-gather argmax
-        # Reset to uniform on episode boundaries.
-        init_partner_spatial = (
-            jnp.ones((num_actors, feat_h, feat_w), dtype=jnp.float32)
-            / (feat_h * feat_w)
+        # Partner's previous-step per-fruit attention vector (length N, lex-sorted).
+        # Used as: scalar suffix to obs (online), soft CE aux target, and r_shape
+        # argmax target. Reset to uniform on episode boundaries.
+        init_partner_fruit_attn = (
+            jnp.ones((num_actors, num_fruits), dtype=jnp.float32) / float(num_fruits)
         )
         init_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
         init_partner_valid = jnp.zeros((num_actors,), dtype=bool)
 
         runner_state = (
             train_state, env_state, obsv, init_done, init_hstate, _rng,
-            init_partner_spatial, init_partner_argmax, init_partner_valid,
+            init_partner_fruit_attn, init_partner_argmax, init_partner_valid,
         )
         return runner_state, policy
 
@@ -255,17 +254,17 @@ def make_train(config, env):
         def step_fn(runner_state, update_steps):
             def _env_step(runner_state, unused):
                 (train_state, env_state, last_obs, last_done, hstate, rng,
-                 prev_partner_spatial, prev_partner_argmax, prev_partner_valid) = runner_state
+                 prev_partner_fruit_attn, prev_partner_argmax, prev_partner_valid) = runner_state
 
                 rng, act_rng = jax.random.split(rng)
 
                 last_obs_batch = batchify(last_obs, env.agents, num_actors)
                 last_done_batch = batchify(last_done, env.agents, num_actors)
 
-                # Append partner's previous attention as a 4th image channel
-                # (upsampled to image resolution, max-normalised).
-                obs_with_partner = _augment_obs_with_attn(
-                    last_obs_batch, prev_partner_spatial,
+                # Append partner's previous per-fruit attention (lex-sorted N values)
+                # as a scalar suffix to the flat obs.
+                obs_with_partner = _augment_obs_with_partner_attn(
+                    last_obs_batch, prev_partner_fruit_attn,
                 )
 
                 avail_actions = jax.vmap(env.get_avail_actions)(env_state)
@@ -290,8 +289,11 @@ def make_train(config, env):
                 # attn_map: (1, actors, fh, fw).
                 attn_2d = _attention_2d(attn_map).squeeze(0)
 
-                # Pre-step food state (LBF state shared by both agents in each env)
-                food_pos_env, food_eaten_env = _food_state_from_log_state(env_state)
+                # Pre-step food state (LBF state shared by both agents in each env).
+                # Lex-sort fruits so slot k is always the k-th fruit in (row, col)
+                # reading order. Agent can identify each slot's fruit from its image.
+                food_pos_env_raw, food_eaten_env_raw = _food_state_from_log_state(env_state)
+                food_pos_env, food_eaten_env = _lex_sort_food(food_pos_env_raw, food_eaten_env_raw)
                 food_pos_actors = _tile_to_actors(food_pos_env)         # (num_actors, N, 2)
                 food_eaten_actors = _tile_to_actors(food_eaten_env)     # (num_actors, N)
 
@@ -340,7 +342,7 @@ def make_train(config, env):
                     obs=obs_with_partner,
                     info=jax.tree.map(lambda x: x.reshape((num_actors,)), info),
                     avail_actions=avail_actions_batch,
-                    partner_prev_spatial=prev_partner_spatial,
+                    partner_prev_fruit_attn=prev_partner_fruit_attn,
                     partner_prev_argmax=prev_partner_argmax,
                     partner_prev_valid=prev_partner_valid,
                     food_pos=food_pos_actors.astype(jnp.int32),
@@ -348,19 +350,19 @@ def make_train(config, env):
                 )
 
                 # --- Update partner-attention state for next step ---
-                # Swap own spatial attention map across agent halves so each agent
-                # gets its partner's map. Reset to uniform on done.
-                swapped_spatial = _swap_partner(attn_2d, num_agents)
-                uniform_spatial = jnp.ones((feat_h, feat_w), dtype=jnp.float32) / (feat_h * feat_w)
-                new_partner_spatial = jnp.where(
-                    done_actors[:, None, None], uniform_spatial[None], swapped_spatial,
+                # Swap own per-fruit vector across agent halves so each agent gets
+                # its partner's per-fruit attention. Reset to uniform on done.
+                swapped_fruit_attn = _swap_partner(per_fruit_norm, num_agents)
+                uniform_fruit = jnp.ones((num_fruits,), dtype=jnp.float32) / float(num_fruits)
+                new_partner_fruit_attn = jnp.where(
+                    done_actors[:, None], uniform_fruit[None], swapped_fruit_attn,
                 )
                 new_partner_argmax = _swap_partner(own_argmax, num_agents).astype(jnp.int32)
                 new_partner_valid = ~done_actors
 
                 runner_state = (
                     train_state, new_env_state, new_obs, new_done, new_hstate, rng,
-                    new_partner_spatial, new_partner_argmax, new_partner_valid,
+                    new_partner_fruit_attn, new_partner_argmax, new_partner_valid,
                 )
                 return runner_state, transition
 
@@ -369,7 +371,7 @@ def make_train(config, env):
             )
 
             (train_state, env_state, last_obs, last_done, hstate, rng,
-             prev_partner_spatial, prev_partner_argmax, prev_partner_valid) = runner_state
+             prev_partner_fruit_attn, prev_partner_argmax, prev_partner_valid) = runner_state
 
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
@@ -378,8 +380,8 @@ def make_train(config, env):
                 batchify(last_avail, env.agents, num_actors).astype(jnp.float32),
             )
             # Bootstrap value uses the same augmented obs format the rollout/loss use.
-            last_obs_with_partner = _augment_obs_with_attn(
-                last_obs_batch, prev_partner_spatial,
+            last_obs_with_partner = _augment_obs_with_partner_attn(
+                last_obs_batch, prev_partner_fruit_attn,
             )
             last_val = _compute_last_value_ja(
                 policy, train_state.params,
@@ -412,7 +414,7 @@ def make_train(config, env):
 
             runner_state = (
                 train_state, env_state, last_obs, last_done, hstate, rng,
-                prev_partner_spatial, prev_partner_argmax, prev_partner_valid,
+                prev_partner_fruit_attn, prev_partner_argmax, prev_partner_valid,
             )
             return runner_state, update_steps + 1, metric
 
@@ -428,11 +430,11 @@ def _run_ppo_aux_epochs(
 ):
     """PPO update with optional per-fruit soft cross-entropy aux loss.
 
-    Aux compares per-fruit attention distributions (point-gathered from spatial
-    attention maps for both agent and partner). The gradient back into the conv
-    layers is thin — only the N fruit cells contribute — which keeps cuDNN happy
-    at large NUM_ENVS. Partner's spatial map is still fed online as the 4th obs
-    channel via FEED_OTHER_ATTN.
+    Aux: soft cross-entropy between agent's per-fruit attention (point-gathered
+    from its spatial attention at each lex-sorted fruit's centre cell) and
+    partner's per-fruit attention (stored directly in the trajectory). Gradient
+    on agent's attention flows through only N fruit cells — keeps cuDNN happy
+    at large NUM_ENVS. Partner's per-fruit vector is fed online as scalar suffix.
     """
 
     def _update_epoch(update_state, unused):
@@ -468,23 +470,19 @@ def _run_ppo_aux_epochs(
                 entropy = pi.entropy().mean()
 
                 # --- Aux loss: per-fruit SOFT cross-entropy ---
-                # Point-gather both agent's and partner's spatial attention to
-                # per-fruit distributions (length N) at each fruit's centre cell,
-                # then soft CE: -sum_k partner[k] * log(agent[k]).
-                # Gradient on attn_2d flows only through the N fruit cells, not all
-                # feat_h*feat_w — keeps the conv backward light.
+                # Agent's per-fruit attention via point-gather of its spatial
+                # attention at each (lex-sorted) fruit's centre cell. Partner's
+                # per-fruit attention vector is already stored in the trajectory.
+                # Gradient on agent's attn_2d flows only through N fruit cells.
                 if aux_active:
                     attn_2d = _attention_2d(attn_map_apply)            # (T, A, fh, fw)
                     agent_per_fruit, agent_on_mass = _per_fruit_attn(
                         attn_2d, traj_batch.food_pos, traj_batch.food_eaten,
                         tile_size, feat_h, feat_w, img_h, img_w,
                     )                                                  # (T, A, N), (T, A)
-                    partner_per_fruit, _ = _per_fruit_attn(
-                        traj_batch.partner_prev_spatial,
-                        traj_batch.food_pos, traj_batch.food_eaten,
-                        tile_size, feat_h, feat_w, img_h, img_w,
+                    target_soft = jax.lax.stop_gradient(
+                        traj_batch.partner_prev_fruit_attn,
                     )                                                  # (T, A, N)
-                    target_soft = jax.lax.stop_gradient(partner_per_fruit)
 
                     log_probs = jnp.log(agent_per_fruit + 1e-8)        # (T, A, N)
                     nll_per_step = -(target_soft * log_probs).sum(axis=-1)  # (T, A)
