@@ -15,7 +15,9 @@ GAMMA: 0.99
 GAE_LAMBDA: 0.8
 VF_COEF: 0.5
 UPDATE_EPOCHS: 4
-NUM_MINIBATCHES: 16
+# Aux attention backprop is memory/workspace-sensitive on image LBF at
+# NUM_ENVS=128. Keep PPO minibatches smaller by default.
+NUM_MINIBATCHES: 32
 CLIP_EPS: 0.2
 ENT_COEF: 0.01
 
