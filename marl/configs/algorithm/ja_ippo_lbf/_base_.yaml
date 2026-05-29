@@ -50,6 +50,6 @@ JA_FRUIT_PARTNER_FEED: true
 # (spatial attention + LSTM) on plain PPO with the partner-attention scalar
 # suffix in the obs but no JA-specific loss. Enable via CLI:
 #   algorithm.JA_AUX_PARTNER_ARGMAX_COEF=0.05
-#   algorithm.JA_FRUIT_R_SHAPE_COEF=0.05
+#   algorithm.JA_FRUIT_R_SELF_COEF=0.05
 JA_AUX_PARTNER_ARGMAX_COEF: 0.0     # per-fruit soft cross-entropy aux loss weight (λ)
-JA_FRUIT_R_SHAPE_COEF: 0.0          # distance-progress shaping coefficient (β₁)
+JA_FRUIT_R_SELF_COEF: 0.0           # progress toward own argmax fruit (β_self)

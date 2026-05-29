@@ -1,13 +1,11 @@
 """JA-IPPO for LBF.
 
-Per-fruit attention pooling, cross-entropy aux loss against partner's
-previous-step argmax fruit, distance-progress shaping toward partner-attended
-fruit. Fresh implementation for LBF specifically; parallel to ja_ippo.py
-(which serves the OP-corrected card-game JA path). No Other-Play. Dynamic
-fruit masks computed each step from current uneaten-fruit positions.
-
-v1 ships: aux loss + r_shape. r_self, partner-attn-in-obs, soft target, and
-eaten-fruit aux masking edge cases are deferred to v2.
+Per-fruit attention pooling with a soft cross-entropy aux loss against the
+partner's per-fruit attention, plus a distance-progress shaping term toward
+the agent's own argmax fruit (r_self; card-game r_attn_self analog). Parallel
+to ja_ippo.py (the OP-corrected card-game JA path). No Other-Play. Fruits are
+lex-sorted each step; positions are fixed per episode so slot k is a stable
+fruit identity.
 """
 from __future__ import annotations
 
@@ -17,11 +15,18 @@ from typing import NamedTuple
 import hydra
 import jax
 import jax.numpy as jnp
-import numpy as np
 from flax.training.train_state import TrainState
 
-from agents.initialize_agents import _get_image_dims, initialize_ja_image_agent
-from agents.ja_actor_critic import _compute_resnet_output_dims
+from agents.initialize_agents import initialize_ja_image_agent
+from agents.lbf.ja_lbf_attention import (
+    agent_positions_from_log_state,
+    as_spatial_attention,
+    food_state_from_log_state,
+    lbf_attention_ctx,
+    lex_sort_food,
+    per_fruit_attn,
+    swap_partner,
+)
 from common.train_logging import (
     IMAGE_IPPO_SCALAR_KEYS,
     log_live_chunk_metrics,
@@ -35,12 +40,17 @@ from marl.ippo_core import (
     configure_training_dims,
     make_optimizer,
 )
+from marl.ja_ppo_core import (
+    compute_last_value_ja,
+    global_grad_norm,
+    ppo_actor_critic_losses,
+)
 from marl.ppo_utils import _create_minibatches, batchify, unbatchify
 
 
 JA_LBF_SCALAR_KEYS = list(IMAGE_IPPO_SCALAR_KEYS) + [
     ("aux_partner_argmax_loss", "Losses"),
-    ("r_shape_mean", "JA"),
+    ("r_self_mean", "JA"),
 ]
 
 
@@ -48,117 +58,17 @@ class TransitionJA(NamedTuple):
     done: jnp.ndarray
     action: jnp.ndarray
     value: jnp.ndarray
-    reward: jnp.ndarray  # = env reward + r_shape_coef * r_shape
+    reward: jnp.ndarray  # = env reward + r_self_coef*r_self
     log_prob: jnp.ndarray
     obs: jnp.ndarray
     info: jnp.ndarray
     avail_actions: jnp.ndarray
     # JA-specific fields, all per-actor. Fruit slot ordering is lex by (row, col).
     partner_prev_fruit_attn: jnp.ndarray  # (num_actors, N) float — per-fruit attention at t-1; aux target + obs feed
-    partner_prev_argmax: jnp.ndarray    # (num_actors,) int32 — argmax fruit slot, drives r_shape
     partner_prev_valid: jnp.ndarray     # (num_actors,) bool — mask aux on invalid steps
     food_pos: jnp.ndarray               # (num_actors, N, 2) int — LEX SORTED, tiled per actor
-    r_shape: jnp.ndarray                # (num_actors,) float — unscaled shaping bonus, for logging
+    r_self: jnp.ndarray                 # (num_actors,) float — unscaled self shaping bonus, for logging
     food_eaten: jnp.ndarray             # (num_actors, N) bool — LEX SORTED, tiled per actor
-
-
-def _per_fruit_attn(
-    attn_2d, food_pos, food_eaten,
-    tile_size, feat_h, feat_w, img_h, img_w,
-):
-    """Point-gather attention at each fruit's centre feature cell.
-
-    Map each fruit's tile centre pixel to a single (fr, fc) feature cell and
-    take attn_2d at that cell. Eaten fruits get zero. Renormalise over
-    on-fruit mass.
-
-    Avoids materialising the (..., N, feat_h, feat_w) dense mask tensor used
-    in earlier versions — both the memory and the 5-D einsum that XLA was
-    routing into a cuDNN kernel that failed at larger batch sizes.
-
-    attn_2d:    (..., feat_h, feat_w)        spatial attention
-    food_pos:   (..., N, 2)  int             grid positions of each fruit
-    food_eaten: (..., N)     bool
-
-    Returns:
-        per_fruit_norm: (..., N) — distribution over fruits given on-mass
-        on_mass:        (...,)   — total attention mass that landed on fruits
-    """
-    centre_r = food_pos[..., 0] * tile_size + tile_size // 2  # (..., N)
-    centre_c = food_pos[..., 1] * tile_size + tile_size // 2
-    fr = jnp.clip(centre_r * feat_h // img_h, 0, feat_h - 1).astype(jnp.int32)
-    fc = jnp.clip(centre_c * feat_w // img_w, 0, feat_w - 1).astype(jnp.int32)
-
-    # Flatten spatial dims and gather. attn_2d shape (..., feat_h, feat_w)
-    # → (..., feat_h*feat_w). Same leading dims as flat_idx so take_along_axis works.
-    attn_flat = attn_2d.reshape(*attn_2d.shape[:-2], feat_h * feat_w)
-    flat_idx = fr * feat_w + fc                                 # (..., N)
-    per_fruit = jnp.take_along_axis(attn_flat, flat_idx, axis=-1)
-
-    alive = 1.0 - food_eaten.astype(jnp.float32)
-    per_fruit = per_fruit * alive
-    on_mass = per_fruit.sum(axis=-1)
-    per_fruit_norm = per_fruit / (on_mass[..., None] + 1e-8)
-    return per_fruit_norm, on_mass
-
-
-def _lex_sort_food(food_pos, food_eaten):
-    """Sort fruits by lex (row, col) so slot k = k-th fruit in reading order.
-
-    food_pos: (num_envs, N, 2); food_eaten: (num_envs, N).
-    Returns the same shapes, reordered per env.
-    """
-    def _single(pos, eaten):
-        # lexsort orders by the LAST key as primary -> row primary, col secondary.
-        idx = jnp.lexsort((pos[:, 1], pos[:, 0]))
-        return pos[idx], eaten[idx]
-    return jax.vmap(_single)(food_pos, food_eaten)
-
-
-def _attention_2d(attn_map):
-    """Return spatial attention with shape (..., feat_h, feat_w)."""
-    if attn_map.ndim == 4:
-        return attn_map
-    raise ValueError(f"Unexpected attention map rank: {attn_map.ndim}")
-
-
-def _swap_partner(x, num_agents):
-    """Swap the agent block in an actor-ordered tensor.
-
-    Actor order: [agent_0 envs, agent_1 envs, ...]. For 2 agents, this swaps
-    halves so position i is now occupied by the partner's value.
-    """
-    if num_agents != 2:
-        raise NotImplementedError("ja_ippo_lbf assumes 2 agents (parameter-shared).")
-    half = x.shape[0] // 2
-    return jnp.concatenate([x[half:], x[:half]], axis=0)
-
-
-def _compute_last_value_ja(policy, params, last_obs_batch, last_done_batch, last_avail_batch, hstate, num_actors):
-    """JA-aware variant of compute_last_value: unpacks the 5-tuple from get_action_value_policy."""
-    _, last_val, _, _, _ = policy.get_action_value_policy(
-        params=params,
-        obs=last_obs_batch.reshape(1, num_actors, -1),
-        done=last_done_batch.reshape(1, num_actors),
-        avail_actions=last_avail_batch.reshape(1, num_actors, -1),
-        hstate=hstate,
-        rng=jax.random.PRNGKey(0),
-    )
-    return last_val.squeeze()
-
-
-def _agent_positions_from_log_state(log_state):
-    """Extract (num_envs, num_agents, 2) agent positions from LogWrapper-wrapped state."""
-    return log_state.env_state.env_state.agents.position
-
-
-def _food_state_from_log_state(log_state):
-    """Extract (food_pos, food_eaten) from LogWrapper-wrapped state.
-
-    food_pos: (num_envs, N, 2); food_eaten: (num_envs, N).
-    """
-    food = log_state.env_state.env_state.food_items
-    return food.position, food.eaten
 
 
 def make_train(config, env):
@@ -174,20 +84,14 @@ def make_train(config, env):
         )
 
     # Image / feature-map geometry
-    img_h, img_w, _ = _get_image_dims(env)
-    feat_h, feat_w = _compute_resnet_output_dims(
-        img_h, img_w,
-        stride=config.get("CONV_STRIDE", 2),
-        kernel_size=config.get("CONV_KERNEL_SIZE", 3),
-        padding=config.get("CONV_PADDING", "SAME"),
-        num_blocks=config.get("CONV_NUM_BLOCKS", 4),
-    )
-    inner = env._env if hasattr(env, "_env") else env
-    tile_size = inner.tile_size
-    num_fruits = inner._num_food
+    ctx = lbf_attention_ctx(config, env)
+    img_h, img_w = ctx["img_h"], ctx["img_w"]
+    feat_h, feat_w = ctx["feat_h"], ctx["feat_w"]
+    tile_size = ctx["tile_size"]
+    num_fruits = ctx["num_fruits"]
 
     aux_coef = float(config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0))
-    r_shape_coef = float(config.get("JA_FRUIT_R_SHAPE_COEF", 0.0))
+    r_self_coef = float(config.get("JA_FRUIT_R_SELF_COEF", 0.0))
     aux_active = aux_coef > 0.0
     # When true, partner's previous per-fruit attention vector (length N,
     # lex-sorted) is appended to the agent's obs as a scalar suffix. When
@@ -204,7 +108,7 @@ def make_train(config, env):
     print(
         f"[ja_ippo_lbf] grid={img_h}x{img_w} feat={feat_h}x{feat_w} "
         f"N_fruits={num_fruits} tile={tile_size} "
-        f"aux_coef={aux_coef} r_shape_coef={r_shape_coef} "
+        f"aux_coef={aux_coef} r_self_coef={r_self_coef} "
         f"partner_feed={partner_feed_active}",
         flush=True,
     )
@@ -245,17 +149,16 @@ def make_train(config, env):
         init_done = {k: jnp.zeros((num_envs,), dtype=bool) for k in env.agents + ["__all__"]}
 
         # Partner's previous-step per-fruit attention vector (length N, lex-sorted).
-        # Used as: scalar suffix to obs (online), soft CE aux target, and r_shape
-        # argmax target. Reset to uniform on episode boundaries.
+        # Used as scalar suffix to obs (online) and soft CE aux target. Reset to
+        # uniform on episode boundaries.
         init_partner_fruit_attn = (
             jnp.ones((num_actors, num_fruits), dtype=jnp.float32) / float(num_fruits)
         )
-        init_partner_argmax = jnp.zeros((num_actors,), dtype=jnp.int32)
         init_partner_valid = jnp.zeros((num_actors,), dtype=bool)
 
         runner_state = (
             train_state, env_state, obsv, init_done, init_hstate, _rng,
-            init_partner_fruit_attn, init_partner_argmax, init_partner_valid,
+            init_partner_fruit_attn, init_partner_valid,
         )
         return runner_state, policy
 
@@ -264,7 +167,7 @@ def make_train(config, env):
         def step_fn(runner_state, update_steps):
             def _env_step(runner_state, unused):
                 (train_state, env_state, last_obs, last_done, hstate, rng,
-                 prev_partner_fruit_attn, prev_partner_argmax, prev_partner_valid) = runner_state
+                 prev_partner_fruit_attn, prev_partner_valid) = runner_state
 
                 rng, act_rng = jax.random.split(rng)
 
@@ -297,17 +200,17 @@ def make_train(config, env):
 
                 # --- Per-fruit attention from current step ---
                 # attn_map: (1, actors, fh, fw).
-                attn_2d = _attention_2d(attn_map).squeeze(0)
+                attn_2d = as_spatial_attention(attn_map).squeeze(0)
 
                 # Pre-step food state (LBF state shared by both agents in each env).
                 # Lex-sort fruits so slot k is always the k-th fruit in (row, col)
                 # reading order. Agent can identify each slot's fruit from its image.
-                food_pos_env_raw, food_eaten_env_raw = _food_state_from_log_state(env_state)
-                food_pos_env, food_eaten_env = _lex_sort_food(food_pos_env_raw, food_eaten_env_raw)
+                food_pos_env_raw, food_eaten_env_raw = food_state_from_log_state(env_state)
+                food_pos_env, food_eaten_env = lex_sort_food(food_pos_env_raw, food_eaten_env_raw)
                 food_pos_actors = _tile_to_actors(food_pos_env)         # (num_actors, N, 2)
                 food_eaten_actors = _tile_to_actors(food_eaten_env)     # (num_actors, N)
 
-                per_fruit_norm, _on_mass = _per_fruit_attn(
+                per_fruit_norm, _on_mass = per_fruit_attn(
                     attn_2d, food_pos_actors, food_eaten_actors,
                     tile_size, feat_h, feat_w, img_h, img_w,
                 )
@@ -315,7 +218,7 @@ def make_train(config, env):
 
                 # --- Pre-step positions (per actor) ---
                 # pos_env shape: (num_envs, num_agents, 2) -> swapaxes -> (num_agents, num_envs, 2) -> (num_actors, 2)
-                pos_pre = _agent_positions_from_log_state(env_state)
+                pos_pre = agent_positions_from_log_state(env_state)
                 pos_pre_actors = jnp.swapaxes(pos_pre, 0, 1).reshape(num_actors, 2)
 
                 # --- Step env ---
@@ -327,32 +230,29 @@ def make_train(config, env):
                     env.step, in_axes=(0, 0, 0),
                 )(rng_step, env_state, env_act)
 
-                # --- Distance progress toward partner's previous-argmax fruit ---
-                pos_post = _agent_positions_from_log_state(new_env_state)
+                pos_post = agent_positions_from_log_state(new_env_state)
                 pos_post_actors = jnp.swapaxes(pos_post, 0, 1).reshape(num_actors, 2)
+                done_actors = batchify(new_done, env.agents, num_actors).squeeze().astype(bool)
 
                 actor_idx = jnp.arange(num_actors)
-                target_fruit_pos = food_pos_actors[actor_idx, prev_partner_argmax]  # (num_actors, 2)
 
-                d_pre = jnp.sum(jnp.abs(pos_pre_actors - target_fruit_pos), axis=-1).astype(jnp.float32)
-                d_post = jnp.sum(jnp.abs(pos_post_actors - target_fruit_pos), axis=-1).astype(jnp.float32)
-                # Confidence-weighted one-sided shaping. Mirrors card-game
-                # r_gaze_pick: bonus scales with partner's peak mass at its
-                # argmax fruit, so a flat partner distribution gives ~0.
-                prev_partner_peak_mass = prev_partner_fruit_attn[
-                    actor_idx, prev_partner_argmax
-                ]  # (num_actors,)
-                r_shape = jnp.where(
-                    prev_partner_valid,
-                    prev_partner_peak_mass
-                    * jnp.maximum(d_pre - d_post, 0.0),
+                # --- Distance progress toward the agent's OWN current-argmax fruit ---
+                # Confidence-weighted one-sided shaping (card-game r_attn_self
+                # analog): bonus = own peak mass x max(0, d_pre - d_post). Zeroed
+                # on the terminal transition, where the env auto-resets and
+                # pos_post belongs to a fresh episode.
+                own_target_pos = food_pos_actors[actor_idx, own_argmax]  # (num_actors, 2)
+                d_pre_self = jnp.sum(jnp.abs(pos_pre_actors - own_target_pos), axis=-1).astype(jnp.float32)
+                d_post_self = jnp.sum(jnp.abs(pos_post_actors - own_target_pos), axis=-1).astype(jnp.float32)
+                own_peak_mass = per_fruit_norm[actor_idx, own_argmax]  # (num_actors,)
+                r_self = jnp.where(
+                    ~done_actors,
+                    own_peak_mass * jnp.maximum(d_pre_self - d_post_self, 0.0),
                     0.0,
                 )
 
                 env_reward = batchify(reward, env.agents, num_actors).squeeze()
-                shaped_reward = env_reward + r_shape_coef * r_shape
-
-                done_actors = batchify(new_done, env.agents, num_actors).squeeze().astype(bool)
+                shaped_reward = env_reward + r_self_coef * r_self
 
                 transition = TransitionJA(
                     done=done_actors,
@@ -364,27 +264,25 @@ def make_train(config, env):
                     info=jax.tree.map(lambda x: x.reshape((num_actors,)), info),
                     avail_actions=avail_actions_batch,
                     partner_prev_fruit_attn=prev_partner_fruit_attn,
-                    partner_prev_argmax=prev_partner_argmax,
                     partner_prev_valid=prev_partner_valid,
                     food_pos=food_pos_actors.astype(jnp.int32),
                     food_eaten=food_eaten_actors,
-                    r_shape=r_shape,
+                    r_self=r_self,
                 )
 
                 # --- Update partner-attention state for next step ---
                 # Swap own per-fruit vector across agent halves so each agent gets
                 # its partner's per-fruit attention. Reset to uniform on done.
-                swapped_fruit_attn = _swap_partner(per_fruit_norm, num_agents)
+                swapped_fruit_attn = swap_partner(per_fruit_norm, num_agents)
                 uniform_fruit = jnp.ones((num_fruits,), dtype=jnp.float32) / float(num_fruits)
                 new_partner_fruit_attn = jnp.where(
                     done_actors[:, None], uniform_fruit[None], swapped_fruit_attn,
                 )
-                new_partner_argmax = _swap_partner(own_argmax, num_agents).astype(jnp.int32)
                 new_partner_valid = ~done_actors
 
                 runner_state = (
                     train_state, new_env_state, new_obs, new_done, new_hstate, rng,
-                    new_partner_fruit_attn, new_partner_argmax, new_partner_valid,
+                    new_partner_fruit_attn, new_partner_valid,
                 )
                 return runner_state, transition
 
@@ -393,7 +291,7 @@ def make_train(config, env):
             )
 
             (train_state, env_state, last_obs, last_done, hstate, rng,
-             prev_partner_fruit_attn, prev_partner_argmax, prev_partner_valid) = runner_state
+             prev_partner_fruit_attn, prev_partner_valid) = runner_state
 
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
@@ -405,7 +303,7 @@ def make_train(config, env):
             last_obs_with_partner = _augment_obs_with_partner_attn(
                 last_obs_batch, prev_partner_fruit_attn,
             )
-            last_val = _compute_last_value_ja(
+            last_val = compute_last_value_ja(
                 policy, train_state.params,
                 last_obs_with_partner, last_done_batch, last_avail_batch, hstate, num_actors,
             )
@@ -431,11 +329,11 @@ def make_train(config, env):
             # Use the canonical key name so log_live_chunk_metrics picks it up
             # (JA_LIVE_SCALAR_KEYS in common/train_logging.py expects this exact name).
             metric["aux_partner_argmax_loss"] = loss_info.aux_loss.mean()
-            metric["r_shape_mean"] = traj_batch.r_shape.mean()
+            metric["r_self_mean"] = traj_batch.r_self.mean()
 
             runner_state = (
                 train_state, env_state, last_obs, last_done, hstate, rng,
-                prev_partner_fruit_attn, prev_partner_argmax, prev_partner_valid,
+                prev_partner_fruit_attn, prev_partner_valid,
             )
             return runner_state, update_steps + 1, metric
 
@@ -473,31 +371,14 @@ def _run_ppo_aux_epochs(
                     params, hidden, inputs_apply,
                 )
 
-                log_prob = pi.log_prob(traj_batch.action)
-                value_pred_clipped = traj_batch.value + (
-                    value - traj_batch.value
-                ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
-                value_losses = jnp.square(value - targets)
-                value_losses_clipped = jnp.square(value_pred_clipped - targets)
-                value_loss = jnp.maximum(value_losses, value_losses_clipped).mean()
-
-                ratio = jnp.exp(log_prob - traj_batch.log_prob)
-                gae_norm = (gae - gae.mean()) / (gae.std() + 1e-8)
-                loss_actor1 = ratio * gae_norm
-                loss_actor2 = jnp.clip(
-                    ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"],
-                ) * gae_norm
-                policy_loss = -jnp.minimum(loss_actor1, loss_actor2).mean()
-                entropy = pi.entropy().mean()
-
                 # --- Aux loss: per-fruit SOFT cross-entropy ---
                 # Agent's per-fruit attention via point-gather of its spatial
                 # attention at each (lex-sorted) fruit's centre cell. Partner's
                 # per-fruit attention vector is already stored in the trajectory.
                 # Gradient on agent's attn_2d flows only through N fruit cells.
                 if aux_active:
-                    attn_2d = _attention_2d(attn_map_apply)            # (T, A, fh, fw)
-                    agent_per_fruit, _agent_on_mass = _per_fruit_attn(
+                    attn_2d = as_spatial_attention(attn_map_apply)     # (T, A, fh, fw)
+                    agent_per_fruit, _agent_on_mass = per_fruit_attn(
                         attn_2d, traj_batch.food_pos, traj_batch.food_eaten,
                         tile_size, feat_h, feat_w, img_h, img_w,
                     )                                                  # (T, A, N)
@@ -522,19 +403,27 @@ def _run_ppo_aux_epochs(
                 else:
                     aux_loss = jnp.float32(0.0)
 
+                terms = ppo_actor_critic_losses(
+                    pi, value,
+                    actions=traj_batch.action,
+                    value_old=traj_batch.value,
+                    log_prob_old=traj_batch.log_prob,
+                    gae=gae, targets=targets,
+                    clip_eps=config["CLIP_EPS"],
+                )
                 total_loss = (
-                    policy_loss
-                    + config["VF_COEF"] * value_loss
-                    - config["ENT_COEF"] * entropy
+                    terms.policy_loss
+                    + config["VF_COEF"] * terms.value_loss
+                    - config["ENT_COEF"] * terms.entropy
                     + aux_coef * aux_loss
                 )
-                return total_loss, (value_loss, policy_loss, entropy, aux_loss)
+                return total_loss, (terms.value_loss, terms.policy_loss, terms.entropy, aux_loss)
 
             grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
             (total_loss, (value_loss, policy_loss, entropy, aux_loss)), grads = grad_fn(
                 train_state.params, traj_batch, advantages, targets,
             )
-            grad_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads)))
+            grad_norm = global_grad_norm(grads)
             train_state = train_state.apply_gradients(grads=grads)
             stats = _PPOAuxStats(
                 total_loss=total_loss,
@@ -661,17 +550,32 @@ def run_ja_ippo_lbf(config, logger):
     try:
         _log_eval_video(algorithm_config, env, out, logger)
     except Exception as e:
-        # The eval-video helper reconstructs the policy from the yaml config and
-        # calls run_episode_with_states, which doesn't know about the per-fruit
-        # scalar suffix we append during training. A clean fix requires augmenting
-        # obs at eval too; for now we just log the error so training output is
-        # preserved.
+        # Safety net: a rendering/moviepy failure should not discard the trained
+        # params and metrics. The per-fruit obs suffix is handled via lbf_ctx in
+        # _log_eval_video.
         print(f"[ja_ippo_lbf] WARN: eval video failed ({e}); continuing.", flush=True)
 
-    # XP evaluation — only meaningful with multiple seeds.
+    # XP evaluation — only meaningful with multiple seeds. run_xp_from_params
+    # runs in-memory from the just-trained params (no checkpoint reload),
+    # NUM_EVAL_EPISODES episodes per pair, with the disjoint-pairing SEM. The
+    # eval policy is rebuilt from the config; initialize_ja_image_agent
+    # auto-resolves JA_ENTITY_FEED_DIM from the env when partner-feed is on.
     if num_seeds > 1:
         try:
-            _log_xp_eval(algorithm_config, env, out, logger)
+            from evaluation.run_xp_seeds import run_xp_from_params
+
+            xp_policy, _ = initialize_ja_image_agent(
+                algorithm_config, env, jax.random.PRNGKey(0),
+            )
+            savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+            run_xp_from_params(
+                env, xp_policy, out["final_params"], algorithm_config,
+                savedir=savedir,
+                task_name=algorithm_config.get("ENV_NAME"),
+                wb_run=getattr(logger, "run", None),
+                greedy_eval=True,
+                wb_prefix="XP",
+            )
         except Exception as e:
             print(f"[ja_ippo_lbf] WARN: XP eval failed ({e}); continuing.", flush=True)
 
@@ -681,288 +585,6 @@ def run_ja_ippo_lbf(config, logger):
         print_prefix="ja_ippo_lbf",
     )
     return out
-
-
-def _jsd_spatial(p, q):
-    """Per-row Jensen-Shannon divergence between two (..., H, W) attention maps.
-
-    Returns a tensor with shape (...,) — the JSD averaged over spatial cells.
-    Inputs are assumed to be probability distributions (rows summing to 1
-    along (-2, -1)).
-    """
-    p_flat = p.reshape(p.shape[:-2] + (-1,))
-    q_flat = q.reshape(q.shape[:-2] + (-1,))
-    m = 0.5 * (p_flat + q_flat)
-    eps = 1e-12
-
-    def _kl(a, b):
-        return (a * (jnp.log(a + eps) - jnp.log(b + eps))).sum(axis=-1)
-
-    return 0.5 * _kl(p_flat, m) + 0.5 * _kl(q_flat, m)
-
-
-def _log_xp_eval(algorithm_config, env, out, logger, savedir: str | None = None):
-    """Greedy cross-play eval between training seeds.
-
-    Builds NxN matrices for:
-      - mean per-pair episode return (the unshaped task reward)
-      - mean per-pair JSD between agent-0 and agent-1 spatial attention maps
-    Aggregates SP (diagonal) and XP (off-diagonal) scalars, plus the full
-    matrices as wandb tables/images.
-
-    Skipped automatically when NUM_SEEDS < 2 (caller already gates this).
-    """
-    import wandb
-
-    stacked_params = out["final_params"]
-    num_seeds = jax.tree.leaves(stacked_params)[0].shape[0]
-
-    inner = env._env if hasattr(env, "_env") else env
-    tile_size = inner.tile_size
-    num_fruits = inner._num_food
-    img_h, img_w, _ = _get_image_dims(env)
-    feat_h, feat_w = _compute_resnet_output_dims(
-        img_h, img_w,
-        stride=algorithm_config.get("CONV_STRIDE", 2),
-        kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
-        padding=algorithm_config.get("CONV_PADDING", "SAME"),
-        num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
-    )
-    partner_feed_active = bool(algorithm_config.get("JA_FRUIT_PARTNER_FEED", True))
-
-    # Inject the entity-feed dim before init so the eval policy's input shape
-    # matches the trained params.
-    cfg = dict(algorithm_config)
-    cfg["JA_ENTITY_FEED_DIM"] = num_fruits if partner_feed_active else 0
-    policy, _ = initialize_ja_image_agent(cfg, env, jax.random.PRNGKey(0))
-
-    # Eval knobs
-    n_envs = int(algorithm_config.get("XP_NUM_ENVS", 64))
-    max_steps = int(algorithm_config.get("ROLLOUT_LENGTH", 128))
-    n_actors = n_envs * 2  # 2 agents
-
-    def _augment(obs_batch_2d, partner_fruit_attn):
-        if not partner_feed_active:
-            return obs_batch_2d
-        return jnp.concatenate([obs_batch_2d, partner_fruit_attn], axis=-1)
-
-    def _eval_pair(rng_pair, params_0, params_1):
-        """Run n_envs parallel rollouts of max_steps with agent_0=params_0,
-        agent_1=params_1.
-
-        Returns: (per_env_return, per_env_jsd) — each (n_envs,). The per-env
-        return is the mean of completed-episode returns in that env (averaged
-        across the two agents); per-env JSD is the mean per-step JSD over
-        max_steps. Caller computes the matrix cell mean/std across these
-        n_envs samples.
-        """
-        rng_pair, reset_rng = jax.random.split(rng_pair)
-        reset_rngs = jax.random.split(reset_rng, n_envs)
-        obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rngs)
-        hstate = policy.init_hstate(n_actors)
-        done = {k: jnp.zeros((n_envs,), dtype=bool) for k in env.agents + ["__all__"]}
-        partner_attn = (
-            jnp.ones((n_actors, num_fruits), dtype=jnp.float32) / float(num_fruits)
-        )
-
-        # Per-actor accumulators (we average over the 2 actors per env at the end).
-        ret_sum = jnp.zeros((n_actors,), dtype=jnp.float32)
-        ret_count = jnp.zeros((n_actors,), dtype=jnp.float32)
-        # Per-env JSD accumulator (one sample per env per step).
-        jsd_sum = jnp.zeros((n_envs,), dtype=jnp.float32)
-        jsd_count = jnp.zeros((), dtype=jnp.float32)
-
-        def _xp_step(carry, _):
-            (env_state, last_obs, last_done, hstate, partner_attn, rng,
-             ret_sum, ret_count, jsd_sum, jsd_count) = carry
-
-            rng, act_rng = jax.random.split(rng)
-
-            obs_batch = batchify(last_obs, env.agents, n_actors)
-            done_batch = batchify(last_done, env.agents, n_actors)
-            obs_aug = _augment(obs_batch, partner_attn)
-
-            avail = jax.vmap(env.get_avail_actions)(env_state)
-            avail_batch = batchify(avail, env.agents, n_actors).astype(jnp.float32)
-
-            # Split per agent
-            obs0 = obs_aug[:n_envs].reshape(1, n_envs, -1)
-            obs1 = obs_aug[n_envs:].reshape(1, n_envs, -1)
-            done0 = done_batch[:n_envs].reshape(1, n_envs)
-            done1 = done_batch[n_envs:].reshape(1, n_envs)
-            avail0 = avail_batch[:n_envs].reshape(1, n_envs, -1)
-            avail1 = avail_batch[n_envs:].reshape(1, n_envs, -1)
-            hs0 = hstate[:, :n_envs]
-            hs1 = hstate[:, n_envs:]
-
-            act0, hs0_new, attn0 = policy.get_action_and_attention(
-                params=params_0, obs=obs0, done=done0,
-                avail_actions=avail0, hstate=hs0, rng=act_rng, greedy=True,
-            )
-            act1, hs1_new, attn1 = policy.get_action_and_attention(
-                params=params_1, obs=obs1, done=done1,
-                avail_actions=avail1, hstate=hs1, rng=act_rng, greedy=True,
-            )
-
-            new_hstate = jnp.concatenate([hs0_new, hs1_new], axis=1)
-
-            # Pool per-fruit attention for next step's partner-feed
-            attn2d_0 = _attention_2d(attn0).squeeze(0)      # (n_envs, fh, fw)
-            attn2d_1 = _attention_2d(attn1).squeeze(0)
-            attn_all = jnp.concatenate([attn2d_0, attn2d_1], axis=0)  # (n_actors, fh, fw)
-
-            food_pos_env_raw, food_eaten_env_raw = _food_state_from_log_state(env_state)
-            food_pos_env, food_eaten_env = _lex_sort_food(
-                food_pos_env_raw, food_eaten_env_raw,
-            )
-            reps = (2,) + (1,) * (food_pos_env.ndim - 1)
-            food_pos_actors = jnp.tile(food_pos_env, reps)
-            food_eaten_actors = jnp.tile(food_eaten_env, (2,) + (1,) * (food_eaten_env.ndim - 1))
-
-            per_fruit, _ = _per_fruit_attn(
-                attn_all, food_pos_actors, food_eaten_actors,
-                tile_size, feat_h, feat_w, img_h, img_w,
-            )
-
-            # Step env
-            actions = jnp.concatenate([act0.squeeze(0), act1.squeeze(0)], axis=0)
-            env_act = unbatchify(actions, env.agents, n_envs, env.num_agents)
-            env_act = {k: v.flatten() for k, v in env_act.items()}
-            rng, _rng = jax.random.split(rng)
-            rng_step = jax.random.split(_rng, n_envs)
-            new_obs, new_env_state, reward, new_done, info = jax.vmap(
-                env.step, in_axes=(0, 0, 0),
-            )(rng_step, env_state, env_act)
-
-            # Update partner per-fruit for next step (swap, reset on done)
-            done_actors = batchify(new_done, env.agents, n_actors).squeeze().astype(bool)
-            new_partner_attn = _swap_partner(per_fruit, env.num_agents)
-            uniform_fruit = jnp.ones((num_fruits,), dtype=jnp.float32) / float(num_fruits)
-            new_partner_attn = jnp.where(
-                done_actors[:, None], uniform_fruit[None], new_partner_attn,
-            )
-
-            # Accumulate episode return at episode end. LogWrapper exposes
-            # returned_episode (bool) and returned_episode_returns (float) as
-            # (num_envs, num_agents) arrays. Convert to actor order
-            # [agent_0_envs..., agent_1_envs...] via swap+reshape.
-            returned_arr = info["returned_episode"].astype(jnp.float32)        # (num_envs, num_agents)
-            ep_returns_arr = info["returned_episode_returns"].astype(jnp.float32)
-            returned_actors = jnp.swapaxes(returned_arr, 0, 1).reshape(n_actors)
-            ep_ret_actors = jnp.swapaxes(ep_returns_arr, 0, 1).reshape(n_actors)
-            ret_sum = ret_sum + ep_ret_actors * returned_actors
-            ret_count = ret_count + returned_actors
-
-            # Per-env JSD between agent-0 and agent-1 attention this step.
-            jsd_step = _jsd_spatial(attn2d_0, attn2d_1)  # (n_envs,)
-            jsd_sum = jsd_sum + jsd_step
-            jsd_count = jsd_count + jnp.float32(1.0)
-
-            new_carry = (
-                new_env_state, new_obs, new_done, new_hstate, new_partner_attn, rng,
-                ret_sum, ret_count, jsd_sum, jsd_count,
-            )
-            return new_carry, None
-
-        carry = (
-            env_state, obsv, done, hstate, partner_attn, rng_pair,
-            ret_sum, ret_count, jsd_sum, jsd_count,
-        )
-        (carry_final, _) = jax.lax.scan(_xp_step, carry, None, length=max_steps)
-        (_, _, _, _, _, _, ret_sum_f, ret_count_f, jsd_sum_f, jsd_count_f) = carry_final
-
-        # Per-env mean return: sum across the env's 2 actors / total completed-episode count.
-        ret_sum_env = ret_sum_f.reshape(2, n_envs).sum(axis=0)        # (n_envs,)
-        ret_count_env = ret_count_f.reshape(2, n_envs).sum(axis=0)    # (n_envs,)
-        per_env_return = ret_sum_env / jnp.maximum(ret_count_env, 1.0)
-        per_env_jsd = jsd_sum_f / jnp.maximum(jsd_count_f, 1.0)
-        return per_env_return, per_env_jsd
-
-    eval_pair_jit = jax.jit(_eval_pair)
-
-    print(
-        f"[ja_ippo_lbf] XP eval: {num_seeds}x{num_seeds} pairs, {n_envs} envs each "
-        f"(per-cell stats over {n_envs} samples)",
-        flush=True,
-    )
-    ret_matrix_mean = np.zeros((num_seeds, num_seeds), dtype=np.float32)
-    ret_matrix_std = np.zeros((num_seeds, num_seeds), dtype=np.float32)
-    jsd_matrix_mean = np.zeros((num_seeds, num_seeds), dtype=np.float32)
-    jsd_matrix_std = np.zeros((num_seeds, num_seeds), dtype=np.float32)
-
-    seed_params = [jax.tree.map(lambda x: x[i], stacked_params) for i in range(num_seeds)]
-    for i in range(num_seeds):
-        for j in range(num_seeds):
-            per_env_ret, per_env_jsd = eval_pair_jit(
-                jax.random.PRNGKey(1000 * (i + 1) + (j + 1)),
-                seed_params[i], seed_params[j],
-            )
-            ret_arr = np.array(per_env_ret)
-            jsd_arr = np.array(per_env_jsd)
-            ret_matrix_mean[i, j] = ret_arr.mean()
-            ret_matrix_std[i, j] = ret_arr.std()
-            jsd_matrix_mean[i, j] = jsd_arr.mean()
-            jsd_matrix_std[i, j] = jsd_arr.std()
-            tag = "SP" if i == j else "XP"
-            print(
-                f"  [{tag}] {i}x{j}: return={ret_matrix_mean[i,j]:.4f}±{ret_matrix_std[i,j]:.4f} "
-                f"jsd={jsd_matrix_mean[i,j]:.4f}±{jsd_matrix_std[i,j]:.4f}",
-                flush=True,
-            )
-
-    ret_matrix = ret_matrix_mean
-    jsd_matrix = jsd_matrix_mean
-
-    sp_returns = np.diag(ret_matrix)
-    xp_mask = ~np.eye(num_seeds, dtype=bool)
-    xp_returns = ret_matrix[xp_mask]
-    sp_jsd = np.diag(jsd_matrix)
-    xp_jsd = jsd_matrix[xp_mask]
-
-    summary = {
-        "XP/return/sp_mean": float(sp_returns.mean()),
-        "XP/return/xp_mean": float(xp_returns.mean()),
-        "XP/return/sp_minus_xp": float(sp_returns.mean() - xp_returns.mean()),
-        "XP/jsd/sp_mean": float(sp_jsd.mean()),
-        "XP/jsd/xp_mean": float(xp_jsd.mean()),
-    }
-    print(f"[ja_ippo_lbf] XP summary: {summary}", flush=True)
-
-    # Save PNG heatmaps + CSVs under xp_results/ and log the PNGs as
-    # wandb.Image (matches the generic XP convention in run_xp_seeds).
-    from evaluation.run_xp_seeds import save_xp_csv, save_xp_heatmap
-
-    if savedir is None:
-        savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    xp_dir = os.path.join(savedir, "xp_results")
-    os.makedirs(xp_dir, exist_ok=True)
-
-    layout = algorithm_config.get("ENV_KWARGS", {}).get("layout", algorithm_config.get("ENV_NAME", ""))
-    total = algorithm_config.get("TOTAL_TIMESTEPS")
-    label_bits = [str(layout)]
-    if total:
-        total_f = float(total)
-        label_bits.append(f"{total_f/1e6:.0f}M" if total_f >= 1e6 else f"{total_f:.0f}")
-    run_label = " / ".join(label_bits)
-
-    ret_png = os.path.join(xp_dir, "xp_score_matrix.png")
-    jsd_png = os.path.join(xp_dir, "xp_jsd_matrix.png")
-    save_xp_heatmap(ret_matrix_mean, ret_matrix_std,
-                     f"XP Episode Return — {run_label}", ret_png)
-    save_xp_heatmap(jsd_matrix_mean, jsd_matrix_std,
-                     f"XP JSD — {run_label}", jsd_png,
-                     fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
-    save_xp_csv(ret_matrix_mean, ret_matrix_std,
-                 os.path.join(xp_dir, "xp_score_matrix.csv"), label="episode_return")
-    save_xp_csv(jsd_matrix_mean, jsd_matrix_std,
-                 os.path.join(xp_dir, "xp_jsd_matrix.csv"), label="jsd")
-
-    run = getattr(logger, "run", None)
-    if run is not None:
-        run.log({
-            "XP/score_matrix": wandb.Image(ret_png),
-            "XP/jsd_matrix": wandb.Image(jsd_png),
-        })
 
 
 def _log_eval_video(algorithm_config, env, out, logger):
@@ -979,20 +601,7 @@ def _log_eval_video(algorithm_config, env, out, logger):
     # so the eval rollout sees the same obs the trained policy expects.
     lbf_ctx = None
     if bool(algorithm_config.get("JA_FRUIT_PARTNER_FEED", True)):
-        img_h, img_w, _ = _get_image_dims(env)
-        feat_h, feat_w = _compute_resnet_output_dims(
-            img_h, img_w,
-            stride=algorithm_config.get("CONV_STRIDE", 2),
-            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
-            padding=algorithm_config.get("CONV_PADDING", "SAME"),
-            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
-        )
-        lbf_ctx = {
-            "num_fruits": int(inner_env._num_food),
-            "tile_size": int(inner_env.tile_size),
-            "feat_h": feat_h, "feat_w": feat_w,
-            "img_h": img_h, "img_w": img_w,
-        }
+        lbf_ctx = lbf_attention_ctx(algorithm_config, env)
 
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
     ep_states, attn_data, _ep_actions, _ep_messages = run_episode_with_states(

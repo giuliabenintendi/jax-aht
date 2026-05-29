@@ -27,7 +27,6 @@ JA_LIVE_SCALAR_KEYS = [
     ("ja_attn_self_mean", "JA/action_matches_own_attn"),
     ("ja_gaze_pick_mean", "JA/action_matches_prev_partner_attn"),
     ("aux_partner_argmax_loss", "JA/aux_partner_argmax_nll"),
-    ("r_shape_mean", "JA/r_shape"),
     ("r_self_mean", "JA/r_self"),
     ("loss_total", "Loss/total"),
     ("loss_value", "Loss/value"),
