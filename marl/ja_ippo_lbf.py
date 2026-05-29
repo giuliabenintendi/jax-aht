@@ -947,31 +947,59 @@ def _log_xp_eval(algorithm_config, env, out, logger, savedir: str | None = None)
 
 
 def _log_eval_video(algorithm_config, env, out, logger):
-    """Run one eval episode with final params (seed 0), log video to wandb."""
-    from evaluation.vis_episodes import run_episode_with_states
+    """Run one eval episode with final params (seed 0), log base + per-agent
+    attention-overlay videos to wandb."""
+    from evaluation.vis_episodes import make_attention_video, run_episode_with_states
 
     rng = jax.random.PRNGKey(0)
     policy, _ = initialize_ja_image_agent(algorithm_config, env, rng)
     final_params = jax.tree.map(lambda x: x[0], out["final_params"])
     inner_env = env._env
 
+    # Build lbf_ctx mirroring the training-time per-fruit partner-feed wiring,
+    # so the eval rollout sees the same obs the trained policy expects.
+    lbf_ctx = None
+    if bool(algorithm_config.get("JA_FRUIT_PARTNER_FEED", True)):
+        img_h, img_w, _ = _get_image_dims(env)
+        feat_h, feat_w = _compute_resnet_output_dims(
+            img_h, img_w,
+            stride=algorithm_config.get("CONV_STRIDE", 2),
+            kernel_size=algorithm_config.get("CONV_KERNEL_SIZE", 3),
+            padding=algorithm_config.get("CONV_PADDING", "SAME"),
+            num_blocks=algorithm_config.get("CONV_NUM_BLOCKS", 4),
+        )
+        lbf_ctx = {
+            "num_fruits": int(inner_env._num_food),
+            "tile_size": int(inner_env.tile_size),
+            "feat_h": feat_h, "feat_w": feat_w,
+            "img_h": img_h, "img_w": img_w,
+        }
+
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
-    ep_states, _, _ = run_episode_with_states(
+    ep_states, attn_data, _ep_actions, _ep_messages = run_episode_with_states(
         jax.random.PRNGKey(42), inner_env, final_params, policy,
         final_params, policy, max_steps,
+        collect_attention=True, lbf_ctx=lbf_ctx,
     )
     print(f"[ja_ippo_lbf] Eval episode: {len(ep_states)} frames collected", flush=True)
 
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     video_dir = f"{savedir}/videos"
     os.makedirs(video_dir, exist_ok=True)
-    video_path = f"{video_dir}/eval_final.mp4"
 
     frames = _render_lbf_eval_frames(inner_env, ep_states)
+
     from moviepy import ImageSequenceClip
-    clip = ImageSequenceClip(frames, fps=10)
-    clip.write_videofile(
-        video_path, fps=10, codec="libx264", audio=False,
+    base_path = f"{video_dir}/eval_final.mp4"
+    ImageSequenceClip(frames, fps=10).write_videofile(
+        base_path, fps=10, codec="libx264", audio=False,
         bitrate="8000k", preset="slow",
     )
-    logger.log_video("Eval/episode_video", video_path, commit=False)
+    logger.log_video("Eval/episode_video", base_path, commit=False)
+
+    attn_base = f"{video_dir}/eval_attention.mp4"
+    make_attention_video(frames, attn_data, filename=attn_base, fps=10)
+    for suffix in ("agent0", "agent1", "combined"):
+        p = f"{video_dir}/eval_attention_{suffix}.mp4"
+        if os.path.exists(p):
+            logger.log_video(f"Eval/attention_{suffix}", p, commit=False)

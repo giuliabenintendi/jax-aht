@@ -103,7 +103,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            max_episode_steps, collect_attention=False,
                            greedy=True, feed_other_attn_dims=None,
                            ja_card_masks=None, collect_obs=False,
-                           partner_feed_dim=5):
+                           partner_feed_dim=5, lbf_ctx=None):
     '''
     Run a single episode and collect states for rendering.
 
@@ -148,9 +148,30 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
     _ja_card = ja_card_masks is not None
+    _lbf = lbf_ctx is not None
+    if _lbf:
+        partner_feed_dim = int(lbf_ctx["num_fruits"])
     if _ja_card:
         prev_pca_0 = jnp.zeros(partner_feed_dim)
         prev_pca_1 = jnp.zeros(partner_feed_dim)
+    elif _lbf:
+        prev_pca_0 = jnp.ones(partner_feed_dim) / float(partner_feed_dim)
+        prev_pca_1 = jnp.ones(partner_feed_dim) / float(partner_feed_dim)
+
+    if _lbf:
+        from marl.ja_ippo_lbf import _food_state_from_log_state, _per_fruit_attn
+
+        def _lbf_per_fruit_single(attn_2d, env_state_local):
+            food_pos, food_eaten = _food_state_from_log_state(env_state_local)
+            idx = jnp.lexsort((food_pos[:, 1], food_pos[:, 0]))
+            food_pos = food_pos[idx]
+            food_eaten = food_eaten[idx]
+            per_fruit, _ = _per_fruit_attn(
+                attn_2d, food_pos, food_eaten,
+                lbf_ctx["tile_size"], lbf_ctx["feat_h"], lbf_ctx["feat_w"],
+                lbf_ctx["img_h"], lbf_ctx["img_w"],
+            )
+            return per_fruit
 
     # Collect states and actions for rendering
     ep_states = [env_state]
@@ -178,7 +199,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         if feed_other_attn_dims is not None:
             obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
             obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
-        if _ja_card:
+        if _ja_card or _lbf:
             obs_0 = jnp.concatenate([obs_0, prev_pca_0])
             obs_1 = jnp.concatenate([obs_1, prev_pca_1])
 
@@ -276,6 +297,15 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             if done["__all__"]:
                 prev_pca_0 = jnp.zeros(partner_feed_dim)
                 prev_pca_1 = jnp.zeros(partner_feed_dim)
+
+        # Update partner per-fruit attention for LBF JA_FRUIT_PARTNER_FEED.
+        # Uses the pre-step env_state (the state the attention was computed
+        # against), swapped so prev_pca_X is the partner's vector for agent X.
+        if _lbf and collect_attention:
+            pf_0 = _lbf_per_fruit_single(attn_0.squeeze(), env_state)
+            pf_1 = _lbf_per_fruit_single(attn_1.squeeze(), env_state)
+            prev_pca_0 = pf_1
+            prev_pca_1 = pf_0
 
         # Take step in environment using the card-game macro-action encoding.
         both_actions = [act_0, act_1]
