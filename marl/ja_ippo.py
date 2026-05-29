@@ -6,8 +6,7 @@ best-checkpoint selection, live logging — and the per-env JA *mechanism*
 (entity attention pooling, partner feed, shaping rewards, aux target/loss,
 report + eval) is supplied by a small mechanism object under `agents/`,
 selected by `select_mechanism`. The shared PPO math (clipped actor-critic
-losses, global grad-norm, JA-aware value bootstrap) is also here and reused by
-the legacy `ja_ippo_general.py` during migration.
+losses, global grad-norm, JA-aware value bootstrap) lives here too.
 
 Loop features (chunked jit stepping, orbax checkpoint folders + chunk_scores,
 best-ckpt-for-eval) apply to every env. Welford reward-norm is gated by
@@ -37,7 +36,7 @@ from marl.ppo_utils import _create_minibatches, batchify, unbatchify
 
 
 # --------------------------------------------------------------------------- #
-# Shared PPO building blocks (also imported by ja_ippo_general.py).
+# Shared PPO building blocks.
 # --------------------------------------------------------------------------- #
 class PPOLossTerms(NamedTuple):
     value_loss: jnp.ndarray
@@ -177,10 +176,10 @@ def select_mechanism(config, env):
     if env_name == "card-game":
         from agents.card_game.ja_card_attention import CardMechanism
         return CardMechanism(config, env)
-    raise NotImplementedError(
-        f"JA mechanism for env '{env_name}' is not yet ported to the unified "
-        f"ja_ippo trainer (Overcooked/Hanabi still run via ja_ippo_general)."
-    )
+    if env_name in ("overcooked-v1", "hanabi"):
+        from agents.ja_jsd_mechanism import JSDMechanism
+        return JSDMechanism(config, env)
+    raise NotImplementedError(f"No JA mechanism registered for env '{env_name}'.")
 
 
 def _run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets, rng, num_actors, mech):

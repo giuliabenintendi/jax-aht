@@ -1,7 +1,7 @@
 """Card-game joint-attention mechanism for the unified ja_ippo trainer.
 
-Ports the OP-corrected card-level JA path out of the legacy ja_ippo_general.py
-into a mechanism the unified trainer plugs in. Keeps: per-card attention pooling
+Implements the OP-corrected card-level JA path as a mechanism the unified
+trainer plugs in. Keeps: per-card attention pooling
 (Other-Play permutation translation), the partner card-attention feed, comm
 shaping (with warmup scale), gaze_pick / attn_self / attn_match shaping, the
 partner-argmax aux NLL, and the card-level JSD diagnostic.
