@@ -996,13 +996,34 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     all_final_params = run_data[params_key]
     print(f"[xp_seeds] using {params_key} from checkpoint")
 
-    rng = jax.random.PRNGKey(EVAL_SEED)
-    rng, init_rng = jax.random.split(rng)
-    policy, _init_params = initialize_ja_image_agent(algo_cfg, env, init_rng)
-
     run_dir = os.path.dirname(checkpoint_path)
     if wb_prefix is None:
         wb_prefix = "XP"
+
+    # LBF runs with JA_FRUIT_PARTNER_FEED on append a per-fruit partner-attention
+    # vector to obs every step. The generic rollout below doesn't know how to
+    # build that suffix; dispatch to the LBF-aware inline XP which does.
+    if (
+        task_cfg["ENV_NAME"] == "lbf"
+        and bool(algo_cfg.get("JA_FRUIT_PARTNER_FEED", False))
+    ):
+        from marl.ja_ippo_lbf import _log_xp_eval
+
+        wb_run = _init_xp_wandb_run(algo_cfg, task_name, run_dir, wb_prefix)
+
+        class _LoggerShim:
+            def __init__(self, run):
+                self.run = run
+
+        print("[xp_seeds] LBF + JA_FRUIT_PARTNER_FEED: dispatching to inline XP")
+        _log_xp_eval(algo_cfg, env, {"final_params": all_final_params}, _LoggerShim(wb_run))
+        wb_run.finish()
+        print(f"[xp_seeds] wandb run: {wb_run.url}")
+        return
+
+    rng = jax.random.PRNGKey(EVAL_SEED)
+    rng, init_rng = jax.random.split(rng)
+    policy, _init_params = initialize_ja_image_agent(algo_cfg, env, init_rng)
     # Avoid overwriting the original training run's xp_results/ when re-evaluating with overrides.
     savedir = run_dir
     if use_best:
