@@ -883,11 +883,11 @@ def _log_xp_eval(algorithm_config, env, out, logger):
     }
     print(f"[ja_ippo_lbf] XP summary: {summary}", flush=True)
 
-    # wandb logging — scalars + matrices as tables
+    # wandb logging — matrices only (as tables). Scalar SP/XP summaries print
+    # to stdout above; logging them via run.log() creates spurious 1-point
+    # line plots, so we omit them here.
     run = getattr(logger, "run", None)
     if run is not None:
-        log_data = dict(summary)
-        # Matrices as tables (easy to view in W&B UI as heatmaps)
         ret_table = wandb.Table(
             columns=["seed_i"] + [f"seed_{j}" for j in range(num_seeds)],
             data=[[i] + ret_matrix[i].tolist() for i in range(num_seeds)],
@@ -896,9 +896,10 @@ def _log_xp_eval(algorithm_config, env, out, logger):
             columns=["seed_i"] + [f"seed_{j}" for j in range(num_seeds)],
             data=[[i] + jsd_matrix[i].tolist() for i in range(num_seeds)],
         )
-        log_data["XP/return_matrix"] = ret_table
-        log_data["XP/jsd_matrix"] = jsd_table
-        run.log(log_data)
+        run.log({
+            "XP/return_matrix": ret_table,
+            "XP/jsd_matrix": jsd_table,
+        })
 
 
 def _log_eval_video(algorithm_config, env, out, logger):
