@@ -142,6 +142,14 @@ def initialize_ja_image_agent(config, env, rng):
     # per-fruit attention as N scalars after lex-sorting fruits). Set via config
     # before init; 0 means off.
     _entity_feed_dim = int(config.get("JA_ENTITY_FEED_DIM", 0))
+    # On reload, JA_ENTITY_FEED_DIM is not in the saved Hydra config (training
+    # sets it dynamically from env._num_food); resolve here when the partner
+    # feed flag is on so eval/XP paths rebuild the policy with the matching
+    # input shape.
+    if _entity_feed_dim == 0 and config.get("JA_FRUIT_PARTNER_FEED", False):
+        _inner = env._env if hasattr(env, "_env") else env
+        _num_food = getattr(_inner, "_num_food", 0)
+        _entity_feed_dim = int(_num_food)
     if _entity_feed_dim > 0:
         num_scalars += _entity_feed_dim
     obs_dim = img_h * img_w * num_channels + num_scalars
