@@ -718,7 +718,7 @@ def _log_xp_eval(algorithm_config, env, out, logger, savedir: str | None = None)
     policy, _ = initialize_ja_image_agent(cfg, env, jax.random.PRNGKey(0))
 
     # Eval knobs
-    n_envs = int(algorithm_config.get("XP_NUM_ENVS", 16))
+    n_envs = int(algorithm_config.get("XP_NUM_ENVS", 64))
     max_steps = int(algorithm_config.get("ROLLOUT_LENGTH", 128))
     n_actors = n_envs * 2  # 2 agents
 
@@ -728,9 +728,14 @@ def _log_xp_eval(algorithm_config, env, out, logger, savedir: str | None = None)
         return jnp.concatenate([obs_batch_2d, partner_fruit_attn], axis=-1)
 
     def _eval_pair(rng_pair, params_0, params_1):
-        """Run n_envs episodes for max_steps with agent_0=params_0, agent_1=params_1.
+        """Run n_envs parallel rollouts of max_steps with agent_0=params_0,
+        agent_1=params_1.
 
-        Returns: (mean_return, mean_jsd) — both scalars.
+        Returns: (per_env_return, per_env_jsd) — each (n_envs,). The per-env
+        return is the mean of completed-episode returns in that env (averaged
+        across the two agents); per-env JSD is the mean per-step JSD over
+        max_steps. Caller computes the matrix cell mean/std across these
+        n_envs samples.
         """
         rng_pair, reset_rng = jax.random.split(rng_pair)
         reset_rngs = jax.random.split(reset_rng, n_envs)
@@ -741,10 +746,11 @@ def _log_xp_eval(algorithm_config, env, out, logger, savedir: str | None = None)
             jnp.ones((n_actors, num_fruits), dtype=jnp.float32) / float(num_fruits)
         )
 
-        # Accumulators
+        # Per-actor accumulators (we average over the 2 actors per env at the end).
         ret_sum = jnp.zeros((n_actors,), dtype=jnp.float32)
         ret_count = jnp.zeros((n_actors,), dtype=jnp.float32)
-        jsd_sum = jnp.zeros((), dtype=jnp.float32)
+        # Per-env JSD accumulator (one sample per env per step).
+        jsd_sum = jnp.zeros((n_envs,), dtype=jnp.float32)
         jsd_count = jnp.zeros((), dtype=jnp.float32)
 
         def _xp_step(carry, _):
@@ -828,10 +834,10 @@ def _log_xp_eval(algorithm_config, env, out, logger, savedir: str | None = None)
             ret_sum = ret_sum + ep_ret_actors * returned_actors
             ret_count = ret_count + returned_actors
 
-            # JSD between agent-0 and agent-1 attention this step.
+            # Per-env JSD between agent-0 and agent-1 attention this step.
             jsd_step = _jsd_spatial(attn2d_0, attn2d_1)  # (n_envs,)
-            jsd_sum = jsd_sum + jsd_step.sum()
-            jsd_count = jsd_count + jnp.float32(n_envs)
+            jsd_sum = jsd_sum + jsd_step
+            jsd_count = jsd_count + jnp.float32(1.0)
 
             new_carry = (
                 new_env_state, new_obs, new_done, new_hstate, new_partner_attn, rng,
@@ -846,27 +852,47 @@ def _log_xp_eval(algorithm_config, env, out, logger, savedir: str | None = None)
         (carry_final, _) = jax.lax.scan(_xp_step, carry, None, length=max_steps)
         (_, _, _, _, _, _, ret_sum_f, ret_count_f, jsd_sum_f, jsd_count_f) = carry_final
 
-        mean_return = ret_sum_f.sum() / jnp.maximum(ret_count_f.sum(), 1.0)
-        mean_jsd = jsd_sum_f / jnp.maximum(jsd_count_f, 1.0)
-        return mean_return, mean_jsd
+        # Per-env mean return: sum across the env's 2 actors / total completed-episode count.
+        ret_sum_env = ret_sum_f.reshape(2, n_envs).sum(axis=0)        # (n_envs,)
+        ret_count_env = ret_count_f.reshape(2, n_envs).sum(axis=0)    # (n_envs,)
+        per_env_return = ret_sum_env / jnp.maximum(ret_count_env, 1.0)
+        per_env_jsd = jsd_sum_f / jnp.maximum(jsd_count_f, 1.0)
+        return per_env_return, per_env_jsd
 
     eval_pair_jit = jax.jit(_eval_pair)
 
-    print(f"[ja_ippo_lbf] XP eval: {num_seeds}x{num_seeds} pairs, {n_envs} envs each", flush=True)
-    ret_matrix = np.zeros((num_seeds, num_seeds), dtype=np.float32)
-    jsd_matrix = np.zeros((num_seeds, num_seeds), dtype=np.float32)
+    print(
+        f"[ja_ippo_lbf] XP eval: {num_seeds}x{num_seeds} pairs, {n_envs} envs each "
+        f"(per-cell stats over {n_envs} samples)",
+        flush=True,
+    )
+    ret_matrix_mean = np.zeros((num_seeds, num_seeds), dtype=np.float32)
+    ret_matrix_std = np.zeros((num_seeds, num_seeds), dtype=np.float32)
+    jsd_matrix_mean = np.zeros((num_seeds, num_seeds), dtype=np.float32)
+    jsd_matrix_std = np.zeros((num_seeds, num_seeds), dtype=np.float32)
 
     seed_params = [jax.tree.map(lambda x: x[i], stacked_params) for i in range(num_seeds)]
     for i in range(num_seeds):
         for j in range(num_seeds):
-            mean_ret, mean_jsd = eval_pair_jit(
+            per_env_ret, per_env_jsd = eval_pair_jit(
                 jax.random.PRNGKey(1000 * (i + 1) + (j + 1)),
                 seed_params[i], seed_params[j],
             )
-            ret_matrix[i, j] = float(mean_ret)
-            jsd_matrix[i, j] = float(mean_jsd)
+            ret_arr = np.array(per_env_ret)
+            jsd_arr = np.array(per_env_jsd)
+            ret_matrix_mean[i, j] = ret_arr.mean()
+            ret_matrix_std[i, j] = ret_arr.std()
+            jsd_matrix_mean[i, j] = jsd_arr.mean()
+            jsd_matrix_std[i, j] = jsd_arr.std()
             tag = "SP" if i == j else "XP"
-            print(f"  [{tag}] {i}x{j}: return={ret_matrix[i,j]:.4f} jsd={jsd_matrix[i,j]:.4f}", flush=True)
+            print(
+                f"  [{tag}] {i}x{j}: return={ret_matrix_mean[i,j]:.4f}±{ret_matrix_std[i,j]:.4f} "
+                f"jsd={jsd_matrix_mean[i,j]:.4f}±{jsd_matrix_std[i,j]:.4f}",
+                flush=True,
+            )
+
+    ret_matrix = ret_matrix_mean
+    jsd_matrix = jsd_matrix_mean
 
     sp_returns = np.diag(ret_matrix)
     xp_mask = ~np.eye(num_seeds, dtype=bool)
@@ -902,12 +928,14 @@ def _log_xp_eval(algorithm_config, env, out, logger, savedir: str | None = None)
 
     ret_png = os.path.join(xp_dir, "xp_score_matrix.png")
     jsd_png = os.path.join(xp_dir, "xp_jsd_matrix.png")
-    save_xp_heatmap(ret_matrix, None, f"XP Episode Return — {run_label}", ret_png)
-    save_xp_heatmap(jsd_matrix, None, f"XP JSD — {run_label}", jsd_png,
+    save_xp_heatmap(ret_matrix_mean, ret_matrix_std,
+                     f"XP Episode Return — {run_label}", ret_png)
+    save_xp_heatmap(jsd_matrix_mean, jsd_matrix_std,
+                     f"XP JSD — {run_label}", jsd_png,
                      fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
-    save_xp_csv(ret_matrix, np.zeros_like(ret_matrix),
+    save_xp_csv(ret_matrix_mean, ret_matrix_std,
                  os.path.join(xp_dir, "xp_score_matrix.csv"), label="episode_return")
-    save_xp_csv(jsd_matrix, np.zeros_like(jsd_matrix),
+    save_xp_csv(jsd_matrix_mean, jsd_matrix_std,
                  os.path.join(xp_dir, "xp_jsd_matrix.csv"), label="jsd")
 
     run = getattr(logger, "run", None)
