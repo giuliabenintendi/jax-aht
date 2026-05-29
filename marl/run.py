@@ -5,6 +5,7 @@ from omegaconf import OmegaConf
 from common.wandb_visualizations import Logger
 from marl.ippo import run_ippo
 from marl.ja_ippo import run_ja_ippo
+from marl.ja_ippo_lbf import run_ja_ippo_lbf
 from marl.image_ippo import run_image_ippo
 
 
@@ -15,8 +16,12 @@ def main(config):
 
     if config.algorithm["ALG"] == "ippo":
         run_ippo(config, wandb_logger)
-    elif config.algorithm["ALG"] in ("ja_ippo", "ja_ippo_lbf"):
-        # One trainer for every JA env; the mechanism is selected by ENV_NAME.
+    elif config.algorithm["ALG"] == "ja_ippo_lbf":
+        # Standalone LBF trainer — kept separate to avoid the cuDNN regression
+        # that the unified trainer's chunked_step_fn triggers at NUM_ENVS=256.
+        run_ja_ippo_lbf(config, wandb_logger)
+    elif config.algorithm["ALG"] == "ja_ippo":
+        # Unified trainer for card-game / hanabi / overcooked.
         run_ja_ippo(config, wandb_logger)
     elif config.algorithm["ALG"] == "image_ippo":
         run_image_ippo(config, wandb_logger)
