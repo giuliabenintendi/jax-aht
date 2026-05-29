@@ -25,7 +25,7 @@ for cell in "${cells[@]}"; do
     echo "================================================================"
     ./run_gpu.sh "${device}" marl.run \
         task=lbf-image-12x12-8food \
-        algorithm@algorithm=ja_ippo_lbf/lbf-image-12x12-8food \
+        algorithm=ja_ippo_lbf/lbf-image-12x12-8food \
         algorithm.NUM_SEEDS=1 \
         algorithm.TOTAL_TIMESTEPS=1e6 \
         algorithm.JA_AUX_PARTNER_ARGMAX_COEF="${aux}" \
