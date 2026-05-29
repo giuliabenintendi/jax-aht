@@ -87,17 +87,36 @@ def swap_partner(x, num_agents):
     return jnp.concatenate([x[half:], x[:half]], axis=0)
 
 
+def _unwrap_lbf_state(state):
+    """Peel any LogWrapper / wrapper layers until we reach the inner Jumanji
+    state that owns `agents` and `food_items`. Training uses LogWrapper-wrapped
+    state (depth 2); the eval-video path calls the inner env directly (depth 0).
+    """
+    s = state
+    for _ in range(3):
+        if hasattr(s, "agents") and hasattr(s, "food_items"):
+            return s
+        s = getattr(s, "env_state", None)
+        if s is None:
+            break
+    raise AttributeError(
+        "Could not locate inner Jumanji LBF state (no agents/food_items found)."
+    )
+
+
 def agent_positions_from_log_state(log_state):
-    """Extract (num_envs, num_agents, 2) agent positions from LogWrapper-wrapped state."""
-    return log_state.env_state.env_state.agents.position
+    """Extract (num_envs, num_agents, 2) agent positions. Works for both
+    LogWrapper-wrapped (training) and raw (eval video) state shapes."""
+    return _unwrap_lbf_state(log_state).agents.position
 
 
 def food_state_from_log_state(log_state):
-    """Extract (food_pos, food_eaten) from LogWrapper-wrapped state.
+    """Extract (food_pos, food_eaten). Works for both LogWrapper-wrapped
+    (training) and raw (eval video) state shapes.
 
     food_pos: (num_envs, N, 2); food_eaten: (num_envs, N).
     """
-    food = log_state.env_state.env_state.food_items
+    food = _unwrap_lbf_state(log_state).food_items
     return food.position, food.eaten
 
 
