@@ -159,14 +159,14 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         prev_pca_1 = jnp.ones(partner_feed_dim) / float(partner_feed_dim)
 
     if _lbf:
-        from marl.ja_ippo_lbf import _food_state_from_log_state, _per_fruit_attn
+        from agents.lbf.ja_lbf_attention import food_state_from_log_state, per_fruit_attn
 
         def _lbf_per_fruit_single(attn_2d, env_state_local):
-            food_pos, food_eaten = _food_state_from_log_state(env_state_local)
+            food_pos, food_eaten = food_state_from_log_state(env_state_local)
             idx = jnp.lexsort((food_pos[:, 1], food_pos[:, 0]))
             food_pos = food_pos[idx]
             food_eaten = food_eaten[idx]
-            per_fruit, _ = _per_fruit_attn(
+            per_fruit, _ = per_fruit_attn(
                 attn_2d, food_pos, food_eaten,
                 lbf_ctx["tile_size"], lbf_ctx["feat_h"], lbf_ctx["feat_w"],
                 lbf_ctx["img_h"], lbf_ctx["img_w"],

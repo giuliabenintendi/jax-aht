@@ -104,9 +104,9 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             ja_ippo_lbf.make_train.
     """
     from agents.ja_utils import augment_obs_for_eval
-    from marl.ja_ippo_lbf import (
-        _food_state_from_log_state,
-        _per_fruit_attn,
+    from agents.lbf.ja_lbf_attention import (
+        food_state_from_log_state,
+        per_fruit_attn,
     )
 
     _lbf = lbf_ctx is not None
@@ -116,11 +116,11 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     def _lbf_per_fruit_single(attn_2d, env_state):
         """Compute one agent's per-fruit attention (length num_fruits, lex-sorted)
         from its spatial attention map and the current env food state."""
-        food_pos, food_eaten = _food_state_from_log_state(env_state)
+        food_pos, food_eaten = food_state_from_log_state(env_state)
         idx = jnp.lexsort((food_pos[:, 1], food_pos[:, 0]))
         food_pos = food_pos[idx]
         food_eaten = food_eaten[idx]
-        per_fruit, _ = _per_fruit_attn(
+        per_fruit, _ = per_fruit_attn(
             attn_2d, food_pos, food_eaten,
             lbf_ctx["tile_size"], lbf_ctx["feat_h"], lbf_ctx["feat_w"],
             lbf_ctx["img_h"], lbf_ctx["img_w"],
@@ -807,23 +807,8 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     # LBF per-fruit partner-feed context (mirrors training-time augmentation).
     lbf_ctx = None
     if env_name == "lbf" and algo_cfg.get("JA_FRUIT_PARTNER_FEED", False):
-        from agents.initialize_agents import _get_image_dims
-        from agents.ja_actor_critic import _compute_resnet_output_dims
-        _img_h, _img_w, _ = _get_image_dims(env)
-        _feat_h, _feat_w = _compute_resnet_output_dims(
-            _img_h, _img_w,
-            stride=algo_cfg.get("CONV_STRIDE", 2),
-            kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
-            padding=algo_cfg.get("CONV_PADDING", "SAME"),
-            num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
-        )
-        _inner = env._env if hasattr(env, "_env") else env
-        lbf_ctx = {
-            "num_fruits": int(_inner._num_food),
-            "tile_size": int(_inner.tile_size),
-            "feat_h": _feat_h, "feat_w": _feat_w,
-            "img_h": _img_h, "img_w": _img_w,
-        }
+        from agents.lbf.ja_lbf_attention import lbf_attention_ctx
+        lbf_ctx = lbf_attention_ctx(algo_cfg, env)
         print(f"[xp_seeds] lbf partner-feed: N_fruits={lbf_ctx['num_fruits']}")
 
     xp_partner_feed_dim = 5
