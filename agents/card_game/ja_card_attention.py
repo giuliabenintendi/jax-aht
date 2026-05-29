@@ -131,22 +131,26 @@ class CardMechanism:
         comm_follow = _pop("comm_reward_follow")
         info.pop("step_count", None)
 
-        # Raw spatial JSD diagnostic (meaningless under OP; kept for parity).
+        # Spatial JSD diagnostic. Stored per env then tiled to actors so every
+        # extras leaf has a num_actors axis (required by _create_minibatches);
+        # rollout_metrics reduces it. Meaningless under OP but kept for parity.
         a0 = attn_map[:, :num_envs, ...].squeeze(0)
         a1 = attn_map[:, num_envs:, ...].squeeze(0)
-        jsd_spatial = jsd_divergence(a0, a1).mean()
+        jsd_per_env = jsd_divergence(a0, a1)
+        jsd_spatial = jnp.concatenate([jsd_per_env, jsd_per_env])
 
         if self.card_metric:
             (perm_0, perm_1, phys_0, phys_1,
              q_phys_0, q_phys_1, m_0, m_1) = self._project_card_attention(attn_map, env_state, num_envs)
-            card_jsd_mean = jsd_divergence(q_phys_0[:, None, :], q_phys_1[:, None, :]).mean()
+            card_jsd_env = jsd_divergence(q_phys_0[:, None, :], q_phys_1[:, None, :])
+            card_jsd = jnp.concatenate([card_jsd_env, card_jsd_env])
             (partner_argmax_per_actor,
              current_partner_phys, current_partner_mass) = self._partner_argmax_targets(
                 phys_0, phys_1, q_phys_0, q_phys_1, perm_0, perm_1, m_0, m_1)
         else:
             perm_0 = perm_1 = jnp.zeros((num_envs, num_cards), dtype=jnp.int32)
             phys_0 = phys_1 = q_phys_0 = q_phys_1 = jnp.zeros((num_envs, num_cards), dtype=jnp.float32)
-            card_jsd_mean = jnp.float32(0.0)
+            card_jsd = jnp.zeros((num_actors,), dtype=jnp.float32)
             partner_argmax_per_actor = jnp.zeros((num_actors,), dtype=jnp.int32)
             current_partner_phys = jnp.zeros((num_actors, num_cards), dtype=jnp.float32)
             current_partner_mass = jnp.zeros((num_actors,), dtype=jnp.float32)
@@ -216,7 +220,7 @@ class CardMechanism:
             "partner_argmax_weight": aux_weight,
             "comm_reward": comm_reward, "comm_match": comm_match,
             "comm_stable": comm_stable, "comm_follow": comm_follow,
-            "card_jsd": card_jsd_mean, "jsd": jsd_spatial,
+            "card_jsd": card_jsd, "jsd": jsd_spatial,
             "r_attn_shaping": r_attn_shaping, "r_attn_match": r_attn_match,
             "r_attn_self": r_attn_self, "r_gaze_pick": r_gaze_pick,
         }
