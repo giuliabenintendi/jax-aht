@@ -90,14 +90,42 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 agent_1_param, agent_1_policy,
                                 max_episode_steps, action_sizes,
                                 feed_attn_dims=None, ja_card_masks=None,
-                                greedy_eval=True, partner_feed_dim=5):
+                                greedy_eval=True, partner_feed_dim=5,
+                                lbf_ctx=None):
     """Run one eval episode, returning LogWrapper info + mean JSD between attention maps.
 
     Args:
         feed_attn_dims: if not None, (img_h, img_w, feat_h, feat_w) for obs augmentation
             with the other agent's previous attention map (4th channel).
+        lbf_ctx: if not None, dict with num_fruits/tile_size/feat_h/feat_w/img_h/img_w
+            describing the LBF env so each agent's obs is augmented with the
+            partner's previous per-fruit attention vector (length num_fruits,
+            lex-sorted) — mirrors the training-time augmentation in
+            ja_ippo_lbf.make_train.
     """
     from agents.ja_utils import augment_obs_for_eval
+    from marl.ja_ippo_lbf import (
+        _food_state_from_log_state,
+        _per_fruit_attn,
+    )
+
+    _lbf = lbf_ctx is not None
+    if _lbf:
+        partner_feed_dim = int(lbf_ctx["num_fruits"])
+
+    def _lbf_per_fruit_single(attn_2d, env_state):
+        """Compute one agent's per-fruit attention (length num_fruits, lex-sorted)
+        from its spatial attention map and the current env food state."""
+        food_pos, food_eaten = _food_state_from_log_state(env_state)
+        idx = jnp.lexsort((food_pos[:, 1], food_pos[:, 0]))
+        food_pos = food_pos[idx]
+        food_eaten = food_eaten[idx]
+        per_fruit, _ = _per_fruit_attn(
+            attn_2d, food_pos, food_eaten,
+            lbf_ctx["tile_size"], lbf_ctx["feat_h"], lbf_ctx["feat_w"],
+            lbf_ctx["img_h"], lbf_ctx["img_w"],
+        )
+        return per_fruit
 
     def _call_attn(policy, params, obs, done, avail, hstate, rng,
                    pe_a=None, pe_c=None, prev_rew=None, prev_act=None):
@@ -129,9 +157,13 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_action_1 = jnp.zeros((1, 1), dtype=jnp.float32)
 
     _ja_card = ja_card_masks is not None
+    # LBF and card both use the prev_pca_X scalar suffix; initial value differs.
     if _ja_card:
         prev_pca_0 = jnp.zeros(partner_feed_dim)
         prev_pca_1 = jnp.zeros(partner_feed_dim)
+    elif _lbf:
+        prev_pca_0 = jnp.ones(partner_feed_dim) / float(partner_feed_dim)
+        prev_pca_1 = jnp.ones(partner_feed_dim) / float(partner_feed_dim)
 
     # Initialize uniform attention maps for feed_other_attn
     if feed_attn_dims is not None:
@@ -152,7 +184,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     if feed_attn_dims is not None:
         obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
         obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
-    if _ja_card:
+    if _ja_card or _lbf:
         obs_0 = jnp.concatenate([obs_0, prev_pca_0])
         obs_1 = jnp.concatenate([obs_1, prev_pca_1])
 
@@ -232,6 +264,15 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         _q1 = ph_1 / (_m1 + 1e-8)
         card_jsd_sum = jsd_divergence(_q0[None, :], _q1[None, :])
         card_jsd_count = jnp.float32(1.0)
+    elif _lbf:
+        # Compute each agent's per-fruit attention from its spatial map and the
+        # pre-step env state (the state the agent actually attended to). Swap
+        # so prev_pca_X (the obs suffix for agent X on the next step) holds the
+        # partner's attention vector — matching the training-time wiring.
+        per_fruit_0 = _lbf_per_fruit_single(attn_0.squeeze(), init_env_state)
+        per_fruit_1 = _lbf_per_fruit_single(attn_1.squeeze(), init_env_state)
+        prev_pca_0 = per_fruit_1
+        prev_pca_1 = per_fruit_0
 
     ep_ts = 1
     # Placeholder partner-LSTM hiddens (carried through unchanged; not wired
@@ -246,8 +287,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                   prev_action_1 if use_prev_io else None,
                   attn_0.squeeze(), attn_1.squeeze(),
                   pe_a0, pe_c0, pe_a1, pe_c1,
-                  prev_pca_0 if _ja_card else jnp.zeros(5),
-                  prev_pca_1 if _ja_card else jnp.zeros(5),
+                  prev_pca_0 if (_ja_card or _lbf) else jnp.zeros(5),
+                  prev_pca_1 if (_ja_card or _lbf) else jnp.zeros(5),
                   card_jsd_sum, card_jsd_count,
                   match_per_step)
 
@@ -274,7 +315,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             if feed_attn_dims is not None:
                 obs_0 = augment_obs_for_eval(obs_0, prev_a1, _img_h, _img_w)
                 obs_1 = augment_obs_for_eval(obs_1, prev_a0, _img_h, _img_w)
-            if _ja_card:
+            if _ja_card or _lbf:
                 obs_0 = jnp.concatenate([obs_0, prev_pca_0])
                 obs_1 = jnp.concatenate([obs_1, prev_pca_1])
 
@@ -339,6 +380,18 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 step_card_jsd = jsd_divergence(q0[None, :], q1[None, :])
                 card_jsd_sum_next = card_jsd_sum + step_card_jsd
                 card_jsd_count_next = card_jsd_count + 1.0
+            elif _lbf:
+                # Use pre-step env_state to match attention against the food
+                # state the agent actually attended to.
+                pf_0 = _lbf_per_fruit_single(attn_0.squeeze(), env_state)
+                pf_1 = _lbf_per_fruit_single(attn_1.squeeze(), env_state)
+                # Reset partner feed to uniform on episode boundary (matches train).
+                uniform_fruit = jnp.ones(partner_feed_dim) / float(partner_feed_dim)
+                ep_over = done_next["__all__"].squeeze().astype(bool)
+                next_pca_0 = jnp.where(ep_over, uniform_fruit, pf_1)
+                next_pca_1 = jnp.where(ep_over, uniform_fruit, pf_0)
+                card_jsd_sum_next = card_jsd_sum
+                card_jsd_count_next = card_jsd_count
             else:
                 next_pca_0 = jnp.zeros(partner_feed_dim)
                 next_pca_1 = jnp.zeros(partner_feed_dim)
@@ -389,7 +442,8 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
                           agent_1_param, agent_1_policy,
                           max_episode_steps, num_eps, action_sizes,
                           feed_attn_dims=None, ja_card_masks=None,
-                          greedy_eval=True, partner_feed_dim=5):
+                          greedy_eval=True, partner_feed_dim=5,
+                          lbf_ctx=None):
     """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
@@ -400,6 +454,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, action_sizes,
             feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
             greedy_eval=greedy_eval, partner_feed_dim=partner_feed_dim,
+            lbf_ctx=lbf_ctx,
         )
     )
     all_info, all_jsd, all_card_jsd, all_match = vmap_fn(ep_rngs)
@@ -411,7 +466,8 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
                      all_agent_1_params, agent_1_policy,
                      max_episode_steps, num_eps, action_sizes,
                      feed_attn_dims=None, ja_card_masks=None,
-                     greedy_eval=True, partner_feed_dim=5):
+                     greedy_eval=True, partner_feed_dim=5,
+                     lbf_ctx=None):
     """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
     num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
     partner_rngs = jax.random.split(rng, num_partners)
@@ -423,6 +479,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, num_eps, action_sizes,
             feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
             greedy_eval=greedy_eval, partner_feed_dim=partner_feed_dim,
+            lbf_ctx=lbf_ctx,
         )
 
     return jax.vmap(eval_one_partner)(partner_rngs, all_agent_1_params)
@@ -747,12 +804,34 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         )
         ja_card_masks = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
+    # LBF per-fruit partner-feed context (mirrors training-time augmentation).
+    lbf_ctx = None
+    if env_name == "lbf" and algo_cfg.get("JA_FRUIT_PARTNER_FEED", False):
+        from agents.initialize_agents import _get_image_dims
+        from agents.ja_actor_critic import _compute_resnet_output_dims
+        _img_h, _img_w, _ = _get_image_dims(env)
+        _feat_h, _feat_w = _compute_resnet_output_dims(
+            _img_h, _img_w,
+            stride=algo_cfg.get("CONV_STRIDE", 2),
+            kernel_size=algo_cfg.get("CONV_KERNEL_SIZE", 3),
+            padding=algo_cfg.get("CONV_PADDING", "SAME"),
+            num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
+        )
+        _inner = env._env if hasattr(env, "_env") else env
+        lbf_ctx = {
+            "num_fruits": int(_inner._num_food),
+            "tile_size": int(_inner.tile_size),
+            "feat_h": _feat_h, "feat_w": _feat_w,
+            "img_h": _img_h, "img_w": _img_w,
+        }
+        print(f"[xp_seeds] lbf partner-feed: N_fruits={lbf_ctx['num_fruits']}")
+
     xp_partner_feed_dim = 5
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks, greedy_eval=greedy_eval,
-        partner_feed_dim=xp_partner_feed_dim,
+        partner_feed_dim=xp_partner_feed_dim, lbf_ctx=lbf_ctx,
     ))
 
     all_row_metrics = []
@@ -811,13 +890,15 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
     os.makedirs(xp_dir, exist_ok=True)
 
     score_mean = score_std = None
-    if "base_return" in xp_metrics:
-        score_data = np.array(xp_metrics["base_return"]).mean(axis=-1)
+    score_key = "base_return" if "base_return" in xp_metrics else "returned_episode_returns"
+    if score_key in xp_metrics:
+        score_data = np.array(xp_metrics[score_key]).mean(axis=-1)
         score_mean = score_data.mean(axis=-1)
         score_std = score_data.std(axis=-1)
         # base_return is the binary decision-success indicator, so the cell
         # value is a success rate in [0, 1]. Pin the colour scale so cells
         # that fall in a narrow range (e.g. all ~0.2) don't get rainbow-stretched.
+        # For envs using returned_episode_returns (LBF, etc.) leave auto-ranged.
         score_vmin, score_vmax = (0.0, 1.0) if is_card_game else (None, None)
         save_xp_heatmap(score_mean, score_std,
                          f"XP Episode Return — {run_label}",
@@ -1003,28 +1084,6 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     run_dir = os.path.dirname(checkpoint_path)
     if wb_prefix is None:
         wb_prefix = "XP"
-
-    # LBF runs with JA_FRUIT_PARTNER_FEED on append a per-fruit partner-attention
-    # vector to obs every step. The generic rollout below doesn't know how to
-    # build that suffix; dispatch to the LBF-aware inline XP which does.
-    if (
-        task_cfg["ENV_NAME"] == "lbf"
-        and bool(algo_cfg.get("JA_FRUIT_PARTNER_FEED", False))
-    ):
-        from marl.ja_ippo_lbf import _log_xp_eval
-
-        wb_run = _init_xp_wandb_run(algo_cfg, task_name, run_dir, wb_prefix)
-
-        class _LoggerShim:
-            def __init__(self, run):
-                self.run = run
-
-        print("[xp_seeds] LBF + JA_FRUIT_PARTNER_FEED: dispatching to inline XP")
-        _log_xp_eval(algo_cfg, env, {"final_params": all_final_params},
-                     _LoggerShim(wb_run), savedir=run_dir)
-        wb_run.finish()
-        print(f"[xp_seeds] wandb run: {wb_run.url}")
-        return
 
     rng = jax.random.PRNGKey(EVAL_SEED)
     rng, init_rng = jax.random.split(rng)
