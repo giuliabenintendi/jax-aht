@@ -40,7 +40,7 @@ from marl.ippo_core import (
     configure_training_dims,
     make_optimizer,
 )
-from marl.ja_ppo_core import (
+from marl.ja_ippo import (
     compute_last_value_ja,
     global_grad_norm,
     ppo_actor_critic_losses,

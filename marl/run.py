@@ -4,8 +4,8 @@ from omegaconf import OmegaConf
 
 from common.wandb_visualizations import Logger
 from marl.ippo import run_ippo
-from marl.ja_ippo import run_ja_ippo
-from marl.ja_ippo_lbf import run_ja_ippo_lbf
+from marl.ja_ippo import run_ja_ippo as run_ja_ippo_unified
+from marl.ja_ippo_general import run_ja_ippo
 from marl.image_ippo import run_image_ippo
 
 
@@ -21,7 +21,9 @@ def main(config):
     elif config.algorithm["ALG"] == "image_ippo":
         run_image_ippo(config, wandb_logger)
     elif config.algorithm["ALG"] == "ja_ippo_lbf":
-        run_ja_ippo_lbf(config, wandb_logger)
+        # LBF now runs on the unified trainer (env mechanism = LBFMechanism).
+        # The legacy marl/ja_ippo_lbf.py is kept as a fallback until validated.
+        run_ja_ippo_unified(config, wandb_logger)
     else:
         raise NotImplementedError(f"Algorithm {config['ALG']} not implemented.")
         

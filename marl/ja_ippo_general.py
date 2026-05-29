@@ -26,6 +26,11 @@ from common.save_load_utils import REPO_PATH, save_train_run
 from common.train_logging import log_live_chunk_metrics, report_ja_training_outputs
 from envs import make_env
 from envs.log_wrapper import LogWrapper
+from marl.ja_ippo import (
+    compute_last_value_ja,
+    global_grad_norm,
+    ppo_actor_critic_losses,
+)
 from marl.ppo_utils import batchify, unbatchify, _create_minibatches
 
 
@@ -340,64 +345,31 @@ def make_train_loop(config, env):
                         else:
                             aux_loss = jnp.float32(0.0)
 
-                        log_prob = pi.log_prob(traj_batch.action)
-                        entropy = pi.entropy().mean()
-
-                        value_pred_clipped = traj_batch.value + (
-                            value - traj_batch.value
-                        ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
-                        value_losses = jnp.square(value - targets)
-                        value_losses_clipped = jnp.square(value_pred_clipped - targets)
-                        value_loss = (
-                            jnp.maximum(value_losses, value_losses_clipped).mean()
+                        terms = ppo_actor_critic_losses(
+                            pi, value,
+                            actions=traj_batch.action,
+                            value_old=traj_batch.value,
+                            log_prob_old=traj_batch.log_prob,
+                            gae=gae, targets=targets,
+                            clip_eps=config["CLIP_EPS"],
+                            policy_loss_type=policy_loss_type,
                         )
-
-                        ratio = jnp.exp(log_prob - traj_batch.log_prob)
-                        gae = (gae - gae.mean()) / (gae.std() + 1e-8)
-                        if policy_loss_type == "spo":
-                            # SPO (Simple Policy Optimization):
-                            # loss = -(ratio*A - |A|*(ratio-1)^2 / (2*eps))
-                            # Smooth quadratic penalty around ratio=1 replaces
-                            # PPO's clipped min. Optimum at ratio = 1 + eps*sign(A);
-                            # beyond that the penalty pulls the ratio back, so
-                            # the update can't drift far in a single step.
-                            spo_penalty = (
-                                jnp.abs(gae) * jnp.square(ratio - 1.0)
-                                / (2.0 * config["CLIP_EPS"])
-                            )
-                            loss_actor = -(ratio * gae - spo_penalty).mean()
-                        else:
-                            loss_actor1 = ratio * gae
-                            loss_actor2 = (
-                                jnp.clip(
-                                    ratio,
-                                    1.0 - config["CLIP_EPS"],
-                                    1.0 + config["CLIP_EPS"],
-                                )
-                                * gae
-                            )
-                            loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
-
                         total_loss = (
-                            loss_actor
-                            + config["VF_COEF"] * value_loss
-                            - config["ENT_COEF"] * entropy
+                            terms.policy_loss
+                            + config["VF_COEF"] * terms.value_loss
+                            - config["ENT_COEF"] * terms.entropy
                             + ja_aux_partner_argmax_coef * aux_loss
                         )
-                        # PPO diagnostics
-                        approx_kl = ((ratio - 1) - jnp.log(ratio)).mean()
-                        clip_frac = (jnp.abs(ratio - 1.0) > config["CLIP_EPS"]).mean()
-                        return total_loss, (value_loss, loss_actor, entropy,
-                                            approx_kl, clip_frac, ratio.mean(), ratio.std(),
+                        return total_loss, (terms.value_loss, terms.policy_loss, terms.entropy,
+                                            terms.approx_kl, terms.clip_frac,
+                                            terms.ratio.mean(), terms.ratio.std(),
                                             aux_loss)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
                         train_state.params, traj_batch, advantages, targets
                     )
-                    grad_norm = jnp.sqrt(
-                        sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads))
-                    )
+                    grad_norm = global_grad_norm(grads)
                     train_state = train_state.apply_gradients(grads=grads)
                     return train_state, (total_loss, grad_norm)
 
@@ -945,16 +917,11 @@ def make_train_loop(config, env):
                 plh_actor=prev_plh_actor.reshape(1, num_actors, -1),
                 plh_critic=prev_plh_critic.reshape(1, num_actors, -1),
             ) if query_partner_lstm else {}
-            _, last_val, _, _, _ = policy.get_action_value_policy(
-                params=train_state.params,
-                obs=last_obs_batch.reshape(1, num_actors, -1),
-                done=last_done_batch.reshape(1, num_actors),
-                avail_actions=last_avail_batch.reshape(1, num_actors, -1),
-                hstate=hstate,
-                rng=jax.random.PRNGKey(0),
+            last_val = compute_last_value_ja(
+                policy, train_state.params,
+                last_obs_batch, last_done_batch, last_avail_batch, hstate, num_actors,
                 **last_plh_kwarg,
             )
-            last_val = last_val.squeeze()
 
             def _calculate_gae(traj_batch, last_val):
                 def _get_advantages(gae_and_next_value, transition):
