@@ -682,7 +682,7 @@ def _jsd_spatial(p, q):
     return 0.5 * _kl(p_flat, m) + 0.5 * _kl(q_flat, m)
 
 
-def _log_xp_eval(algorithm_config, env, out, logger):
+def _log_xp_eval(algorithm_config, env, out, logger, savedir: str | None = None):
     """Greedy cross-play eval between training seeds.
 
     Builds NxN matrices for:
@@ -883,22 +883,38 @@ def _log_xp_eval(algorithm_config, env, out, logger):
     }
     print(f"[ja_ippo_lbf] XP summary: {summary}", flush=True)
 
-    # wandb logging — matrices only (as tables). Scalar SP/XP summaries print
-    # to stdout above; logging them via run.log() creates spurious 1-point
-    # line plots, so we omit them here.
+    # Save PNG heatmaps + CSVs under xp_results/ and log the PNGs as
+    # wandb.Image (matches the generic XP convention in run_xp_seeds).
+    from evaluation.run_xp_seeds import save_xp_csv, save_xp_heatmap
+
+    if savedir is None:
+        savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    xp_dir = os.path.join(savedir, "xp_results")
+    os.makedirs(xp_dir, exist_ok=True)
+
+    layout = algorithm_config.get("ENV_KWARGS", {}).get("layout", algorithm_config.get("ENV_NAME", ""))
+    total = algorithm_config.get("TOTAL_TIMESTEPS")
+    label_bits = [str(layout)]
+    if total:
+        total_f = float(total)
+        label_bits.append(f"{total_f/1e6:.0f}M" if total_f >= 1e6 else f"{total_f:.0f}")
+    run_label = " / ".join(label_bits)
+
+    ret_png = os.path.join(xp_dir, "xp_score_matrix.png")
+    jsd_png = os.path.join(xp_dir, "xp_jsd_matrix.png")
+    save_xp_heatmap(ret_matrix, None, f"XP Episode Return — {run_label}", ret_png)
+    save_xp_heatmap(jsd_matrix, None, f"XP JSD — {run_label}", jsd_png,
+                     fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
+    save_xp_csv(ret_matrix, np.zeros_like(ret_matrix),
+                 os.path.join(xp_dir, "xp_score_matrix.csv"), label="episode_return")
+    save_xp_csv(jsd_matrix, np.zeros_like(jsd_matrix),
+                 os.path.join(xp_dir, "xp_jsd_matrix.csv"), label="jsd")
+
     run = getattr(logger, "run", None)
     if run is not None:
-        ret_table = wandb.Table(
-            columns=["seed_i"] + [f"seed_{j}" for j in range(num_seeds)],
-            data=[[i] + ret_matrix[i].tolist() for i in range(num_seeds)],
-        )
-        jsd_table = wandb.Table(
-            columns=["seed_i"] + [f"seed_{j}" for j in range(num_seeds)],
-            data=[[i] + jsd_matrix[i].tolist() for i in range(num_seeds)],
-        )
         run.log({
-            "XP/return_matrix": ret_table,
-            "XP/jsd_matrix": jsd_table,
+            "XP/score_matrix": wandb.Image(ret_png),
+            "XP/jsd_matrix": wandb.Image(jsd_png),
         })
 
 

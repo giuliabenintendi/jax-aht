@@ -447,20 +447,24 @@ def xp_mean_and_sem(xp_matrix):
     return np.mean(off_diag), np.std(off_diag) / np.sqrt(n)
 
 
-def save_xp_heatmap(matrix_mean: np.ndarray, matrix_std: np.ndarray,
+def save_xp_heatmap(matrix_mean: np.ndarray, matrix_std,
                      title: str, filepath: str, fmt: str = ".2f",
                      cmap: str = "YlOrRd", vmin: float | None = None,
                      vmax: float | None = None):
-    """Save an annotated NxN heatmap as PNG."""
+    """Save an annotated NxN heatmap as PNG. Pass matrix_std=None to annotate
+    cells with the mean only (no ±std line)."""
     n = matrix_mean.shape[0]
     fig, ax = plt.subplots(figsize=(1.5 + n * 1.2, 1.0 + n * 1.0))
     im = ax.imshow(matrix_mean, cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal")
 
-    # Annotate cells with mean ± std
     for i in range(n):
         for j in range(n):
-            m, s = matrix_mean[i, j], matrix_std[i, j]
-            text = f"{m:{fmt}}\n±{s:{fmt}}"
+            m = matrix_mean[i, j]
+            if matrix_std is None:
+                text = f"{m:{fmt}}"
+            else:
+                s = matrix_std[i, j]
+                text = f"{m:{fmt}}\n±{s:{fmt}}"
             color = "white" if matrix_mean[i, j] > (im.norm.vmax + im.norm.vmin) / 2 else "black"
             ax.text(j, i, text, ha="center", va="center", fontsize=8, color=color)
 
@@ -1016,7 +1020,8 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
                 self.run = run
 
         print("[xp_seeds] LBF + JA_FRUIT_PARTNER_FEED: dispatching to inline XP")
-        _log_xp_eval(algo_cfg, env, {"final_params": all_final_params}, _LoggerShim(wb_run))
+        _log_xp_eval(algo_cfg, env, {"final_params": all_final_params},
+                     _LoggerShim(wb_run), savedir=run_dir)
         wb_run.finish()
         print(f"[xp_seeds] wandb run: {wb_run.url}")
         return
