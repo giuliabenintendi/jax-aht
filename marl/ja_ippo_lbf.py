@@ -40,6 +40,7 @@ from marl.ppo_utils import _create_minibatches, batchify, unbatchify
 
 JA_LBF_SCALAR_KEYS = list(IMAGE_IPPO_SCALAR_KEYS) + [
     ("aux_partner_argmax_loss", "Losses"),
+    ("r_shape_mean", "JA"),
 ]
 
 
@@ -57,6 +58,7 @@ class TransitionJA(NamedTuple):
     partner_prev_argmax: jnp.ndarray    # (num_actors,) int32 — argmax fruit slot, drives r_shape
     partner_prev_valid: jnp.ndarray     # (num_actors,) bool — mask aux on invalid steps
     food_pos: jnp.ndarray               # (num_actors, N, 2) int — LEX SORTED, tiled per actor
+    r_shape: jnp.ndarray                # (num_actors,) float — unscaled shaping bonus, for logging
     food_eaten: jnp.ndarray             # (num_actors, N) bool — LEX SORTED, tiled per actor
 
 
@@ -366,6 +368,7 @@ def make_train(config, env):
                     partner_prev_valid=prev_partner_valid,
                     food_pos=food_pos_actors.astype(jnp.int32),
                     food_eaten=food_eaten_actors,
+                    r_shape=r_shape,
                 )
 
                 # --- Update partner-attention state for next step ---
@@ -428,6 +431,7 @@ def make_train(config, env):
             # Use the canonical key name so log_live_chunk_metrics picks it up
             # (JA_LIVE_SCALAR_KEYS in common/train_logging.py expects this exact name).
             metric["aux_partner_argmax_loss"] = loss_info.aux_loss.mean()
+            metric["r_shape_mean"] = traj_batch.r_shape.mean()
 
             runner_state = (
                 train_state, env_state, last_obs, last_done, hstate, rng,
