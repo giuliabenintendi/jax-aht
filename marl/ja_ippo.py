@@ -174,9 +174,12 @@ def select_mechanism(config, env):
     if env_name == "lbf":
         from agents.lbf.ja_lbf_mechanism import LBFMechanism
         return LBFMechanism(config, env)
+    if env_name == "card-game":
+        from agents.card_game.ja_card_attention import CardMechanism
+        return CardMechanism(config, env)
     raise NotImplementedError(
         f"JA mechanism for env '{env_name}' is not yet ported to the unified "
-        f"ja_ippo trainer (card-game/Overcooked still run via ja_ippo_general)."
+        f"ja_ippo trainer (Overcooked/Hanabi still run via ja_ippo_general)."
     )
 
 

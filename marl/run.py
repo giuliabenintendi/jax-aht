@@ -17,7 +17,12 @@ def main(config):
     if config.algorithm["ALG"] == "ippo":
         run_ippo(config, wandb_logger)
     elif config.algorithm["ALG"] == "ja_ippo":
-        run_ja_ippo(config, wandb_logger)
+        # Card runs on the unified trainer; Overcooked/Hanabi stay on the general
+        # trainer until ported (then this branch collapses to the unified path).
+        if config.algorithm["ENV_NAME"] == "card-game":
+            run_ja_ippo_unified(config, wandb_logger)
+        else:
+            run_ja_ippo(config, wandb_logger)
     elif config.algorithm["ALG"] == "image_ippo":
         run_image_ippo(config, wandb_logger)
     elif config.algorithm["ALG"] == "ja_ippo_lbf":
