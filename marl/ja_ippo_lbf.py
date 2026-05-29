@@ -17,6 +17,7 @@ from typing import NamedTuple
 import hydra
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax.training.train_state import TrainState
 
 from agents.initialize_agents import _get_image_dims, initialize_ja_image_agent
