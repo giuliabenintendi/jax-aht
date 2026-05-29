@@ -334,12 +334,16 @@ def make_train(config, env):
 
                 d_pre = jnp.sum(jnp.abs(pos_pre_actors - target_fruit_pos), axis=-1).astype(jnp.float32)
                 d_post = jnp.sum(jnp.abs(pos_post_actors - target_fruit_pos), axis=-1).astype(jnp.float32)
-                # One-sided shaping: reward for moving closer to partner's argmax
-                # fruit, no penalty for moving away or staying put. Mirrors the
-                # card-game shaping convention.
+                # Confidence-weighted one-sided shaping. Mirrors card-game
+                # r_gaze_pick: bonus scales with partner's peak mass at its
+                # argmax fruit, so a flat partner distribution gives ~0.
+                prev_partner_peak_mass = prev_partner_fruit_attn[
+                    actor_idx, prev_partner_argmax
+                ]  # (num_actors,)
                 r_shape = jnp.where(
                     prev_partner_valid,
-                    jnp.maximum(d_pre - d_post, 0.0),
+                    prev_partner_peak_mass
+                    * jnp.maximum(d_pre - d_post, 0.0),
                     0.0,
                 )
 
@@ -489,10 +493,10 @@ def _run_ppo_aux_epochs(
                 # Gradient on agent's attn_2d flows only through N fruit cells.
                 if aux_active:
                     attn_2d = _attention_2d(attn_map_apply)            # (T, A, fh, fw)
-                    agent_per_fruit, agent_on_mass = _per_fruit_attn(
+                    agent_per_fruit, _agent_on_mass = _per_fruit_attn(
                         attn_2d, traj_batch.food_pos, traj_batch.food_eaten,
                         tile_size, feat_h, feat_w, img_h, img_w,
-                    )                                                  # (T, A, N), (T, A)
+                    )                                                  # (T, A, N)
                     target_soft = jax.lax.stop_gradient(
                         traj_batch.partner_prev_fruit_attn,
                     )                                                  # (T, A, N)
@@ -500,9 +504,13 @@ def _run_ppo_aux_epochs(
                     log_probs = jnp.log(agent_per_fruit + 1e-8)        # (T, A, N)
                     nll_per_step = -(target_soft * log_probs).sum(axis=-1)  # (T, A)
                     nll_flat = nll_per_step.reshape(-1)
+                    # Partner-side confidence weight: mirrors card-game's
+                    # current_partner_mass_per_actor. Flat partner gives ~1/N,
+                    # confident partner gives ~peak mass.
+                    partner_peak = target_soft.max(axis=-1)            # (T, A)
                     aux_weight = (
                         traj_batch.partner_prev_valid.reshape(-1).astype(jnp.float32)
-                        * agent_on_mass.reshape(-1)
+                        * partner_peak.reshape(-1)
                     )
                     aux_weight = jax.lax.stop_gradient(aux_weight)
                     aux_denom = jnp.maximum(aux_weight.sum(), 1e-8)
