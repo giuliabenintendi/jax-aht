@@ -334,7 +334,14 @@ def make_train(config, env):
 
                 d_pre = jnp.sum(jnp.abs(pos_pre_actors - target_fruit_pos), axis=-1).astype(jnp.float32)
                 d_post = jnp.sum(jnp.abs(pos_post_actors - target_fruit_pos), axis=-1).astype(jnp.float32)
-                r_shape = jnp.where(prev_partner_valid, d_pre - d_post, 0.0)
+                # One-sided shaping: reward for moving closer to partner's argmax
+                # fruit, no penalty for moving away or staying put. Mirrors the
+                # card-game shaping convention.
+                r_shape = jnp.where(
+                    prev_partner_valid,
+                    jnp.maximum(d_pre - d_post, 0.0),
+                    0.0,
+                )
 
                 env_reward = batchify(reward, env.agents, num_actors).squeeze()
                 shaped_reward = env_reward + r_shape_coef * r_shape
