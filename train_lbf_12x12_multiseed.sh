@@ -24,14 +24,14 @@ case "${condition}" in
     baseline)
         aux=0
         rself=0
-        seeds=5
-        label="lbf12x12-8food_baseline_3M_5seed"
+        seeds=12
+        label="lbf12x12-8food_baseline_3M_12seed"
         ;;
     aux)
         aux=0.05
         rself=0
-        seeds=5
-        label="lbf12x12-8food_aux0.05_3M_5seed"
+        seeds=12
+        label="lbf12x12-8food_aux0.05_3M_12seed"
         ;;
     aux_rself)
         aux=0.05
