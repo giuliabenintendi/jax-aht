@@ -15,6 +15,7 @@ from typing import NamedTuple
 import hydra
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_ja_image_agent
@@ -536,16 +537,22 @@ def run_ja_ippo_lbf(config, logger):
         stacked_metrics = jax.tree.map(lambda *xs: jnp.stack(xs), *all_metrics)
         stacked_ckpts = jax.tree.map(lambda *xs: jnp.stack(xs), *checkpoints)
 
+        # Pull per-seed state off the GPU so the next seed has headroom for its
+        # rollout/PPO activations. Without this, NUM_SEEDS >= ~6 OOMs at
+        # NUM_ENVS=256 on 12x12-8food because prior seeds' params/metrics/
+        # checkpoints stay resident on device.
         seed_outputs.append({
-            "final_params": runner_state[0].params,
-            "metrics": stacked_metrics,
-            "checkpoints": stacked_ckpts,
+            "final_params": jax.device_get(runner_state[0].params),
+            "metrics": jax.device_get(stacked_metrics),
+            "checkpoints": jax.device_get(stacked_ckpts),
             "final_ckpt_idx": len(checkpoints),
         })
 
     print("[ja_ippo_lbf] Training complete.", flush=True)
 
-    out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
+    # Stack across seeds in host memory; jnp.stack would push everything back
+    # to the GPU and recreate the OOM we just avoided.
+    out = jax.tree.map(lambda *xs: np.stack(xs), *seed_outputs)
 
     try:
         _log_eval_video(algorithm_config, env, out, logger)
