@@ -39,8 +39,14 @@ case "${condition}" in
         seeds=12
         label="lbf12x12-8food_aux0.05_rself0.005_3M_12seed"
         ;;
+    aux_rself_tiny)
+        aux=0.05
+        rself=0.001
+        seeds=12
+        label="lbf12x12-8food_aux0.05_rself0.001_3M_12seed"
+        ;;
     *)
-        echo "unknown condition: ${condition} (expected: baseline | aux | aux_rself)" >&2
+        echo "unknown condition: ${condition} (expected: baseline | aux | aux_rself | aux_rself_tiny)" >&2
         exit 1
         ;;
 esac
