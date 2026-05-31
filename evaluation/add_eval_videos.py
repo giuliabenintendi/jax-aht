@@ -1,12 +1,18 @@
 """Add eval videos to an existing wandb run from a saved checkpoint.
 
 Usage:
+    # Local mode (point at an on-disk saved_train_run + .hydra/config.yaml):
     uv run python -m evaluation.add_eval_videos \
         --checkpoint <path_to_saved_train_run> \
         --run-id <wandb_run_id>
+
+    # Wandb mode (auto-download the saved_train_run artifact + reconstruct config
+    # from the wandb run — useful when the local hydra output dir is gone):
+    uv run python -m evaluation.add_eval_videos --from-wandb --run-id <wandb_run_id>
 """
 import argparse
 import os
+import tempfile
 
 import jax
 import wandb
@@ -21,9 +27,40 @@ from evaluation.vis_episodes import (
 )
 
 
+def _materialize_from_wandb(run_id: str, project: str, entity: str, scratch_root: str):
+    """Download the run's `saved_train_run` artifact and write a hydra-style
+    `.hydra/config.yaml` next to it so the rest of the script can run unchanged.
+    Returns the checkpoint path (containing _CHECKPOINT_METADATA)."""
+    api = wandb.Api()
+    run = api.run(f"{entity}/{project}/{run_id}")
+    arts = [a for a in run.logged_artifacts() if a.type == "train_run"]
+    if not arts:
+        raise RuntimeError(f"No train_run artifact on {run_id}")
+    art = arts[0]
+    run_dir = os.path.join(scratch_root, run_id)
+    ckpt_dir = os.path.join(run_dir, "saved_train_run")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    print(f"[add_eval_videos] downloading {art.name} ({art.size / 1e6:.0f} MB) to {ckpt_dir}", flush=True)
+    art.download(root=ckpt_dir)
+    # Reconstruct the hydra config dir the script expects.
+    hydra_dir = os.path.join(run_dir, ".hydra")
+    os.makedirs(hydra_dir, exist_ok=True)
+    cfg_path = os.path.join(hydra_dir, "config.yaml")
+    OmegaConf.save(config=OmegaConf.create(dict(run.config)), f=cfg_path)
+    print(f"[add_eval_videos] wrote reconstructed config -> {cfg_path}", flush=True)
+    return ckpt_dir
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint",
+                        help="Path to local saved_train_run dir. Required unless --from-wandb.")
+    parser.add_argument("--from-wandb", action="store_true",
+                        help="Download the saved_train_run artifact + reconstruct the config "
+                             "from the wandb run instead of needing a local checkpoint.")
+    parser.add_argument("--scratch-dir", default="artifacts/add_eval_videos_tmp",
+                        help="Where to put the downloaded artifact + reconstructed config "
+                             "when --from-wandb is set.")
     parser.add_argument("--run-id", required=True, help="Existing wandb run ID to resume")
     parser.add_argument("--project", default="aht-benchmark")
     parser.add_argument("--entity", default="g-benintendi-university-of-brescia")
@@ -61,6 +98,14 @@ def main():
     for tok in args.xp_pairs:
         i_str, j_str = tok.split(",")
         xp_pairs.append((int(i_str), int(j_str)))
+
+    if args.from_wandb:
+        scratch_root = os.path.abspath(args.scratch_dir)
+        args.checkpoint = _materialize_from_wandb(
+            args.run_id, args.project, args.entity, scratch_root,
+        )
+    if not args.checkpoint:
+        parser.error("--checkpoint is required unless --from-wandb is set")
 
     # Load config
     run_dir = os.path.dirname(args.checkpoint)
