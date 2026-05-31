@@ -274,7 +274,10 @@ def report_ja_training_outputs(config, out, logger):
 
     print_interval = max(1, num_updates // 20)
     for step in range(num_updates):
-        step_data = {"train_step": step}
+        env_steps = (step + 1) * rollout_length * num_envs
+        # env_step shadows wandb's internal _step so post-hoc training curves
+        # align with the same x-axis as the live (per-chunk) metrics.
+        step_data = {"train_step": step, "env_step": env_steps}
 
         for stat_name, stat_data in episode_stats_mean.items():
             step_data[f"Train/{stat_name}_mean"] = float(stat_data[step, 0])
@@ -301,7 +304,6 @@ def report_ja_training_outputs(config, out, logger):
         logger.log(step_data, commit=True)
 
         if step % print_interval == 0 or step == num_updates - 1:
-            env_steps = (step + 1) * rollout_length * num_envs
             pct = (step + 1) / num_updates * 100
             ret_str = "  ".join(
                 f"{stat_name}={stat_data[step, 0]:.2f}"
@@ -358,41 +360,32 @@ def report_basic_training_outputs(
 
     num_updates = train_metrics["returned_episode"].shape[1]
     print_interval = max(1, num_updates // 20)
+    rollout_length = int(config.algorithm["ROLLOUT_LENGTH"])
+    num_envs = int(config.algorithm["NUM_ENVS"])
 
     for step in range(num_updates):
+        env_steps = (step + 1) * rollout_length * num_envs
+        # env_step shadows wandb's internal _step so post-hoc training curves
+        # align with the same x-axis as the live (per-chunk) metrics.
+        commit_payload = {"train_step": step, "env_step": env_steps}
+
         for stat_name, stat_data in train_stats.items():
-            logger.log_item(
-                f"Train/{stat_name}",
-                stat_data[step, 0],
-                train_step=step,
-                commit=False,
-            )
+            commit_payload[f"Train/{stat_name}"] = float(stat_data[step, 0])
         if "base_return" in train_stats and config.task["ENV_NAME"] == "overcooked-v1":
             soups = train_stats["base_return"][step, 0] / 20.0
-            logger.log_item(
-                "Train/soups_delivered",
-                soups,
-                train_step=step,
-                commit=False,
-            )
+            commit_payload["Train/soups_delivered"] = float(soups)
 
         for key, prefix in scalar_keys:
             if key in scalar_data:
-                logger.log_item(
-                    f"{prefix}/{key}",
-                    float(scalar_data[key][step]),
-                    train_step=step,
-                    commit=False,
-                )
+                commit_payload[f"{prefix}/{key}"] = float(scalar_data[key][step])
 
-        logger.log({}, step=step, commit=True)
+        # NOTE: do NOT pass step=step here. Live logging already advanced
+        # wandb's internal _step past `num_updates`, so any explicit step<_step
+        # is silently dropped — that's how the post-hoc curves collapsed to a
+        # single point. Let wandb auto-increment instead.
+        logger.log(commit_payload, commit=True)
 
         if step % print_interval == 0 or step == num_updates - 1:
-            env_steps = (
-                (step + 1)
-                * int(config.algorithm["ROLLOUT_LENGTH"])
-                * int(config.algorithm["NUM_ENVS"])
-            )
             pct = (step + 1) / num_updates * 100
             ret_str = "  ".join(
                 f"{stat_name}={stat_data[step, 0]:.2f}"

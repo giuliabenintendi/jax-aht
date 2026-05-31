@@ -364,10 +364,28 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
           f"({sp_video_episodes} eps each); XP videos: "
           f"{'on' if log_xp_videos else 'off'} ({xp_video_episodes} eps/pair)")
 
+    # Build per-seed checkpoint labels so each video tile is captioned with the
+    # exact env_step of the weights that produced it. Default eval uses the best
+    # per-seed checkpoint; otherwise it falls back to the post-training final params.
+    use_best = bool(algorithm_config.get("USE_BEST_CKPT_FOR_EVAL", True))
+    best_ckpt_idx = out.get("best_ckpt_idx")
+    ckpt_env_steps = out.get("ckpt_env_steps")
+    if use_best and best_ckpt_idx is not None and ckpt_env_steps is not None:
+        seed_ckpt_env_steps = [int(ckpt_env_steps[int(best_ckpt_idx[s])]) for s in range(num_seeds)]
+        seed_ckpt_kind = "best"
+    else:
+        total_steps = int(algorithm_config.get("TOTAL_TIMESTEPS", 0))
+        seed_ckpt_env_steps = [total_steps] * num_seeds
+        seed_ckpt_kind = "final"
+
+    def _seed_caption(seed_idx):
+        return f"seed {seed_idx} | {seed_ckpt_kind} ckpt @ {seed_ckpt_env_steps[seed_idx]:,} env_steps"
+
     for seed_idx in range(num_seeds):
         final_params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
         do_videos = seed_idx < n_video_seeds
         tag = f"Eval/seed_{seed_idx}"
+        seed_caption = _seed_caption(seed_idx)
 
         # Keep eval videos to a single episode so logging stays quick and watchable.
         num_eval_video_eps = 1
@@ -443,6 +461,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     attn_backdrop_frames, attn_data, ep_actions, tag, video_dir, logger,
                     ep_messages=ep_messages, card_permutation=_card_perm,
                     ep_obs=ep_obs, ep_states=ep_states,
+                    caption=seed_caption,
                 )
                 _log_card_game_eval_video(
                     inner_env, policy, final_params, max_steps, tag, video_dir, logger,
@@ -450,6 +469,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                     num_episodes=sp_video_episodes, fps=3,
                     partner_feed_dim=eval_partner_feed_dim,
+                    caption=seed_caption,
                 )
                 _log_card_game_action_distributions(
                     inner_env, policy, final_params, max_steps, tag, logger,
@@ -469,6 +489,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                         ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
                         num_episodes=sp_video_episodes, fps=3,
                         partner_feed_dim=eval_partner_feed_dim,
+                        caption=seed_caption,
                     )
             else:
                 # Other envs: videos + attention overlays
@@ -477,7 +498,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                 clip = ImageSequenceClip(frames, fps=10)
                 clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
                                      bitrate='8000k', preset='slow')
-                logger.log_video(f"{tag}/episode_video", video_path, commit=False)
+                logger.log_video(f"{tag}/episode_video", video_path, commit=False, caption=seed_caption)
 
                 log_attention_to_wandb(
                     attn_data, logger, step=None, tag_prefix=tag, commit=False,
@@ -486,9 +507,9 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
 
                 attn_video_base = f"{video_dir}/eval_attention.mp4"
                 make_attention_video(frames, attn_data, filename=attn_video_base, fps=10)
-                logger.log_video(f"{tag}/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False)
-                logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False)
-                logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False)
+                logger.log_video(f"{tag}/attention_agent0", f"{video_dir}/eval_attention_agent0.mp4", commit=False, caption=seed_caption)
+                logger.log_video(f"{tag}/attention_agent1", f"{video_dir}/eval_attention_agent1.mp4", commit=False, caption=seed_caption)
+                logger.log_video(f"{tag}/attention_combined", f"{video_dir}/eval_attention_combined.mp4", commit=False, caption=seed_caption)
 
         # Multi-episode attention metrics
         import numpy as np
@@ -596,4 +617,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             ja_card_masks=_card_masks_eval if ja_card_partner_feed else None,
             num_episodes=xp_video_episodes, fps=3,
             partner_feed_dim=eval_partner_feed_dim,
+            seed_ckpt_env_steps=seed_ckpt_env_steps,
+            seed_ckpt_kind=seed_ckpt_kind,
         )

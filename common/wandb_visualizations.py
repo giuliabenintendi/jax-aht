@@ -201,8 +201,11 @@ class Logger:
             artifact.add_file(path)
         self.run.log_artifact(artifact)
     
-    def log_video(self, tag, path, commit=True):
-        wandb.log({tag: wandb.Video(path)}, commit=commit)
+    def log_video(self, tag, path, commit=True, caption=None):
+        # caption lets callers stamp the checkpoint env_step (or seed pairing for XP
+        # videos) onto the W&B media tile so it's obvious which weights produced it.
+        kwargs = {"caption": caption} if caption else {}
+        wandb.log({tag: wandb.Video(path, **kwargs)}, commit=commit)
     
     def close(self):
         wandb.finish()

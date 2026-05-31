@@ -16,7 +16,8 @@ from marl.eval_utils import (
 def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir, logger,
                                   ep_messages=None, card_permutation=None,
                                   ep_obs=None, ep_states=None,
-                                  out_name="attention_grid.png"):
+                                  out_name="attention_grid.png",
+                                  caption=None):
     """Log a 2xT grid image: row 0 = agent 0 attention, row 1 = agent 1 attention.
 
     When `ep_obs` is provided, each cell uses the *agent's own* obs as the
@@ -141,7 +142,8 @@ def _log_card_game_attention_grid(frames, attn_data, ep_actions, tag, video_dir,
     Image.fromarray(grid).save(grid_path)
     print(f"[card_game] Saved attention grid: {grid_path} ({grid_w}x{grid_h} px)")
 
-    logger.log({f"{tag}/attention_grid": wandb.Image(grid_path)}, commit=False)
+    img_kwargs = {"caption": caption} if caption else {}
+    logger.log({f"{tag}/attention_grid": wandb.Image(grid_path, **img_kwargs)}, commit=False)
 
 
 def _log_card_game_gt_attn_filmstrip(
@@ -802,7 +804,8 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                                feed_attn_dims=None,
                                ja_card_masks=None,
                                num_episodes=30, fps=3,
-                               partner_feed_dim=5):
+                               partner_feed_dim=5,
+                               caption=None):
     """Run multiple card game episodes and save a video with attention spots and choices."""
     import wandb
     from envs.card_game.rendering import (
@@ -902,7 +905,7 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
     clip = ImageSequenceClip(all_video_frames, fps=fps)
     clip.write_videofile(video_path, fps=fps, codec='libx264', audio=False,
                          bitrate='8000k', preset='slow')
-    logger.log_video(f"{tag}/eval_video", video_path, commit=False)
+    logger.log_video(f"{tag}/eval_video", video_path, commit=False, caption=caption)
     print(f"[card_game] Saved eval video: {video_path} ({len(all_video_frames)} frames, {len(all_video_frames)/fps:.0f}s)")
 
 
@@ -910,7 +913,9 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
                               feed_attn_dims=None, ja_card_masks=None,
                               seed_pairs=None,
                               num_episodes=10, fps=3,
-                              partner_feed_dim=5):
+                              partner_feed_dim=5,
+                              seed_ckpt_env_steps=None,
+                              seed_ckpt_kind="best"):
     """Generate cross-play videos: pair seed_i (agent 0) with seed_j (agent 1).
 
     Records a few episodes for each off-diagonal pair and logs as wandb videos.
@@ -1013,7 +1018,14 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
             clip = ImageSequenceClip(all_video_frames, fps=fps)
             clip.write_videofile(video_path, fps=fps, codec='libx264', audio=False,
                                  bitrate='8000k', preset='slow')
-            logger.log_video(f"{tag}/xp_video_s{seed_i}_vs_s{seed_j}", video_path, commit=False)
+            if seed_ckpt_env_steps is not None:
+                caption = (
+                    f"agent_0=seed {seed_i} ({seed_ckpt_kind} @ {seed_ckpt_env_steps[seed_i]:,}) | "
+                    f"agent_1=seed {seed_j} ({seed_ckpt_kind} @ {seed_ckpt_env_steps[seed_j]:,})"
+                )
+            else:
+                caption = f"agent_0=seed {seed_i} | agent_1=seed {seed_j}"
+            logger.log_video(f"{tag}/xp_video_s{seed_i}_vs_s{seed_j}", video_path, commit=False, caption=caption)
             print(f"[card_game] XP video s{seed_i} vs s{seed_j}: {video_path} ({len(all_video_frames)} frames)")
 
 
@@ -1046,6 +1058,7 @@ def _log_card_game_per_agent_obs_video(
     params_partner=None, video_filename="eval_card_game_per_agent.mp4",
     rng_seed_base=100, video_log_key=None,
     partner_feed_dim=5,
+    caption=None,
 ):
     """Eval video built from each agent's actual observation.
 
@@ -1165,7 +1178,7 @@ def _log_card_game_per_agent_obs_video(
         bitrate='8000k', preset='slow',
     )
     log_key = video_log_key or f"{tag}/eval_video_per_agent"
-    logger.log_video(log_key, video_path, commit=False)
+    logger.log_video(log_key, video_path, commit=False, caption=caption)
     print(
         f"[card_game] Saved per-agent eval video: {video_path} "
         f"({len(all_video_frames)} frames, {len(all_video_frames)/fps:.0f}s)"
