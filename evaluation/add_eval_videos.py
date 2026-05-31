@@ -286,6 +286,14 @@ def main():
         print(f"Card-game eval videos added to {wb_run.url}")
         return
 
+    # LBF JA policies augment each step's obs with a per-fruit partner-attention
+    # feed; `run_episode_with_states` reproduces it when given an `lbf_ctx`.
+    # Without this the obs shape won't match what the policy was trained on.
+    lbf_ctx = None
+    if env_name in ("lbf", "lbf-reward-shaping") and bool(alg_config.get("JA_FRUIT_PARTNER_FEED", True)):
+        from agents.lbf.ja_lbf_attention import lbf_attention_ctx
+        lbf_ctx = lbf_attention_ctx(alg_config, env)
+
     for seed_idx in range(num_seeds):
         params = jax.tree.map(lambda x: x[seed_idx], final_params)
 
@@ -293,7 +301,7 @@ def main():
             jax.random.PRNGKey(42 + seed_idx), inner_env, params, policy,
             params, policy, max_steps,
             collect_attention=True,
-            partner_feed_dim=partner_feed_dim,
+            lbf_ctx=lbf_ctx,
         )
         print(f"Seed {seed_idx}: {len(ep_states)} frames collected")
 
