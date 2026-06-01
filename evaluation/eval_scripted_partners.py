@@ -2,16 +2,19 @@
 
 Pairs the trained ego (agent_0) with `RandomAgent` or `SequentialFruitAgent`
 (agent_1) and runs N episodes per ego seed. Each step the ego's
-JA_FRUIT_PARTNER_FEED channel is populated with a **uniform-over-alive**
-vector (1/num_alive on alive lex-slots, 0 on eaten) — matches the shape
-of training-time `per_fruit_attn` for an uninformative partner (alive mask
-+ renormalization), but with no peakedness anywhere. Run on aux and
-baseline egos and compare the gap.
+JA_FRUIT_PARTNER_FEED channel is populated by `--feed-mode`.
+
+For sequential partners, `target-onehot` is the useful diagnostic: the feed is
+the partner's previous-step scripted target fruit as a one-hot vector in the
+same lexicographic fruit-slot order used by training-time `per_fruit_attn`.
+This tests whether an ego trained with aux + per-fruit partner feed benefits
+from a clean scripted apple/fruit-attention signal.
 
 Usage:
     ./run_gpu.sh 0 evaluation.eval_scripted_partners \\
         --from-wandb --run-id be9uqslh \\
-        --partner seq_nearest --num-episodes 64 [--upload-wandb]
+        --partner seq_nearest --feed-mode target-onehot \\
+        --num-episodes 64 [--upload-wandb]
 """
 from __future__ import annotations
 
@@ -99,6 +102,8 @@ PARTNERS = {
     ),
 }
 
+FEED_MODES = ("uniform-alive", "target-onehot", "zeros", "constant-uniform")
+
 
 def _unwrap_lbf(state):
     s = state
@@ -129,8 +134,57 @@ def _uniform_over_alive_lex(env_state) -> jnp.ndarray:
     return alive_lex / num_alive
 
 
+def _constant_uniform(num_fruits: int) -> jnp.ndarray:
+    return jnp.ones(num_fruits, dtype=jnp.float32) / float(num_fruits)
+
+
+def _scripted_target_onehot_lex(env_state, partner_hstate,
+                                num_fruits: int) -> jnp.ndarray:
+    """One-hot scripted target in the ego channel's lex fruit-slot order.
+
+    SequentialFruitAgent stores its current target in `hstate.sequence[hstate.idx]`.
+    That sequence may be nearest/farthest/etc.; the JA scalar suffix, however,
+    is always lex-sorted by fruit position. This converts from the scripted
+    agent's target position back into the lex slot index.
+    """
+    if not hasattr(partner_hstate, "sequence") or not hasattr(partner_hstate, "idx"):
+        return _uniform_over_alive_lex(env_state)
+
+    lbf_state = _unwrap_lbf(env_state)
+    food_pos = lbf_state.food_items.position
+    food_eaten = lbf_state.food_items.eaten
+    order = jnp.lexsort((food_pos[:, 1], food_pos[:, 0]))
+    food_pos_lex = food_pos[order]
+    eaten_lex = food_eaten[order]
+
+    idx = jnp.clip(partner_hstate.idx, 0, num_fruits - 1)
+    target = partner_hstate.sequence[idx]
+    matches = jnp.all(food_pos_lex == target, axis=-1) & ~eaten_lex
+    valid = jnp.any(matches)
+    onehot = matches.astype(jnp.float32)
+    return jax.lax.cond(
+        valid,
+        lambda: onehot / jnp.maximum(onehot.sum(), 1.0),
+        lambda: _uniform_over_alive_lex(env_state),
+    )
+
+
+def _feed_from_mode(feed_mode: str, env_state, partner_hstate,
+                    num_fruits: int) -> jnp.ndarray:
+    if feed_mode == "uniform-alive":
+        return _uniform_over_alive_lex(env_state)
+    if feed_mode == "target-onehot":
+        return _scripted_target_onehot_lex(env_state, partner_hstate, num_fruits)
+    if feed_mode == "zeros":
+        return jnp.zeros(num_fruits, dtype=jnp.float32)
+    if feed_mode == "constant-uniform":
+        return _constant_uniform(num_fruits)
+    raise ValueError(f"Unknown feed mode: {feed_mode!r}")
+
+
 def _run_episode(rng, env, ego_policy, ego_params, partner_policy,
-                 max_steps, use_partner_feed: bool, num_fruits: int) -> float:
+                 max_steps, use_partner_feed: bool, num_fruits: int,
+                 feed_mode: str) -> float:
     inner_env = env._env
     rng, reset_rng = jax.random.split(rng)
     obs, env_state = inner_env.reset(reset_rng)
@@ -138,6 +192,7 @@ def _run_episode(rng, env, ego_policy, ego_params, partner_policy,
 
     hstate_ego = ego_policy.init_hstate(1)
     hstate_partner = partner_policy.init_hstate(1, aux_info={"agent_id": 1})
+    prev_partner_feed = _constant_uniform(num_fruits)
 
     total_reward = 0.0
     step = 0
@@ -146,8 +201,7 @@ def _run_episode(rng, env, ego_policy, ego_params, partner_policy,
 
         obs_ego = obs["agent_0"]
         if use_partner_feed:
-            partner_feed = _uniform_over_alive_lex(env_state)
-            obs_ego = jnp.concatenate([obs_ego, partner_feed])
+            obs_ego = jnp.concatenate([obs_ego, prev_partner_feed])
 
         rng, ego_rng, partner_rng, step_rng = jax.random.split(rng, 4)
 
@@ -180,9 +234,18 @@ def _run_episode(rng, env, ego_policy, ego_params, partner_policy,
             greedy=True,
         )
         act_partner = jnp.asarray(act_partner).squeeze()
+        next_partner_feed = _feed_from_mode(
+            feed_mode, env_state, hstate_partner, num_fruits,
+        )
 
         env_act = {"agent_0": act_ego, "agent_1": act_partner}
         obs, env_state, reward, done, _info = inner_env.step(step_rng, env_state, env_act)
+        if use_partner_feed:
+            prev_partner_feed = jnp.where(
+                done["__all__"].squeeze(),
+                _constant_uniform(num_fruits),
+                next_partner_feed,
+            )
         total_reward += float(reward["agent_0"])
         step += 1
 
@@ -206,6 +269,11 @@ def main():
     parser.add_argument("--partner", required=True, choices=list(PARTNERS),
                         help=f"Which scripted partner to pair with. "
                              f"Options: {', '.join(PARTNERS)}.")
+    parser.add_argument("--feed-mode", default="uniform-alive",
+                        choices=list(FEED_MODES),
+                        help="How to populate the ego's JA_FRUIT_PARTNER_FEED "
+                             "suffix when it exists. target-onehot uses the "
+                             "sequential partner's lagged scripted target fruit.")
     parser.add_argument("--num-episodes", type=int, default=64)
     parser.add_argument("--eval-seed", type=int, default=2026)
     parser.add_argument("--ego-seeds", nargs="+", type=int, default=None,
@@ -262,7 +330,7 @@ def main():
           f"episodes/seed={args.num_episodes}", flush=True)
     print(f"[eval_scripted_partners] partner={partner_label}", flush=True)
     print(f"[eval_scripted_partners] partner-feed injection: "
-          f"{'uniform-over-alive (lex)' if use_partner_feed else 'OFF (ego obs has no partner-feed channel)'}",
+          f"{args.feed_mode if use_partner_feed else 'OFF (ego obs has no partner-feed channel)'}",
           flush=True)
 
     eval_rng = jax.random.PRNGKey(args.eval_seed)
@@ -275,9 +343,9 @@ def main():
             eval_rng, ep_rng = jax.random.split(eval_rng)
             returns[ep] = _run_episode(
                 ep_rng, env, ego_policy, params_i, partner_policy,
-                max_steps, use_partner_feed, num_fruits,
+                max_steps, use_partner_feed, num_fruits, args.feed_mode,
             )
-            rows.append((seed_idx, args.partner, ep, float(returns[ep])))
+            rows.append((seed_idx, args.partner, args.feed_mode, ep, float(returns[ep])))
         seed_mean = float(returns.mean())
         seed_std = float(returns.std())
         seed_means.append(seed_mean)
@@ -289,6 +357,7 @@ def main():
     print()
     print("=" * 72)
     print(f"SUMMARY for run {args.run_id} (final_params) vs {partner_label}")
+    print(f"  feed mode: {args.feed_mode if use_partner_feed else 'off'}")
     print(f"  ego seeds: {len(seed_indices)}   episodes/seed: {args.num_episodes}")
     print(f"  mean of seed-means: {vals.mean():.4f}")
     print(f"  std across seeds  : {vals.std():.4f}")
@@ -297,12 +366,12 @@ def main():
     print("=" * 72)
 
     output_csv = args.output_csv or os.path.join(
-        "artifacts", f"eval_scripted_{args.run_id}_{args.partner}.csv",
+        "artifacts", f"eval_scripted_{args.run_id}_{args.partner}_{args.feed_mode}.csv",
     )
     os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
     with open(output_csv, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["ego_seed", "partner", "episode", "return"])
+        w.writerow(["ego_seed", "partner", "feed_mode", "episode", "return"])
         w.writerows(rows)
     print(f"[eval_scripted_partners] wrote {len(rows)} rows -> {output_csv}", flush=True)
 
@@ -313,10 +382,10 @@ def main():
             id=args.run_id, resume="must",
         )
         run.log({
-            f"ScriptedPartnerEval/{args.partner}/return_mean": float(vals.mean()),
-            f"ScriptedPartnerEval/{args.partner}/return_std": float(vals.std()),
-            f"ScriptedPartnerEval/{args.partner}/n_seeds": int(len(seed_indices)),
-            f"ScriptedPartnerEval/{args.partner}/n_eps_per_seed": int(args.num_episodes),
+            f"ScriptedPartnerEval/{args.partner}/{args.feed_mode}/return_mean": float(vals.mean()),
+            f"ScriptedPartnerEval/{args.partner}/{args.feed_mode}/return_std": float(vals.std()),
+            f"ScriptedPartnerEval/{args.partner}/{args.feed_mode}/n_seeds": int(len(seed_indices)),
+            f"ScriptedPartnerEval/{args.partner}/{args.feed_mode}/n_eps_per_seed": int(args.num_episodes),
         }, commit=True)
         run.finish()
         print(f"[eval_scripted_partners] uploaded summary to wandb run {args.run_id}",
