@@ -121,7 +121,9 @@ def _build_pair_runner(ev, greedy: bool, partner_feed_dim: int, card_masks):
     def _run_one_episode(rng, params_a, params_b):
         rng, reset_rng = jax.random.split(rng)
         obs, env_state = ev.env.reset(reset_rng)
-        done = {k: jnp.zeros((1,), dtype=bool) for k in ev.env.agents + ["__all__"]}
+        # scalar to match env.step's done shape — the lax.cond in _scan_step
+        # needs both branches' carries to share the done dtype/shape.
+        done = {k: jnp.zeros((), dtype=bool) for k in ev.env.agents + ["__all__"]}
 
         hstate_0 = ev.policy.init_hstate(1)
         hstate_1 = ev.policy.init_hstate(1)
