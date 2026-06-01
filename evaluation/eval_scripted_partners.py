@@ -203,7 +203,9 @@ def _make_episode_runner(env, ego_policy, ego_uses_attention: bool,
     def episode_fn(rng, ego_params):
         rng, reset_rng = jax.random.split(rng)
         obs0, env_state0 = inner_env.reset(reset_rng)
-        done0 = {k: jnp.zeros((1,), dtype=bool) for k in inner_env.agents + ["__all__"]}
+        # `inner_env.step` returns `done` values as scalar bool[] — match that
+        # shape in the init so `lax.scan` sees identical carry types in/out.
+        done0 = {k: jnp.bool_(False) for k in inner_env.agents + ["__all__"]}
         prev_partner_feed0 = _constant_uniform(num_fruits)
 
         def step_body(carry, _):
