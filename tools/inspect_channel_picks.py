@@ -264,20 +264,66 @@ def main():
     all_lookbacks = []
     all_step_on_masses = []      # on_mass at EVERY step (excludes the NA first step)
     all_step_uniform_bls = []    # the matching uniform baselines
+    per_seed = {
+        s: {"lookbacks": [], "on_masses": [], "uniform_bls": [], "returns": []}
+        for s in args.seeds
+    }
     for seed_idx in args.seeds:
         params_i = jax.tree.map(lambda x: x[seed_idx], all_params)
         print(f"\n#### Ego seed {seed_idx} ####")
         for ep in range(args.num_episodes):
             eval_rng, ep_rng = jax.random.split(eval_rng)
-            ep_lookbacks, _ret, history = _run_one_episode(
+            ep_lookbacks, ep_ret, history = _run_one_episode(
                 ep_rng, env, policy, params_i, lbf_ctx, max_steps,
                 ep_idx=ep, lookback=args.lookback,
             )
             all_lookbacks.extend(ep_lookbacks)
+            per_seed[seed_idx]["lookbacks"].extend(ep_lookbacks)
+            per_seed[seed_idx]["returns"].append(ep_ret)
             for (_st, _pf, om, ub, _act, _eat) in history:
                 if not np.isnan(om):
                     all_step_on_masses.append(om)
                     all_step_uniform_bls.append(ub)
+                    per_seed[seed_idx]["on_masses"].append(om)
+                    per_seed[seed_idx]["uniform_bls"].append(ub)
+
+    # Per-seed comparison table — most useful when --seeds picks more than one
+    # ego seed and you want a direct head-to-head on channel meaningfulness.
+    if len(args.seeds) >= 2:
+        print("\n" + "=" * 88)
+        print("PER-SEED COMPARISON (channel meaningfulness side-by-side)")
+        print("-" * 88)
+        header = (f"  {'seed':>4s}  {'eats':>5s}  {'ret_mean':>9s}  "
+                  f"{'mass@k=1':>9s}  {'%top1@k=1':>10s}  {'%top3@k=1':>10s}  "
+                  f"{'on_mass_mean':>13s}  {'ratio_mean':>11s}")
+        print(header)
+        for s in args.seeds:
+            seed_data = per_seed[s]
+            n_eats = len(seed_data["lookbacks"])
+            ret_mean = float(np.mean(seed_data["returns"])) if seed_data["returns"] else float("nan")
+            # mass / rank at k=1
+            mass_k1, rank_k1 = [], []
+            for ev in seed_data["lookbacks"]:
+                for row in ev["table"]:
+                    if row[0] == 1:
+                        mass_k1.append(row[2]); rank_k1.append(row[3])
+                        break
+            mass_k1_str = f"{np.mean(mass_k1):.4f}" if mass_k1 else "  NA  "
+            top1_str = f"{(np.asarray(rank_k1) == 1).mean()*100:5.1f}%" if rank_k1 else " NA "
+            top3_str = f"{(np.asarray(rank_k1) <= 3).mean()*100:5.1f}%" if rank_k1 else " NA "
+            # on_mass / ratio
+            if seed_data["on_masses"]:
+                om_arr = np.asarray(seed_data["on_masses"])
+                ub_arr = np.asarray(seed_data["uniform_bls"])
+                ratio_arr = om_arr / np.maximum(ub_arr, 1e-8)
+                om_str = f"{om_arr.mean():.4f}"
+                ratio_str = f"{ratio_arr.mean():.3f}×"
+            else:
+                om_str = "  NA  "; ratio_str = "  NA  "
+            print(f"  {s:>4d}  {n_eats:>5d}  {ret_mean:>9.4f}  "
+                  f"{mass_k1_str:>9s}  {top1_str:>10s}  {top3_str:>10s}  "
+                  f"{om_str:>13s}  {ratio_str:>11s}")
+        print("=" * 88)
 
     # Aggregate: rank distribution and mass distribution at each k.
     if not all_lookbacks:
