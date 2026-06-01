@@ -291,7 +291,8 @@ def main():
     for k in range(1, args.lookback + 1):
         masses, ranks = [], []
         for ev in all_lookbacks:
-            for (kk, _ti, mass, rank, _am) in ev["table"]:
+            for row in ev["table"]:
+                kk, _ti, mass, rank = row[0], row[1], row[2], row[3]
                 if kk == k:
                     masses.append(mass); ranks.append(rank)
                     break
