@@ -595,46 +595,53 @@ def run_ja_ippo_lbf(config, logger):
 
 
 def _log_eval_video(algorithm_config, env, out, logger):
-    """Run one eval episode with final params (seed 0), log base + per-agent
-    attention-overlay videos to wandb."""
+    """Render one eval episode per training seed and log base + per-agent
+    attention-overlay videos to wandb under per-seed tags. Without per-seed
+    tags every seed would overwrite the same wandb media slot, leaving only
+    the last one visible — which is why earlier runs only had a single video.
+    """
     from evaluation.vis_episodes import make_attention_video, run_episode_with_states
 
     rng = jax.random.PRNGKey(0)
     policy, _ = initialize_ja_image_agent(algorithm_config, env, rng)
-    final_params = jax.tree.map(lambda x: x[0], out["final_params"])
     inner_env = env._env
 
-    # Build lbf_ctx mirroring the training-time per-fruit partner-feed wiring,
+    # Build lbf_ctx mirroring the training-time per-fruit partner-feed wiring
     # so the eval rollout sees the same obs the trained policy expects.
     lbf_ctx = None
     if bool(algorithm_config.get("JA_FRUIT_PARTNER_FEED", True)):
         lbf_ctx = lbf_attention_ctx(algorithm_config, env)
 
     max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
-    ep_states, attn_data, _ep_actions, _ep_messages = run_episode_with_states(
-        jax.random.PRNGKey(42), inner_env, final_params, policy,
-        final_params, policy, max_steps,
-        collect_attention=True, lbf_ctx=lbf_ctx,
-    )
-    print(f"[ja_ippo_lbf] Eval episode: {len(ep_states)} frames collected", flush=True)
-
     savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    video_dir = f"{savedir}/videos"
-    os.makedirs(video_dir, exist_ok=True)
-
-    frames = _render_lbf_eval_frames(inner_env, ep_states)
 
     from moviepy import ImageSequenceClip
-    base_path = f"{video_dir}/eval_final.mp4"
-    ImageSequenceClip(frames, fps=10).write_videofile(
-        base_path, fps=10, codec="libx264", audio=False,
-        bitrate="8000k", preset="slow",
-    )
-    logger.log_video("Eval/episode_video", base_path, commit=False)
 
-    attn_base = f"{video_dir}/eval_attention.mp4"
-    make_attention_video(frames, attn_data, filename=attn_base, fps=10)
-    for suffix in ("agent0", "agent1", "combined"):
-        p = f"{video_dir}/eval_attention_{suffix}.mp4"
-        if os.path.exists(p):
-            logger.log_video(f"Eval/attention_{suffix}", p, commit=False)
+    num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
+    print(f"[ja_ippo_lbf] Logging eval videos for {num_seeds} seeds", flush=True)
+    for seed_idx in range(num_seeds):
+        seed_params = jax.tree.map(lambda x, _s=seed_idx: x[_s], out["final_params"])
+        ep_states, attn_data, _ep_actions, _ep_messages = run_episode_with_states(
+            jax.random.PRNGKey(42 + seed_idx),
+            inner_env, seed_params, policy, seed_params, policy, max_steps,
+            collect_attention=True, lbf_ctx=lbf_ctx,
+        )
+        print(f"[ja_ippo_lbf] seed {seed_idx}: {len(ep_states)} frames", flush=True)
+
+        video_dir = f"{savedir}/videos/seed_{seed_idx}"
+        os.makedirs(video_dir, exist_ok=True)
+        frames = _render_lbf_eval_frames(inner_env, ep_states)
+
+        base_path = f"{video_dir}/eval_final.mp4"
+        ImageSequenceClip(frames, fps=10).write_videofile(
+            base_path, fps=10, codec="libx264", audio=False,
+            bitrate="8000k", preset="slow",
+        )
+        logger.log_video(f"Eval/seed_{seed_idx}/episode_video", base_path, commit=False)
+
+        attn_base = f"{video_dir}/eval_attention.mp4"
+        make_attention_video(frames, attn_data, filename=attn_base, fps=10)
+        for suffix in ("agent0", "agent1", "combined"):
+            p = f"{video_dir}/eval_attention_{suffix}.mp4"
+            if os.path.exists(p):
+                logger.log_video(f"Eval/seed_{seed_idx}/attention_{suffix}", p, commit=False)
