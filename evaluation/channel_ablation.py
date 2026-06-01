@@ -43,7 +43,7 @@ from envs.log_wrapper import LogWrapper
 from evaluation.add_eval_videos import _materialize_from_wandb
 
 
-CONDITIONS = ("normal", "zeros", "uniform-alive")
+CONDITIONS = ("normal", "zeros", "uniform-alive", "constant-uniform")
 
 
 def _unwrap_lbf(state):
@@ -99,6 +99,11 @@ def _apply_ablation(pca_real: jnp.ndarray, env_state, condition: str,
         return jnp.zeros(num_fruits, dtype=jnp.float32)
     if condition == "uniform-alive":
         return _uniform_alive_lex(env_state, num_fruits)
+    if condition == "constant-uniform":
+        # State-independent: [1/N, ..., 1/N] every step regardless of eaten mask.
+        # Strongest form of "no signal" — also OOD vs training, since the
+        # trainer's per_fruit_attn always zeros out eaten slots.
+        return jnp.ones(num_fruits, dtype=jnp.float32) / float(num_fruits)
     raise ValueError(f"Unknown condition: {condition!r}")
 
 
