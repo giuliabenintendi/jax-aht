@@ -1,12 +1,12 @@
 """Channel-ablation eval for a JA-IPPO LBF ego.
 
 Pairs the trained ego with itself (self-play, same seed, parameter-shared)
-and measures how the team return changes when we corrupt agent_0's
-JA_FRUIT_PARTNER_FEED channel.
+and measures how the team return changes when we corrupt the
+JA_FRUIT_PARTNER_FEED channel input for BOTH agents symmetrically.
 
 Both agents are the SAME trained policy, so partner identity is held
-constant — any return change isolates the channel's effect on agent_0's
-behavior. Agent_1 always sees the real (un-ablated) channel.
+constant — any return change isolates the policy's reliance on the channel
+as an action-relevant input.
 
 Conditions:
   - normal       : agent_0 sees the real per_fruit_attn(agent_1's attention).
@@ -128,9 +128,11 @@ def _run_episode(rng, env, policy, params, condition: str, lbf_ctx,
     while not bool(done["__all__"]) and step < max_steps:
         avail = inner_env.get_avail_actions(env_state)
 
-        # Agent_0's channel is the ablation target. Agent_1's channel is real.
+        # Apply the ablation symmetrically to BOTH agents so the comparison
+        # measures the policy's reliance on the channel as an input — not just
+        # one side's degradation while the other gets normal signal.
         pca_0_input = _apply_ablation(prev_pca_0, env_state, condition, num_fruits)
-        pca_1_input = prev_pca_1
+        pca_1_input = _apply_ablation(prev_pca_1, env_state, condition, num_fruits)
 
         obs_0 = jnp.concatenate([obs["agent_0"], pca_0_input])
         obs_1 = jnp.concatenate([obs["agent_1"], pca_1_input])
@@ -225,7 +227,7 @@ def main():
           f"episodes/seed={args.num_episodes}  conditions={args.conditions}",
           flush=True)
     print(f"[channel_ablation] partner=trained ego (self-play, same seed)  "
-          f"ablation applied to agent_0's channel only", flush=True)
+          f"ablation applied SYMMETRICALLY to both agents' channels", flush=True)
 
     rows = []                                        # (seed, condition, ep, return)
     seed_means = {c: [] for c in args.conditions}
@@ -251,7 +253,7 @@ def main():
 
     print()
     print("=" * 78)
-    print(f"SUMMARY for run {args.run_id} (final_params, self-play, agent_0 channel ablated)")
+    print(f"SUMMARY for run {args.run_id} (final_params, self-play, both-agent channel ablated)")
     print(f"  ego seeds: {len(seed_indices)}   episodes/seed: {args.num_episodes}")
     print("-" * 78)
     print(f"  {'condition':<16s}  {'mean of seed-means':>22s}  "
