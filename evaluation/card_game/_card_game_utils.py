@@ -150,17 +150,26 @@ def load_card_game_eval(
     policy, _ = init_fn(alg_config, env_wrapped, jax.random.PRNGKey(0))
 
     run_data = load_train_run_no_convert(checkpoint_path)
-    stacked_ckpts = run_data["checkpoints"]
-    if use_latest:
-        # Last saved chunk per seed. Skips per-ckpt scoring — fine for any
-        # qualitative analysis where "trained policy" is enough.
-        best_params = jax.tree.map(lambda c: np.asarray(c)[:, -1], stacked_ckpts)
-        best_idx = None
+    if "checkpoints" not in run_data:
+        # Reconstructed checkpoint: reconstruct_best.py rebuilds saved_train_run
+        # from the per-chunk folders after a post-train failure, saving only
+        # best_params + final_params (no chunk stack or metrics to score). Use
+        # the already-selected best_params directly (final_params under use_latest).
+        best_params = run_data["final_params"] if use_latest else run_data["best_params"]
+        best_idx = run_data.get("best_ckpt_idx")
         per_ckpt_return = None
     else:
-        best_params, best_idx, per_ckpt_return = select_best_per_seed_params(
-            run_data, alg_config,
-        )
+        stacked_ckpts = run_data["checkpoints"]
+        if use_latest:
+            # Last saved chunk per seed. Skips per-ckpt scoring — fine for any
+            # qualitative analysis where "trained policy" is enough.
+            best_params = jax.tree.map(lambda c: np.asarray(c)[:, -1], stacked_ckpts)
+            best_idx = None
+            per_ckpt_return = None
+        else:
+            best_params, best_idx, per_ckpt_return = select_best_per_seed_params(
+                run_data, alg_config,
+            )
 
     num_seeds = int(jax.tree.leaves(best_params)[0].shape[0])
     max_steps = int(env_kwargs.get("max_steps", 8))
