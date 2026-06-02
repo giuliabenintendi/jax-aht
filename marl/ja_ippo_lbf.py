@@ -460,12 +460,9 @@ def run_ja_ippo_lbf(config, logger):
     env = make_env(algorithm_config["ENV_NAME"], algorithm_config["ENV_KWARGS"])
     env = LogWrapper(env)
 
+    configure_training_dims(algorithm_config, env)
     num_seeds = algorithm_config["NUM_SEEDS"]
-    num_updates = int(
-        algorithm_config["TOTAL_TIMESTEPS"]
-        // algorithm_config["ROLLOUT_LENGTH"]
-        // algorithm_config["NUM_ENVS"]
-    )
+    num_updates = algorithm_config["NUM_UPDATES"]
     num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
     ckpt_interval = max(1, num_updates // max(1, num_ckpts - 1))
 

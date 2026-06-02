@@ -338,12 +338,9 @@ def run_ja_ippo(config, logger):
     env = LogWrapper(env)
     mech = select_mechanism(algorithm_config, env)
 
+    configure_training_dims(algorithm_config, env)
     num_seeds = algorithm_config["NUM_SEEDS"]
-    num_updates = int(
-        algorithm_config["TOTAL_TIMESTEPS"]
-        // algorithm_config["ROLLOUT_LENGTH"]
-        // algorithm_config["NUM_ENVS"]
-    )
+    num_updates = algorithm_config["NUM_UPDATES"]
     print(
         f"[ja_ippo:{mech.name}] NUM_UPDATES={num_updates}, NUM_SEEDS={num_seeds}, "
         f"NUM_ENVS={algorithm_config['NUM_ENVS']}",
