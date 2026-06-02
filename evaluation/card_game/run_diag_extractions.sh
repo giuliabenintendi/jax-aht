@@ -18,8 +18,11 @@ set -uo pipefail
 shopt -s nullglob
 
 GPU="${1:-5}"
-EPISODES="${2:-1000}"
+EPISODES="${2:-300}"   # hidden states are bulky (~num_seeds*eps*T*2*hidden_dim f16)
 RESULTS="${RESULTS:-/scratch/benintendi/jax-aht/results}"
+
+# The npz format changed (now carries hidden states + canonical attention).
+# Old intents-only files are incompatible with the runner; this re-extracts all.
 
 EXTRA=()
 [[ -n "${MAX_SEEDS:-}" ]] && EXTRA+=(--max-seeds "$MAX_SEEDS")

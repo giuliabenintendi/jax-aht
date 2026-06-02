@@ -1,64 +1,42 @@
-"""Compute the five Dec-POMDP diagnostics (Tessera et al., AAMAS 2026) on
-card-game trajectories produced by `extract_diag_trajectories.py`.
+"""Paper-faithful Dec-POMDP diagnostics (Tessera et al., AAMAS 2026) for the card game.
 
-This runs in an ISOLATED environment: it imports only numpy and
-`dec_pomdp_diagnostics`, never JAX or this repo, so it runs locally on macOS
-where the training env cannot. The diagnostics package is pure scipy/sklearn.
+Replicates their pipeline as closely as an Other-Play image env allows:
+  - per-agent GROUND-TRUTH observation `[onehot(step), channel]` and ground-truth
+    action (the canonical emitted card), so obs and actions share one frame and
+    cross-agent coordination is defined (OP relabels per agent — see extractor);
+  - the RNN HIDDEN STATE is supplied, so the package computes their `*_hidden`
+    diagnostics, not only the obs-history `*_ohist` fallback;
+  - the NORMALIZED metrics (`oarR`, `harRcond`, `pifRcond`/`pifOARcond`, `aaRcond`,
+    `daiRcond`/`daiOARcond`) are reported with `rliable` bootstrap CIs (their
+    `rliable_mean_ci`), bolded when they exceed the permutation null;
+  - the four decision flags are aggregated per condition.
 
+Channel by condition (faithful to each observation function): op_only = none,
+comm = partner's previous canonical message, JA = partner's previous canonical
+attention feed.
+
+Runs in an isolated env (numpy + dec-pomdp-diagnostics, no JAX):
     uv run --no-project --with dec-pomdp-diagnostics --with numpy \\
         python evaluation/card_game/run_dec_pomdp_diagnostics.py \\
         --data-dir evaluation/card_game/diag_data \\
         --out evaluation/card_game/diag_data/diagnostics_table.csv
-
-Observation model
------------------
-Under Other-Play the ground-truth board is constant (symmetrized into per-agent
-recolour/shuffle), so the only varying, cross-agent-commensurable observation is
-the communication channel. Per agent per step:
-
-    O_i(t) = onehot(step)                                   (no-comm conditions)
-    O_i(t) = onehot(step) || onehot(partner's previous msg) (comm conditions)
-
-The action A_i(t) is the ground-truth emitted card (a message on deliberation
-steps, the pick on the decision step). The partner's previous message is the
-ground-truth card the partner emitted at t-1 (what the in-obs dot encodes); it is
-included only for `has_comm` runs because no-comm agents cannot observe it. One
-UserData = one run: each SP seed and each XP pair is scored independently, then
-aggregated per condition. SP values on shaped conditions are near-circular (the
-shaping reward directly pays for message coordination); the XP value and the
-SP->XP drop are the load-bearing numbers.
-
-The package reports each metric as a raw kNN-MI `*_max` (the stronger of the two
-agents/directions) against a permutation-null `*_max_null`; we report the
-`excess = raw - null` (signal above chance) plus the four Decision-Rule flags,
-which are the headline per-condition result.
 """
 from __future__ import annotations
 
 import argparse
 import csv
+import os
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
 import dec_pomdp_diagnostics as dpd
+from dec_pomdp_diagnostics import rliable_mean_ci
 
 NUM_CARDS = 5
 AGENTS = ("agent_0", "agent_1")
-
-# metrics= argument to compute_diagnostics (canonical short names).
 METRIC_ARG = ("oar", "har", "pif", "aa", "dai")
-
-# (label, raw key, null key, normalized key) in the returned metrics dict.
-# The `_ohist` variants are the observation-history estimators used when no RNN
-# hidden states are supplied.
-METRIC_SPECS = (
-    ("oar", "oar_max", "oar_max_null", "oarR_max"),
-    ("har", "har_ohist_max", "har_ohist_max_null", "harRcond_ohist_max"),
-    ("pif", "pif_ohist_max", "pif_ohist_max_null", "pifRcond_ohist_max"),
-    ("aa", "aa_max", "aa_max_null", "aaRcond_max"),
-    ("dai", "daiOA_ohist_max", "daiOA_ohist_max_null", "daiOARcond_ohist_max"),
-)
 FLAG_KEYS = (
     "history_dependence",
     "uses_hidden_teammate_info",
@@ -66,95 +44,109 @@ FLAG_KEYS = (
     "temporal_coordination",
 )
 
+# (label, normalized RNN/hidden col, its null, normalized obs-history col, its null)
+REPORT = (
+    ("OAR", "oarR_max", "oarR_max_null", "oarR_max", "oarR_max_null"),
+    ("HAR", "harRcond_hidden_max", "harRcond_hidden_max_null",
+     "harRcond_ohist_max", "harRcond_ohist_max_null"),
+    ("PIF", "pifRcond_hidden_max", "pifRcond_hidden_max_null",
+     "pifOARcond_ohist_max", "pifOARcond_ohist_max_null"),
+    ("AA", "aaRcond_max", "aaRcond_max_null", "aaRcond_max", "aaRcond_max_null"),
+    ("DAI", "daiRcond_hidden_max", "daiRcond_hidden_max_null",
+     "daiOARcond_ohist_max", "daiOARcond_ohist_max_null"),
+)
 
-def _onehot(idx: np.ndarray, n: int, jitter: float, rng: np.random.Generator) -> np.ndarray:
-    """One-hot `idx` into `n` columns, plus small Gaussian jitter so the kNN MI
-    estimators do not choke on exact ties in discrete-valued observations."""
+
+def _onehot(idx: np.ndarray, n: int) -> np.ndarray:
     oh = np.zeros((idx.shape[0], n), dtype=np.float64)
     oh[np.arange(idx.shape[0]), idx] = 1.0
-    if jitter > 0:
-        oh += jitter * rng.standard_normal(oh.shape)
     return oh
 
 
-def _build_userdata(intents: np.ndarray, has_comm: bool, scenario: str, seed: int,
-                    jitter: float) -> dpd.UserData:
-    """`intents`: `(E, T, 2)` ground-truth emitted card per agent per step."""
+def _build_userdata(intents, hstates, gt_attn, has_comm, has_attn, scenario, seed, jitter):
+    """`intents (E,T,2)`, `hstates (E,T,2,hdim)`, `gt_attn (E,T,2,5)` — all ground-truth."""
     rng = np.random.default_rng(seed)
     e, t, _ = intents.shape
     step = np.tile(np.arange(t), e).astype(np.int64)
     episode_ids = np.repeat(np.arange(e), t).astype(np.int64)
 
-    observations, actions = {}, {}
-    for i, agent in enumerate(AGENTS):
-        feats = [_onehot(step, t, jitter, rng)]
+    obs, acts, hid = {}, {}, {}
+    for i, ag in enumerate(AGENTS):
+        feats = [_onehot(step, t)]
         if has_comm:
-            partner_prev = np.full((e, t), -1, dtype=np.int64)
-            partner_prev[:, 1:] = intents[:, :-1, 1 - i]
-            # shift -1 (no message yet) into category 0
-            feats.append(_onehot(partner_prev.reshape(-1) + 1, NUM_CARDS + 1, jitter, rng))
-        observations[agent] = np.concatenate(feats, axis=1)
-        actions[agent] = intents[:, :, i].reshape(-1).astype(np.int64)
+            pm = np.full((e, t), -1, np.int64)
+            pm[:, 1:] = intents[:, :-1, 1 - i]
+            feats.append(_onehot(pm.reshape(-1) + 1, NUM_CARDS + 1))
+        if has_attn:
+            pa = np.zeros((e, t, gt_attn.shape[-1]), np.float64)
+            pa[:, 1:, :] = gt_attn[:, :-1, 1 - i, :].astype(np.float64)
+            feats.append(pa.reshape(e * t, -1))
+        o = np.concatenate(feats, axis=1)
+        if jitter > 0:
+            o = o + jitter * rng.standard_normal(o.shape)
+        obs[ag] = o
+        acts[ag] = intents[:, :, i].reshape(-1).astype(np.int64)
+        hid[ag] = hstates[:, :, i, :].reshape(e * t, -1).astype(np.float64)
 
     timesteps = {a: step for a in AGENTS}
     eids = {a: episode_ids for a in AGENTS}
-    # alg_name deliberately omits "RNN": we feed observation history, not hidden
-    # states, so the obs-history estimators are the intended path.
     return dpd.UserData(
-        observations=observations, actions=actions, timesteps=timesteps,
-        episode_ids=eids, env_name="card_game", alg_name="JA-IPPO",
+        observations=obs, actions=acts, timesteps=timesteps, episode_ids=eids,
+        hidden_states=hid, env_name="card_game", alg_name="JA-IPPO-RNN",
         seed=seed, scenario_name=scenario,
     )
 
 
-def _score_run(intents: np.ndarray, has_comm: bool, scenario: str, seed: int,
-               history_k: int, null_reps: int, jitter: float) -> dict:
-    data = _build_userdata(intents, has_comm, scenario, seed, jitter)
+def _score_run(task):
+    (intents, hstates, gt_attn, has_comm, has_attn, scenario, seed,
+     condition, kind, idx, history_k, null_reps, jitter, max_samples) = task
+    data = _build_userdata(intents, hstates, gt_attn, has_comm, has_attn, scenario, seed, jitter)
     result = dpd.compute_diagnostics(
-        data, history_k=history_k, null_reps=null_reps, metrics=METRIC_ARG,
+        data, history_k=history_k, null_reps=null_reps,
+        max_samples=max_samples, metrics=METRIC_ARG,
     )
-    m = result.metrics
-    row: dict = {"scenario": scenario}
-    for label, raw_k, null_k, norm_k in METRIC_SPECS:
-        raw = float(m.get(raw_k, float("nan")))
-        null = float(m.get(null_k, float("nan")))
-        row[f"raw.{label}"] = raw
-        row[f"null.{label}"] = null
-        row[f"excess.{label}"] = raw - null
-        row[f"norm.{label}"] = float(m.get(norm_k, float("nan")))
-    for fk in FLAG_KEYS:
-        row[f"flag.{fk}"] = bool(result.flags.get(fk, False))
+    row = {"condition": condition, "kind": kind, "idx": idx}
+    row.update({k: float(v) for k, v in result.metrics.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)})
+    row.update({f"flag.{k}": bool(result.flags.get(k, False)) for k in FLAG_KEYS})
     return row
 
 
-def _nanmean(vals: list[float]) -> float:
-    arr = np.array(vals, dtype=np.float64)
-    arr = arr[~np.isnan(arr)]
-    return float(arr.mean()) if arr.size else float("nan")
+_RLIABLE_OK = True  # set False in main() if rliable's deps fail to import
 
 
-def _summarize(rows: list[dict]) -> dict:
-    """Mean excess per metric + flag-True fraction over a set of run rows."""
-    out: dict = {}
-    for label, *_ in METRIC_SPECS:
-        out[f"excess.{label}"] = _nanmean([r[f"excess.{label}"] for r in rows])
-    for fk in FLAG_KEYS:
-        out[f"flag.{fk}"] = (
-            float(np.mean([r[f"flag.{fk}"] for r in rows])) if rows else float("nan")
-        )
-    return out
+def _bootstrap_ci(arr, reps=5000):
+    rng = np.random.default_rng(0)
+    means = arr[rng.integers(0, arr.size, (reps, arr.size))].mean(axis=1)
+    return (float(arr.mean()), float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5)))
+
+
+def _ci(vals):
+    arr = np.array([v for v in vals if v is not None and not np.isnan(v)], dtype=np.float64)
+    if arr.size == 0:
+        return (float("nan"), float("nan"), float("nan"))
+    if arr.size == 1:
+        return (float(arr[0]), float(arr[0]), float(arr[0]))
+    if _RLIABLE_OK:
+        try:
+            return rliable_mean_ci(arr)
+        except Exception:
+            pass
+    return _bootstrap_ci(arr)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", default="evaluation/card_game/diag_data",
-                        help="Directory of <condition>.npz files from the extractor.")
-    parser.add_argument("--conditions", nargs="*", default=None,
-                        help="Condition basenames to include (default: all .npz in data-dir).")
-    parser.add_argument("--out", default=None, help="CSV path for the per-run table.")
+    parser.add_argument("--data-dir", default="evaluation/card_game/diag_data")
+    parser.add_argument("--conditions", nargs="*", default=None)
+    parser.add_argument("--out", default=None, help="Per-run CSV path.")
     parser.add_argument("--history-k", type=int, default=3)
     parser.add_argument("--null-reps", type=int, default=5)
+    parser.add_argument("--max-samples", type=int, default=8000)
     parser.add_argument("--jitter", type=float, default=1e-6)
+    parser.add_argument("--workers", type=int, default=os.cpu_count())
+    parser.add_argument("--variant", choices=("hidden", "ohist"), default="hidden",
+                        help="Which normalized variant to print (RNN hidden vs obs-history).")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -165,58 +157,79 @@ def main() -> None:
     if not files:
         raise SystemExit(f"No .npz files found in {data_dir}")
 
-    per_run: list[dict] = []
-    summary: list[dict] = []
+    tasks = []
     for f in files:
         d = np.load(f, allow_pickle=True)
         cond = str(d["condition"])
-        has_comm = bool(d["has_comm"])
-        sp = d["sp_intents"]
-        xp = d["xp_intents"]
-        print(f"\n=== {cond}  (comm={has_comm})  sp={sp.shape}  xp={xp.shape} ===")
+        has_comm, has_attn = bool(d["has_comm"]), bool(d["has_attn"])
+        for kind in ("sp", "xp"):
+            inten, hsta, gat = d[f"{kind}_intents"], d[f"{kind}_hstates"], d[f"{kind}_gt_attn"]
+            for k in range(inten.shape[0]):
+                tasks.append((
+                    inten[k], hsta[k], gat[k], has_comm, has_attn,
+                    f"{cond}/{kind}/{k}", (0 if kind == "sp" else 100) + k,
+                    cond, kind, k, args.history_k, args.null_reps, args.jitter, args.max_samples,
+                ))
 
-        sp_rows, xp_rows = [], []
-        for kind, block, rows in (("sp", sp, sp_rows), ("xp", xp, xp_rows)):
-            for k in range(block.shape[0]):
-                r = _score_run(block[k], has_comm, f"{cond}/{kind}/{k}",
-                               seed=(0 if kind == "sp" else 100) + k,
-                               history_k=args.history_k, null_reps=args.null_reps,
-                               jitter=args.jitter)
-                r.update(condition=cond, kind=kind, idx=k)
-                per_run.append(r)
-                rows.append(r)
-                excess = "  ".join(f"{lab}={r['excess.' + lab]:+.3f}" for lab, *_ in METRIC_SPECS)
-                flags = "".join("1" if r["flag." + fk] else "0" for fk in FLAG_KEYS)
-                print(f"  {kind} {k:2d}: {excess}  flags[{''.join(fk[0] for fk in FLAG_KEYS)}]={flags}")
+    global _RLIABLE_OK
+    try:
+        rliable_mean_ci(np.array([0.1, 0.2, 0.3]))
+    except Exception as e:
+        _RLIABLE_OK = False
+        print(f"[warn] rliable unavailable ({type(e).__name__}); using percentile-bootstrap CIs "
+              f"(equivalent to their stratified-mean bootstrap for a single group).")
 
-        summary.append({"condition": cond, "comm": has_comm,
-                        "sp": _summarize(sp_rows), "xp": _summarize(xp_rows)})
+    print(f"Scoring {len(tasks)} runs on {args.workers} workers ...")
+    if args.workers and args.workers > 1:
+        with ProcessPoolExecutor(max_workers=args.workers) as ex:
+            rows = list(ex.map(_score_run, tasks))
+    else:
+        rows = [_score_run(t) for t in tasks]
 
-    _print_summary(summary)
+    # Per (condition, kind) aggregation with rliable CIs over the normalized variant.
+    conds = sorted({r["condition"] for r in rows})
+    hid = args.variant == "hidden"
+    summary = []
+    print("\n" + "=" * 96)
+    print(f"PER-CONDITION NORMALISED DIAGNOSTICS ({args.variant}), rliable mean [95% CI]; "
+          f"* exceeds null. flags = {', '.join(k[0] for k in FLAG_KEYS)} share")
+    for cond in conds:
+        for kind in ("sp", "xp"):
+            grp = [r for r in rows if r["condition"] == cond and r["kind"] == kind]
+            if not grp:
+                continue
+            cells, rec = [], {"condition": cond, "kind": kind, "n": len(grp)}
+            for label, hcol, hnull, ocol, onull in REPORT:
+                col, ncol = (hcol, hnull) if hid else (ocol, onull)
+                m, lo, up = _ci([r.get(col, np.nan) for r in grp])
+                null_m = np.nanmean([r.get(ncol, np.nan) for r in grp])
+                star = "*" if (not np.isnan(m) and not np.isnan(null_m) and m > null_m) else " "
+                cells.append(f"{label} {m:+.3f}[{lo:+.3f},{up:+.3f}]{star}")
+                rec[f"{label}.mean"], rec[f"{label}.lo"], rec[f"{label}.hi"] = m, lo, up
+                rec[f"{label}.null"] = float(null_m)
+            flags = " ".join(f"{np.mean([r[f'flag.{k}'] for r in grp]):.2f}" for k in FLAG_KEYS)
+            rec["flags"] = flags
+            summary.append(rec)
+            print(f"\n{cond:<14} {kind:<3} (n={len(grp):2d})  flags[{flags}]")
+            print("    " + "   ".join(cells))
+
+    # Binary table (their build_paper_table logic: a rule holds for a condition iff
+    # ANY seed flags it; we report SP share across conditions).
+    print("\n" + "=" * 96)
+    print("DECISION-RULE SHARE across conditions (ANY seed per condition, SP):")
+    sp_conds = {c: [r for r in rows if r["condition"] == c and r["kind"] == "sp"] for c in conds}
+    for k in FLAG_KEYS:
+        n_pos = sum(any(r[f"flag.{k}"] for r in grp) for grp in sp_conds.values() if grp)
+        print(f"  {k:<28} {n_pos}/{len(conds)}")
 
     if args.out:
         out_path = Path(args.out)
-        keys = sorted({k for r in per_run for k in r})
+        keys = sorted({k for r in rows for k in r})
         with out_path.open("w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=keys)
             w.writeheader()
-            w.writerows(per_run)
+            w.writerows(rows)
         print(f"\nSaved per-run table -> {out_path}")
-
-
-def _print_summary(summary: list[dict]) -> None:
-    labels = [lab for lab, *_ in METRIC_SPECS]
-    print("\n" + "=" * 88)
-    print("PER-CONDITION SUMMARY")
-    print(f"\nMean excess-over-null per metric  (flag legend: {', '.join(FLAG_KEYS)})")
-    head = "condition".ljust(22) + "kind  " + "".join(f"{lab:>9}" for lab in labels) + "   flags"
-    print(head)
-    for s in summary:
-        for kind in ("sp", "xp"):
-            agg = s[kind]
-            metr = "".join(f"{agg['excess.' + lab]:>+9.3f}" for lab in labels)
-            flg = " ".join(f"{agg['flag.' + fk]:.2f}" for fk in FLAG_KEYS)
-            print(f"{s['condition'].ljust(22)}{kind:<6}{metr}   {flg}")
 
 
 if __name__ == "__main__":
