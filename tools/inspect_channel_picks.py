@@ -25,22 +25,11 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from agents.initialize_agents import initialize_ja_image_agent
-from agents.lbf.ja_lbf_attention import lbf_attention_ctx, per_fruit_attn
+from agents.lbf.ja_lbf_attention import _unwrap_lbf_state, lbf_attention_ctx, per_fruit_attn
 from common.save_load_utils import load_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 from evaluation.add_eval_videos import _materialize_from_wandb
-
-
-def _unwrap_lbf(state):
-    s = state
-    for _ in range(3):
-        if hasattr(s, "food_items"):
-            return s
-        s = getattr(s, "env_state", None)
-        if s is None:
-            break
-    raise AttributeError("Could not find inner LBF state with food_items")
 
 
 def _compute_lex_per_fruit(spatial_attn, env_state, lbf_ctx):
@@ -53,7 +42,7 @@ def _compute_lex_per_fruit(spatial_attn, env_state, lbf_ctx):
     is at that baseline, attention is uniform over the feature map and
     the renormalized per-fruit vector is purely a normalization artifact.
     """
-    lbf_state = _unwrap_lbf(env_state)
+    lbf_state = _unwrap_lbf_state(env_state)
     food_pos = lbf_state.food_items.position
     food_eaten = lbf_state.food_items.eaten
     pf, on_mass = per_fruit_attn(
@@ -69,13 +58,13 @@ def _compute_lex_per_fruit(spatial_attn, env_state, lbf_ctx):
 
 def _lex_order(env_state) -> np.ndarray:
     """Permutation that lex-sorts the env's food positions."""
-    lbf_state = _unwrap_lbf(env_state)
+    lbf_state = _unwrap_lbf_state(env_state)
     food_pos = np.asarray(lbf_state.food_items.position)
     return np.lexsort((food_pos[:, 1], food_pos[:, 0]))
 
 
 def _eaten_lex(env_state) -> np.ndarray:
-    lbf_state = _unwrap_lbf(env_state)
+    lbf_state = _unwrap_lbf_state(env_state)
     eaten = np.asarray(lbf_state.food_items.eaten)
     return eaten[_lex_order(env_state)]
 

@@ -32,6 +32,7 @@ from agents.lbf.agent_policy_wrappers import (
     LBFRandomPolicyWrapper,
     LBFSequentialFruitPolicyWrapper,
 )
+from agents.lbf.ja_lbf_attention import _unwrap_lbf_state
 from common.save_load_utils import load_train_run
 from envs import make_env
 from envs.log_wrapper import LogWrapper
@@ -105,17 +106,6 @@ PARTNERS = {
 FEED_MODES = ("uniform-alive", "target-onehot", "zeros", "constant-uniform")
 
 
-def _unwrap_lbf(state):
-    s = state
-    for _ in range(3):
-        if hasattr(s, "food_items"):
-            return s
-        s = getattr(s, "env_state", None)
-        if s is None:
-            break
-    raise AttributeError("Could not find inner LBF state with food_items")
-
-
 def _uniform_over_alive_lex(env_state) -> jnp.ndarray:
     """Build the partner-feed vector the aux ego saw at training shape:
     uniform-over-alive in LEX (row, col) slot order, zeros on eaten slots.
@@ -124,7 +114,7 @@ def _uniform_over_alive_lex(env_state) -> jnp.ndarray:
     flat (no-information) shape, since this script's partners don't actually
     emit a per-fruit signal.
     """
-    lbf_state = _unwrap_lbf(env_state)
+    lbf_state = _unwrap_lbf_state(env_state)
     food_pos = lbf_state.food_items.position           # (N, 2) int
     food_eaten = lbf_state.food_items.eaten            # (N,) bool
     order = jnp.lexsort((food_pos[:, 1], food_pos[:, 0]))
@@ -150,7 +140,7 @@ def _scripted_target_onehot_lex(env_state, partner_hstate,
     if not hasattr(partner_hstate, "sequence") or not hasattr(partner_hstate, "idx"):
         return _uniform_over_alive_lex(env_state)
 
-    lbf_state = _unwrap_lbf(env_state)
+    lbf_state = _unwrap_lbf_state(env_state)
     food_pos = lbf_state.food_items.position
     food_eaten = lbf_state.food_items.eaten
     order = jnp.lexsort((food_pos[:, 1], food_pos[:, 0]))

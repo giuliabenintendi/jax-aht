@@ -32,6 +32,7 @@ from omegaconf import OmegaConf
 
 from agents.initialize_agents import initialize_ja_image_agent
 from agents.lbf.ja_lbf_attention import (
+    _unwrap_lbf_state,
     lbf_attention_ctx,
     per_fruit_attn,
 )
@@ -44,22 +45,11 @@ from evaluation.add_eval_videos import _materialize_from_wandb
 CONDITIONS = ("normal", "zeros", "uniform-alive", "constant-uniform")
 
 
-def _unwrap_lbf(state):
-    s = state
-    for _ in range(3):
-        if hasattr(s, "food_items"):
-            return s
-        s = getattr(s, "env_state", None)
-        if s is None:
-            break
-    raise AttributeError("Could not find inner LBF state with food_items")
-
-
 def _compute_lex_per_fruit(spatial_attn: jnp.ndarray, env_state, lbf_ctx) -> jnp.ndarray:
     """Reproduce the trainer's mechanism: gather attention at each fruit's
     centre feature cell, alive-mask + renormalize, then permute into the
     canonical lex (row, col) slot ordering."""
-    lbf_state = _unwrap_lbf(env_state)
+    lbf_state = _unwrap_lbf_state(env_state)
     food_pos = lbf_state.food_items.position
     food_eaten = lbf_state.food_items.eaten
     pf, _ = per_fruit_attn(
@@ -75,7 +65,7 @@ def _compute_lex_per_fruit(spatial_attn: jnp.ndarray, env_state, lbf_ctx) -> jnp
 
 def _uniform_alive_lex(env_state, num_fruits: int) -> jnp.ndarray:
     """Lex-ordered alive mask, renormalized: 1/num_alive on alive, 0 on eaten."""
-    lbf_state = _unwrap_lbf(env_state)
+    lbf_state = _unwrap_lbf_state(env_state)
     food_pos = lbf_state.food_items.position
     food_eaten = lbf_state.food_items.eaten
     order = jnp.lexsort((food_pos[:, 1], food_pos[:, 0]))
