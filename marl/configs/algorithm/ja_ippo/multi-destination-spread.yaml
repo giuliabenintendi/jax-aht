@@ -7,7 +7,7 @@ defaults:
 # so JSDMechanism is a no-op here (4 agents -> zero JSD). PPO hyperparameters match
 # image_ippo/multi-destination-spread.yaml exactly, so comparing the two isolates
 # the attention architecture from the JA method.
-TOTAL_TIMESTEPS: 1e7
+TOTAL_TIMESTEPS: 5e6   # peak coordination reached by ~4M (run 4gbczabm); 10M wasted the tail
 NUM_ENVS: 512
 NUM_SEEDS: 3        # base_config_marl forces 1; pass algorithm.NUM_SEEDS=3 on the CLI
 
@@ -23,3 +23,7 @@ ANNEAL_LR: false
 MAX_GRAD_NORM: 0.5
 # NORMALIZE_REWARDS: true is inherited from ja_ippo/_base_ (matches the patched
 # image_ippo baseline). All JA mechanism coefficients stay at their off defaults.
+
+# Per-checkpoint episode videos during training via the shared N-agent
+# rollout_and_log_video path (same helper image_ippo uses).
+SAVE_CKPT_VIDEOS: true

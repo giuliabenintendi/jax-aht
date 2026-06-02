@@ -7,8 +7,8 @@ defaults:
 # (1024 envs, 4 epochs, 16 minibatches); LR/gamma/lambda/clip/ent kept at paper
 # Table C.1 values. NOTE: image_ippo has no reward normalization, whereas the
 # card game ran on ja_ippo with NORMALIZE_REWARDS=true — likely the missing piece.
-TOTAL_TIMESTEPS: 1e7
-NUM_ENVS: 512       # 512 * 100-step rollout -> ~195 updates at 1e7 (lighter memory than 1024)
+TOTAL_TIMESTEPS: 5e6   # peak coordination is reached by ~4M (see run 4gbczabm); 10M wasted the tail
+NUM_ENVS: 512       # 512 * 100-step rollout -> ~97 updates at 5e6 (lighter memory than 1024)
 NUM_SEEDS: 3        # base_config_marl forces 1; pass algorithm.NUM_SEEDS=3 on the CLI
 
 LR: 5e-4            # paper Table C.1 (Adam eps=1e-5 set in make_optimizer); card game used 4e-4
