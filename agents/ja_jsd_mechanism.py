@@ -91,7 +91,7 @@ class JSDMechanism:
     def eval_outputs(self, algorithm_config, env, out, logger):
         if env.num_agents != 2:
             # 2-agent log_greedy_eval/log_eval_video/pairwise-XP are agent_0/agent_1
-            # hardcoded. For >2-agent envs: a greedy video via the shared N-agent
+            # hardcoded. For >2-agent envs: a video via the shared N-agent
             # path, plus inline ego/partner cross-play when multi-seed — both on the
             # (best-ckpt) params already in `out`. Each guarded so neither crashes
             # the run.

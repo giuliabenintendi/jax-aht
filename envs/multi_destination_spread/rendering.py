@@ -1,9 +1,9 @@
 """Eval rollout and frame rendering for the Multi-Destination Spread env.
 
-`rollout_states` runs one greedy, parameter-shared episode over all agents (the
-2-agent `evaluation.vis_episodes.run_episode_with_states` does not generalise to
-four agents), and `render_multi_destination_ego_frames` turns the resulting states
-into per-agent ego-view frames for the per-checkpoint gifs.
+`rollout_states` runs one parameter-shared episode over all agents (the 2-agent
+`evaluation.vis_episodes.run_episode_with_states` does not generalise to four
+agents), and `render_multi_destination_ego_frames` turns the resulting states
+into per-agent ego-view frames for eval videos.
 """
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def rollout_states(rng, inner_env, params, policy, max_steps: int) -> list:
-    """Run one greedy episode with `policy` (shared params) driving every agent.
+def rollout_states(rng, inner_env, params, policy, max_steps: int, *, greedy=False) -> list:
+    """Run one episode with `policy` (shared params) driving every agent.
 
     Returns the list of `WrappedEnvState` visited (length `max_steps + 1`, including
     the reset state), matching what the renderers below expect.
@@ -38,7 +38,7 @@ def rollout_states(rng, inner_env, params, policy, max_steps: int) -> list:
             obs_batch.reshape(1, n, -1),
             done.reshape(1, n),
             avail_batch.reshape(1, n, -1),
-            hstate, act_rng, greedy=True,
+            hstate, act_rng, greedy=greedy,
         )
         action = action.reshape(n)
         env_act = {a: action[i] for i, a in enumerate(agents)}

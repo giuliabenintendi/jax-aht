@@ -5,9 +5,9 @@ for both per-checkpoint and end-of-training videos, across every env. Env-specif
 frame rendering is delegated to `envs.render_registry.get_eval_frames`; Overcooked
 (whose visualizer writes the mp4 inline) is special-cased here.
 
-`rollout_states` is a generic, parameter-shared, greedy N-agent rollout — the
-2-agent `evaluation.vis_episodes.run_episode_with_states` does not generalise to
-more agents. For JA envs that need attention/obs/action overlays, callers can pass
+`rollout_states` is a generic, parameter-shared N-agent rollout — the 2-agent
+`evaluation.vis_episodes.run_episode_with_states` does not generalise to more
+agents. For JA envs that need attention/obs/action overlays, callers can pass
 pre-collected `ep_states`/`ep_obs`/`ep_actions` from `run_episode_with_states`
 instead of using `rollout_states`.
 """
@@ -22,8 +22,17 @@ import numpy as np
 from envs.render_registry import get_eval_frames
 
 
-def rollout_states(rng, inner_env, params, policy, max_steps, *, collect_obs_actions=False):
-    """Run one greedy, parameter-shared episode driving every agent with `policy`.
+def rollout_states(
+    rng,
+    inner_env,
+    params,
+    policy,
+    max_steps,
+    *,
+    collect_obs_actions=False,
+    greedy=True,
+):
+    """Run one parameter-shared episode driving every agent with `policy`.
 
     Returns the list of `WrappedEnvState` visited (incl. the reset state). With
     `collect_obs_actions=True`, also returns per-step obs dicts and action tuples
@@ -51,7 +60,7 @@ def rollout_states(rng, inner_env, params, policy, max_steps, *, collect_obs_act
             obs_batch.reshape(1, n, -1),
             done.reshape(1, n),
             avail_batch.reshape(1, n, -1),
-            hstate, act_rng, greedy=True,
+            hstate, act_rng, greedy=greedy,
         )
         action = action.reshape(n)
         if collect_obs_actions:
@@ -100,16 +109,28 @@ def render_and_log_video(inner_env, env_name, ep_states, tag, savedir, logger, *
     return video_path
 
 
+def _default_video_greedy(env_name: str) -> bool:
+    """Default action-selection mode for qualitative eval videos."""
+    # Multi-destination spread starts all parameter-shared agents on the same
+    # cell with identical observations. Greedy eval makes them all choose the
+    # same action, collide, and stay static forever; sampled eval breaks that
+    # symmetry like training rollouts do.
+    return env_name != "multi-destination-spread"
+
+
 def rollout_and_log_video(rng, inner_env, env_name, params, policy, max_steps,
-                          tag, savedir, logger, *, fps=10):
+                          tag, savedir, logger, *, fps=10, greedy=None):
     """Convenience: generic N-agent rollout + render + log, for non-JA trainers.
 
     Collects obs/actions only for envs whose renderer needs them (card game).
     """
+    if greedy is None:
+        greedy = _default_video_greedy(env_name)
     needs_obs_actions = env_name == "card-game"
     roll = rollout_states(
         rng, inner_env, params, policy, max_steps,
         collect_obs_actions=needs_obs_actions,
+        greedy=greedy,
     )
     if needs_obs_actions:
         ep_states, ep_obs, ep_actions = roll
