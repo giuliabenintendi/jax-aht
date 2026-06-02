@@ -1,0 +1,23 @@
+defaults:
+  - image_ippo/_base_
+  - _self_
+
+# Dual Destination runs on the shared image_ippo trainer (ALG inherited from _base_).
+# Training scale + PPO hyperparameters: DreamTeam paper Table 7 (DD column).
+TOTAL_TIMESTEPS: 1e7
+NUM_ENVS: 512       # DreamTeam real-env parallelism
+NUM_SEEDS: 3        # DreamTeam seeds 42,43,44; base_config_marl forces 1, pass algorithm.NUM_SEEDS=3 on the CLI
+
+LR: 2e-4
+GAMMA: 0.985
+GAE_LAMBDA: 0.95
+VF_COEF: 0.5
+ENT_COEF: 0.001
+UPDATE_EPOCHS: 6
+NUM_MINIBATCHES: 8
+ANNEAL_LR: false
+CLIP_EPS: 0.2
+MAX_GRAD_NORM: 0.5
+
+# Per-checkpoint episode videos via the shared eval-media helper.
+SAVE_CKPT_VIDEOS: true

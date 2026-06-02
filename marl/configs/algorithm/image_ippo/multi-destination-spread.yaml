@@ -1,0 +1,24 @@
+defaults:
+  - image_ippo/_base_
+  - _self_
+
+# Multi-Destination Spread (4 agents) runs on the shared image_ippo trainer
+# (ALG inherited from _base_). PPO hyperparameters: paper Table C.1, adapted to
+# the ResNet+LSTM (the paper's 60 update epochs / MLP(64) are not applied).
+TOTAL_TIMESTEPS: 1e7
+NUM_ENVS: 256       # paper Table C.1 (with ROLLOUT_LENGTH=100 -> batch 25,600)
+NUM_SEEDS: 3        # base_config_marl forces 1; pass algorithm.NUM_SEEDS=3 on the CLI
+
+LR: 5e-4
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+VF_COEF: 0.5
+UPDATE_EPOCHS: 6
+NUM_MINIBATCHES: 8
+ANNEAL_LR: false
+MAX_GRAD_NORM: 0.5
+
+# Per-checkpoint episode videos via the shared eval-media helper.
+SAVE_CKPT_VIDEOS: true
