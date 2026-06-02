@@ -1,0 +1,9 @@
+ENV_NAME: dual-destination
+ROLLOUT_LENGTH: 100   # = max_steps (DreamTeam DD episode length)
+ENV_KWARGS:
+  obs_type: image
+  layout: symmetric_5x5
+  max_steps: 100   # DreamTeam Dual Destination: 100 steps then done
+  random_reset: false
+  one_step_delay: false
+TASK_NAME: dual-destination
