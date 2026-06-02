@@ -1100,9 +1100,11 @@ def run_xp_nagent_from_params(env, policy, stacked_params, algo_cfg, savedir,
     print(f"[xp_seeds:nagent] SP (diag) = {sp:.2f}  |  XP (off-diag) = {xp_mean:.2f} +/- {xp_sem:.2f}")
     if logger is not None:
         try:
-            logger.log({f"{wb_prefix}/sp_diag": sp,
-                        f"{wb_prefix}/xp_offdiag_mean": xp_mean,
-                        f"{wb_prefix}/xp_offdiag_sem": xp_sem})
+            import wandb
+            wb_run = getattr(logger, "run", None)
+            if wb_run is not None:
+                png = os.path.join(savedir, "xp_nagent_return.png")
+                wb_run.log({f"{wb_prefix}/return_matrix": wandb.Image(png)}, commit=False)
         except Exception as e:
             print(f"[xp_seeds:nagent] WARN: wandb log failed ({e}); continuing.", flush=True)
     return matrix, sp, (xp_mean, xp_sem)
