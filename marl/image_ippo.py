@@ -5,6 +5,8 @@ Ablation baseline for JA-IPPO. Same ResNet encoder, same LSTM, same PPO
 hyperparameters — but no attention mechanism and no JSD intrinsic reward.
 Uses parameter sharing (single network for both agents, like standard IPPO).
 '''
+from typing import NamedTuple
+
 import hydra
 import jax
 import jax.numpy as jnp
@@ -28,6 +30,39 @@ from marl.ippo_core import (
 from marl.ppo_utils import Transition, batchify, unbatchify
 
 
+# Streaming reward normalization (Welford), gated by NORMALIZE_REWARDS. Mirrors
+# the implementation in `ja_ippo` so the image baseline can match the card-game
+# trainer (which normalised the combined reward stream); kept local to avoid
+# touching the JA trainer. Default off, so other image_ippo envs are unchanged.
+class RewardNormState(NamedTuple):
+    mean: jnp.ndarray
+    var: jnp.ndarray
+    count: jnp.ndarray
+
+
+def reward_norm_init() -> RewardNormState:
+    return RewardNormState(mean=jnp.zeros(()), var=jnp.ones(()), count=jnp.zeros(()))
+
+
+def reward_norm_update(state: RewardNormState, batch: jnp.ndarray) -> RewardNormState:
+    batch_mean = batch.mean()
+    batch_var = batch.var()
+    batch_count = jnp.array(batch.size, dtype=jnp.float32)
+    delta = batch_mean - state.mean
+    total_count = state.count + batch_count
+    new_mean = state.mean + delta * batch_count / jnp.maximum(total_count, 1.0)
+    m_a = state.var * state.count
+    m_b = batch_var * batch_count
+    m2 = m_a + m_b + delta ** 2 * state.count * batch_count / jnp.maximum(total_count, 1.0)
+    new_var = m2 / jnp.maximum(total_count, 1.0)
+    return RewardNormState(mean=new_mean, var=new_var, count=total_count)
+
+
+def reward_norm_apply(state: RewardNormState, rewards: jnp.ndarray, clip: float = 10.0) -> jnp.ndarray:
+    std = jnp.sqrt(state.var + 1e-8)
+    return jnp.clip((rewards - state.mean) / std, -clip, clip)
+
+
 def make_train(config, env):
     """Build init and step functions for Image IPPO training.
 
@@ -40,6 +75,7 @@ def make_train(config, env):
 
     num_envs = config["NUM_ENVS"]
     num_actors = config["NUM_ACTORS"]
+    normalize_rewards = bool(config.get("NORMALIZE_REWARDS", False))
 
     def init(rng):
         rng, init_rng = jax.random.split(rng)
@@ -55,7 +91,7 @@ def make_train(config, env):
 
         init_hstate = policy.init_hstate(num_actors)
         init_done = {k: jnp.zeros((config["NUM_ENVS"]), dtype=bool) for k in env.agents + ["__all__"]}
-        runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng)
+        runner_state = (train_state, env_state, obsv, init_done, init_hstate, _rng, reward_norm_init())
 
         return runner_state, policy
 
@@ -115,11 +151,14 @@ def make_train(config, env):
                 runner_state = (train_state, new_env_state, new_obs, new_done, new_hstate, rng)
                 return runner_state, transition
 
-            runner_state, traj_batch = jax.lax.scan(
-                _env_step, runner_state, None, config["ROLLOUT_LENGTH"]
+            # The reward normaliser rides alongside the scan carry (it is only
+            # updated per-update, not per-step), so split it off for the rollout.
+            rew_norm_state = runner_state[6]
+            core_state, traj_batch = jax.lax.scan(
+                _env_step, runner_state[:6], None, config["ROLLOUT_LENGTH"]
             )
 
-            train_state, env_state, last_obs, last_done, hstate, rng = runner_state
+            train_state, env_state, last_obs, last_done, hstate, rng = core_state
             last_obs_batch = batchify(last_obs, env.agents, num_actors)
             last_done_batch = batchify(last_done, env.agents, num_actors)
             last_avail = jax.vmap(env.get_avail_actions)(env_state)
@@ -135,6 +174,13 @@ def make_train(config, env):
                 hstate,
                 num_actors,
             )
+            # Normalise rewards by the running std before GAE (the critic and
+            # bootstrap value learn in this same normalised return scale).
+            if normalize_rewards:
+                rew_norm_state = reward_norm_update(rew_norm_state, traj_batch.reward)
+                traj_batch = traj_batch._replace(
+                    reward=reward_norm_apply(rew_norm_state, traj_batch.reward),
+                )
             advantages, targets = calculate_gae(config, traj_batch, last_val)
             train_state, loss_info, rng = run_ppo_epochs(
                 config, policy, train_state, traj_batch, advantages, targets, rng, num_actors
@@ -149,7 +195,7 @@ def make_train(config, env):
             metric["grad_norm"] = loss_info.grad_norm.mean()
             metric["value_mean"] = traj_batch.value.mean()
 
-            runner_state = (train_state, env_state, last_obs, last_done, hstate, rng)
+            runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, rew_norm_state)
             return runner_state, update_steps + 1, metric
 
         return step_fn
