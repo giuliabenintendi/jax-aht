@@ -101,20 +101,12 @@ def episode_agreement(intents: np.ndarray) -> tuple[np.ndarray, int]:
     return agree, settle
 
 
-def _build_pair_runner(ev, greedy: bool, partner_feed_dim: int, card_masks,
-                       return_diag: bool = False):
+def _build_pair_runner(ev, greedy: bool, partner_feed_dim: int, card_masks):
     """Build a compiled batched rollout that returns per-step intentions.
 
     The analysis only needs the canonical intended card per step, so this
     skips the rendering-oriented Python bookkeeping in `run_episode_with_states`
     and returns a dense `(num_episodes, T, 2)` array directly.
-
-    With `return_diag=True` it additionally returns, per step, the input RNN
-    hidden state that produced each action `(num_episodes, T, 2, hidden_dim)` and
-    each agent's canonical (un-OP'd) per-card attention
-    `(num_episodes, T, 2, 5)` (zeros when the policy has no card-attention head).
-    These feed the Dec-POMDP diagnostics extractor; the default path that
-    returns only intents is unchanged.
     """
     T = ev.max_steps
     needs_prev_io = (
@@ -125,11 +117,6 @@ def _build_pair_runner(ev, greedy: bool, partner_feed_dim: int, card_masks,
     has_attention_api = hasattr(ev.policy, "get_action_and_attention")
     if needs_card_attention and not has_attention_api:
         raise ValueError("JA card-attention eval requires get_action_and_attention().")
-
-    hdim = int(sum(int(np.prod(leaf.shape)) for leaf in jax.tree.leaves(ev.policy.init_hstate(1))))
-
-    def _flat_hstate(h):
-        return jnp.concatenate([leaf.reshape(-1) for leaf in jax.tree.leaves(h)])
 
     def _run_one_episode(rng, params_a, params_b):
         rng, reset_rng = jax.random.split(rng)
@@ -159,9 +146,6 @@ def _build_pair_runner(ev, greedy: bool, partner_feed_dim: int, card_masks,
                 prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
                 prev_pca_0, prev_pca_1,
             ) = carry
-
-            # Input hidden states — the memory that produces THIS step's action.
-            hstate_obs = jnp.stack([_flat_hstate(hstate_0), _flat_hstate(hstate_1)])
 
             avail_actions = ev.env.get_avail_actions(env_state)
             avail_actions = jax.lax.stop_gradient(avail_actions)
@@ -271,34 +255,27 @@ def _build_pair_runner(ev, greedy: bool, partner_feed_dim: int, card_masks,
                 ph1 = jnp.zeros(5).at[p1].set(ca1)
                 prev_pca_0_next = ph1[p0]
                 prev_pca_1_next = ph0[p1]
-                # Canonical (un-OP'd) per-card attention each agent produced.
-                gt_attn = jnp.stack([ph0, ph1]).astype(jnp.float32)
             else:
                 prev_pca_0_next = prev_pca_0
                 prev_pca_1_next = prev_pca_1
-                gt_attn = jnp.zeros((2, 5), dtype=jnp.float32)
 
             next_carry = (
                 obs_next, env_state_next, done_next, rng, hstate_0_next, hstate_1_next,
                 prev_reward_0_next, prev_reward_1_next, prev_action_0_next,
                 prev_action_1_next, prev_pca_0_next, prev_pca_1_next,
             )
-            return next_carry, (intents, hstate_obs, gt_attn)
+            return next_carry, intents
 
         def _scan_step(carry, step_idx):
             done_all = carry[2]["__all__"].reshape(())
             return jax.lax.cond(
                 done_all,
-                lambda c: (c, (jnp.full((2,), -1, dtype=jnp.int32),
-                               jnp.zeros((2, hdim), dtype=jnp.float32),
-                               jnp.zeros((2, 5), dtype=jnp.float32))),
+                lambda c: (c, jnp.full((2,), -1, dtype=jnp.int32)),
                 lambda c: _take_step(c, step_idx),
                 carry,
             )
 
-        _, (intents, hstates, gt_attn) = jax.lax.scan(_scan_step, init_carry, jnp.arange(T))
-        if return_diag:
-            return intents, hstates, gt_attn
+        _, intents = jax.lax.scan(_scan_step, init_carry, jnp.arange(T))
         return intents
 
     return jax.jit(jax.vmap(_run_one_episode, in_axes=(0, None, None)))
