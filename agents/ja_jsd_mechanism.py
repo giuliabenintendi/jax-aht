@@ -31,6 +31,15 @@ class JSDMechanism:
         ja_warmup_env_steps = float(config.get("JA_WARMUP_ENV_STEPS", 0))
         env_steps_per_update = int(config["ROLLOUT_LENGTH"]) * int(config["NUM_ENVS"])
         self.ja_warmup_updates = ja_warmup_env_steps / max(env_steps_per_update, 1)
+        # The pairwise attention JSD is only defined for 2 agents. Allow >2-agent
+        # envs only as a no-method baseline (JA_BETA_MAX=0); fail fast otherwise so
+        # a requested JSD reward is never silently dropped.
+        if self.num_agents != 2 and self.ja_beta_max > 0.0:
+            raise NotImplementedError(
+                f"JSDMechanism's pairwise attention JSD is 2-agent only, but env "
+                f"'{self.name}' has {self.num_agents} agents. Use JA_BETA_MAX=0 for the "
+                "no-method baseline, or implement an N-agent JA mechanism."
+            )
 
     def entity_feed_dim(self) -> int:
         return 0
@@ -44,15 +53,20 @@ class JSDMechanism:
     def step(self, *, attn_map, env_state, new_env_state, action, env_reward,
              info, done_actors, carry, num_actors, update_steps):
         del env_state, new_env_state, action, info, done_actors
-        num_envs = num_actors // self.num_agents
-        a0 = attn_map[:, :num_envs, ...].squeeze(0)
-        a1 = attn_map[:, num_envs:, ...].squeeze(0)
-        jsd_env = jsd_divergence(a0, a1)                  # (num_envs,)
-        jsd_actors = jnp.concatenate([jsd_env, jsd_env])  # (num_actors,)
         ja_beta = jnp.minimum(
             self.ja_beta_max,
             self.ja_beta_max * update_steps / jnp.maximum(self.ja_warmup_updates, 1.0),
         )
+        if self.num_agents == 2:
+            num_envs = num_actors // self.num_agents
+            a0 = attn_map[:, :num_envs, ...].squeeze(0)
+            a1 = attn_map[:, num_envs:, ...].squeeze(0)
+            jsd_env = jsd_divergence(a0, a1)                  # (num_envs,)
+            jsd_actors = jnp.concatenate([jsd_env, jsd_env])  # (num_actors,)
+        else:
+            # >2 agents: no pairwise JSD signal (beta is forced 0 by __init__), so
+            # emit zero — the JA network then trains as a plain-PPO baseline.
+            jsd_actors = jnp.zeros((num_actors,))
         # Intrinsic reward = beta * (-JSD): reward attention agreement.
         reward = env_reward - ja_beta * jsd_actors
         extras = {

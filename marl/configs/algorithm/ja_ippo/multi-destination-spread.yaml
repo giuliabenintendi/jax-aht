@@ -1,0 +1,25 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# "True baseline": the JA attention network trained with plain PPO. Every JA term
+# stays at its off default (JA_BETA_MAX=0, FEED_OTHER_ATTN=false, all *_COEF=0),
+# so JSDMechanism is a no-op here (4 agents -> zero JSD). PPO hyperparameters match
+# image_ippo/multi-destination-spread.yaml exactly, so comparing the two isolates
+# the attention architecture from the JA method.
+TOTAL_TIMESTEPS: 1e7
+NUM_ENVS: 512
+NUM_SEEDS: 3        # base_config_marl forces 1; pass algorithm.NUM_SEEDS=3 on the CLI
+
+LR: 5e-4
+GAMMA: 0.99
+GAE_LAMBDA: 0.95    # override ja_ippo/_base_ (0.8) to match the image_ippo baseline
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+VF_COEF: 0.5
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 16
+ANNEAL_LR: false
+MAX_GRAD_NORM: 0.5
+# NORMALIZE_REWARDS: true is inherited from ja_ippo/_base_ (matches the patched
+# image_ippo baseline). All JA mechanism coefficients stay at their off defaults.
