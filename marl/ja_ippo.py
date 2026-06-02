@@ -32,115 +32,14 @@ from common.train_logging import log_live_chunk_metrics
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 from marl.ippo_core import calculate_gae, configure_training_dims, make_optimizer
+from marl.ja_ppo_core import (
+    PPOAuxStats,
+    compute_last_value_ja,
+    global_grad_norm,
+    ppo_actor_critic_losses,
+)
 from marl.ppo_utils import _create_minibatches, batchify, unbatchify
-
-
-# --------------------------------------------------------------------------- #
-# Shared PPO building blocks.
-# --------------------------------------------------------------------------- #
-class PPOLossTerms(NamedTuple):
-    value_loss: jnp.ndarray
-    policy_loss: jnp.ndarray
-    entropy: jnp.ndarray
-    ratio: jnp.ndarray
-    approx_kl: jnp.ndarray
-    clip_frac: jnp.ndarray
-
-
-def ppo_actor_critic_losses(
-    pi, value, *, actions, value_old, log_prob_old, gae, targets, clip_eps,
-    policy_loss_type: str = "ppo",
-) -> PPOLossTerms:
-    """Standard clipped PPO value + policy + entropy losses.
-
-    GAE is advantage-normalised internally. `policy_loss_type="spo"` swaps the
-    clipped-min surrogate for SPO's smooth quadratic penalty (optimum at
-    ratio = 1 + eps*sign(A)); any other value uses PPO clipping. Callers add
-    their own auxiliary term and assemble the weighted total loss.
-    """
-    log_prob = pi.log_prob(actions)
-    entropy = pi.entropy().mean()
-
-    value_pred_clipped = value_old + (value - value_old).clip(-clip_eps, clip_eps)
-    value_losses = jnp.square(value - targets)
-    value_losses_clipped = jnp.square(value_pred_clipped - targets)
-    value_loss = jnp.maximum(value_losses, value_losses_clipped).mean()
-
-    ratio = jnp.exp(log_prob - log_prob_old)
-    gae_norm = (gae - gae.mean()) / (gae.std() + 1e-8)
-    if policy_loss_type == "spo":
-        # SPO (Simple Policy Optimization): smooth quadratic penalty around
-        # ratio=1 replaces PPO's clipped min, so the update can't drift far in
-        # a single step.
-        spo_penalty = jnp.abs(gae_norm) * jnp.square(ratio - 1.0) / (2.0 * clip_eps)
-        policy_loss = -(ratio * gae_norm - spo_penalty).mean()
-    else:
-        loss_actor1 = ratio * gae_norm
-        loss_actor2 = jnp.clip(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * gae_norm
-        policy_loss = -jnp.minimum(loss_actor1, loss_actor2).mean()
-
-    approx_kl = ((ratio - 1) - jnp.log(ratio)).mean()
-    clip_frac = (jnp.abs(ratio - 1.0) > clip_eps).mean()
-    return PPOLossTerms(value_loss, policy_loss, entropy, ratio, approx_kl, clip_frac)
-
-
-def global_grad_norm(grads) -> jnp.ndarray:
-    """L2 norm of the full gradient pytree."""
-    return jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads)))
-
-
-def compute_last_value_ja(
-    policy, params, last_obs_batch, last_done_batch, last_avail_batch, hstate, num_actors,
-    **policy_kwargs,
-):
-    """Bootstrap the final value for a JA rollout.
-
-    Unpacks the 5-tuple from `get_action_value_policy` (the non-JA
-    `ippo_core.compute_last_value` expects a 4-tuple). `policy_kwargs` forwards
-    extra inputs such as plh_actor/plh_critic when query_partner_lstm is on.
-    """
-    _, last_val, _, _, _ = policy.get_action_value_policy(
-        params=params,
-        obs=last_obs_batch.reshape(1, num_actors, -1),
-        done=last_done_batch.reshape(1, num_actors),
-        avail_actions=last_avail_batch.reshape(1, num_actors, -1),
-        hstate=hstate,
-        rng=jax.random.PRNGKey(0),
-        **policy_kwargs,
-    )
-    return last_val.squeeze()
-
-
-# --------------------------------------------------------------------------- #
-# Streaming reward normalization (Welford), gated by NORMALIZE_REWARDS.
-# --------------------------------------------------------------------------- #
-class RewardNormState(NamedTuple):
-    mean: jnp.ndarray
-    var: jnp.ndarray
-    count: jnp.ndarray
-
-
-def reward_norm_init() -> RewardNormState:
-    return RewardNormState(mean=jnp.zeros(()), var=jnp.ones(()), count=jnp.zeros(()))
-
-
-def reward_norm_update(state: RewardNormState, batch: jnp.ndarray) -> RewardNormState:
-    batch_mean = batch.mean()
-    batch_var = batch.var()
-    batch_count = jnp.array(batch.size, dtype=jnp.float32)
-    delta = batch_mean - state.mean
-    total_count = state.count + batch_count
-    new_mean = state.mean + delta * batch_count / jnp.maximum(total_count, 1.0)
-    m_a = state.var * state.count
-    m_b = batch_var * batch_count
-    m2 = m_a + m_b + delta ** 2 * state.count * batch_count / jnp.maximum(total_count, 1.0)
-    new_var = m2 / jnp.maximum(total_count, 1.0)
-    return RewardNormState(mean=new_mean, var=new_var, count=total_count)
-
-
-def reward_norm_apply(state: RewardNormState, rewards: jnp.ndarray, clip: float = 10.0) -> jnp.ndarray:
-    std = jnp.sqrt(state.var + 1e-8)
-    return jnp.clip((rewards - state.mean) / std, -clip, clip)
+from marl.reward_norm import reward_norm_apply, reward_norm_init, reward_norm_update
 
 
 # --------------------------------------------------------------------------- #
@@ -156,15 +55,6 @@ class JATransition(NamedTuple):
     info: Any
     avail_actions: jnp.ndarray
     extras: Any  # env-specific pytree from the mechanism, consumed by its aux_loss
-
-
-class _PPOAuxStats(NamedTuple):
-    total_loss: jnp.ndarray
-    value_loss: jnp.ndarray
-    policy_loss: jnp.ndarray
-    entropy: jnp.ndarray
-    grad_norm: jnp.ndarray
-    aux_loss: jnp.ndarray
 
 
 def select_mechanism(config, env):
@@ -218,7 +108,7 @@ def _run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets
             )
             grad_norm = global_grad_norm(grads)
             train_state = train_state.apply_gradients(grads=grads)
-            stats = _PPOAuxStats(
+            stats = PPOAuxStats(
                 total_loss=total_loss,
                 value_loss=value_loss,
                 policy_loss=policy_loss,

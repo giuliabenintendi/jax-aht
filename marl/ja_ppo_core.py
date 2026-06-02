@@ -26,6 +26,16 @@ class PPOLossTerms(NamedTuple):
     clip_frac: jnp.ndarray
 
 
+class PPOAuxStats(NamedTuple):
+    """Per-update PPO stats including the JA auxiliary loss term."""
+    total_loss: jnp.ndarray
+    value_loss: jnp.ndarray
+    policy_loss: jnp.ndarray
+    entropy: jnp.ndarray
+    grad_norm: jnp.ndarray
+    aux_loss: jnp.ndarray
+
+
 def ppo_actor_critic_losses(
     pi, value, *, actions, value_old, log_prob_old, gae, targets, clip_eps,
     policy_loss_type: str = "ppo",

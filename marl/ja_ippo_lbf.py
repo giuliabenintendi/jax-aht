@@ -42,6 +42,7 @@ from marl.ippo_core import (
     make_optimizer,
 )
 from marl.ja_ppo_core import (
+    PPOAuxStats,
     compute_last_value_ja,
     global_grad_norm,
     ppo_actor_critic_losses,
@@ -426,7 +427,7 @@ def _run_ppo_aux_epochs(
             )
             grad_norm = global_grad_norm(grads)
             train_state = train_state.apply_gradients(grads=grads)
-            stats = _PPOAuxStats(
+            stats = PPOAuxStats(
                 total_loss=total_loss,
                 value_loss=value_loss,
                 policy_loss=policy_loss,
@@ -452,15 +453,6 @@ def _run_ppo_aux_epochs(
         _update_epoch, update_state, None, config["UPDATE_EPOCHS"],
     )
     return update_state[0], loss_info, update_state[-1]
-
-
-class _PPOAuxStats(NamedTuple):
-    total_loss: jnp.ndarray
-    value_loss: jnp.ndarray
-    policy_loss: jnp.ndarray
-    entropy: jnp.ndarray
-    grad_norm: jnp.ndarray
-    aux_loss: jnp.ndarray
 
 
 def run_ja_ippo_lbf(config, logger):

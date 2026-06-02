@@ -5,8 +5,6 @@ Ablation baseline for JA-IPPO. Same ResNet encoder, same LSTM, same PPO
 hyperparameters — but no attention mechanism and no JSD intrinsic reward.
 Uses parameter sharing (single network for both agents, like standard IPPO).
 '''
-from typing import NamedTuple
-
 import hydra
 import jax
 import jax.numpy as jnp
@@ -28,39 +26,7 @@ from marl.ippo_core import (
     run_ppo_epochs,
 )
 from marl.ppo_utils import Transition, batchify, unbatchify
-
-
-# Streaming reward normalization (Welford), gated by NORMALIZE_REWARDS. Mirrors
-# the implementation in `ja_ippo` so the image baseline can match the card-game
-# trainer (which normalised the combined reward stream); kept local to avoid
-# touching the JA trainer. Default off, so other image_ippo envs are unchanged.
-class RewardNormState(NamedTuple):
-    mean: jnp.ndarray
-    var: jnp.ndarray
-    count: jnp.ndarray
-
-
-def reward_norm_init() -> RewardNormState:
-    return RewardNormState(mean=jnp.zeros(()), var=jnp.ones(()), count=jnp.zeros(()))
-
-
-def reward_norm_update(state: RewardNormState, batch: jnp.ndarray) -> RewardNormState:
-    batch_mean = batch.mean()
-    batch_var = batch.var()
-    batch_count = jnp.array(batch.size, dtype=jnp.float32)
-    delta = batch_mean - state.mean
-    total_count = state.count + batch_count
-    new_mean = state.mean + delta * batch_count / jnp.maximum(total_count, 1.0)
-    m_a = state.var * state.count
-    m_b = batch_var * batch_count
-    m2 = m_a + m_b + delta ** 2 * state.count * batch_count / jnp.maximum(total_count, 1.0)
-    new_var = m2 / jnp.maximum(total_count, 1.0)
-    return RewardNormState(mean=new_mean, var=new_var, count=total_count)
-
-
-def reward_norm_apply(state: RewardNormState, rewards: jnp.ndarray, clip: float = 10.0) -> jnp.ndarray:
-    std = jnp.sqrt(state.var + 1e-8)
-    return jnp.clip((rewards - state.mean) / std, -clip, clip)
+from marl.reward_norm import reward_norm_apply, reward_norm_init, reward_norm_update
 
 
 def make_train(config, env):
