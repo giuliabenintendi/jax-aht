@@ -2,7 +2,7 @@
 Added support for avail_actions, and removed continuous action options.
 '''
 from functools import partial
-from typing import Dict, Any, Sequence
+from typing import Any, Sequence
 
 import distrax
 from flax.linen.initializers import constant, orthogonal

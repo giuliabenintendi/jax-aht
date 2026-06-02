@@ -1,6 +1,4 @@
-from typing import Tuple
 import numpy as np
-import scipy.stats
 from rliable import metrics as rli_metrics
 from rliable import library as rli_library
 

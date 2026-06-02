@@ -807,11 +807,8 @@ def _log_card_game_eval_video(inner_env, policy, params, max_steps, tag, video_d
                                partner_feed_dim=5,
                                caption=None):
     """Run multiple card game episodes and save a video with attention spots and choices."""
-    import wandb
     from envs.card_game.rendering import (
-        render_card_game_minimal,
         render_card_game_gt_frame,
-        _unwrap_card_game_state,
         _stamp_label_np,
         _A0_PATTERN_SMALL,
         _A1_PATTERN_SMALL,
@@ -922,7 +919,6 @@ def _log_card_game_xp_videos(inner_env, policy, all_params, max_steps, tag, vide
     `seed_pairs` is an optional list of (i, j) tuples; if None, every off-diagonal
     pair is rendered.
     """
-    import wandb
 
     num_seeds = jax.tree.leaves(all_params)[0].shape[0]
     scale = 20

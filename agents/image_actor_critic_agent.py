@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from agents.agent_interface import AgentPolicy
-from agents.image_actor_critic import ImageActorCritic, ImageScannedLSTM
+from agents.image_actor_critic import ImageActorCritic
 
 
 class ImageActorCriticPolicy(AgentPolicy):

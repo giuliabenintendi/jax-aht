@@ -477,7 +477,6 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
         tag_prefix: prefix for wandb log keys.
         frames: list of pre-rendered RGB frames (from render_episode_frames).
     """
-    import numpy as np
 
     maps_0 = attn_data.get("agent_0", [])
     maps_1 = attn_data.get("agent_1", [])
@@ -857,7 +856,6 @@ def _overlay_attention(frame, attn, cmap_name, alpha=0.6):
 def _make_overlay_video(frames, attn_maps, cmap_name, filename, fps):
     """Create a single MP4 with a colormap heatmap overlaid on the game frame."""
     import os
-    import numpy as np
     from moviepy import ImageSequenceClip
 
     n = min(len(attn_maps), len(frames) - 1)

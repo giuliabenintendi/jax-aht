@@ -2,7 +2,6 @@ from functools import partial
 from typing import Dict, Any, List, Tuple, Optional
 
 import chex
-from flax.struct import dataclass
 import jax
 import jax.numpy as jnp
 from jumanji.env import Environment as JumanjiEnv

@@ -21,7 +21,6 @@ dots and card-backs use auxiliary colours that are *not* in
 `HANABI_COLORS` so the Other-Play pixel-match recolouring wrapper can
 permute the card palette without touching them.
 """
-from functools import partial
 
 import jax
 import jax.numpy as jnp

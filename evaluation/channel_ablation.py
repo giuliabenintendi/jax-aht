@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -33,7 +32,6 @@ from omegaconf import OmegaConf
 
 from agents.initialize_agents import initialize_ja_image_agent
 from agents.lbf.ja_lbf_attention import (
-    food_state_from_log_state,
     lbf_attention_ctx,
     per_fruit_attn,
 )

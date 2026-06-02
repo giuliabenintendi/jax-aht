@@ -4,7 +4,6 @@ from typing import Dict, Tuple, Optional
 import chex
 import jax
 import jax.numpy as jnp
-from flax.struct import dataclass
 from jaxmarl.environments.overcooked.overcooked import State as OvercookedState
 from jaxmarl.environments import spaces
 

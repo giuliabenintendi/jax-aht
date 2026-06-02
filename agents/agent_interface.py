@@ -3,7 +3,6 @@ from typing import Tuple, Dict
 import chex
 from functools import partial
 import jax
-import jax.numpy as jnp
 
 
 class AgentPolicy(abc.ABC):

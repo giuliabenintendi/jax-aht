@@ -14,7 +14,6 @@ import numpy as np
 import distrax
 import flax.linen as nn
 from flax.linen.initializers import constant, orthogonal
-import jax
 import jax.numpy as jnp
 
 from agents.action_masking import mask_action_logits

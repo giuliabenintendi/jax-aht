@@ -21,7 +21,7 @@ so the env always sees ground truth actions and produces ground truth rewards.
 """
 from itertools import permutations
 from functools import partial
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 import jax
 import jax.numpy as jnp
