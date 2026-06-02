@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -178,7 +178,9 @@ def main() -> None:
         cond = str(d["condition"])
         has_comm, has_attn = bool(d["has_comm"]), bool(d["has_attn"])
         for kind in ("sp", "xp"):
-            inten, hsta, gat = d[f"{kind}_intents"], d[f"{kind}_hstates"], d[f"{kind}_gt_attn"]
+            inten, gat = d[f"{kind}_intents"], d[f"{kind}_gt_attn"]
+            # Only touch the multi-GB hidden-state array if it's actually used.
+            hsta = d[f"{kind}_hstates"] if use_hidden else None
             for k in range(inten.shape[0]):
                 tasks.append((
                     inten[k], (hsta[k] if use_hidden else None), gat[k], has_comm, has_attn,
@@ -195,10 +197,15 @@ def main() -> None:
         print(f"[warn] rliable unavailable ({type(e).__name__}); using percentile-bootstrap CIs "
               f"(equivalent to their stratified-mean bootstrap for a single group).")
 
-    print(f"Scoring {len(tasks)} runs on {args.workers} workers ...")
+    print(f"Scoring {len(tasks)} runs on {args.workers} workers ...", flush=True)
     if args.workers and args.workers > 1:
+        rows = []
         with ProcessPoolExecutor(max_workers=args.workers) as ex:
-            rows = list(ex.map(_score_run, tasks))
+            futs = [ex.submit(_score_run, t) for t in tasks]
+            for n, fut in enumerate(as_completed(futs), 1):
+                rows.append(fut.result())
+                if n % 20 == 0 or n == len(futs):
+                    print(f"  {n}/{len(futs)} runs done", flush=True)
     else:
         rows = [_score_run(t) for t in tasks]
 
