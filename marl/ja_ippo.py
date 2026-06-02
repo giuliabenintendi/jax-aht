@@ -492,6 +492,16 @@ def run_ja_ippo(config, logger):
 
     live_wandb = bool(algorithm_config.get("LIVE_WANDB_LOGGING", True))
 
+    # Per-checkpoint episode videos via the shared helper. Default off so the
+    # paper pipeline is byte-identical unless explicitly enabled.
+    save_ckpt_videos = bool(algorithm_config.get("SAVE_CKPT_VIDEOS", False))
+    inner_env = getattr(env, "_env", env)
+    env_name = algorithm_config["ENV_NAME"]
+    eval_max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
+    video_dir = None
+    if save_ckpt_videos:
+        video_dir = f"{hydra.core.hydra_config.HydraConfig.get().runtime.output_dir}/videos"
+
     all_seed_metrics = []
     all_seed_ckpts = []
     all_seed_final_params = []
@@ -517,6 +527,25 @@ def run_ja_ippo(config, logger):
             steps_done = chunk_end
             if len(seed_ckpts) < num_ckpts:
                 seed_ckpts.append(jax.tree.map(jnp.copy, runner_state[0].params))
+                if save_ckpt_videos:
+                    ckpt_idx = len(seed_ckpts) - 1
+                    try:
+                        from common.eval_media import render_and_log_video
+                        from evaluation.vis_episodes import run_episode_with_states
+                        params_ck = runner_state[0].params
+                        ep_states, ep_actions, _msgs, ep_obs = run_episode_with_states(
+                            jax.random.PRNGKey(7000 + seed_idx * 100 + ckpt_idx),
+                            inner_env, params_ck, policy, params_ck, policy,
+                            eval_max_steps, collect_obs=True,
+                        )
+                        render_and_log_video(
+                            inner_env, env_name, ep_states,
+                            tag=f"Eval/seed_{seed_idx}/ckpt_{ckpt_idx}",
+                            savedir=video_dir, logger=logger,
+                            ep_obs=ep_obs, ep_actions=ep_actions,
+                        )
+                    except Exception as e:
+                        print(f"[ja_ippo:{mech.name}] WARN: ckpt video failed ({e}); continuing.", flush=True)
             print(f"[ja_ippo:{mech.name}]   step {steps_done}/{num_updates}", flush=True)
             if live_wandb:
                 log_live_chunk_metrics(

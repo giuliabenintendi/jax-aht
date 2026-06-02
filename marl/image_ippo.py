@@ -18,7 +18,6 @@ from common.train_logging import (
 )
 from envs import make_env
 from envs.log_wrapper import LogWrapper
-from marl.eval_lbf import _render_lbf_eval_frames
 from marl.ippo_core import (
     calculate_gae,
     compute_last_value,
@@ -188,6 +187,17 @@ def run_image_ippo(config, logger):
     else:
         live_log_interval = max(1, ckpt_interval)
 
+    # Per-checkpoint episode videos (shared path, every env). Default off so the
+    # baseline outputs are unchanged unless explicitly enabled.
+    save_ckpt_videos = bool(algorithm_config.get("SAVE_CKPT_VIDEOS", False))
+    inner_env = env._env
+    env_name = algorithm_config["ENV_NAME"]
+    eval_max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
+    video_dir = None
+    if save_ckpt_videos:
+        import hydra
+        video_dir = f"{hydra.core.hydra_config.HydraConfig.get().runtime.output_dir}/videos"
+
     seed_outputs = []
     for s in range(num_seeds):
         print(f"[image_ippo] Seed {s+1}/{num_seeds}: initializing...")
@@ -208,6 +218,18 @@ def run_image_ippo(config, logger):
             should_ckpt = (step % ckpt_interval == 0) or (step == num_updates - 1)
             if should_ckpt and len(checkpoints) < num_ckpts:
                 checkpoints.append(runner_state[0].params)
+                if save_ckpt_videos:
+                    ckpt_idx = len(checkpoints) - 1
+                    try:
+                        from common.eval_media import rollout_and_log_video
+                        rollout_and_log_video(
+                            jax.random.PRNGKey(1000 + s * 100 + ckpt_idx),
+                            inner_env, env_name, runner_state[0].params, policy,
+                            eval_max_steps, tag=f"Eval/seed_{s}/ckpt_{ckpt_idx}",
+                            savedir=video_dir, logger=logger,
+                        )
+                    except Exception as e:
+                        print(f"[image_ippo] WARN: ckpt video failed ({e}); continuing.", flush=True)
 
             if step % max(1, num_updates // 10) == 0 or step == num_updates - 1:
                 print(f"[image_ippo] Seed {s+1}/{num_seeds}: step {step+1}/{num_updates}")
@@ -250,56 +272,20 @@ def run_image_ippo(config, logger):
     return out
 
 def log_eval_video(algorithm_config, env, out, logger):
-    """Run one eval episode with final params (seed 0), log video to wandb."""
-    import os
-    from evaluation.vis_episodes import run_episode_with_states
+    """Run one eval episode with final params (seed 0), render+log via the shared helper."""
+    from common.eval_media import rollout_and_log_video
 
-    # Reconstruct policy (same for both agents — shared params)
     rng = jax.random.PRNGKey(0)
     policy, _ = initialize_image_agent(algorithm_config, env, rng)
-
-    # Extract final params from seed 0
     final_params = jax.tree.map(lambda x: x[0], out["final_params"])
-
     inner_env = env._env
-
-    max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
-    ep_states, _, _ = run_episode_with_states(
-        jax.random.PRNGKey(42), inner_env, final_params, policy,
-        final_params, policy, max_steps,
-    )
-    print(f"[image_ippo] Eval episode: {len(ep_states)} frames collected")
-
-    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    video_dir = f"{savedir}/videos"
-    os.makedirs(video_dir, exist_ok=True)
-    video_path = f"{video_dir}/eval_final.mp4"
-
     env_name = algorithm_config["ENV_NAME"]
-    if env_name in ("lbf", "lbf-reward-shaping"):
-        frames = _render_lbf_eval_frames(inner_env, ep_states)
-    elif env_name == "card-game":
-        from envs.card_game.rendering import render_card_game_eval_frames
-        # Side-by-side A0 | A1 composite per frame: each side shows that
-        # agent's own view + own pick highlighted.
-        frames = render_card_game_eval_frames(
-            ep_states, scale=32, ep_obs=ep_obs, ep_actions=ep_actions,
+    max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
+    savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    try:
+        rollout_and_log_video(
+            jax.random.PRNGKey(42), inner_env, env_name, final_params, policy, max_steps,
+            tag="Eval/episode_video", savedir=f"{savedir}/videos", logger=logger,
         )
-    elif env_name == "hanabi":
-        from envs.hanabi.rendering import render_hanabi_eval_frames
-        frames = render_hanabi_eval_frames(ep_states, scale=8)
-    else:
-        from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
-        viz = AdHocOvercookedVisualizer()
-        viz.animate_mp4(
-            [s.env_state for s in ep_states], inner_env.agent_view_size,
-            filename=video_path, pixels_per_tile=32, fps=10,
-        )
-        logger.log_video("Eval/episode_video", video_path, commit=False)
-        return
-
-    from moviepy import ImageSequenceClip
-    clip = ImageSequenceClip(frames, fps=10)
-    clip.write_videofile(video_path, fps=10, codec='libx264', audio=False,
-                         bitrate='8000k', preset='slow')
-    logger.log_video("Eval/episode_video", video_path, commit=False)
+    except Exception as e:
+        print(f"[image_ippo] WARN: eval video failed ({e}); continuing.", flush=True)
