@@ -483,8 +483,6 @@ def log_attention_to_wandb(attn_data, logger, step, tag_prefix="Eval",
     if not maps_0 or not maps_1:
         return
 
-    n = min(len(maps_0), len(maps_1))
-
 
 
 

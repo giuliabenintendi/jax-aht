@@ -224,8 +224,8 @@ def main():
     print(f"[channel_ablation] run={args.run_id}  seeds={seed_indices}  "
           f"episodes/seed={args.num_episodes}  conditions={args.conditions}",
           flush=True)
-    print(f"[channel_ablation] partner=trained ego (self-play, same seed)  "
-          f"ablation applied SYMMETRICALLY to both agents' channels", flush=True)
+    print("[channel_ablation] partner=trained ego (self-play, same seed)  "
+          "ablation applied SYMMETRICALLY to both agents' channels", flush=True)
 
     rows = []                                        # (seed, condition, ep, return)
     seed_means = {c: [] for c in args.conditions}

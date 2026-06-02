@@ -385,8 +385,6 @@ def rendering_pot(obj, img):
     com_fn    = point_in_rect(0.1, 0.9, 0.21, 0.9)
     handle_fn = point_in_rect(0.4, 0.6, 0.16, 0.21)
 
-    interior_fn = point_in_rect(0.12, 0.88, 0.36, 0.88)
-
     # background
     img = FILL_COORDS_7(img, point_in_rect(0, 1, 0, 1), COLORS["grey"])
 
