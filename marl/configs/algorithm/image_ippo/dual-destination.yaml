@@ -1,8 +1,0 @@
-defaults:
-  - image_ippo/_base_
-  - _self_
-
-TOTAL_TIMESTEPS: 2e6
-NUM_ENVS: 64
-NUM_SEEDS: 3
-ENT_COEF: 0.01
