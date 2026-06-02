@@ -134,6 +134,12 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         env_kwargs.pop('obs_type', None)  # always image
         env = DualDestinationEnv(**env_kwargs)
 
+    elif env_name == 'multi-destination-spread':
+        from envs.multi_destination_spread.multi_destination_spread import MultiDestinationSpreadEnv
+        env_kwargs = dict(env_kwargs)
+        env_kwargs.pop('obs_type', None)  # always image
+        env = MultiDestinationSpreadEnv(**env_kwargs)
+
     elif env_name == 'hanabi':
         default_env_kwargs = {
             "num_agents": 2,
