@@ -141,8 +141,6 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     rng, reset_rng = jax.random.split(rng)
     init_obs, init_env_state = env.reset(reset_rng)
     init_done = {k: jnp.zeros((1), dtype=bool) for k in env.agents + ["__all__"]}
-    init_act_onehot = {k: jnp.zeros((action_sizes[k],))
-                       for k in env.agents}
 
     init_hstate_0 = agent_0_policy.init_hstate(1, aux_info={"agent_id": 0})
     init_hstate_1 = agent_1_policy.init_hstate(1, aux_info={"agent_id": 1})
@@ -1143,7 +1141,7 @@ def print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds):
     m = num_seeds // 2
     print(f"  ({num_seeds} seeds -> {m} independent XP samples)")
     if num_seeds % 2 != 0:
-        print(f"  WARNING: odd number of seeds, last seed excluded from SEM computation")
+        print("  WARNING: odd number of seeds, last seed excluded from SEM computation")
 
     for metric_name in metric_names:
         # (N, N, episodes, agents) -> avg over agents and episodes -> (N, N)
@@ -1236,7 +1234,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
             num_blocks=algo_cfg.get("CONV_NUM_BLOCKS", 4),
         )
         feed_attn_dims = (_img_h, _img_w, _feat_h, _feat_w)
-        print(f"[xp_seeds] feed_other_attn enabled")
+        print("[xp_seeds] feed_other_attn enabled")
 
     ja_card_masks = None
     if algo_cfg.get("JA_CARD_ATTN", False) or algo_cfg.get("JA_CARD_METRIC", False):
@@ -1254,6 +1252,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
         ja_card_masks = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
     xp_partner_feed_dim = 5
+    greedy_eval = True
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
@@ -1285,7 +1284,6 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
         score_matrix[i] = np.array(all_row_metrics[i]["returned_episode_returns"])
 
     score_mean = score_matrix.mean(axis=-1)
-    score_std = score_matrix.std(axis=-1)
     jsd_ep_means = jsd_matrix.mean(axis=-1)
 
     # Print summary
