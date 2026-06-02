@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import List, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -191,7 +190,7 @@ def _run_one_episode(rng, env, policy, params, lbf_ctx, max_steps: int,
           f"eats: {len(eat_lookbacks)}")
 
     if eat_lookbacks:
-        print(f"  --- Eat-event lookbacks (was the eaten slot signaled before?) ---")
+        print("  --- Eat-event lookbacks (was the eaten slot signaled before?) ---")
         for ev in eat_lookbacks:
             print(f"  step {ev['step']:>2d}: slot {ev['slot']} eaten")
             print(f"    {'k':>3s} {'t-k':>4s} {'mass@slot':>10s} {'rank@slot':>10s} "
@@ -320,9 +319,9 @@ def main():
         return
 
     print("\n" + "=" * 72)
-    print(f"AGGREGATE — was the eaten slot signaled by agent_0's partner-feed?")
+    print("AGGREGATE — was the eaten slot signaled by agent_0's partner-feed?")
     print(f"  total eat events: {len(all_lookbacks)}")
-    print(f"  K-step-before  mean_mass  median_mass   %top1   %top3   %top5   uniform_baseline_mass(=1/8)")
+    print("  K-step-before  mean_mass  median_mass   %top1   %top3   %top5   uniform_baseline_mass(=1/8)")
     for k in range(1, args.lookback + 1):
         masses, ranks = [], []
         for ev in all_lookbacks:
@@ -353,14 +352,14 @@ def main():
         ratio = om / np.maximum(ub, 1e-8)
         print()
         print("=" * 72)
-        print(f"AGGREGATE — is attention actually ON apples or just uniform-over-feat-map?")
+        print("AGGREGATE — is attention actually ON apples or just uniform-over-feat-map?")
         print(f"  steps inspected: {len(om)}")
-        print(f"  on_mass (fraction of spatial-attn mass landing on fruit cells):")
+        print("  on_mass (fraction of spatial-attn mass landing on fruit cells):")
         print(f"    mean={om.mean():.4f}  median={float(np.median(om)):.4f}  "
               f"q05={float(np.quantile(om, 0.05)):.4f}  q95={float(np.quantile(om, 0.95)):.4f}")
-        print(f"  uniform_baseline (= num_alive / feat_cells):")
+        print("  uniform_baseline (= num_alive / feat_cells):")
         print(f"    mean={ub.mean():.4f}  median={float(np.median(ub)):.4f}")
-        print(f"  ratio on_mass / uniform_baseline:")
+        print("  ratio on_mass / uniform_baseline:")
         print(f"    mean={ratio.mean():.3f}×  median={float(np.median(ratio)):.3f}×  "
               f"q05={float(np.quantile(ratio, 0.05)):.3f}×  q95={float(np.quantile(ratio, 0.95)):.3f}×")
         print("=" * 72)
