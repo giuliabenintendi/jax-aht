@@ -217,23 +217,3 @@ class LBFMechanism:
                     logger.log_video(f"Eval/attention_{suffix}", p, commit=False)
         except Exception as e:
             print(f"[ja_ippo:lbf] WARN: eval video failed ({e}); continuing.", flush=True)
-
-        num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
-        if num_seeds > 1:
-            try:
-                from evaluation.run_xp_seeds import run_xp_from_params
-
-                xp_policy, _ = initialize_ja_image_agent(
-                    algorithm_config, env, jax.random.PRNGKey(0),
-                )
-                savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-                run_xp_from_params(
-                    env, xp_policy, out["final_params"], algorithm_config,
-                    savedir=savedir,
-                    task_name=algorithm_config.get("ENV_NAME"),
-                    wb_run=getattr(logger, "run", None),
-                    greedy_eval=True,
-                    wb_prefix="XP",
-                )
-            except Exception as e:
-                print(f"[ja_ippo:lbf] WARN: XP eval failed ({e}); continuing.", flush=True)

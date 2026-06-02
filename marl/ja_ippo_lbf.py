@@ -556,19 +556,16 @@ def run_ja_ippo_lbf(config, logger):
     # auto-resolves JA_ENTITY_FEED_DIM from the env when partner-feed is on.
     if num_seeds > 1:
         try:
-            from evaluation.run_xp_seeds import run_xp_from_params
+            from evaluation.run_xp_seeds import run_xp
 
             xp_policy, _ = initialize_ja_image_agent(
                 algorithm_config, env, jax.random.PRNGKey(0),
             )
             savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-            run_xp_from_params(
-                env, xp_policy, out["final_params"], algorithm_config,
-                savedir=savedir,
-                task_name=algorithm_config.get("ENV_NAME"),
-                wb_run=getattr(logger, "run", None),
-                greedy_eval=True,
-                wb_prefix="XP",
+            xp_params = out.get("best_params", out["final_params"])
+            run_xp(
+                env, xp_policy, xp_params, algorithm_config, savedir, logger,
+                jsd=True, task_name=algorithm_config.get("ENV_NAME"),
             )
         except Exception as e:
             print(f"[ja_ippo_lbf] WARN: XP eval failed ({e}); continuing.", flush=True)

@@ -273,20 +273,6 @@ class CardMechanism:
         from marl.eval_logging import log_eval_video, log_greedy_eval
         log_greedy_eval(algorithm_config, env, out, logger)
         log_eval_video(algorithm_config, env, out, logger)
-        num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
-        if num_seeds > 1:
-            import hydra
-            import wandb
-
-            from agents.initialize_agents import initialize_ja_image_agent
-            from evaluation.run_xp_seeds import run_xp_from_params
-            policy, _ = initialize_ja_image_agent(algorithm_config, env, jax.random.PRNGKey(0))
-            savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-            run_xp_from_params(
-                env, policy, out["final_params"], algorithm_config,
-                savedir=savedir, task_name=algorithm_config.get("ENV_NAME"),
-                wb_run=getattr(wandb, "run", None), greedy_eval=True, wb_prefix="XP",
-            )
 
     # -------------------------------------------------------------- internals
     def _project_card_attention(self, attn_map, env_state, num_envs):

@@ -89,20 +89,29 @@ class JSDMechanism:
         report_ja_training_outputs(config, out, logger)
 
     def eval_outputs(self, algorithm_config, env, out, logger):
+        if env.num_agents != 2:
+            # 2-agent log_greedy_eval/log_eval_video/pairwise-XP are agent_0/agent_1
+            # hardcoded. For >2-agent envs: a greedy video via the shared N-agent
+            # path, plus inline ego/partner cross-play when multi-seed — both on the
+            # (best-ckpt) params already in `out`. Each guarded so neither crashes
+            # the run.
+            import hydra
+
+            from agents.initialize_agents import initialize_ja_image_agent
+            from envs.base_env import get_inner_env
+            policy, _ = initialize_ja_image_agent(algorithm_config, env, jax.random.PRNGKey(0))
+            savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+            max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 100))
+            try:
+                from common.eval_media import rollout_and_log_video
+                rollout_and_log_video(
+                    jax.random.PRNGKey(42), get_inner_env(env), algorithm_config["ENV_NAME"],
+                    jax.tree.map(lambda x: x[0], out["final_params"]), policy, max_steps,
+                    tag="Eval/episode_video", savedir=f"{savedir}/videos", logger=logger,
+                )
+            except Exception as e:
+                print(f"[ja_ippo:{self.name}] WARN: N-agent eval video failed ({e}); continuing.", flush=True)
+            return
         from marl.eval_logging import log_eval_video, log_greedy_eval
         log_greedy_eval(algorithm_config, env, out, logger)
         log_eval_video(algorithm_config, env, out, logger)
-        num_seeds = jax.tree.leaves(out["final_params"])[0].shape[0]
-        if num_seeds > 1:
-            import hydra
-            import wandb
-
-            from agents.initialize_agents import initialize_ja_image_agent
-            from evaluation.run_xp_seeds import run_xp_from_params
-            policy, _ = initialize_ja_image_agent(algorithm_config, env, jax.random.PRNGKey(0))
-            savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-            run_xp_from_params(
-                env, policy, out["final_params"], algorithm_config,
-                savedir=savedir, task_name=algorithm_config.get("ENV_NAME"),
-                wb_run=getattr(wandb, "run", None), greedy_eval=True, wb_prefix="XP",
-            )

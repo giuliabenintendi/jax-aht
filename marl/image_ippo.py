@@ -291,6 +291,12 @@ def run_image_ippo(config, logger):
     eval_out = {**out, "final_params": best_params} if use_best else out
 
     log_eval_video(algorithm_config, env, eval_out, logger)
+    if num_seeds > 1:
+        from evaluation.run_xp_seeds import run_xp
+        xp_params = out.get("best_params", out["final_params"])
+        savedir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+        run_xp(env, policy, xp_params, algorithm_config, savedir, logger,
+               jsd=False, task_name=algorithm_config.get("ENV_NAME"))
     report_basic_training_outputs(
         config,
         out,

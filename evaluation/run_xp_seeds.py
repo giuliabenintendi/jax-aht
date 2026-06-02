@@ -1022,6 +1022,117 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         print(f"[xp_seeds] wandb run: {wb_run.url}")
 
 
+def _rollout_team_return(rng, inner_env, team_params, policy, max_steps):
+    """One greedy episode for a fixed team with per-slot params; returns the
+    (shared) episode return. `team_params[k]` is the params pytree for agent k."""
+    agents = inner_env.agents
+    n = inner_env.num_agents
+    rng, reset_rng = jax.random.split(rng)
+    obs, env_state = inner_env.reset(reset_rng)
+    hstates = [policy.init_hstate(1) for _ in range(n)]
+    done = [jnp.zeros((1, 1), dtype=bool) for _ in range(n)]
+    total = 0.0
+    for _ in range(max_steps):
+        avail = inner_env.get_avail_actions(env_state)
+        env_act = {}
+        for k, a in enumerate(agents):
+            rng, act_rng = jax.random.split(rng)
+            act_k, hstates[k] = policy.get_action(
+                team_params[k],
+                obs[a].reshape(1, 1, -1),
+                done[k],
+                avail[a].astype(jnp.float32).reshape(1, 1, -1),
+                hstates[k], act_rng, greedy=True,
+            )
+            env_act[a] = act_k.reshape(())
+        rng, step_rng = jax.random.split(rng)
+        obs, env_state, reward, dones, _ = inner_env.step(step_rng, env_state, env_act)
+        total += float(reward[agents[0]])  # shared cooperative reward
+        done = [dones[a].reshape(1, 1) for a in agents]
+        if bool(dones["__all__"]):
+            break
+    return total
+
+
+def run_xp_nagent_from_params(env, policy, stacked_params, algo_cfg, savedir,
+                              task_name=None, num_episodes=32, wb_prefix="XP",
+                              logger=None):
+    """N-agent cross-play: ego (agent_0) from seed i, the other n-1 agents from seed j.
+
+    `matrix[i, j]` is the mean greedy episode return for that team; the diagonal
+    is self-play (all agents seed i). Saves a heatmap + CSV, prints the SP/XP
+    summary (XP = off-diagonal mean via `xp_mean_and_sem`), and — if `logger` is
+    given — logs the SP/XP scalars to the run's wandb. Parameter-shared network,
+    per-slot params — no Other-Play / JSD / card-game machinery.
+    """
+    del task_name
+    from envs.base_env import get_inner_env
+    inner_env = get_inner_env(env)
+    num_seeds = int(jax.tree.leaves(stacked_params)[0].shape[0])
+    max_steps = int(algo_cfg.get("ENV_KWARGS", {}).get("max_steps", 100))
+
+    def seed_params(s):
+        return jax.tree.map(lambda x: x[s], stacked_params)
+
+    matrix = np.zeros((num_seeds, num_seeds))
+    rng = jax.random.PRNGKey(EVAL_SEED)
+    for i in range(num_seeds):
+        ego = seed_params(i)
+        for j in range(num_seeds):
+            team = [ego] + [seed_params(j)] * (inner_env.num_agents - 1)
+            rets = []
+            for _ in range(num_episodes):
+                rng, ep_rng = jax.random.split(rng)
+                rets.append(_rollout_team_return(ep_rng, inner_env, team, policy, max_steps))
+            matrix[i, j] = float(np.mean(rets))
+        print(f"[xp_seeds:nagent] ego seed_{i}: {num_seeds} partner sets done", flush=True)
+
+    sp = float(np.mean(np.diag(matrix)))
+    xp_mean, xp_sem = xp_mean_and_sem(matrix)
+    os.makedirs(savedir, exist_ok=True)
+    save_xp_heatmap(
+        matrix, None,
+        title=f"XP return (row=ego seed, col=partners seed)\nSP={sp:.1f}  XP={xp_mean:.1f}+/-{xp_sem:.1f}",
+        filepath=os.path.join(savedir, "xp_nagent_return.png"),
+    )
+    save_xp_csv(matrix, np.zeros_like(matrix),
+                os.path.join(savedir, "xp_nagent_return.csv"), label="return")
+    print(f"[xp_seeds:nagent] SP (diag) = {sp:.2f}  |  XP (off-diag) = {xp_mean:.2f} +/- {xp_sem:.2f}")
+    if logger is not None:
+        try:
+            logger.log({f"{wb_prefix}/sp_diag": sp,
+                        f"{wb_prefix}/xp_offdiag_mean": xp_mean,
+                        f"{wb_prefix}/xp_offdiag_sem": xp_sem})
+        except Exception as e:
+            print(f"[xp_seeds:nagent] WARN: wandb log failed ({e}); continuing.", flush=True)
+    return matrix, sp, (xp_mean, xp_sem)
+
+
+def run_xp(env, policy, params, algo_cfg, savedir, logger=None, *, jsd=True,
+           task_name=None, wb_prefix="XP"):
+    """Single in-process XP-eval entry, run right after training.
+
+    Dispatches by team size and trainer type:
+      - 2-agent JA runs (`jsd=True`) get the Other-Play / JSD / disjoint-pairing
+        matrix (`run_xp_from_params`).
+      - >2-agent envs, or non-attention baselines (`jsd=False`), get the
+        return-only ego/partner matrix (`run_xp_nagent_from_params`).
+
+    `params` is the per-seed params to cross-play; callers pass best-checkpoint
+    params (final params only as a fallback).
+    """
+    if env.num_agents == 2 and jsd:
+        run_xp_from_params(
+            env, policy, params, algo_cfg, savedir=savedir, task_name=task_name,
+            wb_run=getattr(logger, "run", None), greedy_eval=True, wb_prefix=wb_prefix,
+        )
+    else:
+        run_xp_nagent_from_params(
+            env, policy, params, algo_cfg, savedir=savedir, task_name=task_name,
+            wb_prefix=wb_prefix, logger=logger,
+        )
+
+
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True,
                       use_best: bool = False,
                       wb_prefix: str | None = None,
@@ -1086,6 +1197,11 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
         effective = xp_video_max_pairs if xp_video_max_pairs > 0 else 10**9
         label_cfg["XP_VIDEO_MAX_PAIRS"] = effective
         print(f"[xp_seeds] XP_VIDEO_MAX_PAIRS overridden to {effective}")
+    if env.num_agents != 2:
+        # >2-agent envs: ego/partner cross-play, no 2-agent/OP/JSD machinery.
+        run_xp_nagent_from_params(env, policy, all_final_params, label_cfg,
+                                  savedir=savedir, task_name=task_name, wb_prefix=wb_prefix)
+        return
     run_xp_from_params(env, policy, all_final_params, label_cfg,
                        savedir=savedir, task_name=task_name,
                        greedy_eval=greedy_eval, wb_prefix=wb_prefix)
