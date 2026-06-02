@@ -11,7 +11,7 @@ from agents.initialize_agents import initialize_s5_agent, initialize_mlp_agent, 
 from common.train_logging import report_basic_training_outputs
 from envs import make_env
 from envs.log_wrapper import LogWrapper
-from marl.ippo_core import (
+from marl.ppo_core import (
     calculate_gae,
     compute_last_value,
     configure_training_dims,

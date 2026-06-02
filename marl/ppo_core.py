@@ -1,4 +1,14 @@
-"""Shared PPO helpers for MARL trainers."""
+"""Shared PPO building blocks for the MARL trainers.
+
+The numerical core every IPPO trainer reuses: training-dim derivation, the
+optimizer/LR schedule, streaming reward normalization (Welford), the clipped
+actor-critic losses (4-tuple and JA 5-tuple variants), GAE, and the PPO
+minibatch update. Per-env mechanism logic (attention pooling, partner feed,
+shaping rewards, aux loss) stays in each trainer; this module holds only the
+env-agnostic math.
+"""
+from __future__ import annotations
+
 from typing import NamedTuple
 
 import jax
@@ -6,14 +16,6 @@ import jax.numpy as jnp
 import optax
 
 from marl.ppo_utils import _create_minibatches
-
-
-class PPOLossStats(NamedTuple):
-    total_loss: jnp.ndarray
-    value_loss: jnp.ndarray
-    policy_loss: jnp.ndarray
-    entropy: jnp.ndarray
-    grad_norm: jnp.ndarray
 
 
 def configure_training_dims(config, env):
@@ -46,8 +48,115 @@ def make_optimizer(config):
     )
 
 
+# --------------------------------------------------------------------------- #
+# Streaming reward normalization (Welford), gated by each trainer's
+# NORMALIZE_REWARDS flag. Mirrors the DeepMind reference that normalised the
+# combined env+intrinsic reward stream; default off so envs that never
+# normalised (e.g. LBF) are unchanged unless their config opts in.
+# --------------------------------------------------------------------------- #
+class RewardNormState(NamedTuple):
+    mean: jnp.ndarray
+    var: jnp.ndarray
+    count: jnp.ndarray
+
+
+def reward_norm_init() -> RewardNormState:
+    return RewardNormState(mean=jnp.zeros(()), var=jnp.ones(()), count=jnp.zeros(()))
+
+
+def reward_norm_update(state: RewardNormState, batch: jnp.ndarray) -> RewardNormState:
+    batch_mean = batch.mean()
+    batch_var = batch.var()
+    batch_count = jnp.array(batch.size, dtype=jnp.float32)
+    delta = batch_mean - state.mean
+    total_count = state.count + batch_count
+    new_mean = state.mean + delta * batch_count / jnp.maximum(total_count, 1.0)
+    m_a = state.var * state.count
+    m_b = batch_var * batch_count
+    m2 = m_a + m_b + delta ** 2 * state.count * batch_count / jnp.maximum(total_count, 1.0)
+    new_var = m2 / jnp.maximum(total_count, 1.0)
+    return RewardNormState(mean=new_mean, var=new_var, count=total_count)
+
+
+def reward_norm_apply(state: RewardNormState, rewards: jnp.ndarray, clip: float = 10.0) -> jnp.ndarray:
+    std = jnp.sqrt(state.var + 1e-8)
+    return jnp.clip((rewards - state.mean) / std, -clip, clip)
+
+
+# --------------------------------------------------------------------------- #
+# PPO loss / stats containers.
+# --------------------------------------------------------------------------- #
+class PPOLossStats(NamedTuple):
+    total_loss: jnp.ndarray
+    value_loss: jnp.ndarray
+    policy_loss: jnp.ndarray
+    entropy: jnp.ndarray
+    grad_norm: jnp.ndarray
+
+
+class PPOLossTerms(NamedTuple):
+    value_loss: jnp.ndarray
+    policy_loss: jnp.ndarray
+    entropy: jnp.ndarray
+    ratio: jnp.ndarray
+    approx_kl: jnp.ndarray
+    clip_frac: jnp.ndarray
+
+
+class PPOAuxStats(NamedTuple):
+    """Per-update PPO stats including the JA auxiliary loss term."""
+    total_loss: jnp.ndarray
+    value_loss: jnp.ndarray
+    policy_loss: jnp.ndarray
+    entropy: jnp.ndarray
+    grad_norm: jnp.ndarray
+    aux_loss: jnp.ndarray
+
+
+def ppo_actor_critic_losses(
+    pi, value, *, actions, value_old, log_prob_old, gae, targets, clip_eps,
+    policy_loss_type: str = "ppo",
+) -> PPOLossTerms:
+    """Standard clipped PPO value + policy + entropy losses.
+
+    GAE is advantage-normalised internally. `policy_loss_type="spo"` swaps the
+    clipped-min surrogate for SPO's smooth quadratic penalty (optimum at
+    ratio = 1 + eps*sign(A)); any other value uses PPO clipping. Callers add
+    their own auxiliary term and assemble the weighted total loss.
+    """
+    log_prob = pi.log_prob(actions)
+    entropy = pi.entropy().mean()
+
+    value_pred_clipped = value_old + (value - value_old).clip(-clip_eps, clip_eps)
+    value_losses = jnp.square(value - targets)
+    value_losses_clipped = jnp.square(value_pred_clipped - targets)
+    value_loss = jnp.maximum(value_losses, value_losses_clipped).mean()
+
+    ratio = jnp.exp(log_prob - log_prob_old)
+    gae_norm = (gae - gae.mean()) / (gae.std() + 1e-8)
+    if policy_loss_type == "spo":
+        # SPO (Simple Policy Optimization): smooth quadratic penalty around
+        # ratio=1 replaces PPO's clipped min, so the update can't drift far in
+        # a single step.
+        spo_penalty = jnp.abs(gae_norm) * jnp.square(ratio - 1.0) / (2.0 * clip_eps)
+        policy_loss = -(ratio * gae_norm - spo_penalty).mean()
+    else:
+        loss_actor1 = ratio * gae_norm
+        loss_actor2 = jnp.clip(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * gae_norm
+        policy_loss = -jnp.minimum(loss_actor1, loss_actor2).mean()
+
+    approx_kl = ((ratio - 1) - jnp.log(ratio)).mean()
+    clip_frac = (jnp.abs(ratio - 1.0) > clip_eps).mean()
+    return PPOLossTerms(value_loss, policy_loss, entropy, ratio, approx_kl, clip_frac)
+
+
+def global_grad_norm(grads) -> jnp.ndarray:
+    """L2 norm of the full gradient pytree."""
+    return jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads)))
+
+
 def compute_last_value(policy, params, last_obs_batch, last_done_batch, last_avail_batch, hstate, num_actors):
-    """Bootstrap the final value estimate for a rollout."""
+    """Bootstrap the final value estimate for a rollout (non-JA 4-tuple policy)."""
     _, last_val, _, _ = policy.get_action_value_policy(
         params=params,
         obs=last_obs_batch.reshape(1, num_actors, -1),
@@ -55,6 +164,28 @@ def compute_last_value(policy, params, last_obs_batch, last_done_batch, last_ava
         avail_actions=last_avail_batch.reshape(1, num_actors, -1),
         hstate=hstate,
         rng=jax.random.PRNGKey(0),
+    )
+    return last_val.squeeze()
+
+
+def compute_last_value_ja(
+    policy, params, last_obs_batch, last_done_batch, last_avail_batch, hstate, num_actors,
+    **policy_kwargs,
+):
+    """Bootstrap the final value for a JA rollout.
+
+    Unpacks the 5-tuple from `get_action_value_policy` (the non-JA
+    `compute_last_value` expects a 4-tuple). `policy_kwargs` forwards
+    extra inputs such as plh_actor/plh_critic when query_partner_lstm is on.
+    """
+    _, last_val, _, _, _ = policy.get_action_value_policy(
+        params=params,
+        obs=last_obs_batch.reshape(1, num_actors, -1),
+        done=last_done_batch.reshape(1, num_actors),
+        avail_actions=last_avail_batch.reshape(1, num_actors, -1),
+        hstate=hstate,
+        rng=jax.random.PRNGKey(0),
+        **policy_kwargs,
     )
     return last_val.squeeze()
 

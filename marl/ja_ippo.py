@@ -29,15 +29,19 @@ from common.train_logging import log_live_chunk_metrics
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 from marl.checkpointing import compute_chunk_boundaries, finalize_best_checkpoints
-from marl.ippo_core import calculate_gae, configure_training_dims, make_optimizer
-from marl.ja_ppo_core import (
+from marl.ppo_core import (
     PPOAuxStats,
+    calculate_gae,
     compute_last_value_ja,
+    configure_training_dims,
     global_grad_norm,
+    make_optimizer,
     ppo_actor_critic_losses,
+    reward_norm_apply,
+    reward_norm_init,
+    reward_norm_update,
 )
 from marl.ppo_utils import _create_minibatches, batchify, unbatchify
-from marl.reward_norm import reward_norm_apply, reward_norm_init, reward_norm_update
 
 
 # --------------------------------------------------------------------------- #

@@ -19,15 +19,17 @@ from common.train_logging import (
 from envs import make_env
 from envs.log_wrapper import LogWrapper
 from marl.checkpointing import compute_chunk_boundaries, finalize_best_checkpoints
-from marl.ippo_core import (
+from marl.ppo_core import (
     calculate_gae,
     compute_last_value,
     configure_training_dims,
     make_optimizer,
+    reward_norm_apply,
+    reward_norm_init,
+    reward_norm_update,
     run_ppo_epochs,
 )
 from marl.ppo_utils import Transition, batchify, unbatchify
-from marl.reward_norm import reward_norm_apply, reward_norm_init, reward_norm_update
 
 
 def make_train(config, env):
