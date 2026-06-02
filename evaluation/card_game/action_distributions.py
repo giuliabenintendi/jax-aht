@@ -543,6 +543,11 @@ def _run_mode(args, alg_config_template, final_params, num_seeds, seed_indices,
         alg_config_template,
     )
     eval_label = "XP" if xp_mode else "SP"
+    _op_kw = alg_config_template.get("ENV_KWARGS", {})
+    op_label = "on" if (
+        _op_kw.get("other_play_recolouring", False)
+        or _op_kw.get("other_play_position_shuffle", False)
+    ) else "off"
     print(f"\n[action_distributions] mode: {eval_label}  "
           f"(out: {output_dir.resolve()})")
 
