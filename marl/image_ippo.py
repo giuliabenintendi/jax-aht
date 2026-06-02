@@ -18,6 +18,7 @@ from common.train_logging import (
 )
 from envs import make_env
 from envs.log_wrapper import LogWrapper
+from marl.checkpointing import compute_chunk_boundaries, finalize_best_checkpoints
 from marl.ippo_core import (
     calculate_gae,
     compute_last_value,
@@ -177,8 +178,12 @@ def run_image_ippo(config, logger):
     configure_training_dims(algorithm_config, env)
     num_seeds = algorithm_config["NUM_SEEDS"]
     num_updates = algorithm_config["NUM_UPDATES"]
-    num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
-    ckpt_interval = num_updates // max(1, num_ckpts - 1)
+    env_steps_per_update = algorithm_config["ROLLOUT_LENGTH"] * algorithm_config["NUM_ENVS"]
+    freq_timesteps = float(algorithm_config.get("CHECKPOINT_FREQ_TIMESTEPS", 0) or 0)
+    chunk_boundaries, num_ckpts, freq_updates = compute_chunk_boundaries(
+        algorithm_config, num_updates, env_steps_per_update,
+    )
+    boundary_set = set(chunk_boundaries)
 
     rng = jax.random.PRNGKey(algorithm_config["TRAIN_SEED"])
     rngs = jax.random.split(rng, num_seeds)
@@ -187,18 +192,21 @@ def run_image_ippo(config, logger):
 
     print(f"[image_ippo] NUM_UPDATES={num_updates}, NUM_SEEDS={num_seeds}, "
           f"NUM_ENVS={algorithm_config['NUM_ENVS']}")
+    if freq_updates is not None:
+        print(f"[image_ippo] Checkpoint cadence: every {freq_timesteps:.0f} env steps "
+              f"({freq_updates} updates) -> {num_ckpts} checkpoints")
+    else:
+        print(f"[image_ippo] Checkpoint cadence: NUM_CHECKPOINTS={num_ckpts} evenly spaced")
 
     live_wandb = bool(algorithm_config.get("LIVE_WANDB_LOGGING", True))
-    env_steps_per_update = algorithm_config["ROLLOUT_LENGTH"] * algorithm_config["NUM_ENVS"]
     # Push live chunk-aggregated metrics on the checkpoint cadence so the
     # wandb dashboard updates at the same granularity training progresses at.
     # CHECKPOINT_FREQ_TIMESTEPS > 0 mirrors ja_ippo's chunking knob (lets
     # smoke runs request fine-grained live points without bumping NUM_CHECKPOINTS).
-    freq_timesteps = float(algorithm_config.get("CHECKPOINT_FREQ_TIMESTEPS", 0) or 0)
     if freq_timesteps > 0:
         live_log_interval = max(1, int(freq_timesteps / env_steps_per_update))
     else:
-        live_log_interval = max(1, ckpt_interval)
+        live_log_interval = max(1, num_updates // max(1, num_ckpts - 1))
 
     # Per-checkpoint episode videos (shared path, every env). Default off so the
     # baseline outputs are unchanged unless explicitly enabled.
@@ -228,8 +236,7 @@ def run_image_ippo(config, logger):
             all_metrics.append(metric)
             chunk_buffer.append(metric)
 
-            should_ckpt = (step % ckpt_interval == 0) or (step == num_updates - 1)
-            if should_ckpt and len(checkpoints) < num_ckpts:
+            if (step + 1) in boundary_set and len(checkpoints) < num_ckpts:
                 checkpoints.append(runner_state[0].params)
                 if save_ckpt_videos:
                     ckpt_idx = len(checkpoints) - 1
@@ -274,7 +281,14 @@ def run_image_ippo(config, logger):
 
     out = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_outputs)
 
-    log_eval_video(algorithm_config, env, out, logger)
+    use_best = bool(algorithm_config.get("USE_BEST_CKPT_FOR_EVAL", True))
+    best_params = finalize_best_checkpoints(
+        algorithm_config, out, chunk_boundaries, num_ckpts,
+        env_steps_per_update, logger, print_prefix="image_ippo",
+    )
+    eval_out = {**out, "final_params": best_params} if use_best else out
+
+    log_eval_video(algorithm_config, env, eval_out, logger)
     report_basic_training_outputs(
         config,
         out,

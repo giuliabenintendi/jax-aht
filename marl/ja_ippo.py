@@ -16,8 +16,6 @@ their config opts in.
 from __future__ import annotations
 
 import functools
-import json
-import os
 from typing import Any, NamedTuple
 
 import hydra
@@ -27,10 +25,10 @@ import numpy as np
 from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_ja_image_agent
-from common.save_load_utils import REPO_PATH, save_train_run
 from common.train_logging import log_live_chunk_metrics
 from envs import make_env
 from envs.log_wrapper import LogWrapper
+from marl.checkpointing import compute_chunk_boundaries, finalize_best_checkpoints
 from marl.ippo_core import calculate_gae, configure_training_dims, make_optimizer
 from marl.ja_ppo_core import (
     PPOAuxStats,
@@ -293,39 +291,6 @@ def make_train(config, env, mech):
     return init_policy, init_state, make_step_fn
 
 
-def _select_best_per_seed_ckpt(out, chunk_boundaries):
-    """Score each saved checkpoint by mean episodic return over its producing chunk.
-
-    Returns (best_params, best_idx, per_ckpt_chunk_return). Picking by the chunk
-    that produced a checkpoint approximates eval-time return without extra
-    rollouts; the argmax is per seed.
-    """
-    metrics = out["metrics"]
-    stacked_ckpts = out["checkpoints"]
-    num_seeds, num_ckpts = jax.tree.leaves(stacked_ckpts)[0].shape[:2]
-
-    returned = np.asarray(metrics["returned_episode"])
-    returns = np.asarray(metrics["returned_episode_returns"])
-
-    n_chunks = min(num_ckpts, len(chunk_boundaries))
-    los = [0] + list(chunk_boundaries[:n_chunks - 1])
-    his = list(chunk_boundaries[:n_chunks])
-
-    per_ckpt_returns = np.zeros((num_seeds, num_ckpts), dtype=np.float64)
-    for i, (lo, hi) in enumerate(zip(los, his)):
-        m = returned[:, lo:hi]
-        v = returns[:, lo:hi]
-        reduce_axes = tuple(range(1, m.ndim))
-        denom = np.maximum(m.sum(axis=reduce_axes), 1)
-        numer = (v * m).sum(axis=reduce_axes)
-        per_ckpt_returns[:, i] = numer / denom
-
-    best_idx = per_ckpt_returns.argmax(axis=1).astype(np.int32)
-    seed_arange = np.arange(num_seeds)
-    best_params = jax.tree.map(lambda c: c[seed_arange, best_idx], stacked_ckpts)
-    return best_params, best_idx, per_ckpt_returns
-
-
 def run_ja_ippo(config, logger):
     """Unified JA-IPPO entry. Dispatches the per-env mechanism via select_mechanism."""
     algorithm_config = dict(config.algorithm)
@@ -354,22 +319,13 @@ def run_ja_ippo(config, logger):
 
     env_steps_per_update = int(algorithm_config["ROLLOUT_LENGTH"]) * int(algorithm_config["NUM_ENVS"])
     freq_timesteps = float(algorithm_config.get("CHECKPOINT_FREQ_TIMESTEPS", 0) or 0)
-    if freq_timesteps > 0:
-        freq_updates = max(1, int(round(freq_timesteps / env_steps_per_update)))
-        chunk_boundaries: list[int] = []
-        b = 0
-        while b < num_updates:
-            b = min(b + freq_updates, num_updates)
-            chunk_boundaries.append(b)
-        num_ckpts = len(chunk_boundaries)
+    chunk_boundaries, num_ckpts, freq_updates = compute_chunk_boundaries(
+        algorithm_config, num_updates, env_steps_per_update,
+    )
+    if freq_updates is not None:
         print(f"[ja_ippo:{mech.name}] Checkpoint cadence: every {freq_timesteps:.0f} env steps "
               f"({freq_updates} updates) -> {num_ckpts} checkpoints", flush=True)
     else:
-        num_ckpts = algorithm_config.get("NUM_CHECKPOINTS", 5)
-        ckpt_interval = num_updates // max(1, num_ckpts - 1)
-        chunk_boundaries = [min((i + 1) * ckpt_interval, num_updates) for i in range(num_ckpts)]
-        if chunk_boundaries[-1] < num_updates:
-            chunk_boundaries.append(num_updates)
         print(f"[ja_ippo:{mech.name}] Checkpoint cadence: NUM_CHECKPOINTS={num_ckpts} evenly spaced", flush=True)
 
     print(f"[ja_ippo:{mech.name}] Initializing policy and {num_seeds} seeds...", flush=True)
@@ -417,19 +373,12 @@ def run_ja_ippo(config, logger):
                 if save_ckpt_videos:
                     ckpt_idx = len(seed_ckpts) - 1
                     try:
-                        from common.eval_media import render_and_log_video
-                        from evaluation.vis_episodes import run_episode_with_states
-                        params_ck = runner_state[0].params
-                        ep_states, ep_actions, _msgs, ep_obs = run_episode_with_states(
+                        from common.eval_media import rollout_and_log_video
+                        rollout_and_log_video(
                             jax.random.PRNGKey(7000 + seed_idx * 100 + ckpt_idx),
-                            inner_env, params_ck, policy, params_ck, policy,
-                            eval_max_steps, collect_obs=True,
-                        )
-                        render_and_log_video(
-                            inner_env, env_name, ep_states,
-                            tag=f"Eval/seed_{seed_idx}/ckpt_{ckpt_idx}",
+                            inner_env, env_name, runner_state[0].params, policy,
+                            eval_max_steps, tag=f"Eval/seed_{seed_idx}/ckpt_{ckpt_idx}",
                             savedir=video_dir, logger=logger,
-                            ep_obs=ep_obs, ep_actions=ep_actions,
                         )
                     except Exception as e:
                         print(f"[ja_ippo:{mech.name}] WARN: ckpt video failed ({e}); continuing.", flush=True)
@@ -461,53 +410,10 @@ def run_ja_ippo(config, logger):
     }
 
     use_best = bool(algorithm_config.get("USE_BEST_CKPT_FOR_EVAL", True))
-    best_params, best_idx, per_ckpt_returns = _select_best_per_seed_ckpt(out, chunk_boundaries)
-    ckpt_env_steps = [int(b) * env_steps_per_update for b in chunk_boundaries[:num_ckpts]]
-    out["best_params"] = best_params
-    out["best_ckpt_idx"] = best_idx
-    out["per_ckpt_chunk_return"] = per_ckpt_returns
-    out["ckpt_env_steps"] = np.asarray(ckpt_env_steps, dtype=np.int64)
-    best_env_steps = [ckpt_env_steps[int(i)] for i in best_idx]
-
-    # Per-checkpoint orbax folders + chunk_scores.json under CHECKPOINT_ROOT/<run_name>/.
-    savedir_for_scores = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-    ckpt_root_setting = str(algorithm_config.get("CHECKPOINT_ROOT", "checkpoints"))
-    if not os.path.isabs(ckpt_root_setting):
-        ckpt_root_setting = os.path.join(REPO_PATH, ckpt_root_setting)
-    run_name = None
-    if logger is not None and getattr(logger, "run", None) is not None:
-        run_name = getattr(logger.run, "name", None)
-    if not run_name:
-        run_name = os.path.basename(savedir_for_scores.rstrip("/")) or "unnamed_run"
-    ckpt_root = os.path.join(ckpt_root_setting, run_name)
-
-    ckpt_folder_paths: list[str] = []
-    if bool(algorithm_config.get("SAVE_CHECKPOINT_FOLDER", True)):
-        os.makedirs(ckpt_root, exist_ok=True)
-        for i in range(num_ckpts):
-            params_i = jax.tree.map(lambda c, _i=i: c[:, _i], stacked_ckpts)
-            ret_mean = float(per_ckpt_returns[:, i].mean())
-            ckpt_name = f"ckpt_{i:02d}_ret_{ret_mean:.2f}"
-            save_train_run(params_i, ckpt_root, ckpt_name)
-            ckpt_folder_paths.append(os.path.join(ckpt_root, ckpt_name))
-        print(f"[ja_ippo:{mech.name}] Checkpoint folder: {ckpt_root} ({num_ckpts} ckpts)", flush=True)
-
-    scores_dir = ckpt_root if bool(algorithm_config.get("SAVE_CHECKPOINT_FOLDER", True)) else savedir_for_scores
-    os.makedirs(scores_dir, exist_ok=True)
-    with open(os.path.join(scores_dir, "chunk_scores.json"), "w") as _fh:
-        json.dump({
-            "run_name": run_name,
-            "num_seeds": int(num_seeds),
-            "num_ckpts": int(num_ckpts),
-            "ckpt_root": ckpt_root,
-            "ckpt_env_steps": ckpt_env_steps,
-            "ckpt_update_boundaries": [int(b) for b in chunk_boundaries[:num_ckpts]],
-            "ckpt_folder_paths": ckpt_folder_paths,
-            "per_seed_per_ckpt_return": per_ckpt_returns.tolist(),
-            "best_ckpt_idx_per_seed": best_idx.tolist(),
-            "best_env_step_per_seed": best_env_steps,
-            "best_chunk_return_per_seed": [float(per_ckpt_returns[s, best_idx[s]]) for s in range(num_seeds)],
-        }, _fh, indent=2)
+    best_params = finalize_best_checkpoints(
+        algorithm_config, out, chunk_boundaries, num_ckpts,
+        env_steps_per_update, logger, print_prefix=f"ja_ippo:{mech.name}",
+    )
 
     mech.report(config, out, logger)
 
