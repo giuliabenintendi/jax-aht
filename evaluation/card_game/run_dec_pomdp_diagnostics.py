@@ -63,8 +63,14 @@ def _onehot(idx: np.ndarray, n: int) -> np.ndarray:
     return oh
 
 
-def _build_userdata(intents, hstates, gt_attn, has_comm, has_attn, scenario, seed, jitter):
-    """`intents (E,T,2)`, `hstates (E,T,2,hdim)`, `gt_attn (E,T,2,5)` — all ground-truth."""
+def _build_userdata(intents, hstates, gt_attn, has_comm, has_attn, scenario, seed, jitter, use_hidden):
+    """`intents (E,T,2)`, `hstates (E,T,2,hdim)`, `gt_attn (E,T,2,5)` — all ground-truth.
+
+    `use_hidden=False` (default) feeds no hidden states, so the package computes
+    only the obs-history `*_ohist` diagnostics. With the channel now in the
+    observation that variant is faithful AND avoids 512-d kNN CMI, which is both
+    the runtime bottleneck and unreliable at that dimension.
+    """
     rng = np.random.default_rng(seed)
     e, t, _ = intents.shape
     step = np.tile(np.arange(t), e).astype(np.int64)
@@ -86,21 +92,24 @@ def _build_userdata(intents, hstates, gt_attn, has_comm, has_attn, scenario, see
             o = o + jitter * rng.standard_normal(o.shape)
         obs[ag] = o
         acts[ag] = intents[:, :, i].reshape(-1).astype(np.int64)
-        hid[ag] = hstates[:, :, i, :].reshape(e * t, -1).astype(np.float64)
+        if use_hidden:
+            hid[ag] = hstates[:, :, i, :].reshape(e * t, -1).astype(np.float64)
 
     timesteps = {a: step for a in AGENTS}
     eids = {a: episode_ids for a in AGENTS}
     return dpd.UserData(
         observations=obs, actions=acts, timesteps=timesteps, episode_ids=eids,
-        hidden_states=hid, env_name="card_game", alg_name="JA-IPPO-RNN",
+        hidden_states=(hid if use_hidden else None), env_name="card_game",
+        alg_name=("JA-IPPO-RNN" if use_hidden else "JA-IPPO"),
         seed=seed, scenario_name=scenario,
     )
 
 
 def _score_run(task):
     (intents, hstates, gt_attn, has_comm, has_attn, scenario, seed,
-     condition, kind, idx, history_k, null_reps, jitter, max_samples) = task
-    data = _build_userdata(intents, hstates, gt_attn, has_comm, has_attn, scenario, seed, jitter)
+     condition, kind, idx, history_k, null_reps, jitter, max_samples, use_hidden) = task
+    data = _build_userdata(intents, hstates, gt_attn, has_comm, has_attn,
+                           scenario, seed, jitter, use_hidden)
     result = dpd.compute_diagnostics(
         data, history_k=history_k, null_reps=null_reps,
         max_samples=max_samples, metrics=METRIC_ARG,
@@ -145,9 +154,15 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=8000)
     parser.add_argument("--jitter", type=float, default=1e-6)
     parser.add_argument("--workers", type=int, default=os.cpu_count())
-    parser.add_argument("--variant", choices=("hidden", "ohist"), default="hidden",
+    parser.add_argument("--use-hidden", action="store_true",
+                        help="Feed the 512-d RNN hidden state (their `*_hidden` metrics). OFF by "
+                             "default: 512-d kNN CMI is the runtime bottleneck and unreliable at "
+                             "that dimension; obs-history is faithful since the obs carries the "
+                             "channel. Pair with `--max-seeds`-style small runs if you enable it.")
+    parser.add_argument("--variant", choices=("hidden", "ohist"), default="ohist",
                         help="Which normalized variant to print (RNN hidden vs obs-history).")
     args = parser.parse_args()
+    use_hidden = args.use_hidden
 
     data_dir = Path(args.data_dir)
     files = (
@@ -166,9 +181,10 @@ def main() -> None:
             inten, hsta, gat = d[f"{kind}_intents"], d[f"{kind}_hstates"], d[f"{kind}_gt_attn"]
             for k in range(inten.shape[0]):
                 tasks.append((
-                    inten[k], hsta[k], gat[k], has_comm, has_attn,
+                    inten[k], (hsta[k] if use_hidden else None), gat[k], has_comm, has_attn,
                     f"{cond}/{kind}/{k}", (0 if kind == "sp" else 100) + k,
                     cond, kind, k, args.history_k, args.null_reps, args.jitter, args.max_samples,
+                    use_hidden,
                 ))
 
     global _RLIABLE_OK
@@ -188,7 +204,7 @@ def main() -> None:
 
     # Per (condition, kind) aggregation with rliable CIs over the normalized variant.
     conds = sorted({r["condition"] for r in rows})
-    hid = args.variant == "hidden"
+    hid = args.variant == "hidden" and use_hidden  # hidden cols are NaN unless fed
     summary = []
     print("\n" + "=" * 96)
     print(f"PER-CONDITION NORMALISED DIAGNOSTICS ({args.variant}), rliable mean [95% CI]; "
