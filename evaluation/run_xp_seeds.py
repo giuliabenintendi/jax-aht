@@ -17,6 +17,7 @@ Usage:
 """
 import argparse
 import csv
+import itertools
 import os
 import time
 
@@ -1069,16 +1070,39 @@ def _rollout_team_return(rng, inner_env, team_params, policy, max_steps, *, gree
     return total
 
 
+def _mixed_seed_team_params(seed_i_params, seed_j_params, num_agents: int):
+    """All nontrivial i/j team compositions for an N-agent XP pairing.
+
+    For four agents this yields the requested 1+3, 2+2, and 3+1 cases, with all
+    slot assignments included so the result is not tied to agent_0 being special.
+    """
+    teams = []
+    slots = range(num_agents)
+    for n_i in range(1, num_agents):
+        for i_slots in itertools.combinations(slots, n_i):
+            i_slot_set = set(i_slots)
+            teams.append((
+                n_i,
+                [
+                    seed_i_params if slot in i_slot_set else seed_j_params
+                    for slot in slots
+                ],
+            ))
+    return teams
+
+
 def run_xp_nagent_from_params(env, policy, stacked_params, algo_cfg, savedir,
                               task_name=None, num_episodes=32, wb_prefix="XP",
                               logger=None):
-    """N-agent cross-play: ego (agent_0) from seed i, the other n-1 agents from seed j.
+    """N-agent cross-play across all mixed seed-i/seed-j team compositions.
 
-    `matrix[i, j]` is the mean episode return for that team; the diagonal
-    is self-play (all agents seed i). Saves a heatmap + CSV, prints the SP/XP
-    summary (XP = off-diagonal mean via `xp_mean_and_sem`), and — if `logger` is
-    given — logs the SP/XP scalars to the run's wandb. Parameter-shared network,
-    per-slot params — no Other-Play / JSD / card-game machinery.
+    Diagonal entries are self-play (all slots use seed i). Off-diagonal entries
+    average every nontrivial mixed composition between seeds i and j. For four
+    agents, that is 1+3, 2+2, and 3+1, across all slot assignments. Saves a
+    heatmap + CSV, prints the SP/XP summary (XP = off-diagonal mean via
+    `xp_mean_and_sem`), and — if `logger` is given — logs the SP/XP scalars to
+    the run's wandb. Parameter-shared network, per-slot params — no Other-Play /
+    JSD / card-game machinery.
     """
     del task_name
     from envs.base_env import get_inner_env
@@ -1100,33 +1124,59 @@ def run_xp_nagent_from_params(env, policy, stacked_params, algo_cfg, savedir,
         return jax.tree.map(lambda x: x[s], stacked_params)
 
     matrix = np.zeros((num_seeds, num_seeds))
+    by_count = {
+        n_i: np.full((num_seeds, num_seeds), np.nan, dtype=np.float64)
+        for n_i in range(1, inner_env.num_agents)
+    }
+    num_mixed_teams = (2 ** inner_env.num_agents) - 2
+    print(
+        f"[xp_seeds:nagent] mixed teams per seed pair: {num_mixed_teams}",
+        flush=True,
+    )
     rng = jax.random.PRNGKey(EVAL_SEED)
     for i in range(num_seeds):
-        ego = seed_params(i)
+        params_i = seed_params(i)
         for j in range(num_seeds):
-            team = [ego] + [seed_params(j)] * (inner_env.num_agents - 1)
+            params_j = seed_params(j)
+            teams = (
+                [(inner_env.num_agents, [params_i] * inner_env.num_agents)]
+                if i == j
+                else _mixed_seed_team_params(params_i, params_j, inner_env.num_agents)
+            )
             rets = []
-            for _ in range(num_episodes):
-                rng, ep_rng = jax.random.split(rng)
-                rets.append(
-                    _rollout_team_return(
+            count_rets: dict[int, list[float]] = {n_i: [] for n_i in by_count}
+            for n_i, team in teams:
+                for _ in range(num_episodes):
+                    rng, ep_rng = jax.random.split(rng)
+                    ret = _rollout_team_return(
                         ep_rng, inner_env, team, policy, max_steps,
                         greedy=greedy_eval,
                     )
-                )
+                    rets.append(ret)
+                    if n_i in count_rets:
+                        count_rets[n_i].append(ret)
             matrix[i, j] = float(np.mean(rets))
-        print(f"[xp_seeds:nagent] ego seed_{i}: {num_seeds} partner sets done", flush=True)
+            for n_i, vals in count_rets.items():
+                if vals:
+                    by_count[n_i][i, j] = float(np.mean(vals))
+        print(f"[xp_seeds:nagent] seed-pair row {i}: {num_seeds} partner seeds done", flush=True)
 
     sp = float(np.mean(np.diag(matrix)))
     xp_mean, xp_sem = xp_mean_and_sem(matrix)
     os.makedirs(savedir, exist_ok=True)
     save_xp_heatmap(
         matrix, None,
-        title=f"XP return (row=ego seed, col=partners seed)\nSP={sp:.1f}  XP={xp_mean:.1f}+/-{xp_sem:.1f}",
+        title=f"XP return (row/col=seed pair; off-diag=all mixed teams)\nSP={sp:.1f}  XP={xp_mean:.1f}+/-{xp_sem:.1f}",
         filepath=os.path.join(savedir, "xp_nagent_return.png"),
     )
     save_xp_csv(matrix, np.zeros_like(matrix),
                 os.path.join(savedir, "xp_nagent_return.csv"), label="return")
+    for n_i, count_matrix in by_count.items():
+        save_xp_csv(
+            count_matrix, np.zeros_like(count_matrix),
+            os.path.join(savedir, f"xp_nagent_return_{n_i}v{inner_env.num_agents - n_i}.csv"),
+            label="return",
+        )
     print(f"[xp_seeds:nagent] SP (diag) = {sp:.2f}  |  XP (off-diag) = {xp_mean:.2f} +/- {xp_sem:.2f}")
     if logger is not None:
         try:
