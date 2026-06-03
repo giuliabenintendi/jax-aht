@@ -1,8 +1,14 @@
 import os
+import re
 from datetime import datetime
 
 import wandb
 from omegaconf import OmegaConf
+
+try:
+    from hydra.core.hydra_config import HydraConfig
+except ModuleNotFoundError:  # pragma: no cover - only for lightweight import checks
+    HydraConfig = None
 
 
 def _format_timesteps(n: float) -> str:
@@ -24,12 +30,55 @@ def _get_layout_short(config) -> str:
     return task.split("/")[-1] if "/" in task else task
 
 
+def _sanitize_name_part(value) -> str:
+    """Make override fragments safe for W&B run names and checkpoint paths."""
+    text = str(value).strip().strip("'\"")
+    text = text.replace("/", "-")
+    text = re.sub(r"[^A-Za-z0-9_.+-]+", "-", text)
+    return text.strip("-")
+
+
+def _algorithm_override_suffixes() -> list[str]:
+    """Return CLI algorithm hyperparameter overrides to append to the run name.
+
+    Hydra exposes task overrides exactly as typed on the command line. That lets
+    names reflect user-requested deviations from the selected config defaults
+    without hard-coding every default value here.
+    """
+    if HydraConfig is None:
+        return []
+    try:
+        overrides = list(HydraConfig.get().overrides.task)
+    except Exception:
+        return []
+
+    already_named = {"TOTAL_TIMESTEPS", "NUM_SEEDS"}
+    ignored = {"ALG", "ENV_NAME", "ENV_KWARGS", "ROLLOUT_LENGTH"}
+    suffixes: list[str] = []
+    seen: set[str] = set()
+    for raw in overrides:
+        if "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        key = key.lstrip("+")
+        if not key.startswith("algorithm."):
+            continue
+        short_key = key.split(".")[-1]
+        if short_key in already_named or short_key in ignored:
+            continue
+        part = f"{_sanitize_name_part(short_key)}{_sanitize_name_part(value)}"
+        if part and part not in seen:
+            suffixes.append(part)
+            seen.add(part)
+    return suffixes
+
+
 def _build_run_string(config: dict) -> str:
     """Build a concise, label-driven run name.
 
-    Format: {layout}_{alg}_[{label}_]{timesteps}_[s{N}_]{DDMMYYYY}
-    Hyperparameters live in tags, not the name. Use the `label` config field to
-    describe the run.
+    Format: {layout}_{alg}_[{label}_]{timesteps}_[s{N}_]{DDMMYYYY}_[overrides...]
+    Algorithm CLI overrides are appended so runs with changed hyperparameters
+    stay identifiable from the W&B run list.
     """
     alg_config = config["algorithm"]
     layout = _get_layout_short(config)
@@ -44,6 +93,7 @@ def _build_run_string(config: dict) -> str:
     if num_seeds > 1:
         parts.append(f"s{num_seeds}")
     parts.append(datetime.now().strftime("%d%m%Y"))
+    parts.extend(_algorithm_override_suffixes())
     return "_".join(parts)
 
 
