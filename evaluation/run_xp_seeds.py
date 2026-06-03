@@ -1148,6 +1148,55 @@ def run_xp(env, policy, params, algo_cfg, savedir, logger=None, *, jsd=True,
         )
 
 
+def run_xp_best_from_run(rundir: str, scores_path: str | None = None,
+                         wb_prefix: str = "XP_best"):
+    """Post-hoc XP on each seed's BEST checkpoint, for an already-finished run.
+
+    Reads `chunk_scores.json` (`best_ckpt_idx_per_seed` + absolute
+    `ckpt_folder_paths`), reconstructs per-seed best params (each seed's best
+    index may differ), and runs the XP matrix dispatched by team size. Writes the
+    matrix PNG/CSV under `rundir`. `scores_path` defaults to
+    `<rundir>/chunk_scores.json`; pass it explicitly when SAVE_CHECKPOINT_FOLDER
+    placed it under CHECKPOINT_ROOT/<run_name>/.
+    """
+    import json
+
+    hydra_cfg = _load_hydra_config(rundir)
+    if hydra_cfg is None:
+        raise ValueError(f"No .hydra/config.yaml found under {rundir}")
+    algo_cfg = hydra_cfg["algorithm"]
+
+    if scores_path is None:
+        scores_path = os.path.join(rundir, "chunk_scores.json")
+    with open(scores_path) as f:
+        cs = json.load(f)
+    best_idx = cs["best_ckpt_idx_per_seed"]
+    ckpt_paths = cs["ckpt_folder_paths"]
+    print(f"[xp_best] {len(best_idx)} seeds; best ckpt idx/seed = {best_idx}", flush=True)
+
+    env = LogWrapper(make_env(algo_cfg["ENV_NAME"], dict(algo_cfg["ENV_KWARGS"])))
+    rng = jax.random.PRNGKey(EVAL_SEED)
+    alg = algo_cfg.get("ALG", "ja_ippo")
+    if alg == "image_ippo":
+        from agents.initialize_agents import initialize_image_agent
+        policy, _ = initialize_image_agent(algo_cfg, env, rng)
+    else:
+        policy, _ = initialize_ja_image_agent(algo_cfg, env, rng)
+
+    # Each best ckpt folder holds all seeds at that checkpoint; take this seed's
+    # slice, then stack across seeds into per-seed best params.
+    seed_best = []
+    for s, b in enumerate(best_idx):
+        ckpt_params = load_train_run(ckpt_paths[b])
+        seed_best.append(jax.tree.map(lambda x, _s=s: x[_s], ckpt_params))
+    best_params = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_best)
+
+    run_xp(env, policy, best_params, algo_cfg, rundir, None,
+           jsd=(alg != "image_ippo"), task_name=algo_cfg.get("ENV_NAME"),
+           wb_prefix=wb_prefix)
+    print(f"[xp_best] XP matrix written under {rundir}", flush=True)
+
+
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True,
                       use_best: bool = True,
                       wb_prefix: str | None = None,
@@ -1452,9 +1501,16 @@ if __name__ == "__main__":
     parser.add_argument("--no-xp-videos", action="store_true",
                         help="Skip XP video rendering entirely (overrides "
                              "EVAL_VIDEO_LOG_XP from the saved Hydra config).")
+    parser.add_argument("--best-from-run", default=None,
+                        help="Rundir (with .hydra/config.yaml): post-hoc XP on each "
+                             "seed's best checkpoint, from chunk_scores.json + per-ckpt folders")
+    parser.add_argument("--scores", default=None,
+                        help="Path to chunk_scores.json (default: <best-from-run>/chunk_scores.json)")
     args = parser.parse_args()
 
-    if args.checkpoints:
+    if args.best_from_run:
+        run_xp_best_from_run(args.best_from_run, scores_path=args.scores)
+    elif args.checkpoints:
         run_xp_multi_checkpoint(args.task, args.checkpoints)
     elif args.checkpoint:
         max_pairs = 0 if args.xp_video_all_pairs else args.xp_video_max_pairs
