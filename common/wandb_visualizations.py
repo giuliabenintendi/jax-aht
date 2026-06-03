@@ -38,7 +38,29 @@ def _sanitize_name_part(value) -> str:
     return text.strip("-")
 
 
-def _algorithm_override_suffixes() -> list[str]:
+def _compact_name_part(value) -> str:
+    """Normalise a name fragment for fuzzy duplicate checks."""
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _override_name_part(key: str, value: str) -> str:
+    """Short display form for an algorithm override in the run name."""
+    clean_value = _sanitize_name_part(value)
+    aliases = {
+        "ANNEAL_LR": "anneal",
+        "CLIP_EPS": "clip",
+        "ENT_COEF": "ent",
+        "GAE_LAMBDA": "gae",
+        "NORMALIZE_REWARDS": "normrew",
+        "UPDATE_EPOCHS": "epochs",
+        "NUM_MINIBATCHES": "mb",
+        "MAX_GRAD_NORM": "gradclip",
+    }
+    display_key = aliases.get(key, key)
+    return f"{display_key}{clean_value}"
+
+
+def _algorithm_override_suffixes(label: str = "") -> list[str]:
     """Return CLI algorithm hyperparameter overrides to append to the run name.
 
     Hydra exposes task overrides exactly as typed on the command line. That lets
@@ -56,6 +78,7 @@ def _algorithm_override_suffixes() -> list[str]:
     ignored = {"ALG", "ENV_NAME", "ENV_KWARGS", "ROLLOUT_LENGTH"}
     suffixes: list[str] = []
     seen: set[str] = set()
+    compact_label = _compact_name_part(label)
     for raw in overrides:
         if "=" not in raw:
             continue
@@ -66,7 +89,18 @@ def _algorithm_override_suffixes() -> list[str]:
         short_key = key.split(".")[-1]
         if short_key in already_named or short_key in ignored:
             continue
-        part = f"{_sanitize_name_part(short_key)}{_sanitize_name_part(value)}"
+        part = _override_name_part(short_key, value)
+        compact_part = _compact_name_part(part)
+        compact_key = _compact_name_part(_override_name_part(short_key, ""))
+        compact_value = _compact_name_part(value)
+        # If the user put the same idea in `label` (e.g. `annealLR3e4`), do not
+        # repeat it in the automatic override suffix.
+        if compact_part in compact_label:
+            continue
+        if compact_key and compact_key in compact_label:
+            continue
+        if compact_value and short_key == "LR" and f"lr{compact_value}" in compact_label:
+            continue
         if part and part not in seen:
             suffixes.append(part)
             seen.add(part)
@@ -87,13 +121,20 @@ def _build_run_string(config: dict) -> str:
     label = str(config.get("label", "default_label"))
     if label and label != "default_label":
         parts.append(label)
+    compact_label = _compact_name_part(label)
     if "TOTAL_TIMESTEPS" in alg_config:
-        parts.append(_format_timesteps(alg_config["TOTAL_TIMESTEPS"]))
+        timesteps = _format_timesteps(alg_config["TOTAL_TIMESTEPS"])
+        if _compact_name_part(timesteps) not in compact_label:
+            parts.append(timesteps)
     num_seeds = alg_config.get("NUM_SEEDS", 1)
     if num_seeds > 1:
-        parts.append(f"s{num_seeds}")
+        seed_token = f"s{num_seeds}"
+        compact_seed = _compact_name_part(seed_token)
+        compact_seed_alt = _compact_name_part(f"{num_seeds}s")
+        if compact_seed not in compact_label and compact_seed_alt not in compact_label:
+            parts.append(seed_token)
     parts.append(datetime.now().strftime("%d%m%Y"))
-    parts.extend(_algorithm_override_suffixes())
+    parts.extend(_algorithm_override_suffixes(label))
     return "_".join(parts)
 
 
