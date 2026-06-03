@@ -1035,9 +1035,11 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         print(f"[xp_seeds] wandb run: {wb_run.url}")
 
 
-def _rollout_team_return(rng, inner_env, team_params, policy, max_steps):
-    """One greedy episode for a fixed team with per-slot params; returns the
-    (shared) episode return. `team_params[k]` is the params pytree for agent k."""
+def _rollout_team_return(rng, inner_env, team_params, policy, max_steps, *, greedy=True):
+    """One episode for a fixed team with per-slot params; returns the shared return.
+
+    `team_params[k]` is the params pytree for agent k.
+    """
     agents = inner_env.agents
     n = inner_env.num_agents
     rng, reset_rng = jax.random.split(rng)
@@ -1055,7 +1057,7 @@ def _rollout_team_return(rng, inner_env, team_params, policy, max_steps):
                 obs[a].reshape(1, 1, -1),
                 done[k],
                 avail[a].astype(jnp.float32).reshape(1, 1, -1),
-                hstates[k], act_rng, greedy=True,
+                hstates[k], act_rng, greedy=greedy,
             )
             env_act[a] = act_k.reshape(())
         rng, step_rng = jax.random.split(rng)
@@ -1072,7 +1074,7 @@ def run_xp_nagent_from_params(env, policy, stacked_params, algo_cfg, savedir,
                               logger=None):
     """N-agent cross-play: ego (agent_0) from seed i, the other n-1 agents from seed j.
 
-    `matrix[i, j]` is the mean greedy episode return for that team; the diagonal
+    `matrix[i, j]` is the mean episode return for that team; the diagonal
     is self-play (all agents seed i). Saves a heatmap + CSV, prints the SP/XP
     summary (XP = off-diagonal mean via `xp_mean_and_sem`), and — if `logger` is
     given — logs the SP/XP scalars to the run's wandb. Parameter-shared network,
@@ -1083,6 +1085,16 @@ def run_xp_nagent_from_params(env, policy, stacked_params, algo_cfg, savedir,
     inner_env = get_inner_env(env)
     num_seeds = int(jax.tree.leaves(stacked_params)[0].shape[0])
     max_steps = int(algo_cfg.get("ENV_KWARGS", {}).get("max_steps", 100))
+    env_name = str(algo_cfg.get("ENV_NAME", ""))
+    # Multi-destination spread starts all parameter-shared agents on the same
+    # cell with identical observations. Greedy eval makes self-play degenerate:
+    # all agents pick the same action, collide, and stay at the center. Sampled
+    # XP matches the stochastic symmetry breaking used during training.
+    greedy_eval = env_name != "multi-destination-spread"
+    print(
+        f"[xp_seeds:nagent] action selection: {'greedy' if greedy_eval else 'sampled'}",
+        flush=True,
+    )
 
     def seed_params(s):
         return jax.tree.map(lambda x: x[s], stacked_params)
@@ -1096,7 +1108,12 @@ def run_xp_nagent_from_params(env, policy, stacked_params, algo_cfg, savedir,
             rets = []
             for _ in range(num_episodes):
                 rng, ep_rng = jax.random.split(rng)
-                rets.append(_rollout_team_return(ep_rng, inner_env, team, policy, max_steps))
+                rets.append(
+                    _rollout_team_return(
+                        ep_rng, inner_env, team, policy, max_steps,
+                        greedy=greedy_eval,
+                    )
+                )
             matrix[i, j] = float(np.mean(rets))
         print(f"[xp_seeds:nagent] ego seed_{i}: {num_seeds} partner sets done", flush=True)
 
@@ -1187,7 +1204,9 @@ def run_xp_best_from_run(rundir: str, scores_path: str | None = None,
     # slice, then stack across seeds into per-seed best params.
     seed_best = []
     for s, b in enumerate(best_idx):
-        ckpt_params = load_train_run(ckpt_paths[b])
+        ckpt_path = ckpt_paths[b]
+        print(f"[xp_best] seed {s}: loading ckpt[{b}] {ckpt_path}", flush=True)
+        ckpt_params = load_train_run(ckpt_path)
         seed_best.append(jax.tree.map(lambda x, _s=s: x[_s], ckpt_params))
     best_params = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_best)
 
