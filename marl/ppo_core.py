@@ -92,6 +92,8 @@ class PPOLossStats(NamedTuple):
     policy_loss: jnp.ndarray
     entropy: jnp.ndarray
     grad_norm: jnp.ndarray
+    approx_kl: jnp.ndarray
+    clip_frac: jnp.ndarray
 
 
 class PPOLossTerms(NamedTuple):
@@ -111,6 +113,8 @@ class PPOAuxStats(NamedTuple):
     entropy: jnp.ndarray
     grad_norm: jnp.ndarray
     aux_loss: jnp.ndarray
+    approx_kl: jnp.ndarray
+    clip_frac: jnp.ndarray
 
 
 def ppo_actor_critic_losses(
@@ -231,8 +235,6 @@ def run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets,
                     hstate=init_hstate,
                     rng=jax.random.PRNGKey(0),
                 )
-                log_prob = pi.log_prob(traj_batch.action)
-
                 value_pred_clipped = traj_batch.value + (
                     value - traj_batch.value
                 ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
@@ -240,6 +242,7 @@ def run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets,
                 value_losses_clipped = jnp.square(value_pred_clipped - targets)
                 value_loss = jnp.maximum(value_losses, value_losses_clipped).mean()
 
+                log_prob = pi.log_prob(traj_batch.action)
                 ratio = jnp.exp(log_prob - traj_batch.log_prob)
                 gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                 loss_actor1 = ratio * gae
@@ -253,16 +256,18 @@ def run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets,
                 )
                 policy_loss = -jnp.minimum(loss_actor1, loss_actor2).mean()
                 entropy = pi.entropy().mean()
+                approx_kl = ((ratio - 1) - jnp.log(ratio)).mean()
+                clip_frac = (jnp.abs(ratio - 1.0) > config["CLIP_EPS"]).mean()
 
                 total_loss = (
                     policy_loss
                     + config["VF_COEF"] * value_loss
                     - config["ENT_COEF"] * entropy
                 )
-                return total_loss, (value_loss, policy_loss, entropy)
+                return total_loss, (value_loss, policy_loss, entropy, approx_kl, clip_frac)
 
             grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
-            (total_loss, (value_loss, policy_loss, entropy)), grads = grad_fn(
+            (total_loss, (value_loss, policy_loss, entropy, approx_kl, clip_frac)), grads = grad_fn(
                 train_state.params, traj_batch, advantages, targets
             )
             grad_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in jax.tree.leaves(grads)))
@@ -273,6 +278,8 @@ def run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets,
                 policy_loss=policy_loss,
                 entropy=entropy,
                 grad_norm=grad_norm,
+                approx_kl=approx_kl,
+                clip_frac=clip_frac,
             )
             return train_state, stats
 

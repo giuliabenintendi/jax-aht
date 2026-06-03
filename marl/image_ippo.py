@@ -162,6 +162,8 @@ def make_train(config, env):
             metric["loss_policy"] = loss_info.policy_loss.mean()
             metric["entropy"] = loss_info.entropy.mean()
             metric["grad_norm"] = loss_info.grad_norm.mean()
+            metric["approx_kl"] = loss_info.approx_kl.mean()
+            metric["clip_frac"] = loss_info.clip_frac.mean()
             metric["value_mean"] = traj_batch.value.mean()
 
             runner_state = (train_state, env_state, last_obs, last_done, hstate, rng, rew_norm_state)

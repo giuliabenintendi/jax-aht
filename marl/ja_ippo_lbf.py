@@ -325,6 +325,8 @@ def make_train(config, env):
             metric["loss_policy"] = loss_info.policy_loss.mean()
             metric["entropy"] = loss_info.entropy.mean()
             metric["grad_norm"] = loss_info.grad_norm.mean()
+            metric["approx_kl"] = loss_info.approx_kl.mean()
+            metric["clip_frac"] = loss_info.clip_frac.mean()
             metric["value_mean"] = traj_batch.value.mean()
             # Use the canonical key name so log_live_chunk_metrics picks it up
             # (JA_LIVE_SCALAR_KEYS in common/train_logging.py expects this exact name).
@@ -417,10 +419,20 @@ def _run_ppo_aux_epochs(
                     - config["ENT_COEF"] * terms.entropy
                     + aux_coef * aux_loss
                 )
-                return total_loss, (terms.value_loss, terms.policy_loss, terms.entropy, aux_loss)
+                return total_loss, (
+                    terms.value_loss,
+                    terms.policy_loss,
+                    terms.entropy,
+                    aux_loss,
+                    terms.approx_kl,
+                    terms.clip_frac,
+                )
 
             grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
-            (total_loss, (value_loss, policy_loss, entropy, aux_loss)), grads = grad_fn(
+            (
+                total_loss,
+                (value_loss, policy_loss, entropy, aux_loss, approx_kl, clip_frac),
+            ), grads = grad_fn(
                 train_state.params, traj_batch, advantages, targets,
             )
             grad_norm = global_grad_norm(grads)
@@ -432,6 +444,8 @@ def _run_ppo_aux_epochs(
                 entropy=entropy,
                 grad_norm=grad_norm,
                 aux_loss=aux_loss,
+                approx_kl=approx_kl,
+                clip_frac=clip_frac,
             )
             return train_state, stats
 

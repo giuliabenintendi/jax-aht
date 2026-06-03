@@ -1,8 +1,9 @@
 """Cross-play evaluation for multi-seed training runs.
 
-Loads final_params (shape: num_seeds, ...) from a single checkpoint,
-builds the NxN cross-play matrix, and reports SP/XP with proper SEM
-following the pairing scheme from the ZSC literature.
+Loads best_params (shape: num_seeds, ...) from a single checkpoint when
+available, falling back to final_params for older checkpoints. Builds the NxN
+cross-play matrix, and reports SP/XP with proper SEM following the pairing
+scheme from the ZSC literature.
 
 Reports the cross-play game-score matrix. For non-card-game envs also
 reports a raw-spatial JSD matrix between attention maps; this is skipped
@@ -47,6 +48,18 @@ CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs", "task")
 ALGO_BASE_CONFIG = os.path.join(
     os.path.dirname(__file__), "..", "marl", "configs", "algorithm", "ja_ippo", "_base_.yaml"
 )
+
+
+def _select_xp_params(run_data, *, prefer_best: bool = True):
+    """Return params for XP eval, preferring best checkpoint params when present."""
+    if prefer_best and "best_params" in run_data:
+        return run_data["best_params"], "best_params"
+    if "final_params" in run_data:
+        return run_data["final_params"], "final_params"
+    raise KeyError(
+        "Neither 'best_params' nor 'final_params' found in checkpoint; "
+        f"keys: {list(run_data.keys())}"
+    )
 
 
 def load_task_config(task_name: str) -> dict:
@@ -1136,13 +1149,14 @@ def run_xp(env, policy, params, algo_cfg, savedir, logger=None, *, jsd=True,
 
 
 def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: bool = True,
-                      use_best: bool = False,
+                      use_best: bool = True,
                       wb_prefix: str | None = None,
                       xp_video_max_pairs: int | None = None,
                       no_xp_videos: bool = False):
     """Standalone XP evaluation from a saved checkpoint.
 
     `use_best` selects `best_params` over `final_params` (per-seed best checkpoint).
+    If `best_params` is missing, final params are used as a compatibility fallback.
     Results land under the run's `xp_results/` directory and are logged to a
     fresh wandb run with `wb_prefix` (default `XP`).
     """
@@ -1171,10 +1185,7 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     env = LogWrapper(env)
 
     run_data = load_train_run(checkpoint_path)
-    params_key = "best_params" if use_best else "final_params"
-    if params_key not in run_data:
-        raise KeyError(f"{params_key!r} not found in checkpoint; keys: {list(run_data.keys())}")
-    all_final_params = run_data[params_key]
+    all_final_params, params_key = _select_xp_params(run_data, prefer_best=use_best)
     print(f"[xp_seeds] using {params_key} from checkpoint")
 
     run_dir = os.path.dirname(checkpoint_path)
@@ -1186,7 +1197,7 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     policy, _init_params = initialize_ja_image_agent(algo_cfg, env, init_rng)
     # Avoid overwriting the original training run's xp_results/ when re-evaluating with overrides.
     savedir = run_dir
-    if use_best:
+    if params_key == "best_params":
         savedir = os.path.join(run_dir, "rerun_best")
         os.makedirs(savedir, exist_ok=True)
         print(f"[xp_seeds] writing rerun outputs to {savedir}")
@@ -1320,11 +1331,11 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     seed_params = []
     for i, ckpt_path in enumerate(checkpoint_paths):
         run_data = load_train_run(ckpt_path)
-        params = run_data["final_params"]
+        params, params_key = _select_xp_params(run_data)
         # Take seed 0 from each checkpoint (each has 1 seed)
         params_0 = jax.tree.map(lambda x: x[0], params)
         num_params = sum(x.size for x in jax.tree.leaves(params_0))
-        print(f"  checkpoint {i}: {ckpt_path} ({num_params} params)")
+        print(f"  checkpoint {i}: {ckpt_path} ({params_key}, {num_params} params)")
         seed_params.append(params_0)
 
     num_seeds = len(seed_params)
@@ -1427,8 +1438,10 @@ if __name__ == "__main__":
                         help="Path to saved_train_run directory (single multi-seed checkpoint)")
     parser.add_argument("--checkpoints", nargs="+", default=None,
                         help="Paths to multiple 1-seed checkpoints for multi-checkpoint XP")
-    parser.add_argument("--use-best", action="store_true",
-                        help="Use best_params (per-seed best checkpoint) instead of final_params")
+    parser.add_argument("--use-best", action="store_true", default=True,
+                        help="Use best_params when available (default; final_params is fallback)")
+    parser.add_argument("--use-final", dest="use_best", action="store_false",
+                        help="Force final_params instead of best_params")
     parser.add_argument("--xp-video-max-pairs", type=int, default=None,
                         help="Override the cap on number of XP video pairs (default 3 from "
                              "config). Pass 0 (or any non-positive) to render every "
@@ -1442,8 +1455,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.checkpoints:
-        if args.use_best:
-            parser.error("--use-best is only supported with --checkpoint (single multi-seed run)")
         run_xp_multi_checkpoint(args.task, args.checkpoints)
     elif args.checkpoint:
         max_pairs = 0 if args.xp_video_all_pairs else args.xp_video_max_pairs

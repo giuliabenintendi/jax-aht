@@ -81,6 +81,8 @@ IMAGE_IPPO_SCALAR_KEYS = [
     ("loss_policy", "Losses"),
     ("entropy", "Losses"),
     ("grad_norm", "Losses"),
+    ("approx_kl", "Losses"),
+    ("clip_frac", "Losses"),
     ("value_mean", "Values"),
 ]
 
