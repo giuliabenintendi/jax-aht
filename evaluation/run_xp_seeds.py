@@ -1149,7 +1149,7 @@ def run_xp(env, policy, params, algo_cfg, savedir, logger=None, *, jsd=True,
 
 
 def run_xp_best_from_run(rundir: str, scores_path: str | None = None,
-                         wb_prefix: str = "XP_best"):
+                         wb_prefix: str = "XP_best", wandb_resume: str | None = None):
     """Post-hoc XP on each seed's BEST checkpoint, for an already-finished run.
 
     Reads `chunk_scores.json` (`best_ckpt_idx_per_seed` + absolute
@@ -1191,9 +1191,23 @@ def run_xp_best_from_run(rundir: str, scores_path: str | None = None,
         seed_best.append(jax.tree.map(lambda x, _s=s: x[_s], ckpt_params))
     best_params = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_best)
 
-    run_xp(env, policy, best_params, algo_cfg, rundir, None,
+    logger = None
+    if wandb_resume:
+        import types
+
+        import wandb
+        wb = wandb.init(
+            id=wandb_resume, resume="must",
+            project=hydra_cfg["logger"]["project"],
+            entity=hydra_cfg["logger"]["entity"],
+        )
+        logger = types.SimpleNamespace(run=wb)
+
+    run_xp(env, policy, best_params, algo_cfg, rundir, logger,
            jsd=(alg != "image_ippo"), task_name=algo_cfg.get("ENV_NAME"),
            wb_prefix=wb_prefix)
+    if logger is not None:
+        logger.run.finish()
     print(f"[xp_best] XP matrix written under {rundir}", flush=True)
 
 
@@ -1506,10 +1520,14 @@ if __name__ == "__main__":
                              "seed's best checkpoint, from chunk_scores.json + per-ckpt folders")
     parser.add_argument("--scores", default=None,
                         help="Path to chunk_scores.json (default: <best-from-run>/chunk_scores.json)")
+    parser.add_argument("--wandb-resume", default=None,
+                        help="wandb run id to resume and log XP_best/return_matrix into "
+                             "(uses logger.project/entity from the run's config)")
     args = parser.parse_args()
 
     if args.best_from_run:
-        run_xp_best_from_run(args.best_from_run, scores_path=args.scores)
+        run_xp_best_from_run(args.best_from_run, scores_path=args.scores,
+                             wandb_resume=args.wandb_resume)
     elif args.checkpoints:
         run_xp_multi_checkpoint(args.task, args.checkpoints)
     elif args.checkpoint:
