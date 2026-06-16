@@ -1,6 +1,11 @@
 defaults:
-  - ja_ippo/lbf-image-12x12-8food
+  - ja_ippo/_base_
   - _self_
+
+# Matches lbf-image-12x12-8food's PPO budget; inlined rather than inherited as a
+# sibling default, which Hydra resolves to a doubled ja_ippo/ja_ippo/_base_ path.
+TOTAL_TIMESTEPS: 5e6
+NUM_ENVS: 64
 
 # Generalizable Joint Attention: entity-free future-occupancy shaping.
 JA_MECHANISM: future_occupancy
