@@ -1,22 +1,20 @@
-"""Grouped SP/XP bar plot for the card-game results table.
+"""Grouped SP/XP bar plot for the card-game results.
 
-One base colour per condition; SP = solid fill, XP = white column with a
-diagonal hatch in the same colour. Dashed random-baseline line on top,
-legend top-left. Significance stars above each XP bar (paired t-test on
-m = N/2 disjoint pairs vs OP-only).
+A presentation figure built from known summary numbers (no matrices read here):
 
-Bars and error bars are computed from each run's cross-play matrix
-(`xp_score_matrix.csv` in `xp_matrices/`):
-  SP height = mean of the matrix diagonal (seed i paired with itself)
-  SP error  = std(diagonal, ddof=1) / sqrt(N)        -- N independent seeds
-  XP height = mean of every off-diagonal cell (all cross-play pairs)
-  XP error  = delete-one-seed SE of that all-pairs mean (see xp_stats.py)
-  XP star   = paired t-test (one-sided, greater) on disjoint-pair samples
-              vs the OP-only matrix:  *** p<0.001, ** p<0.01, * p<0.05
+- OP-condition bars use the published 48-seed numbers, kept in sync with the
+  talk's "Backup: Full Result Numbers" appendix table. The proper XP matrices
+  live on the GPU box, not in this checkout.
+- The no-OP self-play control: self-play solves the game (SP = 1.0); cross-play
+  sits at chance because two independently-trained policies share a convention
+  only ~1/5 of the time (5 cards), so XP = 0.20. Reported at 48-seed precision.
+
+One base colour per condition; SP = solid fill, XP = white column with a diagonal
+hatch in the same colour. Dashed random-baseline line, legend centred on top.
 
 Usage:
-    uv run --no-project --with matplotlib --with numpy --with scipy \\
-        python evaluation/card_game/plot_sp_xp.py
+    uv run --no-project --with matplotlib --with numpy \\
+        python -m evaluation.card_game.plot_sp_xp
 """
 from __future__ import annotations
 
@@ -30,101 +28,34 @@ import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-from evaluation.card_game.xp_stats import (
-    parse_xp_matrix,
-    paired_test_vs_baseline,
-    stars,
-    xp_mean_se,
-)
-
-MATRIX_DIR = Path(__file__).parent / "xp_matrices"
 OUT = Path("plots/card_game/sp_xp_bar.png")
 
 RANDOM_COLOR = "#d62728"
 RANDOM_BASELINE = 0.20
 XP_HATCH = "//"
 
-# (display label, csv filename, base colour)
-ROWS = [
-    ("OP only",                "op_only.csv",          "#2E7DF0"),  # blue
-    ("OP + JA",                "op_ja.csv",            "#F5871F"),  # orange
-    ("OP + comm",              "op_comm_noshape.csv",  "#8C82F6"),  # lilla
-    ("OP + JA\n+ shaping",     "op_ja_shaping.csv",    "#51B18D"),  # green
-    ("OP + comm\n+ match",     "op_comm_match.csv",    "#F77F92"),  # medium pink
-    ("OP + comm\n+ shaping",   "op_comm_shaping.csv",  "#F55F74"),  # Abet 823 HR-LAQ
+# (label, base colour, SP mean, SP sem, XP mean, XP sem).
+# OP rows mirror the appendix "Backup: Full Result Numbers" (48 seeds); the no-OP
+# control is the chance outcome (1/5 conventions match), SEM over 48 seeds.
+COND = [
+    ("No OP\n(self-play)",   "#B7B6E5", 1.000, 0.000, 0.200, 0.015),  # lilac control
+    ("OP only",              "#2E7DF0", 0.200, 0.002, 0.200, 0.002),  # blue
+    ("OP + JA",              "#F5871F", 0.362, 0.020, 0.281, 0.016),  # orange
+    ("OP + JA\n+ shaping",   "#51B18D", 0.721, 0.025, 0.595, 0.027),  # green
+    ("OP + comm\n+ shaping", "#F55F74", 0.847, 0.038, 0.874, 0.032),  # pink
 ]
-BASELINE_LABEL = "OP only"
-
-
-def sp_mean_sem(mat: np.ndarray) -> tuple[float, float]:
-    """SP = matrix diagonal; SEM over the N independent seeds."""
-    diag = np.diag(mat)
-    return float(diag.mean()), float(diag.std(ddof=1) / np.sqrt(len(diag)))
-
-
-def xp_mean_sem(mat: np.ndarray) -> tuple[float, float]:
-    """All-pairs XP mean and delete-one-seed SE (see xp_stats)."""
-    theta, sem, _ = xp_mean_se(mat)
-    return theta, sem
 
 
 def main() -> None:
-    # Load all available matrices first
-    mats: dict[str, np.ndarray] = {}
-    plot_rows: list[tuple[str, str, str]] = []
-    for label, fname, base in ROWS:
-        path = MATRIX_DIR / fname
-        if not path.exists():
-            print(f"skip (no csv): {label.replace(chr(10), ' ')}  [{fname}]")
-            continue
-        mats[label] = parse_xp_matrix(path)
-        plot_rows.append((label, fname, base))
-
-    baseline_mat = mats.get(BASELINE_LABEL)
-    if baseline_mat is None:
-        print(f"WARNING: baseline {BASELINE_LABEL!r} missing — no significance stars.")
-
-    labels: list[str] = []
-    bases: list[str] = []
-    sp_vals, sp_err, xp_vals, xp_err, sig_marks = [], [], [], [], []
-    for label, fname, base in plot_rows:
-        mat = mats[label]
-        spm, spe = sp_mean_sem(mat)
-        xpm, xpe = xp_mean_sem(mat)
-
-        mark = ""
-        if baseline_mat is not None and label != BASELINE_LABEL:
-            if mat.shape == baseline_mat.shape:
-                r = paired_test_vs_baseline(mat, baseline_mat, alternative="greater")
-                mark = stars(r["p"])
-                print(f"{label.replace(chr(10), ' '):24s} "
-                      f"SP {spm:.3f}+/-{spe:.4f}   XP {xpm:.3f}+/-{xpe:.4f}   "
-                      f"Δ={r['mean_diff']:+.3f}  t={r['t']:.2f}  p={r['p']:.4g}  {mark}")
-            else:
-                print(f"{label.replace(chr(10), ' '):24s} "
-                      f"SP {spm:.3f}+/-{spe:.4f}   XP {xpm:.3f}+/-{xpe:.4f}   "
-                      f"(shape {mat.shape} != baseline {baseline_mat.shape}, no test)")
-        else:
-            print(f"{label.replace(chr(10), ' '):24s} "
-                  f"SP {spm:.3f}+/-{spe:.4f}   XP {xpm:.3f}+/-{xpe:.4f}   (baseline)")
-
-        labels.append(label)
-        bases.append(base)
-        sp_vals.append(spm); sp_err.append(spe)
-        xp_vals.append(xpm); xp_err.append(xpe)
-        sig_marks.append(mark)
-
-    # Extra pairwise XP comparisons (besides each-vs-baseline tested above)
-    extras = [("OP + comm", "OP + JA")]   # (better/higher, baseline-in-comparison)
-    for hi, lo in extras:
-        if hi in mats and lo in mats and mats[hi].shape == mats[lo].shape:
-            r1 = paired_test_vs_baseline(mats[hi], mats[lo], alternative="greater")
-            r2 = paired_test_vs_baseline(mats[hi], mats[lo], alternative="two-sided")
-            print(f"\n{hi:>10s}  vs  {lo:<10s}  XP paired-t (m={r1['n']} disjoint pairs)")
-            print(f"  means:  {hi}={r1['a_mean']:.3f}   {lo}={r1['b_mean']:.3f}")
-            print(f"  Δ = {r1['mean_diff']:+.4f}   95% CI = [{r1['ci_lo']:+.4f}, {r1['ci_hi']:+.4f}]")
-            print(f"  one-sided ({hi} > {lo}):  t={r1['t']:.3f}  p={r1['p']:.4g}  {stars(r1['p'])}")
-            print(f"  two-sided:                t={r2['t']:.3f}  p={r2['p']:.4g}  {stars(r2['p'])}")
+    labels = [c[0] for c in COND]
+    bases = [c[1] for c in COND]
+    sp_vals = [c[2] for c in COND]
+    sp_err = [c[3] for c in COND]
+    xp_vals = [c[4] for c in COND]
+    xp_err = [c[5] for c in COND]
+    for label, _, spm, spe, xpm, xpe in COND:
+        print(f"{label.replace(chr(10), ' '):24s} "
+              f"SP {spm:.3f}+/-{spe:.3f}   XP {xpm:.3f}+/-{xpe:.3f}")
 
     x = np.arange(len(labels))
     w = 0.38
@@ -155,7 +86,7 @@ def main() -> None:
         Line2D([0], [0], color=RANDOM_COLOR, ls="--", lw=1.8,
                label="Random baseline"),
     ]
-    ax.legend(handles=handles, frameon=False, fontsize=16, loc="upper left")
+    ax.legend(handles=handles, frameon=False, fontsize=16, loc="upper center")
 
     fig.tight_layout()
     OUT.parent.mkdir(parents=True, exist_ok=True)
