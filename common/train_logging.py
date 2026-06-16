@@ -105,7 +105,7 @@ HANABI_LIVE_SCALAR_KEYS = [
 ]
 
 
-def log_live_chunk_metrics(chunk_metrics, env_step, seed_idx, logger):
+def log_live_chunk_metrics(chunk_metrics, env_step, seed_idx, logger, mech_scalar_keys=None):
     """Push chunk-aggregated training metrics to W&B during training."""
     if logger is None or getattr(logger, "run", None) is None:
         return
@@ -140,6 +140,15 @@ def log_live_chunk_metrics(chunk_metrics, env_step, seed_idx, logger):
     for key, name in HANABI_LIVE_SCALAR_KEYS:
         if key in chunk_metrics:
             data[f"LiveTrain/seed_{seed_idx}/{name}"] = float(
+                np.asarray(chunk_metrics[key]).mean()
+            )
+
+    # Mechanism-declared scalar metrics (e.g. the future-occupancy aux loss and
+    # attention/occupancy overlaps), logged live under their group so they appear
+    # alongside the standard losses during training rather than only at end-of-run.
+    for key, group in (mech_scalar_keys or []):
+        if key in chunk_metrics:
+            data[f"LiveTrain/seed_{seed_idx}/{group}/{key}"] = float(
                 np.asarray(chunk_metrics[key]).mean()
             )
 

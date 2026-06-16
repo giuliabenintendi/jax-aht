@@ -419,6 +419,7 @@ def run_ja_ippo(config, logger):
                     env_step=steps_done * env_steps_per_update,
                     seed_idx=seed_idx,
                     logger=logger,
+                    mech_scalar_keys=getattr(mech, "scalar_keys", None),
                 )
 
         all_seed_final_params.append(jax.device_get(runner_state[0].params))
