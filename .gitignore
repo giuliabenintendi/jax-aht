@@ -26,9 +26,13 @@ Eval/*
 
 # Claude Code
 claude/
+.claude/
 
-# Reference code (not part of this project)
+# Reference code / local-only (not part of this project)
 google-research/
+external/
+artifacts/
+DREAMTEAM_ENGINEERING_PRIMER.md
 
 # Python packaging artifacts
 *.egg-info/
