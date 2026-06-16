@@ -1,0 +1,15 @@
+defaults:
+  - ja_ippo/multi-destination-spread   # inherit the baseline recipe verbatim
+  - _self_
+
+# Joint-Attention method on Multi-Destination Spread: identical to the baseline
+# (ja_ippo/multi-destination-spread) except the partner-target-prediction aux
+# loss is switched on, so a baseline-vs-this comparison isolates the JA signal.
+# Both configs run MDSMechanism (routed by env_name); the baseline leaves the aux
+# coef at 0 (inert), this turns it on.
+JA_AUX_PARTNER_ARGMAX_COEF: 0.1   # partner-target-prediction aux weight (sweep me)
+
+# Partner-attention feed stays OFF: enabling it appends num_goals scalars to the
+# policy input, which the N-agent cross-play rollout does not yet inject, so XP
+# would mismatch the obs shape. Turn on only once that path feeds it.
+JA_MDS_PARTNER_FEED: false

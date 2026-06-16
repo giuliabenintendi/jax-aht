@@ -63,12 +63,15 @@ def select_mechanism(config, env):
     """Pick the per-env JA mechanism by ENV_NAME (imported lazily)."""
     env_name = config.get("ENV_NAME", "")
     if env_name == "lbf":
-        from agents.lbf.ja_lbf_mechanism import LBFMechanism
-        return LBFMechanism(config, env)
+        from agents.lbf.ja_lbf_future_occupancy import FutureOccupancyLBFMechanism
+        return FutureOccupancyLBFMechanism(config, env)
     if env_name == "card-game":
         from agents.card_game.ja_card_attention import CardMechanism
         return CardMechanism(config, env)
-    if env_name in ("overcooked-v1", "hanabi", "multi-destination-spread"):
+    if env_name == "multi-destination-spread":
+        from agents.multi_destination_spread.ja_mds_mechanism import MDSMechanism
+        return MDSMechanism(config, env)
+    if env_name in ("overcooked-v1", "hanabi"):
         from agents.ja_jsd_mechanism import JSDMechanism
         return JSDMechanism(config, env)
     raise NotImplementedError(f"No JA mechanism registered for env '{env_name}'.")
@@ -258,6 +261,10 @@ def make_train(config, env, mech):
                 last_obs_aug, last_done_batch, last_avail_batch, hstate, num_actors,
             )
 
+            postprocess = getattr(mech, "postprocess_trajectory", None)
+            if postprocess is not None:
+                traj_batch = postprocess(traj_batch, config, update_steps)
+
             if normalize_rewards:
                 rew_norm_state = reward_norm_update(rew_norm_state, traj_batch.reward)
                 traj_batch = traj_batch._replace(
@@ -390,14 +397,19 @@ def run_ja_ippo(config, logger):
                 seed_ckpts.append(jax.tree.map(jnp.copy, runner_state[0].params))
                 if save_ckpt_videos:
                     ckpt_idx = len(seed_ckpts) - 1
+                    tag = f"Eval/seed_{seed_idx}/ckpt_{ckpt_idx}"
+                    ckpt_video = getattr(mech, "log_ckpt_video", None)
                     try:
-                        from common.eval_media import rollout_and_log_video
-                        rollout_and_log_video(
-                            jax.random.PRNGKey(7000 + seed_idx * 100 + ckpt_idx),
-                            inner_env, env_name, runner_state[0].params, policy,
-                            eval_max_steps, tag=f"Eval/seed_{seed_idx}/ckpt_{ckpt_idx}",
-                            savedir=video_dir, logger=logger,
-                        )
+                        if ckpt_video is not None:
+                            ckpt_video(algorithm_config, env, runner_state[0].params,
+                                       policy, tag, video_dir, logger)
+                        else:
+                            from common.eval_media import rollout_and_log_video
+                            rollout_and_log_video(
+                                jax.random.PRNGKey(7000 + seed_idx * 100 + ckpt_idx),
+                                inner_env, env_name, runner_state[0].params, policy,
+                                eval_max_steps, tag=tag, savedir=video_dir, logger=logger,
+                            )
                     except Exception as e:
                         print(f"[ja_ippo:{mech.name}] WARN: ckpt video failed ({e}); continuing.", flush=True)
             print(f"[ja_ippo:{mech.name}]   step {steps_done}/{num_updates}", flush=True)

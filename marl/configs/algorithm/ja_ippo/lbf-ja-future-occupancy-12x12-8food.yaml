@@ -1,0 +1,20 @@
+defaults:
+  - ja_ippo/lbf-image-12x12-8food
+  - _self_
+
+# Generalizable Joint Attention: entity-free future-occupancy shaping.
+JA_MECHANISM: future_occupancy
+FEED_OTHER_ATTN: true
+
+# Per-checkpoint training videos.
+SAVE_CKPT_VIDEOS: true
+
+# First pass: no reward shaping. Test partner-attention feed + aux only.
+JA_FUTURE_PARTNER_COEF: 0.0
+JA_FUTURE_SELF_COEF: 0.0
+JA_FUTURE_GAMMA_OCC: 0.95
+JA_FUTURE_WARMUP_ENV_STEPS: 500000
+JA_FUTURE_RAMP_ENV_STEPS: 500000
+
+# Main supervised JA signal.
+JA_FUTURE_AUX_PARTNER_OCC_COEF: 0.05

@@ -217,3 +217,36 @@ class LBFMechanism:
                     logger.log_video(f"Eval/attention_{suffix}", p, commit=False)
         except Exception as e:
             print(f"[ja_ippo:lbf] WARN: eval video failed ({e}); continuing.", flush=True)
+
+    def log_ckpt_video(self, algorithm_config, env, params, policy, tag, savedir, logger):
+        """Per-checkpoint attention-overlay video for live monitoring during training.
+
+        Mirrors `eval_outputs`'s LBF render on a single checkpoint's params, so the
+        attention map is shown overlaid on the rollout as the policy develops.
+        """
+        import os
+        try:
+            from evaluation.vis_episodes import make_attention_video, run_episode_with_states
+            from marl.eval_lbf import _render_lbf_eval_frames
+            inner_env = env._env
+            lbf_ctx = lbf_attention_ctx(algorithm_config, env) if self.partner_feed_active else None
+            max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
+            ep_states, attn_data, _a, _m = run_episode_with_states(
+                jax.random.PRNGKey(42), inner_env, params, policy, params, policy,
+                max_steps, collect_attention=True, lbf_ctx=lbf_ctx,
+            )
+            os.makedirs(savedir, exist_ok=True)
+            frames = _render_lbf_eval_frames(inner_env, ep_states)
+            from moviepy import ImageSequenceClip
+            stem = f"{savedir}/{tag.replace('/', '_')}"
+            ImageSequenceClip(frames, fps=10).write_videofile(
+                f"{stem}.mp4", fps=10, codec="libx264", audio=False, bitrate="8000k", preset="slow",
+            )
+            logger.log_video(tag, f"{stem}.mp4", commit=False)
+            make_attention_video(frames, attn_data, filename=f"{stem}_attn.mp4", fps=10)
+            for suffix in ("agent0", "agent1", "combined"):
+                p = f"{stem}_attn_{suffix}.mp4"
+                if os.path.exists(p):
+                    logger.log_video(f"{tag}_attention_{suffix}", p, commit=False)
+        except Exception as e:
+            print(f"[ja_ippo:lbf] WARN: ckpt attention video failed ({e}); continuing.", flush=True)
