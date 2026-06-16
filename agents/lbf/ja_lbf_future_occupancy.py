@@ -218,6 +218,12 @@ class FutureOccupancyLBFMechanism:
             )
             os.makedirs(savedir, exist_ok=True)
             frames = _render_lbf_eval_frames(inner_env, ep_states)
+            # ep_states carries the initial state plus the post-done auto-reset
+            # state of the next episode; trim to the attention length so the plain
+            # video drops the trailing reset frame and stays aligned with the overlay.
+            n_attn = len(attn_data.get("agent_0", []))
+            if n_attn:
+                frames = frames[:n_attn]
             from moviepy import ImageSequenceClip
             stem = f"{savedir}/{tag.replace('/', '_')}"
             ImageSequenceClip(frames, fps=10).write_videofile(
