@@ -3,12 +3,13 @@ defaults:
   - _self_
 
 # Non-JA PPO hyperparameters matched to the highest-scoring LBF baseline
-# (W&B run f321gywc, ja_ippo_lbf, XP/sp_score 0.451) so the only difference from
-# that baseline is the future-occupancy JA shaping below. Inlined rather than
-# inheriting the sibling lbf config, which Hydra resolves to a doubled
-# ja_ippo/ja_ippo/_base_ path.
+# (W&B run f321gywc, ja_ippo_lbf, XP/sp_score 0.451). NUM_ENVS is 128 rather than
+# that baseline's 256: the unified future-occupancy trainer cannot hold a 256-env
+# batch on a 32GB GPU, so the LBF baseline is re-run at 128 on this trainer (JA off)
+# for an apples-to-apples comparison. Inlined rather than inheriting the sibling
+# lbf config, which Hydra resolves to a doubled ja_ippo/ja_ippo/_base_ path.
 TOTAL_TIMESTEPS: 3e6
-NUM_ENVS: 256
+NUM_ENVS: 128
 NUM_MINIBATCHES: 32
 ANNEAL_LR: true
 NORMALIZE_REWARDS: false  # baseline trained on raw env rewards; revisit when reward shaping is enabled
