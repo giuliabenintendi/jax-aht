@@ -28,5 +28,7 @@ JA_FUTURE_GAMMA_OCC: 0.95
 JA_FUTURE_WARMUP_ENV_STEPS: 500000
 JA_FUTURE_RAMP_ENV_STEPS: 500000
 
-# Main supervised JA signal.
-JA_FUTURE_AUX_PARTNER_OCC_COEF: 0.05
+# Main supervised JA signal. Cut 10x from 0.05: at 0.05 this aux (a 441-cell
+# cross-entropy, ~4 nats) contributed ~0.2 to the loss and dominated the PPO
+# terms (~0.01), so the net was optimising occupancy prediction over the task.
+JA_FUTURE_AUX_PARTNER_OCC_COEF: 0.005
