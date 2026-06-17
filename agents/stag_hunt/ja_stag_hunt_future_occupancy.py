@@ -182,3 +182,47 @@ class FutureOccupancyStagHuntMechanism:
 
     def eval_outputs(self, algorithm_config, env, out, logger):
         del algorithm_config, env, out, logger
+
+    def log_ckpt_video(self, algorithm_config, env, params, policy, tag, savedir, logger):
+        """Per-checkpoint attention-overlay video.
+
+        Rebuilds the partner-attention 4th channel via `feed_other_attn_dims`,
+        exactly as `augment_obs` does at train time, so the JA image policy gets the
+        obs shape it was trained on (the generic trainer video path omits this and
+        would feed a 3-channel obs into the 4-channel network). Overlays attention on
+        the shared agent_0-red / agent_1-blue frames -> agent0 / agent1 / combined.
+        """
+        import os
+        try:
+            from evaluation.vis_episodes import make_attention_video, run_episode_with_states
+            from envs.stag_hunt.rendering import render_stag_hunt_ego_frames
+
+            inner_env = getattr(env, "_env", env)
+            feed_dims = (
+                (self.img_h, self.img_w, self.feat_h, self.feat_w)
+                if self.feed_other_attn else None
+            )
+            max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 100))
+            ep_states, attn_data, _a, _m = run_episode_with_states(
+                jax.random.PRNGKey(42), inner_env, params, policy, params, policy,
+                max_steps, collect_attention=True, feed_other_attn_dims=feed_dims,
+            )
+            os.makedirs(savedir, exist_ok=True)
+            # agent_0's ego view (ego red / partner blue) doubles as a shared frame.
+            frames, _ = render_stag_hunt_ego_frames(inner_env, ep_states)
+            n_attn = len(attn_data.get("agent_0", []))
+            if n_attn:
+                frames = frames[:n_attn]  # drop the trailing auto-reset frame; align to attn
+            from moviepy import ImageSequenceClip
+            stem = f"{savedir}/{tag.replace('/', '_')}"
+            ImageSequenceClip(frames, fps=10).write_videofile(
+                f"{stem}.mp4", fps=10, codec="libx264", audio=False, bitrate="8000k", preset="slow",
+            )
+            logger.log_video(tag, f"{stem}.mp4", commit=False)
+            make_attention_video(frames, attn_data, filename=f"{stem}_attn.mp4", fps=10)
+            for suffix in ("agent0", "agent1", "combined"):
+                p = f"{stem}_attn_{suffix}.mp4"
+                if os.path.exists(p):
+                    logger.log_video(f"{tag}_attention_{suffix}", p, commit=False)
+        except Exception as e:
+            print(f"[ja_ippo:{self.name}] WARN: ckpt attention video failed ({e}); continuing.", flush=True)

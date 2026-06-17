@@ -15,8 +15,8 @@ NORMALIZE_REWARDS: false
 JA_MECHANISM: future_occupancy
 FEED_OTHER_ATTN: true
 
-# Per-checkpoint videos not yet wired for stag-hunt (needs a stag-hunt log_ckpt_video).
-SAVE_CKPT_VIDEOS: false
+# Per-checkpoint attention-overlay videos (agent0 / agent1 / combined).
+SAVE_CKPT_VIDEOS: true
 
 # First pass: aux only, no overlap reward shaping.
 JA_FUTURE_PARTNER_COEF: 0.0
