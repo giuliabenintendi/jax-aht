@@ -140,6 +140,12 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         env_kwargs.pop('obs_type', None)  # always image
         env = MultiDestinationSpreadEnv(**env_kwargs)
 
+    elif env_name == 'stag-hunt':
+        from envs.stag_hunt.stag_hunt import StagHuntEnv
+        env_kwargs = dict(env_kwargs)
+        env_kwargs.pop('obs_type', None)  # always image
+        env = StagHuntEnv(**env_kwargs)
+
     elif env_name == 'hanabi':
         default_env_kwargs = {
             "num_agents": 2,

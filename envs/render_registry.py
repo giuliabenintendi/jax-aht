@@ -41,6 +41,10 @@ def get_eval_frames(env_name, inner_env, ep_states, *, ep_obs=None, ep_actions=N
         return _composite_per_agent(
             render_multi_destination_ego_frames(inner_env, ep_states)
         )
+    if env_name == "stag-hunt":
+        from envs.stag_hunt.rendering import render_stag_hunt_ego_frames
+        f0, f1 = render_stag_hunt_ego_frames(inner_env, ep_states)
+        return _composite_per_agent([f0, f1])
     raise NotImplementedError(
         f"No eval-frame renderer registered for env '{env_name}'. "
         "(overcooked-v1 is handled inline in common.eval_media.render_and_log_video.)"

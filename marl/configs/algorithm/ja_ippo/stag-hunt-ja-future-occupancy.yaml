@@ -1,0 +1,30 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# PPO hyperparameters (inherits ResNet/LSTM/attention dims + PPO defaults from _base_).
+TOTAL_TIMESTEPS: 3e6
+NUM_ENVS: 128
+NUM_MINIBATCHES: 32
+ANNEAL_LR: true
+NORMALIZE_REWARDS: false
+
+# Generalizable Joint Attention: entity-free future-occupancy.
+# Baseline ("Attention" ablation) = run with FEED_OTHER_ATTN=false and
+# JA_FUTURE_AUX_PARTNER_OCC_COEF=0 (no aux, no feed) on the same network.
+JA_MECHANISM: future_occupancy
+FEED_OTHER_ATTN: true
+
+# Per-checkpoint videos not yet wired for stag-hunt (needs a stag-hunt log_ckpt_video).
+SAVE_CKPT_VIDEOS: false
+
+# First pass: aux only, no overlap reward shaping.
+JA_FUTURE_PARTNER_COEF: 0.0
+JA_FUTURE_SELF_COEF: 0.0
+JA_FUTURE_GAMMA_OCC: 0.95
+JA_FUTURE_WARMUP_ENV_STEPS: 500000
+JA_FUTURE_RAMP_ENV_STEPS: 500000
+
+# Main supervised JA signal (kept low after the LBF lesson: a feature-grid
+# cross-entropy is O(several nats), so a small coef keeps it a bias not the objective).
+JA_FUTURE_AUX_PARTNER_OCC_COEF: 0.005

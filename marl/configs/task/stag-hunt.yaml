@@ -1,0 +1,12 @@
+ENV_NAME: stag-hunt
+ROLLOUT_LENGTH: 100
+ENV_KWARGS:
+  obs_type: image
+  layout: empty_7x7
+  num_stags: 1
+  num_plants: 2
+  penalty: 0.5
+  stag_reward: 5.0
+  plant_reward: 1.0
+  max_steps: 100
+TASK_NAME: stag-hunt

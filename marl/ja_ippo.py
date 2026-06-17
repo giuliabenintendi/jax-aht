@@ -71,6 +71,9 @@ def select_mechanism(config, env):
     if env_name == "multi-destination-spread":
         from agents.multi_destination_spread.ja_mds_mechanism import MDSMechanism
         return MDSMechanism(config, env)
+    if env_name == "stag-hunt":
+        from agents.stag_hunt.ja_stag_hunt_future_occupancy import FutureOccupancyStagHuntMechanism
+        return FutureOccupancyStagHuntMechanism(config, env)
     if env_name in ("overcooked-v1", "hanabi"):
         from agents.ja_jsd_mechanism import JSDMechanism
         return JSDMechanism(config, env)
