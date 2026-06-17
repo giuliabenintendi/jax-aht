@@ -516,6 +516,23 @@ def xp_mean_and_sem(xp_matrix):
     return np.mean(off_diag), np.std(off_diag) / np.sqrt(n)
 
 
+def _score_color_range(env_name: str, num_agents: int) -> tuple[float, float | None]:
+    """Colour range for the XP episode-return heatmap.
+
+    Pin to `[0, max-possible-return]` so a matrix whose cells fall in a narrow band
+    (e.g. all ~0.2) is not rainbow-stretched over its own min/max. card-game's
+    `base_return` is a decision-success rate in `[0, 1]`. LBF shares rewards as the
+    mean over agents while Jumanji normalises the team return to 1.0, so each agent's
+    episode return tops out at `1/num_agents` (0.5 for 2 agents). Envs whose max is
+    unknown keep an auto ceiling but still pin the floor at 0.
+    """
+    if env_name == "card-game":
+        return 0.0, 1.0
+    if env_name == "lbf":
+        return 0.0, 1.0 / num_agents
+    return 0.0, None
+
+
 def save_xp_heatmap(matrix_mean: np.ndarray, matrix_std,
                      title: str, filepath: str, fmt: str = ".2f",
                      cmap: str = "YlOrRd", vmin: float | None = None,
@@ -892,11 +909,10 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         score_data = np.array(xp_metrics[score_key]).mean(axis=-1)
         score_mean = score_data.mean(axis=-1)
         score_std = score_data.std(axis=-1)
-        # base_return is the binary decision-success indicator, so the cell
-        # value is a success rate in [0, 1]. Pin the colour scale so cells
-        # that fall in a narrow range (e.g. all ~0.2) don't get rainbow-stretched.
-        # For envs using returned_episode_returns (LBF, etc.) leave auto-ranged.
-        score_vmin, score_vmax = (0.0, 1.0) if is_card_game else (None, None)
+        # Pin the colour scale to [0, max-possible-return] (per-env max in
+        # _score_color_range) so a matrix whose cells fall in a narrow band
+        # (e.g. all ~0.2) isn't rainbow-stretched over its own min/max.
+        score_vmin, score_vmax = _score_color_range(env_name, env.num_agents)
         save_xp_heatmap(score_mean, score_std,
                          f"XP Episode Return — {run_label}",
                          os.path.join(xp_dir, "xp_score_matrix.png"),
