@@ -136,7 +136,7 @@ def backfill_run(run_id: str, artifact_root: Path, dry_run: bool) -> None:
     rollout_length = int(alg["ROLLOUT_LENGTH"])
     num_envs = int(alg["NUM_ENVS"])
 
-    # LBF runs use IMAGE_IPPO_SCALAR_KEYS + LBF extras (see agents/lbf/ja_lbf_mechanism.py).
+    # LBF runs use IMAGE_IPPO_SCALAR_KEYS + LBF extras (see agents/lbf/ja_lbf_future_occupancy.py).
     if env_name in ("lbf", "lbf-reward-shaping"):
         scalar_keys = IMAGE_IPPO_SCALAR_KEYS + LBF_EXTRA_SCALAR_KEYS
     else:

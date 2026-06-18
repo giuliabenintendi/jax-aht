@@ -1,7 +1,8 @@
 """Shared per-fruit attention geometry for LBF joint attention.
 
-These helpers are used by the training loop (`marl/ja_ippo_lbf.py`) and by both
-evaluation paths (`evaluation/vis_episodes.py`, `evaluation/run_xp_seeds.py`).
+These helpers are used by the LBF JA mechanism
+(`agents/lbf/ja_lbf_future_occupancy.py`) and by both evaluation paths
+(`evaluation/vis_episodes.py`, `evaluation/run_xp_seeds.py`).
 They live here, in the leaf `agents` package, so evaluation no longer has to
 reach into the training module for them.
 
