@@ -52,8 +52,10 @@ class CardMechanism:
         self.aux_coef = float(config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0))
         self.gaze_pick_active = self.gaze_pick_coef > 0
         self.aux_active = self.aux_coef > 0
-        # Aux target: partner's gamma-discounted first-occupancy over emitted cards
-        # (LBF-style look-ahead) instead of the partner's current attention argmax.
+        # Aux target: partner's gamma-discounted first-occupancy over its ATTENTION
+        # (argmax each step) — the LBF future-occupancy method on the card game's
+        # observable, co-adaptive intent signal (NOT the raw emission, which is an
+        # unlearnable stochastic action). The plain-argmax aux is the gamma->0 limit.
         # Built in postprocess_trajectory; gamma reuses the LBF occupancy discount.
         self.aux_target_pick = bool(config.get("JA_AUX_PARTNER_PICK", False))
         self.aux_pick_gamma = float(config.get("JA_FUTURE_GAMMA_OCC", 0.9))
@@ -219,17 +221,14 @@ class CardMechanism:
             "prev_partner_argmax_valid": new_prev_argmax_valid,
             "prev_partner_argmax_weight": new_prev_argmax_weight,
         }
-        # Partner's pick THIS step, in the agent's own view order (parallel to the
-        # argmax target's inv_perm translation). Only the decision-step value is a
-        # real pick; postprocess_trajectory propagates it back over the episode.
-        inv_perm_0 = jnp.argsort(perm_0, axis=-1)
-        inv_perm_1 = jnp.argsort(perm_1, axis=-1)
-        pp0 = jnp.take_along_axis(inv_perm_0, action_1_gt[:, None], axis=1).squeeze(-1)
-        pp1 = jnp.take_along_axis(inv_perm_1, action_0_gt[:, None], axis=1).squeeze(-1)
-        partner_pick_this_step = jnp.concatenate([pp0, pp1]).astype(jnp.int32)
+        # Partner's current ATTENTION argmax this step (already translated to the
+        # agent's view frame) — the observable, co-adaptive intent signal, analogous
+        # to the partner's position in LBF. postprocess builds the gamma-discounted
+        # future-occupancy over this sequence.
+        partner_attn_argmax_step = partner_argmax_per_actor.astype(jnp.int32)
 
         extras = {
-            "partner_pick_this_step": partner_pick_this_step,
+            "partner_attn_argmax_step": partner_attn_argmax_step,
             "partner_argmax": aux_argmax,
             "partner_argmax_valid": aux_valid,
             "partner_argmax_weight": aux_weight,
@@ -242,20 +241,22 @@ class CardMechanism:
         return reward, new_carry, extras
 
     def postprocess_trajectory(self, traj_batch, config, update_steps):
-        """Build the partner's gamma-discounted first-occupancy over emitted cards.
+        """Build the partner's gamma-discounted first-occupancy over its ATTENTION.
 
-        Agents emit a card every step (only the last is the binding decision), so
-        the partner's emissions form a discrete trajectory. A reverse scan turns it
-        into a gamma-discounted first-occupancy distribution over cards — the SAME
-        construction as LBF's spatial future-occupancy, in the 5-card space:
-        the card emitted now scores 1, the next new card gamma, etc. No-op unless
-        the pick-target aux is active, so the argmax path is untouched.
+        Each step the partner attends to some card (argmax of its per-card
+        attention); over the episode this forms a discrete trajectory. A reverse
+        scan turns it into a gamma-discounted first-occupancy distribution over
+        cards — the SAME construction as LBF's spatial future-occupancy, in the
+        5-card space: the card attended now scores 1, the next new one gamma, etc.
+        The partner's attention is observable (it is fed) and co-adaptive, so unlike
+        the raw emission it gives a learnable target. No-op unless the occupancy aux
+        is active, so the plain-argmax path is untouched.
         """
         del config, update_steps
         if not (self.aux_active and self.aux_target_pick):
             return traj_batch
         ex = traj_batch.extras
-        pick = ex["partner_pick_this_step"]            # (T, A) partner emission, agent-view
+        pick = ex["partner_attn_argmax_step"]          # (T, A) partner attention argmax, agent-view
         done = traj_batch.done                          # (T, A)
         onehot = jax.nn.one_hot(pick, self.num_cards, dtype=jnp.float32)  # (T, A, C)
         gamma = self.aux_pick_gamma

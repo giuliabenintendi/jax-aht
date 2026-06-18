@@ -50,6 +50,10 @@ class FutureOccupancyLBFMechanism:
         self.ramp_env_steps = float(config.get("JA_FUTURE_RAMP_ENV_STEPS", 1.0))
         self.aux_occ_coef = float(config.get("JA_FUTURE_AUX_PARTNER_OCC_COEF", 0.0))
         self.feed_other_attn = bool(config.get("FEED_OTHER_ATTN", False))
+        # Aux target: "occupancy" = partner's future-position occupancy (default),
+        # "attention" = partner's current attention map (mirrors the card-game
+        # attention-to-attention aux, for testing a unified target across envs).
+        self.aux_target = str(config.get("JA_AUX_TARGET", "occupancy"))
 
         # This JA variant is intentionally entity-free.
         self.aux_coef = self.aux_occ_coef
@@ -97,6 +101,9 @@ class FutureOccupancyLBFMechanism:
         extras = {
             "ja_future_attn_2d": jax.lax.stop_gradient(attn_2d.astype(jnp.float32)),
             "ja_future_pos_post": pos_post_actors.astype(jnp.int32),
+            # Partner's previous attention map (the causal, fed one) — target for
+            # the attention-to-attention aux variant.
+            "ja_partner_attn_prev": jax.lax.stop_gradient(carry["partner_attn"]),
         }
         swapped_attn = self._swap_partner(attn_2d, num_actors)
         uniform = jnp.ones((self.feat_h, self.feat_w), dtype=jnp.float32) / float(
@@ -163,7 +170,10 @@ class FutureOccupancyLBFMechanism:
         del config
         if not self.aux_active:
             return self.aux_occ_coef, jnp.float32(0.0)
-        target = jax.lax.stop_gradient(traj_batch.extras["ja_future_partner_occ"])
+        if self.aux_target == "attention":
+            target = jax.lax.stop_gradient(traj_batch.extras["ja_partner_attn_prev"])
+        else:
+            target = jax.lax.stop_gradient(traj_batch.extras["ja_future_partner_occ"])
         attn = as_spatial_attention(attn_map_apply)
         nll = -(target * jnp.log(attn + 1e-8)).sum(axis=(-2, -1))
         valid = (~traj_batch.done).astype(jnp.float32)
