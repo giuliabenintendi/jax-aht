@@ -62,6 +62,12 @@ class CardMechanism:
         # Alt aux target: the partner's actual PICKED card (emitted action) instead
         # of its attention argmax. Same hard-NLL causal-shifted structure.
         self.aux_use_pick = bool(config.get("JA_AUX_USE_PICK", False))
+        # New: discounted future card-OCCUPANCY target (the LBF analog). Soft target =
+        # gamma-discounted SUM of the partner's per-card attention DISTRIBUTION over the
+        # episode, with the partner's actual final pick injected (one-hot) at the
+        # decision step. Soft cross-entropy. Separate path so the ablation stays clean.
+        self.aux_card_occ = bool(config.get("JA_AUX_CARD_OCC", False))
+        self.aux_card_occ_gamma = float(config.get("JA_FUTURE_GAMMA_OCC", 0.95))
         self.attn_shaping_active = self.attn_match_coef > 0 or self.attn_self_coef > 0
         self.prev_partner_phys_active = self.attn_match_coef > 0 or self.gaze_pick_active
         self.card_metric = (
@@ -201,8 +207,14 @@ class CardMechanism:
             pick0_view = jnp.take_along_axis(inv_perm_0, action_1_gt[:, None], axis=1).squeeze(-1)
             pick1_view = jnp.take_along_axis(inv_perm_1, action_0_gt[:, None], axis=1).squeeze(-1)
             partner_pick_per_actor = jnp.concatenate([pick0_view, pick1_view]).astype(jnp.int32)
+            # Partner's per-card attention DISTRIBUTION in the agent's view order (the
+            # soft signal for the card-occupancy aux), same translation as the feed.
+            dist0_view = jnp.take_along_axis(q_phys_1, perm_0, axis=1)
+            dist1_view = jnp.take_along_axis(q_phys_0, perm_1, axis=1)
+            partner_attn_dist_step = jnp.concatenate([dist0_view, dist1_view], axis=0).astype(jnp.float32)
         else:
             partner_pick_per_actor = jnp.zeros((num_actors,), dtype=jnp.int32)
+            partner_attn_dist_step = jnp.zeros((num_actors, num_cards), dtype=jnp.float32)
 
         (r_attn_shaping, r_attn_match, r_attn_self, r_gaze_pick) = self._shaping_rewards(
             q_phys_0, q_phys_1, carry["prev_partner_phys"], carry["prev_partner_valid"],
@@ -251,6 +263,8 @@ class CardMechanism:
 
         extras = {
             "partner_attn_argmax_step": partner_attn_argmax_step,
+            "partner_attn_dist_step": partner_attn_dist_step,
+            "partner_pick_step": partner_pick_per_actor,
             "partner_argmax": aux_argmax,
             "partner_argmax_valid": aux_valid,
             "partner_argmax_weight": aux_weight,
@@ -275,22 +289,40 @@ class CardMechanism:
         is active, so the plain-argmax path is untouched.
         """
         del config, update_steps
-        if not (self.aux_active and self.aux_target_pick):
+        if not (self.aux_active and (self.aux_target_pick or self.aux_card_occ)):
             return traj_batch
         ex = traj_batch.extras
-        pick = ex["partner_attn_argmax_step"]          # (T, A) partner attention argmax, agent-view
         done = traj_batch.done                          # (T, A)
-        onehot = jax.nn.one_hot(pick, self.num_cards, dtype=jnp.float32)  # (T, A, C)
-        gamma = self.aux_pick_gamma
+        if self.aux_card_occ:
+            # Soft discounted future card-occupancy: gamma-discounted SUM of the
+            # partner's per-card attention DISTRIBUTION over the episode, with the
+            # partner's actual final pick injected (one-hot) on the decision step.
+            dist = ex["partner_attn_dist_step"]                                       # (T, A, C) soft
+            pick_oh = jax.nn.one_hot(ex["partner_pick_step"], self.num_cards, dtype=jnp.float32)
+            signal = jnp.where(done[..., None], pick_oh, dist)                        # inject pick at done
+            gamma = self.aux_card_occ_gamma
 
-        def _scan(m_next, x):
-            oh_t, done_t = x
-            m_next = jnp.where(done_t[..., None], 0.0, m_next)
-            m_t = jnp.where(oh_t > 0.0, 1.0, gamma * m_next)
-            return m_t, m_t
+            def _scan(m_next, x):
+                sig_t, done_t = x
+                m_next = jnp.where(done_t[..., None], 0.0, m_next)
+                m_t = sig_t + gamma * m_next
+                return m_t, m_t
 
-        init = jnp.zeros(onehot.shape[1:], dtype=jnp.float32)             # (A, C)
-        _, occ = jax.lax.scan(_scan, init, (onehot, done), reverse=True)  # (T, A, C)
+            init = jnp.zeros(signal.shape[1:], dtype=jnp.float32)                      # (A, C)
+            _, occ = jax.lax.scan(_scan, init, (signal, done), reverse=True)           # (T, A, C)
+        else:
+            # Hard discounted FIRST-occupancy over the partner's attention argmax.
+            onehot = jax.nn.one_hot(ex["partner_attn_argmax_step"], self.num_cards, dtype=jnp.float32)
+            gamma = self.aux_pick_gamma
+
+            def _scan(m_next, x):
+                oh_t, done_t = x
+                m_next = jnp.where(done_t[..., None], 0.0, m_next)
+                m_t = jnp.where(oh_t > 0.0, 1.0, gamma * m_next)
+                return m_t, m_t
+
+            init = jnp.zeros(onehot.shape[1:], dtype=jnp.float32)                      # (A, C)
+            _, occ = jax.lax.scan(_scan, init, (onehot, done), reverse=True)           # (T, A, C)
         occ = occ / (occ.sum(axis=-1, keepdims=True) + 1e-8)
         new_extras = dict(ex)
         new_extras["partner_card_occ"] = jax.lax.stop_gradient(occ)
@@ -310,7 +342,7 @@ class CardMechanism:
         own_card_mass = per_card_attn.sum(axis=-1)
         per_card_norm = per_card_attn / (own_card_mass[..., None] + 1e-8)
         log_probs = jnp.log(per_card_norm + 1e-8)
-        if self.aux_target_pick:
+        if self.aux_target_pick or self.aux_card_occ:
             # Soft cross-entropy against the partner's discounted card-occupancy
             # (mirrors LBF's occupancy aux), weighted by the agent's on-card mass.
             target = ex["partner_card_occ"]
