@@ -345,9 +345,14 @@ class CardMechanism:
         if self.aux_target_pick or self.aux_card_occ:
             # Soft cross-entropy against the partner's discounted card-occupancy
             # (mirrors LBF's occupancy aux), weighted by the agent's on-card mass.
+            # The terminal pick still supervises earlier timesteps via the reverse
+            # scan target; done rows themselves are excluded, as in LBF.
             target = ex["partner_card_occ"]
             nll_flat = -(target * log_probs).sum(axis=-1).reshape(-1)
-            aux_weight_flat = jax.lax.stop_gradient(own_card_mass.reshape(-1))
+            valid = (~traj_batch.done).astype(jnp.float32)
+            aux_weight_flat = jax.lax.stop_gradient(
+                valid.reshape(-1) * own_card_mass.reshape(-1)
+            )
         else:
             target_flat = ex["partner_argmax"].reshape(-1)
             log_probs_flat = log_probs.reshape(-1, log_probs.shape[-1])
