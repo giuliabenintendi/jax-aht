@@ -59,6 +59,9 @@ class CardMechanism:
         # Built in postprocess_trajectory; gamma reuses the LBF occupancy discount.
         self.aux_target_pick = bool(config.get("JA_AUX_PARTNER_PICK", False))
         self.aux_pick_gamma = float(config.get("JA_FUTURE_GAMMA_OCC", 0.9))
+        # Alt aux target: the partner's actual PICKED card (emitted action) instead
+        # of its attention argmax. Same hard-NLL causal-shifted structure.
+        self.aux_use_pick = bool(config.get("JA_AUX_USE_PICK", False))
         self.attn_shaping_active = self.attn_match_coef > 0 or self.attn_self_coef > 0
         self.prev_partner_phys_active = self.attn_match_coef > 0 or self.gaze_pick_active
         self.card_metric = (
@@ -107,6 +110,7 @@ class CardMechanism:
             "prev_partner_argmax": jnp.zeros((num_actors,), dtype=jnp.int32),
             "prev_partner_argmax_valid": jnp.zeros((num_actors,), dtype=bool),
             "prev_partner_argmax_weight": jnp.zeros((num_actors,), dtype=jnp.float32),
+            "prev_partner_pick": jnp.zeros((num_actors,), dtype=jnp.int32),
         }
 
     def augment_obs(self, obs_batch_2d, carry):
@@ -163,8 +167,10 @@ class CardMechanism:
             current_partner_mass = jnp.zeros((num_actors,), dtype=jnp.float32)
 
         # Aux target: causal-shifted (prev step) when the partner-feed is on.
+        # JA_AUX_USE_PICK swaps the attention-argmax target for the partner's
+        # actual picked card (its prev emitted action).
         if self.aux_active and self.ja_card_partner_feed:
-            aux_argmax = carry["prev_partner_argmax"]
+            aux_argmax = carry["prev_partner_pick"] if self.aux_use_pick else carry["prev_partner_argmax"]
             aux_valid = carry["prev_partner_argmax_valid"]
             aux_weight = carry["prev_partner_argmax_weight"]
         else:
@@ -186,6 +192,17 @@ class CardMechanism:
         else:
             action_0_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
             action_1_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
+
+        # Partner's PICK (emitted card) this step, OP-translated to the agent's view —
+        # the alternative aux target to the attention argmax (JA_AUX_USE_PICK).
+        if self.card_metric:
+            inv_perm_0 = jnp.argsort(perm_0, axis=-1)
+            inv_perm_1 = jnp.argsort(perm_1, axis=-1)
+            pick0_view = jnp.take_along_axis(inv_perm_0, action_1_gt[:, None], axis=1).squeeze(-1)
+            pick1_view = jnp.take_along_axis(inv_perm_1, action_0_gt[:, None], axis=1).squeeze(-1)
+            partner_pick_per_actor = jnp.concatenate([pick0_view, pick1_view]).astype(jnp.int32)
+        else:
+            partner_pick_per_actor = jnp.zeros((num_actors,), dtype=jnp.int32)
 
         (r_attn_shaping, r_attn_match, r_attn_self, r_gaze_pick) = self._shaping_rewards(
             q_phys_0, q_phys_1, carry["prev_partner_phys"], carry["prev_partner_valid"],
@@ -212,6 +229,10 @@ class CardMechanism:
             new_prev_argmax = carry["prev_partner_argmax"]
             new_prev_argmax_valid = carry["prev_partner_argmax_valid"]
             new_prev_argmax_weight = carry["prev_partner_argmax_weight"]
+        if self.aux_active and self.ja_card_partner_feed:
+            new_prev_pick = jnp.where(done_actors, 0, partner_pick_per_actor).astype(jnp.int32)
+        else:
+            new_prev_pick = carry["prev_partner_pick"]
 
         new_carry = {
             "partner_card_attn": new_partner_card_attn,
@@ -220,6 +241,7 @@ class CardMechanism:
             "prev_partner_argmax": new_prev_argmax,
             "prev_partner_argmax_valid": new_prev_argmax_valid,
             "prev_partner_argmax_weight": new_prev_argmax_weight,
+            "prev_partner_pick": new_prev_pick,
         }
         # Partner's current ATTENTION argmax this step (already translated to the
         # agent's view frame) — the observable, co-adaptive intent signal, analogous
