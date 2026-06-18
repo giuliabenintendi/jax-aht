@@ -52,6 +52,11 @@ class CardMechanism:
         self.aux_coef = float(config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0))
         self.gaze_pick_active = self.gaze_pick_coef > 0
         self.aux_active = self.aux_coef > 0
+        # Aux target: partner's gamma-discounted first-occupancy over emitted cards
+        # (LBF-style look-ahead) instead of the partner's current attention argmax.
+        # Built in postprocess_trajectory; gamma reuses the LBF occupancy discount.
+        self.aux_target_pick = bool(config.get("JA_AUX_PARTNER_PICK", False))
+        self.aux_pick_gamma = float(config.get("JA_FUTURE_GAMMA_OCC", 0.9))
         self.attn_shaping_active = self.attn_match_coef > 0 or self.attn_self_coef > 0
         self.prev_partner_phys_active = self.attn_match_coef > 0 or self.gaze_pick_active
         self.card_metric = (
@@ -214,7 +219,17 @@ class CardMechanism:
             "prev_partner_argmax_valid": new_prev_argmax_valid,
             "prev_partner_argmax_weight": new_prev_argmax_weight,
         }
+        # Partner's pick THIS step, in the agent's own view order (parallel to the
+        # argmax target's inv_perm translation). Only the decision-step value is a
+        # real pick; postprocess_trajectory propagates it back over the episode.
+        inv_perm_0 = jnp.argsort(perm_0, axis=-1)
+        inv_perm_1 = jnp.argsort(perm_1, axis=-1)
+        pp0 = jnp.take_along_axis(inv_perm_0, action_1_gt[:, None], axis=1).squeeze(-1)
+        pp1 = jnp.take_along_axis(inv_perm_1, action_0_gt[:, None], axis=1).squeeze(-1)
+        partner_pick_this_step = jnp.concatenate([pp0, pp1]).astype(jnp.int32)
+
         extras = {
+            "partner_pick_this_step": partner_pick_this_step,
             "partner_argmax": aux_argmax,
             "partner_argmax_valid": aux_valid,
             "partner_argmax_weight": aux_weight,
@@ -226,8 +241,44 @@ class CardMechanism:
         }
         return reward, new_carry, extras
 
+    def postprocess_trajectory(self, traj_batch, config, update_steps):
+        """Build the partner's gamma-discounted first-occupancy over emitted cards.
+
+        Agents emit a card every step (only the last is the binding decision), so
+        the partner's emissions form a discrete trajectory. A reverse scan turns it
+        into a gamma-discounted first-occupancy distribution over cards — the SAME
+        construction as LBF's spatial future-occupancy, in the 5-card space:
+        the card emitted now scores 1, the next new card gamma, etc. No-op unless
+        the pick-target aux is active, so the argmax path is untouched.
+        """
+        del config, update_steps
+        if not (self.aux_active and self.aux_target_pick):
+            return traj_batch
+        ex = traj_batch.extras
+        pick = ex["partner_pick_this_step"]            # (T, A) partner emission, agent-view
+        done = traj_batch.done                          # (T, A)
+        onehot = jax.nn.one_hot(pick, self.num_cards, dtype=jnp.float32)  # (T, A, C)
+        gamma = self.aux_pick_gamma
+
+        def _scan(m_next, x):
+            oh_t, done_t = x
+            m_next = jnp.where(done_t[..., None], 0.0, m_next)
+            m_t = jnp.where(oh_t > 0.0, 1.0, gamma * m_next)
+            return m_t, m_t
+
+        init = jnp.zeros(onehot.shape[1:], dtype=jnp.float32)             # (A, C)
+        _, occ = jax.lax.scan(_scan, init, (onehot, done), reverse=True)  # (T, A, C)
+        occ = occ / (occ.sum(axis=-1, keepdims=True) + 1e-8)
+        new_extras = dict(ex)
+        new_extras["partner_card_occ"] = jax.lax.stop_gradient(occ)
+        return traj_batch._replace(extras=new_extras)
+
     def aux_loss(self, attn_map_apply, traj_batch, config):
-        """Mass-weighted NLL forcing per-card attention to peak at the partner argmax."""
+        """Mass-weighted NLL pulling per-card attention onto the partner target.
+
+        Target is the partner's argmax attention by default, or the partner's
+        terminal pick when `JA_AUX_PARTNER_PICK` is set.
+        """
         del config
         if not self.aux_active:
             return self.aux_coef, jnp.float32(0.0)
@@ -236,16 +287,23 @@ class CardMechanism:
         own_card_mass = per_card_attn.sum(axis=-1)
         per_card_norm = per_card_attn / (own_card_mass[..., None] + 1e-8)
         log_probs = jnp.log(per_card_norm + 1e-8)
-        target_flat = ex["partner_argmax"].reshape(-1)
-        log_probs_flat = log_probs.reshape(-1, log_probs.shape[-1])
-        nll_flat = -jnp.take_along_axis(
-            log_probs_flat, target_flat[:, None], axis=-1,
-        ).squeeze(-1)
-        aux_weight_flat = jax.lax.stop_gradient(
-            ex["partner_argmax_valid"].reshape(-1).astype(jnp.float32)
-            * ex["partner_argmax_weight"].reshape(-1)
-            * own_card_mass.reshape(-1)
-        )
+        if self.aux_target_pick:
+            # Soft cross-entropy against the partner's discounted card-occupancy
+            # (mirrors LBF's occupancy aux), weighted by the agent's on-card mass.
+            target = ex["partner_card_occ"]
+            nll_flat = -(target * log_probs).sum(axis=-1).reshape(-1)
+            aux_weight_flat = jax.lax.stop_gradient(own_card_mass.reshape(-1))
+        else:
+            target_flat = ex["partner_argmax"].reshape(-1)
+            log_probs_flat = log_probs.reshape(-1, log_probs.shape[-1])
+            nll_flat = -jnp.take_along_axis(
+                log_probs_flat, target_flat[:, None], axis=-1,
+            ).squeeze(-1)
+            aux_weight_flat = jax.lax.stop_gradient(
+                ex["partner_argmax_valid"].reshape(-1).astype(jnp.float32)
+                * ex["partner_argmax_weight"].reshape(-1)
+                * own_card_mass.reshape(-1)
+            )
         aux_loss = (nll_flat * aux_weight_flat).sum() / jnp.maximum(aux_weight_flat.sum(), 1e-8)
         return self.aux_coef, aux_loss
 
