@@ -30,21 +30,6 @@ def get_eval_frames(env_name, inner_env, ep_states, *, ep_obs=None, ep_actions=N
     if env_name == "hanabi":
         from envs.hanabi.rendering import render_hanabi_eval_frames
         return render_hanabi_eval_frames(ep_states)
-    if env_name == "dual-destination":
-        from envs.dual_destination.rendering import render_dual_destination_ego_frames
-        f0, f1 = render_dual_destination_ego_frames(inner_env, ep_states)
-        return _composite_per_agent([f0, f1])
-    if env_name == "multi-destination-spread":
-        from envs.multi_destination_spread.rendering import (
-            render_multi_destination_ego_frames,
-        )
-        return _composite_per_agent(
-            render_multi_destination_ego_frames(inner_env, ep_states)
-        )
-    if env_name == "stag-hunt":
-        from envs.stag_hunt.rendering import render_stag_hunt_ego_frames
-        f0, f1 = render_stag_hunt_ego_frames(inner_env, ep_states)
-        return _composite_per_agent([f0, f1])
     raise NotImplementedError(
         f"No eval-frame renderer registered for env '{env_name}'. "
         "(overcooked-v1 is handled inline in common.eval_media.render_and_log_video.)"

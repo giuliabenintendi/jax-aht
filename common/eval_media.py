@@ -109,15 +109,6 @@ def render_and_log_video(inner_env, env_name, ep_states, tag, savedir, logger, *
     return video_path
 
 
-def _default_video_greedy(env_name: str) -> bool:
-    """Default action-selection mode for qualitative eval videos."""
-    # Multi-destination spread starts all parameter-shared agents on the same
-    # cell with identical observations. Greedy eval makes them all choose the
-    # same action, collide, and stay static forever; sampled eval breaks that
-    # symmetry like training rollouts do.
-    return env_name != "multi-destination-spread"
-
-
 def rollout_and_log_video(rng, inner_env, env_name, params, policy, max_steps,
                           tag, savedir, logger, *, fps=10, greedy=None):
     """Convenience: generic N-agent rollout + render + log, for non-JA trainers.
@@ -125,7 +116,7 @@ def rollout_and_log_video(rng, inner_env, env_name, params, policy, max_steps,
     Collects obs/actions only for envs whose renderer needs them (card game).
     """
     if greedy is None:
-        greedy = _default_video_greedy(env_name)
+        greedy = True
     needs_obs_actions = env_name == "card-game"
     roll = rollout_states(
         rng, inner_env, params, policy, max_steps,

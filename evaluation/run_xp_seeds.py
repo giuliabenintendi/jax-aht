@@ -1125,16 +1125,7 @@ def run_xp_nagent_from_params(env, policy, stacked_params, algo_cfg, savedir,
     inner_env = get_inner_env(env)
     num_seeds = int(jax.tree.leaves(stacked_params)[0].shape[0])
     max_steps = int(algo_cfg.get("ENV_KWARGS", {}).get("max_steps", 100))
-    env_name = str(algo_cfg.get("ENV_NAME", ""))
-    # Multi-destination spread starts all parameter-shared agents on the same
-    # cell with identical observations. Greedy eval makes self-play degenerate:
-    # all agents pick the same action, collide, and stay at the center. Sampled
-    # XP matches the stochastic symmetry breaking used during training.
-    greedy_eval = env_name != "multi-destination-spread"
-    print(
-        f"[xp_seeds:nagent] action selection: {'greedy' if greedy_eval else 'sampled'}",
-        flush=True,
-    )
+    greedy_eval = True
 
     def seed_params(s):
         return jax.tree.map(lambda x: x[s], stacked_params)

@@ -128,24 +128,6 @@ def make_env(env_name: str, env_kwargs: dict = {}):
             from envs.card_game.other_play import CardGameRecolouringWrapper
             env = CardGameRecolouringWrapper(env)
 
-    elif env_name == 'dual-destination':
-        from envs.dual_destination.dual_destination import DualDestinationEnv
-        env_kwargs = dict(env_kwargs)
-        env_kwargs.pop('obs_type', None)  # always image
-        env = DualDestinationEnv(**env_kwargs)
-
-    elif env_name == 'multi-destination-spread':
-        from envs.multi_destination_spread.multi_destination_spread import MultiDestinationSpreadEnv
-        env_kwargs = dict(env_kwargs)
-        env_kwargs.pop('obs_type', None)  # always image
-        env = MultiDestinationSpreadEnv(**env_kwargs)
-
-    elif env_name == 'stag-hunt':
-        from envs.stag_hunt.stag_hunt import StagHuntEnv
-        env_kwargs = dict(env_kwargs)
-        env_kwargs.pop('obs_type', None)  # always image
-        env = StagHuntEnv(**env_kwargs)
-
     elif env_name == 'hanabi':
         default_env_kwargs = {
             "num_agents": 2,
