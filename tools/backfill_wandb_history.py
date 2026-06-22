@@ -37,7 +37,7 @@ LBF_EXTRA_SCALAR_KEYS = [
 
 
 def get_metric_names(env_name: str) -> tuple[str, ...]:
-    if env_name in ("lbf", "lbf-reward-shaping"):
+    if env_name == "lbf":
         return ("percent_eaten", "returned_episode_returns")
     if env_name == "overcooked-v1":
         return ("base_return", "returned_episode_returns")
@@ -137,7 +137,7 @@ def backfill_run(run_id: str, artifact_root: Path, dry_run: bool) -> None:
     num_envs = int(alg["NUM_ENVS"])
 
     # LBF runs use IMAGE_IPPO_SCALAR_KEYS + LBF extras (see agents/lbf/ja_lbf_future_occupancy.py).
-    if env_name in ("lbf", "lbf-reward-shaping"):
+    if env_name == "lbf":
         scalar_keys = IMAGE_IPPO_SCALAR_KEYS + LBF_EXTRA_SCALAR_KEYS
     else:
         scalar_keys = IMAGE_IPPO_SCALAR_KEYS

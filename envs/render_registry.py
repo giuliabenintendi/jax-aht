@@ -19,7 +19,7 @@ def _composite_per_agent(frames_per_agent: list[list[np.ndarray]]) -> list[np.nd
 
 def get_eval_frames(env_name, inner_env, ep_states, *, ep_obs=None, ep_actions=None):
     """Render `ep_states` to a list of RGB frames using the env's own renderer."""
-    if env_name in ("lbf", "lbf-reward-shaping"):
+    if env_name == "lbf":
         from marl.eval_lbf import _render_lbf_eval_frames
         return _render_lbf_eval_frames(inner_env, ep_states)
     if env_name == "card-game":

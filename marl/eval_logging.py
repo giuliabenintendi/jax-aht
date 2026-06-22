@@ -424,7 +424,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             os.makedirs(video_dir, exist_ok=True)
 
             # Render frames from episode states
-            if env_name in ("lbf", "lbf-reward-shaping"):
+            if env_name == "lbf":
                 frames = _render_lbf_eval_frames(inner_env, ep_states)
             elif env_name == "hanabi":
                 from envs.hanabi.rendering import render_hanabi_eval_frames

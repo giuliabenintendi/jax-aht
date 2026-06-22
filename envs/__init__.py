@@ -21,7 +21,7 @@ def process_default_args(env_kwargs: dict, default_args: dict):
     return default_args_copy, env_kwargs_copy
 
 def make_env(env_name: str, env_kwargs: dict = {}):
-    if env_name in ['lbf', 'lbf-reward-shaping']:
+    if env_name == 'lbf':
         import jumanji
         from jumanji.environments.routing.lbf.generator import RandomGenerator as LbfGenerator
 
@@ -36,7 +36,6 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         default_viewer_args = {"highlight_agent_idx": 0} # None to disable highlighting
 
         from envs.lbf.lbf_wrapper import LBFWrapper
-        from envs.lbf.reward_shaping_lbf_wrapper import RewardShapingLBFWrapper
         from envs.lbf.adhoc_lbf_viewer import AdHocLBFViewer
 
         env_kwargs_copy = dict(copy.deepcopy(env_kwargs))
@@ -55,8 +54,6 @@ def make_env(env_name: str, env_kwargs: dict = {}):
         if obs_type == 'image':
             from envs.lbf.lbf_image_wrapper import LBFImageWrapper
             env = LBFImageWrapper(jumanji_env, share_rewards=True)
-        elif env_name == 'lbf-reward-shaping':
-            env = RewardShapingLBFWrapper(jumanji_env, share_rewards=True)
         else:
             env = LBFWrapper(jumanji_env, share_rewards=True)
         
@@ -166,7 +163,7 @@ def make_env(env_name: str, env_kwargs: dict = {}):
 
 if __name__ == "__main__":
     # sanity check: test environment creation
-    env = make_env('lbf-reward-shaping', {'num_agents': 3, 'grid_size': 9})
+    env = make_env('lbf', {'num_agents': 3, 'grid_size': 9})
     print(env)
     env = make_env('overcooked-v1', {'layout': 'cramped_room'})
     print(env)

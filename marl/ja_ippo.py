@@ -63,6 +63,9 @@ def select_mechanism(config, env):
     """Pick the per-env JA mechanism by ENV_NAME (imported lazily)."""
     env_name = config.get("ENV_NAME", "")
     if env_name == "lbf":
+        if config.get("JA_LBF_DENSE_OBJECT_OCCUPANCY", False):
+            from agents.lbf.ja_lbf_dense_object_occupancy import LBFDenseObjectOccupancyMechanism
+            return LBFDenseObjectOccupancyMechanism(config, env)
         from agents.lbf.ja_lbf_future_occupancy import FutureOccupancyLBFMechanism
         return FutureOccupancyLBFMechanism(config, env)
     if env_name == "card-game":

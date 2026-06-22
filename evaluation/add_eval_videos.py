@@ -289,7 +289,7 @@ def main():
     # feed; `run_episode_with_states` reproduces it when given an `lbf_ctx`.
     # Without this the obs shape won't match what the policy was trained on.
     lbf_ctx = None
-    if env_name in ("lbf", "lbf-reward-shaping") and bool(alg_config.get("JA_FRUIT_PARTNER_FEED", True)):
+    if env_name == "lbf" and bool(alg_config.get("JA_FRUIT_PARTNER_FEED", True)):
         from agents.lbf.ja_lbf_attention import lbf_attention_ctx
         lbf_ctx = lbf_attention_ctx(alg_config, env)
 
@@ -308,7 +308,7 @@ def main():
         os.makedirs(video_dir, exist_ok=True)
 
         # Render frames
-        if env_name in ("lbf", "lbf-reward-shaping"):
+        if env_name == "lbf":
             from marl.eval_lbf import _render_lbf_eval_frames
             frames = _render_lbf_eval_frames(inner_env, ep_states)
         else:

@@ -189,7 +189,7 @@ def main():
         resolve=True,
     )
     alg_config = cfg["algorithm"]
-    if alg_config["ENV_NAME"] not in ("lbf", "lbf-reward-shaping"):
+    if alg_config["ENV_NAME"] != "lbf":
         raise SystemExit(f"LBF-only; got env_name={alg_config['ENV_NAME']!r}")
     if not bool(alg_config.get("JA_FRUIT_PARTNER_FEED", True)):
         raise SystemExit("JA_FRUIT_PARTNER_FEED is OFF — ego obs has no "
