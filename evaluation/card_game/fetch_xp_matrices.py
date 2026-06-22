@@ -28,8 +28,8 @@ PROJECT = "g-benintendi-university-of-brescia/aht-benchmark"
 # (W&B run id, target csv filename, comment)
 RUNS = [
     ("6d93i8mc", "op_only.csv",          "OP only 48s"),
-    ("mpzaww7r", "op_ja.csv",            "OP+JA noshape 48s"),
-    ("do36ppqt", "op_ja_shaping.csv",    "OP+JA shaped 48s (standalone)"),
+    ("qvublwxp", "op_ja.csv",            "OP+JA gazeonly 48s best-ckpt"),
+    ("hm3x0pdv", "op_ja_shaping.csv",    "OP+JA gaze_self (shaping) 48s best-ckpt"),
     ("bota0h7c", "op_comm_noshape.csv",  "OP+comm noshape 48s"),
     ("p2p1x7ez", "op_comm_match.csv",    "OP+comm match-only 48s (may be pending)"),
     ("p94s92du", "op_comm_shaping.csv",  "OP+comm shaped 48s"),
