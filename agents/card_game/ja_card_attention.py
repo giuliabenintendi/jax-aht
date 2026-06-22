@@ -3,12 +3,13 @@
 Implements the OP-corrected card-level JA path as a mechanism the unified
 trainer plugs in. Keeps: per-card attention pooling
 (Other-Play permutation translation), the partner card-attention feed, comm
-shaping (with warmup scale), gaze_pick / attn_self / attn_match shaping, the
+shaping (with warmup scale), gaze_pick / attn_self shaping, the
 partner-argmax aux NLL, and the card-level JSD diagnostic.
 
 Dropped (never used by the card path): FEED_OTHER_ATTN, QUERY_PARTNER_LSTM, the
-JSD-intrinsic r_ja reward, the JA_CARD_JSD shaping reward (diagnostic kept),
-SPO, and the symbolic encoder. Report + eval reuse the proven card-game helpers
+JSD-intrinsic r_ja reward, the JA_CARD_JSD shaping reward, the attn_match shaping
+reward, the alternate aux targets (partner pick, card occupancy), SPO, and the
+symbolic encoder. Report + eval reuse the proven card-game helpers
 (report_ja_training_outputs, log_greedy_eval, log_eval_video, run_xp_from_params).
 
 Other-Play (position shuffle + recolouring) is required for the card metric.
@@ -29,7 +30,6 @@ class CardMechanism:
         ("jsd_mean", "JA/jsd"),
         ("card_jsd_mean", "JA/card_jsd"),
         ("ja_attn_shaping_mean", "JA/total_shaping"),
-        ("ja_attn_match_mean", "JA/own_attn_matches_prev_partner_attn"),
         ("ja_attn_self_mean", "JA/action_matches_own_attn"),
         ("ja_gaze_pick_mean", "JA/action_matches_prev_partner_attn"),
         ("aux_partner_argmax_loss", "JA/aux_partner_argmax_nll"),
@@ -46,7 +46,6 @@ class CardMechanism:
 
         self.ja_card_attn = bool(config.get("JA_CARD_ATTN", False))
         self.ja_card_partner_feed = self.ja_card_attn and bool(config.get("JA_CARD_PARTNER_FEED", True))
-        self.attn_match_coef = float(config.get("JA_ATTN_MATCH_COEF", 0.0))
         self.attn_self_coef = float(config.get("JA_ATTN_SELF_COEF", 0.0))
         self.gaze_pick_coef = float(config.get("JA_GAZE_PICK_COEF", 0.0))
         self.aux_coef = float(config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0))
@@ -59,17 +58,8 @@ class CardMechanism:
         # Built in postprocess_trajectory; gamma reuses the LBF occupancy discount.
         self.aux_target_pick = bool(config.get("JA_AUX_PARTNER_PICK", False))
         self.aux_pick_gamma = float(config.get("JA_FUTURE_GAMMA_OCC", 0.9))
-        # Alt aux target: the partner's actual PICKED card (emitted action) instead
-        # of its attention argmax. Same hard-NLL causal-shifted structure.
-        self.aux_use_pick = bool(config.get("JA_AUX_USE_PICK", False))
-        # New: discounted future card-OCCUPANCY target (the LBF analog). Soft target =
-        # gamma-discounted SUM of the partner's per-card attention DISTRIBUTION over the
-        # episode, with the partner's actual final pick injected (one-hot) at the
-        # decision step. Soft cross-entropy. Separate path so the ablation stays clean.
-        self.aux_card_occ = bool(config.get("JA_AUX_CARD_OCC", False))
-        self.aux_card_occ_gamma = float(config.get("JA_FUTURE_GAMMA_OCC", 0.95))
-        self.attn_shaping_active = self.attn_match_coef > 0 or self.attn_self_coef > 0
-        self.prev_partner_phys_active = self.attn_match_coef > 0 or self.gaze_pick_active
+        self.attn_shaping_active = self.attn_self_coef > 0
+        self.prev_partner_phys_active = self.gaze_pick_active
         self.card_metric = (
             self.ja_card_attn or bool(config.get("JA_CARD_METRIC", False))
             or self.attn_shaping_active or self.aux_active or self.gaze_pick_active
@@ -116,7 +106,6 @@ class CardMechanism:
             "prev_partner_argmax": jnp.zeros((num_actors,), dtype=jnp.int32),
             "prev_partner_argmax_valid": jnp.zeros((num_actors,), dtype=bool),
             "prev_partner_argmax_weight": jnp.zeros((num_actors,), dtype=jnp.float32),
-            "prev_partner_pick": jnp.zeros((num_actors,), dtype=jnp.int32),
         }
 
     def augment_obs(self, obs_batch_2d, carry):
@@ -173,10 +162,8 @@ class CardMechanism:
             current_partner_mass = jnp.zeros((num_actors,), dtype=jnp.float32)
 
         # Aux target: causal-shifted (prev step) when the partner-feed is on.
-        # JA_AUX_USE_PICK swaps the attention-argmax target for the partner's
-        # actual picked card (its prev emitted action).
         if self.aux_active and self.ja_card_partner_feed:
-            aux_argmax = carry["prev_partner_pick"] if self.aux_use_pick else carry["prev_partner_argmax"]
+            aux_argmax = carry["prev_partner_argmax"]
             aux_valid = carry["prev_partner_argmax_valid"]
             aux_weight = carry["prev_partner_argmax_weight"]
         else:
@@ -199,26 +186,9 @@ class CardMechanism:
             action_0_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
             action_1_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
 
-        # Partner's PICK (emitted card) this step, OP-translated to the agent's view —
-        # the alternative aux target to the attention argmax (JA_AUX_USE_PICK).
-        if self.card_metric:
-            inv_perm_0 = jnp.argsort(perm_0, axis=-1)
-            inv_perm_1 = jnp.argsort(perm_1, axis=-1)
-            pick0_view = jnp.take_along_axis(inv_perm_0, action_1_gt[:, None], axis=1).squeeze(-1)
-            pick1_view = jnp.take_along_axis(inv_perm_1, action_0_gt[:, None], axis=1).squeeze(-1)
-            partner_pick_per_actor = jnp.concatenate([pick0_view, pick1_view]).astype(jnp.int32)
-            # Partner's per-card attention DISTRIBUTION in the agent's view order (the
-            # soft signal for the card-occupancy aux), same translation as the feed.
-            dist0_view = jnp.take_along_axis(q_phys_1, perm_0, axis=1)
-            dist1_view = jnp.take_along_axis(q_phys_0, perm_1, axis=1)
-            partner_attn_dist_step = jnp.concatenate([dist0_view, dist1_view], axis=0).astype(jnp.float32)
-        else:
-            partner_pick_per_actor = jnp.zeros((num_actors,), dtype=jnp.int32)
-            partner_attn_dist_step = jnp.zeros((num_actors, num_cards), dtype=jnp.float32)
-
-        (r_attn_shaping, r_attn_match, r_attn_self, r_gaze_pick) = self._shaping_rewards(
+        (r_attn_shaping, r_attn_self, r_gaze_pick) = self._shaping_rewards(
             q_phys_0, q_phys_1, carry["prev_partner_phys"], carry["prev_partner_valid"],
-            action_0_gt, action_1_gt, pick_0_is_card, pick_1_is_card, num_envs, num_actors)
+            action_0_gt, action_1_gt, pick_0_is_card, pick_1_is_card, num_actors)
 
         reward = env_reward + comm_scale * comm_reward + r_attn_shaping + r_gaze_pick
 
@@ -241,10 +211,6 @@ class CardMechanism:
             new_prev_argmax = carry["prev_partner_argmax"]
             new_prev_argmax_valid = carry["prev_partner_argmax_valid"]
             new_prev_argmax_weight = carry["prev_partner_argmax_weight"]
-        if self.aux_active and self.ja_card_partner_feed:
-            new_prev_pick = jnp.where(done_actors, 0, partner_pick_per_actor).astype(jnp.int32)
-        else:
-            new_prev_pick = carry["prev_partner_pick"]
 
         new_carry = {
             "partner_card_attn": new_partner_card_attn,
@@ -253,7 +219,6 @@ class CardMechanism:
             "prev_partner_argmax": new_prev_argmax,
             "prev_partner_argmax_valid": new_prev_argmax_valid,
             "prev_partner_argmax_weight": new_prev_argmax_weight,
-            "prev_partner_pick": new_prev_pick,
         }
         # Partner's current ATTENTION argmax this step (already translated to the
         # agent's view frame) — the observable, co-adaptive intent signal, analogous
@@ -263,15 +228,13 @@ class CardMechanism:
 
         extras = {
             "partner_attn_argmax_step": partner_attn_argmax_step,
-            "partner_attn_dist_step": partner_attn_dist_step,
-            "partner_pick_step": partner_pick_per_actor,
             "partner_argmax": aux_argmax,
             "partner_argmax_valid": aux_valid,
             "partner_argmax_weight": aux_weight,
             "comm_reward": comm_reward, "comm_match": comm_match,
             "comm_stable": comm_stable, "comm_follow": comm_follow,
             "card_jsd": card_jsd, "jsd": jsd_spatial,
-            "r_attn_shaping": r_attn_shaping, "r_attn_match": r_attn_match,
+            "r_attn_shaping": r_attn_shaping,
             "r_attn_self": r_attn_self, "r_gaze_pick": r_gaze_pick,
         }
         return reward, new_carry, extras
@@ -289,40 +252,22 @@ class CardMechanism:
         is active, so the plain-argmax path is untouched.
         """
         del config, update_steps
-        if not (self.aux_active and (self.aux_target_pick or self.aux_card_occ)):
+        if not (self.aux_active and self.aux_target_pick):
             return traj_batch
         ex = traj_batch.extras
         done = traj_batch.done                          # (T, A)
-        if self.aux_card_occ:
-            # Soft discounted future card-occupancy: gamma-discounted SUM of the
-            # partner's per-card attention DISTRIBUTION over the episode, with the
-            # partner's actual final pick injected (one-hot) on the decision step.
-            dist = ex["partner_attn_dist_step"]                                       # (T, A, C) soft
-            pick_oh = jax.nn.one_hot(ex["partner_pick_step"], self.num_cards, dtype=jnp.float32)
-            signal = jnp.where(done[..., None], pick_oh, dist)                        # inject pick at done
-            gamma = self.aux_card_occ_gamma
+        # Hard discounted FIRST-occupancy over the partner's attention argmax.
+        onehot = jax.nn.one_hot(ex["partner_attn_argmax_step"], self.num_cards, dtype=jnp.float32)
+        gamma = self.aux_pick_gamma
 
-            def _scan(m_next, x):
-                sig_t, done_t = x
-                m_next = jnp.where(done_t[..., None], 0.0, m_next)
-                m_t = sig_t + gamma * m_next
-                return m_t, m_t
+        def _scan(m_next, x):
+            oh_t, done_t = x
+            m_next = jnp.where(done_t[..., None], 0.0, m_next)
+            m_t = jnp.where(oh_t > 0.0, 1.0, gamma * m_next)
+            return m_t, m_t
 
-            init = jnp.zeros(signal.shape[1:], dtype=jnp.float32)                      # (A, C)
-            _, occ = jax.lax.scan(_scan, init, (signal, done), reverse=True)           # (T, A, C)
-        else:
-            # Hard discounted FIRST-occupancy over the partner's attention argmax.
-            onehot = jax.nn.one_hot(ex["partner_attn_argmax_step"], self.num_cards, dtype=jnp.float32)
-            gamma = self.aux_pick_gamma
-
-            def _scan(m_next, x):
-                oh_t, done_t = x
-                m_next = jnp.where(done_t[..., None], 0.0, m_next)
-                m_t = jnp.where(oh_t > 0.0, 1.0, gamma * m_next)
-                return m_t, m_t
-
-            init = jnp.zeros(onehot.shape[1:], dtype=jnp.float32)                      # (A, C)
-            _, occ = jax.lax.scan(_scan, init, (onehot, done), reverse=True)           # (T, A, C)
+        init = jnp.zeros(onehot.shape[1:], dtype=jnp.float32)                      # (A, C)
+        _, occ = jax.lax.scan(_scan, init, (onehot, done), reverse=True)           # (T, A, C)
         occ = occ / (occ.sum(axis=-1, keepdims=True) + 1e-8)
         new_extras = dict(ex)
         new_extras["partner_card_occ"] = jax.lax.stop_gradient(occ)
@@ -342,7 +287,7 @@ class CardMechanism:
         own_card_mass = per_card_attn.sum(axis=-1)
         per_card_norm = per_card_attn / (own_card_mass[..., None] + 1e-8)
         log_probs = jnp.log(per_card_norm + 1e-8)
-        if self.aux_target_pick or self.aux_card_occ:
+        if self.aux_target_pick:
             # Soft cross-entropy against the partner's discounted card-occupancy
             # (mirrors LBF's occupancy aux), weighted by the agent's on-card mass.
             # The terminal pick still supervises earlier timesteps via the reverse
@@ -374,7 +319,6 @@ class CardMechanism:
             "jsd_mean": ex["jsd"].mean(),
             "card_jsd_mean": ex["card_jsd"].mean(),
             "ja_attn_shaping_mean": ex["r_attn_shaping"].mean(),
-            "ja_attn_match_mean": ex["r_attn_match"].mean(),
             "ja_attn_self_mean": ex["r_attn_self"].mean(),
             "ja_gaze_pick_mean": ex["r_gaze_pick"].sum() / gaze_count,
             "aux_partner_argmax_loss": loss_info.aux_loss.mean(),
@@ -434,35 +378,16 @@ class CardMechanism:
         return jnp.where(done_actors[:, None], 0.0, partner_card_attn)
 
     def _shaping_rewards(self, q_phys_0, q_phys_1, prev_partner_phys, prev_partner_valid,
-                         action_0_gt, action_1_gt, pick_0_is_card, pick_1_is_card, num_envs, num_actors):
+                         action_0_gt, action_1_gt, pick_0_is_card, pick_1_is_card, num_actors):
         if self.card_metric and self.attn_shaping_active:
-            if self.attn_match_coef > 0:
-                log2 = jnp.log(jnp.asarray(2.0))
-                pp0, pp1 = prev_partner_phys[:num_envs], prev_partner_phys[num_envs:]
-                pv0, pv1 = prev_partner_valid[:num_envs], prev_partner_valid[num_envs:]
-                jsd0 = jsd_divergence(q_phys_0[:, None, :], pp0[:, None, :]).reshape(num_envs)
-                jsd1 = jsd_divergence(q_phys_1[:, None, :], pp1[:, None, :]).reshape(num_envs)
-                ms0 = 1.0 - jnp.clip(jsd0, 0.0, log2) / log2
-                ms1 = 1.0 - jnp.clip(jsd1, 0.0, log2) / log2
-                r_match = jnp.concatenate([
-                    jnp.where(pv0, self.attn_match_coef * ms0, 0.0),
-                    jnp.where(pv1, self.attn_match_coef * ms1, 0.0),
-                ])
-            else:
-                r_match = jnp.zeros(num_actors)
-            if self.attn_self_coef > 0:
-                oam0 = jnp.take_along_axis(q_phys_0, action_0_gt[:, None], axis=1).squeeze(-1)
-                oam1 = jnp.take_along_axis(q_phys_1, action_1_gt[:, None], axis=1).squeeze(-1)
-                oam0 = jnp.where(pick_0_is_card, oam0, 0.0)
-                oam1 = jnp.where(pick_1_is_card, oam1, 0.0)
-                r_self = self.attn_self_coef * jnp.concatenate([oam0, oam1])
-            else:
-                r_self = jnp.zeros(num_actors)
-            r_shaping = r_match + r_self
+            oam0 = jnp.take_along_axis(q_phys_0, action_0_gt[:, None], axis=1).squeeze(-1)
+            oam1 = jnp.take_along_axis(q_phys_1, action_1_gt[:, None], axis=1).squeeze(-1)
+            oam0 = jnp.where(pick_0_is_card, oam0, 0.0)
+            oam1 = jnp.where(pick_1_is_card, oam1, 0.0)
+            r_self = self.attn_self_coef * jnp.concatenate([oam0, oam1])
         else:
-            r_shaping = jnp.zeros(num_actors)
-            r_match = jnp.zeros(num_actors)
             r_self = jnp.zeros(num_actors)
+        r_shaping = r_self
 
         if self.gaze_pick_active:
             action_canon = jnp.concatenate([action_0_gt, action_1_gt])
@@ -477,7 +402,6 @@ class CardMechanism:
 
         return (
             jax.lax.stop_gradient(r_shaping),
-            jax.lax.stop_gradient(r_match),
             jax.lax.stop_gradient(r_self),
             jax.lax.stop_gradient(r_gaze),
         )
