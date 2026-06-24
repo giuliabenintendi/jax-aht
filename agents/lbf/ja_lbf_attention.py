@@ -1,7 +1,7 @@
 """Shared per-fruit attention geometry for LBF joint attention.
 
 These helpers are used by the LBF JA mechanism
-(`agents/lbf/ja_lbf_future_occupancy.py`) and by both evaluation paths
+(`agents/lbf/ja_lbf_dense_object_occupancy.py`) and by both evaluation paths
 (`evaluation/vis_episodes.py`, `evaluation/run_xp_seeds.py`).
 They live here, in the leaf `agents` package, so evaluation no longer has to
 reach into the training module for them.
@@ -89,12 +89,14 @@ def swap_partner(x, num_agents):
 
 
 def _unwrap_lbf_state(state):
-    """Peel any LogWrapper / wrapper layers until we reach the inner Jumanji
-    state that owns `agents` and `food_items`. Training uses LogWrapper-wrapped
-    state (depth 2); the eval-video path calls the inner env directly (depth 0).
+    """Peel any LogWrapper / Other-Play / wrapper layers until we reach the inner
+    Jumanji state that owns `agents` and `food_items`. Depth varies by wrapping:
+    the eval-video path calls the inner env directly (depth 0); LogWrapper training
+    is depth 2; the LBF Other-Play wrapper adds one more layer. Peel generously and
+    return as soon as the inner state is found.
     """
     s = state
-    for _ in range(3):
+    for _ in range(8):
         if hasattr(s, "agents") and hasattr(s, "food_items"):
             return s
         s = getattr(s, "env_state", None)
