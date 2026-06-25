@@ -1,10 +1,7 @@
-"""Grouped SP/XP bar plots for the card-game results.
+"""Grouped SP/XP bar plot for the card-game joint-attention result.
 
-Renders two presentation figures from per-condition summary numbers:
-
-- `sp_xp_bar_all.png`: all six conditions.
-- `sp_xp_bar_ja.png`: the joint-attention story only
-  (SP, OP only, OP + JA, OP + JA + shaping).
+Renders `sp_xp_bar_ja.png`: the three-condition story (IPPO, OP, MATE) from
+per-condition summary numbers.
 
 Bar values:
 
@@ -38,7 +35,6 @@ import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-OUT_ALL = Path("plots/card_game/sp_xp_bar_all.png")
 OUT_JA = Path("plots/card_game/sp_xp_bar_ja.png")
 
 RANDOM_COLOR = "#d62728"
@@ -51,16 +47,16 @@ XP_HATCH = "//"
 # self-play control is the measured 48-seed no-OP run.
 # Unshaped block (SP, OP only, OP + JA, OP + comm) then shaped block.
 COND = [
-    ("SP",                   "#B7B6E5", 1.000, 0.001, 0.211, 0.059),  # lilac control (no OP); 48-seed noop_1M_48s
-    ("OP only",              "#2E7DF0", 0.200, 0.002, 0.200, 0.002),  # blue (chance)
-    ("OP + JA",              "#F5871F", 0.872, 0.008, 0.832, 0.008),  # orange; qvublwxp best-ckpt (48 seeds)
+    ("IPPO",                 "#B7B6E1", 1.000, 0.001, 0.211, 0.059),  # lavender control (no OP); 48-seed noop_1M_48s
+    ("OP",                   "#457BE8", 0.200, 0.002, 0.200, 0.002),  # blue (chance)
+    ("MATE",                 "#E68D3C", 0.872, 0.008, 0.832, 0.008),  # orange; qvublwxp best-ckpt (48 seeds)
     ("OP + comm",            "#8C82F6", 0.344, 0.027, 0.355, 0.028),  # purple (no shaping)
     ("OP + JA\n+ shaping",   "#51B18D", 0.984, 0.002, 0.933, 0.007),  # green; hm3x0pdv best-ckpt (48 seeds)
     ("OP + comm\n+ shaping", "#F55F74", 0.847, 0.038, 0.874, 0.032),  # pink
 ]
 
-# Joint-attention story: SP control, OP baseline, OP + JA (no shaping bar).
-JA_LABELS = {"SP", "OP only", "OP + JA"}
+# Joint-attention story: IPPO control, OP baseline, MATE (no shaping bar).
+JA_LABELS = {"IPPO", "OP", "MATE"}
 
 
 def render(cond: list[tuple], out: Path) -> None:
@@ -106,7 +102,7 @@ def render(cond: list[tuple], out: Path) -> None:
     # Centre the legend in the open gap between the SP condition's bars and the
     # next tall bar, i.e. over the low OP-only column (x = op_idx), leaving a
     # small margin on each side. The OP-only bars are low, so nothing is hidden.
-    op_idx = labels.index("OP only") if "OP only" in labels else 1
+    op_idx = labels.index("OP") if "OP" in labels else 1
     ax.legend(handles=handles, frameon=False, fontsize=13, loc="upper center",
               bbox_to_anchor=(op_idx - 0.15, 1.08), bbox_transform=ax.transData,
               handlelength=1.4, handletextpad=0.5, labelspacing=0.3, borderpad=0.0)
@@ -119,7 +115,6 @@ def render(cond: list[tuple], out: Path) -> None:
 
 
 def main() -> None:
-    render(COND, OUT_ALL)
     render([c for c in COND if c[0] in JA_LABELS], OUT_JA)
 
 
