@@ -74,13 +74,19 @@ class CardMechanism:
             self.ja_card_attn or bool(config.get("JA_CARD_METRIC", False))
             or self.attn_shaping_active or self.aux_active or self.gaze_pick_active
         )
-        if self.card_metric:
-            ek = config.get("ENV_KWARGS", {})
-            if not (ek.get("other_play_position_shuffle") and ek.get("other_play_recolouring")):
-                raise ValueError(
-                    "CardMechanism (card metric/attn) requires both "
-                    "other_play_position_shuffle and other_play_recolouring"
-                )
+        # Other-Play provides each agent's independent position/recolour permutations.
+        # With both flags set the mechanism translates attention/actions through them;
+        # with neither set (the JA-only control) it falls back to the base env's single
+        # shared card_permutation and identity recolouring. One flag alone is an
+        # inconsistent config.
+        ek = config.get("ENV_KWARGS", {})
+        n_op = int(bool(ek.get("other_play_position_shuffle"))) + int(bool(ek.get("other_play_recolouring")))
+        if self.card_metric and n_op == 1:
+            raise ValueError(
+                "CardMechanism (card metric/attn) needs both "
+                "other_play_position_shuffle and other_play_recolouring, or neither"
+            )
+        self.op_active = n_op == 2
 
         env_steps_per_update = int(config["ROLLOUT_LENGTH"]) * int(config["NUM_ENVS"])
         self.comm_warmup_env_steps = float(config.get("COMM_WARMUP_ENV_STEPS", 0))
@@ -190,11 +196,15 @@ class CardMechanism:
         pick_1_view = action[num_envs:]
         pick_0_is_card = pick_0_view < num_cards
         pick_1_is_card = pick_1_view < num_cards
-        if self.card_metric:
+        if self.card_metric and self.op_active:
             inv_recol_0 = env_state.env_state.per_agent_inv_recolouring["agent_0"]
             inv_recol_1 = env_state.env_state.per_agent_inv_recolouring["agent_1"]
             action_0_gt = inv_recol_0[env_idx, jnp.minimum(pick_0_view, num_cards - 1)]
             action_1_gt = inv_recol_1[env_idx, jnp.minimum(pick_1_view, num_cards - 1)]
+        elif self.card_metric:
+            # No recolouring (JA-only control): the emitted action already is the card identity.
+            action_0_gt = jnp.minimum(pick_0_view, num_cards - 1).astype(jnp.int32)
+            action_1_gt = jnp.minimum(pick_1_view, num_cards - 1).astype(jnp.int32)
         else:
             action_0_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
             action_1_gt = jnp.zeros((num_envs,), dtype=jnp.int32)
@@ -393,6 +403,21 @@ class CardMechanism:
         log_eval_video(algorithm_config, env, out, logger)
 
     # -------------------------------------------------------------- internals
+    def _shared_card_permutation(self, env_state):
+        """Base env's shared per-episode card_permutation (no-OP JA control).
+
+        Walks the wrapper chain to the inner CardGameState. Shape (num_envs, num_cards):
+        card_permutation[pos] = the card identity shown at screen position pos.
+        """
+        s = env_state
+        for _ in range(6):
+            if hasattr(s, "card_permutation"):
+                return s.card_permutation
+            s = getattr(s, "env_state", None)
+            if s is None:
+                break
+        raise AttributeError("could not locate card_permutation in env_state")
+
     def _project_card_attention(self, attn_map, env_state, num_envs):
         """Pool spatial attention onto cards and translate to canonical frame."""
         attn = attn_map.squeeze(0)  # (num_actors, fh, fw)
@@ -400,8 +425,13 @@ class CardMechanism:
         card_pos_attn_0 = card_pos_attn[:num_envs]
         card_pos_attn_1 = card_pos_attn[num_envs:]
         eps = 1e-8
-        perm_0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
-        perm_1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
+        if self.op_active:
+            perm_0 = env_state.env_state.env_state.per_agent_perm["agent_0"]
+            perm_1 = env_state.env_state.env_state.per_agent_perm["agent_1"]
+        else:
+            # No OP: both agents share the base env's single card_permutation frame.
+            shared_perm = self._shared_card_permutation(env_state)
+            perm_0 = perm_1 = shared_perm
         batch_idx = jnp.arange(num_envs)[:, None]
         phys_0 = jnp.zeros((num_envs, self.num_cards)).at[batch_idx, perm_0].set(card_pos_attn_0)
         phys_1 = jnp.zeros((num_envs, self.num_cards)).at[batch_idx, perm_1].set(card_pos_attn_1)

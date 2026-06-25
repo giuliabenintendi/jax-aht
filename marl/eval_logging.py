@@ -165,8 +165,16 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
                     # OTHER agent's view-frame. Mirrors the rollout in marl/ja_ippo.py.
                     a0_sq = attn_0.squeeze()
                     a1_sq = attn_1.squeeze()
-                    perm_0 = env_state.env_state.per_agent_perm["agent_0"]
-                    perm_1 = env_state.env_state.per_agent_perm["agent_1"]
+                    # Without OP there is no per-agent perm; fall back to identity
+                    # (both agents share the base layout, so the feed is frame-invariant).
+                    _ps = env_state
+                    while _ps is not None and not hasattr(_ps, "per_agent_perm"):
+                        _ps = getattr(_ps, "env_state", None)
+                    if _ps is not None:
+                        perm_0 = _ps.per_agent_perm["agent_0"]
+                        perm_1 = _ps.per_agent_perm["agent_1"]
+                    else:
+                        perm_0 = perm_1 = jnp.arange(5, dtype=jnp.int32)
                     card_attn_0 = jnp.einsum("hw,chw->c", a0_sq, _card_masks_eval)
                     card_attn_1 = jnp.einsum("hw,chw->c", a1_sq, _card_masks_eval)
                     phys_0 = jnp.zeros(5).at[perm_0].set(card_attn_0)

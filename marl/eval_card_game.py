@@ -355,6 +355,8 @@ def _render_vertical_colorbar(cmap_name, height_px):
         orientation="vertical",
         ticks=[0.0, 0.25, 0.5, 0.75, 1.0],
     )
+    # Larger tick numbers, scaled to the bar height so they read at any strip size.
+    ax.tick_params(labelsize=max(16, round(height_px * 0.09)))
     buf = BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)

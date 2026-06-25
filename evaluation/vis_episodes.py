@@ -866,23 +866,49 @@ def _make_overlay_video(frames, attn_maps, cmap_name, filename, fps):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     clip = ImageSequenceClip(overlay_frames, fps=fps)
     clip.write_videofile(filename, fps=fps, codec='libx264', audio=False,
-                         bitrate='8000k', preset='slow')
+                         bitrate='8000k', preset='ultrafast')
     print(f"[attn video] Saved {filename} ({len(overlay_frames)} frames)")
 
 
-def make_attention_video(frames, attn_data, filename, fps=10):
+def _apply_v4(arr, elem):
+    """Apply a MIRROR_V4 element index to an array's first two (spatial) axes.
+
+    V4 = [identity, H-flip, V-flip, both]; reflections are self-inverse, so the
+    same call both maps a GT frame into an agent's view and un-maps an agent's
+    attention back to the GT frame. Works on (H, W) attention or (H, W, 3) frames.
+    """
+    import numpy as np
+
+    from envs.lbf.other_play import MIRROR_V4
+    h_flip, v_flip, _k = MIRROR_V4[int(elem)]
+    if h_flip:
+        arr = np.flip(arr, axis=1)  # left-right (columns)
+    if v_flip:
+        arr = np.flip(arr, axis=0)  # up-down (rows)
+    return arr
+
+
+def make_attention_video(frames, attn_data, filename, fps=10, op_elems=None):
     """Create three MP4s: Agent 0 (Blues), Agent 1 (Reds), Combined (jet).
 
-    Each video shows the game frame with the corresponding heatmap panel alongside.
-    Combined = element-wise minimum, highlighting where both agents attend.
+    Without OP (`op_elems is None`) all three overlay on the same GT frames and
+    Combined = element-wise minimum (where both agents attend).
+
+    Under Other-Play (`op_elems = {"agent_0": elem, "agent_1": elem}` of V4 element
+    indices), each agent's attention lives in its own mirror frame, so:
+      - agent0 / agent1: background is that agent's OWN view (the GT frame flipped
+        by its element), with its native-frame attention overlaid;
+      - combined: the GT board, with BOTH agents' attention reframed back into GT
+        (un-flipped by their elements) before taking the overlap.
 
     Output files: <filename>_agent0.mp4, <filename>_agent1.mp4, <filename>_combined.mp4
 
     Args:
-        frames: list of pre-rendered RGB frames (from render_episode_frames).
+        frames: list of pre-rendered GT RGB frames (from render_episode_frames).
         attn_data: dict with per-agent attention maps list.
         filename: base output path (extension stripped, suffixes appended).
         fps: frames per second.
+        op_elems: optional {"agent_0": int, "agent_1": int} V4 element per agent.
     """
     import numpy as np
 
@@ -893,13 +919,27 @@ def make_attention_video(frames, attn_data, filename, fps=10):
         return
 
     base = filename.rsplit(".", 1)[0] if "." in filename else filename
-
     n = min(len(maps_0), len(maps_1))
-    combined = [np.minimum(np.array(maps_0[i]).squeeze(),
-                           np.array(maps_1[i]).squeeze()) for i in range(n)]
 
-    _make_overlay_video(frames, maps_0, "Blues", f"{base}_agent0.mp4", fps)
-    _make_overlay_video(frames, maps_1, "Reds", f"{base}_agent1.mp4", fps)
+    if op_elems is None:
+        combined = [np.minimum(np.array(maps_0[i]).squeeze(),
+                               np.array(maps_1[i]).squeeze()) for i in range(n)]
+        _make_overlay_video(frames, maps_0, "Blues", f"{base}_agent0.mp4", fps)
+        _make_overlay_video(frames, maps_1, "Reds", f"{base}_agent1.mp4", fps)
+        _make_overlay_video(frames, combined, "jet", f"{base}_combined.mp4", fps)
+        return
+
+    g0, g1 = int(op_elems["agent_0"]), int(op_elems["agent_1"])
+    # Per-agent: each agent's OWN view = GT frame flipped into its frame; the
+    # attention is already in that frame, so it overlays natively.
+    frames_0 = [_apply_v4(f, g0) for f in frames]
+    frames_1 = [_apply_v4(f, g1) for f in frames]
+    _make_overlay_video(frames_0, maps_0, "Blues", f"{base}_agent0.mp4", fps)
+    _make_overlay_video(frames_1, maps_1, "Reds", f"{base}_agent1.mp4", fps)
+    # Combined: both attentions reframed into the GT layout (V4 is self-inverse).
+    maps_0_gt = [_apply_v4(np.array(maps_0[i]).squeeze(), g0) for i in range(n)]
+    maps_1_gt = [_apply_v4(np.array(maps_1[i]).squeeze(), g1) for i in range(n)]
+    combined = [np.minimum(maps_0_gt[i], maps_1_gt[i]) for i in range(n)]
     _make_overlay_video(frames, combined, "jet", f"{base}_combined.mp4", fps)
 
 

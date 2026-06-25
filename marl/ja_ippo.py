@@ -63,17 +63,11 @@ def select_mechanism(config, env):
     """Pick the per-env JA mechanism by ENV_NAME (imported lazily)."""
     env_name = config.get("ENV_NAME", "")
     if env_name == "lbf":
-        from agents.lbf.ja_lbf_future_occupancy import FutureOccupancyLBFMechanism
-        return FutureOccupancyLBFMechanism(config, env)
+        from agents.lbf.ja_lbf_dense_object_occupancy import LBFDenseObjectOccupancyMechanism
+        return LBFDenseObjectOccupancyMechanism(config, env)
     if env_name == "card-game":
         from agents.card_game.ja_card_attention import CardMechanism
         return CardMechanism(config, env)
-    if env_name == "multi-destination-spread":
-        from agents.multi_destination_spread.ja_mds_mechanism import MDSMechanism
-        return MDSMechanism(config, env)
-    if env_name == "stag-hunt":
-        from agents.stag_hunt.ja_stag_hunt_future_occupancy import FutureOccupancyStagHuntMechanism
-        return FutureOccupancyStagHuntMechanism(config, env)
     if env_name in ("overcooked-v1", "hanabi"):
         from agents.ja_jsd_mechanism import JSDMechanism
         return JSDMechanism(config, env)

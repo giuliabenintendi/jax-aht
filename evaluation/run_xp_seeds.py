@@ -31,6 +31,11 @@ import yaml
 
 from agents.initialize_agents import initialize_ja_image_agent
 from agents.ja_utils import jsd_divergence
+from agents.lbf.op_equivariance import (
+    feat_transform_table,
+    read_op_elems,
+    transform_feat_maps,
+)
 from common.plot_utils import get_metric_names
 from common.save_load_utils import load_train_run
 from common.tree_utils import tree_stack
@@ -98,6 +103,28 @@ def _get_card_game_inv_recolouring(state, agent_name: str):
             return s.per_agent_inv_recolouring[agent_name]
         s = getattr(s, "env_state", None)
     return jnp.arange(NUM_CARDS, dtype=jnp.int32)
+
+
+def _attn_to_gt(attn_0_2d, attn_1_2d, env_state, agents):
+    """Un-mirror each agent's (h, w) spatial attention into the GT frame.
+
+    Under LBF Other-Play each agent sees a mirror-transformed observation, so its
+    attention lives in that agent's mirror frame; JSD between the two raw maps then
+    measures the frame mismatch, not real disagreement. `read_op_elems` returns the
+    per-agent V4 element (None when OP is off, or for the card game's recolouring
+    wrapper, which uses `per_agent_perm` not `per_agent_elem`), and the self-inverse
+    transform brings both maps into the shared GT frame before the JSD is taken.
+    """
+    op_elems = read_op_elems(env_state, agents)
+    if op_elems is None:
+        return attn_0_2d, attn_1_2d
+    h, w = attn_0_2d.shape[-2], attn_0_2d.shape[-1]
+    table = feat_transform_table(h, w)
+    g0 = jnp.reshape(op_elems[agents[0]], (1,))
+    g1 = jnp.reshape(op_elems[agents[1]], (1,))
+    a0 = transform_feat_maps(attn_0_2d.reshape(1, h, w), g0, table)[0]
+    a1 = transform_feat_maps(attn_1_2d.reshape(1, h, w), g1, table)[0]
+    return a0, a1
 
 
 def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
@@ -218,8 +245,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     )
     act_1 = act_1.squeeze()
 
-    attn_0_2d = attn_0
-    attn_1_2d = attn_1
+    attn_0_2d, attn_1_2d = _attn_to_gt(attn_0, attn_1, init_env_state, env.agents)
     attn_0_flat = attn_0_2d.reshape(-1)
     attn_1_flat = attn_1_2d.reshape(-1)
     attn_0_dist = attn_0_flat / (attn_0_flat.sum() + 1e-8)
@@ -349,8 +375,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             )
             act_1 = act_1.squeeze()
 
-            a0_2d = attn_0
-            a1_2d = attn_1
+            a0_2d, a1_2d = _attn_to_gt(attn_0, attn_1, env_state, env.agents)
             a0 = a0_2d.reshape(-1)
             a1 = a1_2d.reshape(-1)
             a0 = a0 / (a0.sum() + 1e-8)
@@ -765,9 +790,8 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         task_name: task name for labels (e.g. "overcooked-v1-image/cramped_room")
         wb_run: existing wandb run to log to. If None, creates a new one.
     """
-    # Stochastic XP has been retired; keep the parameter for compatibility.
-    greedy_eval = True
-
+    # greedy_eval flows from the caller: greedy (argmax) decoding by default,
+    # or stochastic sampling when greedy_eval=False (CLI --sampled).
     num_seeds = jax.tree.leaves(stacked_params)[0].shape[0]
     if num_seeds < 2:
         print(f"[xp_seeds] SKIP: only {num_seeds} seed(s) — need at least 2 for cross-play")
@@ -1125,16 +1149,7 @@ def run_xp_nagent_from_params(env, policy, stacked_params, algo_cfg, savedir,
     inner_env = get_inner_env(env)
     num_seeds = int(jax.tree.leaves(stacked_params)[0].shape[0])
     max_steps = int(algo_cfg.get("ENV_KWARGS", {}).get("max_steps", 100))
-    env_name = str(algo_cfg.get("ENV_NAME", ""))
-    # Multi-destination spread starts all parameter-shared agents on the same
-    # cell with identical observations. Greedy eval makes self-play degenerate:
-    # all agents pick the same action, collide, and stay at the center. Sampled
-    # XP matches the stochastic symmetry breaking used during training.
-    greedy_eval = env_name != "multi-destination-spread"
-    print(
-        f"[xp_seeds:nagent] action selection: {'greedy' if greedy_eval else 'sampled'}",
-        flush=True,
-    )
+    greedy_eval = True
 
     def seed_params(s):
         return jax.tree.map(lambda x: x[s], stacked_params)
@@ -1308,7 +1323,6 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     Results land under the run's `xp_results/` directory and are logged to a
     fresh wandb run with `wb_prefix` (default `XP`).
     """
-    greedy_eval = True
     hydra_cfg = _load_hydra_config(checkpoint_path)
     if task_name is not None:
         task_cfg = load_task_config(task_name)
@@ -1590,6 +1604,9 @@ if __name__ == "__main__":
                         help="Use best_params when available (default; final_params is fallback)")
     parser.add_argument("--use-final", dest="use_best", action="store_false",
                         help="Force final_params instead of best_params")
+    parser.add_argument("--sampled", action="store_true",
+                        help="Stochastic (non-greedy) action selection for XP/SP "
+                             "instead of the default argmax decoding.")
     parser.add_argument("--xp-video-max-pairs", type=int, default=None,
                         help="Override the cap on number of XP video pairs (default 3 from "
                              "config). Pass 0 (or any non-positive) to render every "
@@ -1617,7 +1634,7 @@ if __name__ == "__main__":
         run_xp_multi_checkpoint(args.task, args.checkpoints)
     elif args.checkpoint:
         max_pairs = 0 if args.xp_video_all_pairs else args.xp_video_max_pairs
-        run_xp_evaluation(args.task, args.checkpoint, greedy_eval=True,
+        run_xp_evaluation(args.task, args.checkpoint, greedy_eval=not args.sampled,
                           use_best=args.use_best,
                           xp_video_max_pairs=max_pairs,
                           no_xp_videos=args.no_xp_videos)

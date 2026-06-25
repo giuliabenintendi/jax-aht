@@ -41,6 +41,8 @@ def make_env(env_name: str, env_kwargs: dict = {}):
 
         env_kwargs_copy = dict(copy.deepcopy(env_kwargs))
         obs_type = env_kwargs_copy.pop("obs_type", "symbolic")
+        op_mirror = env_kwargs_copy.pop("other_play_mirror", False)
+        op_rotation = env_kwargs_copy.pop("other_play_rotation", False)
 
         generator_args, env_kwargs_copy = process_default_args(env_kwargs_copy, default_generator_args)
         # Full observability: fov must equal grid_size
@@ -59,6 +61,15 @@ def make_env(env_name: str, env_kwargs: dict = {}):
             env = RewardShapingLBFWrapper(jumanji_env, share_rewards=True)
         else:
             env = LBFWrapper(jumanji_env, share_rewards=True)
+
+        if op_mirror or op_rotation:
+            if obs_type != 'image':
+                raise ValueError("LBF Other-Play requires obs_type=image (geometric pixel transform)")
+            from envs.lbf.other_play import LBFMirrorOtherPlayWrapper, LBFRotationOtherPlayWrapper
+            if op_mirror:
+                env = LBFMirrorOtherPlayWrapper(env)
+            if op_rotation:
+                env = LBFRotationOtherPlayWrapper(env)
         
     elif env_name == 'overcooked-v1':
         default_env_kwargs = {
