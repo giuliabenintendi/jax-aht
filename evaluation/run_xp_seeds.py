@@ -1315,13 +1315,19 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
                       use_best: bool = True,
                       wb_prefix: str | None = None,
                       xp_video_max_pairs: int | None = None,
-                      no_xp_videos: bool = False):
+                      no_xp_videos: bool = False,
+                      no_op: bool = False):
     """Standalone XP evaluation from a saved checkpoint.
 
     `use_best` selects `best_params` over `final_params` (per-seed best checkpoint).
     If `best_params` is missing, final params are used as a compatibility fallback.
     Results land under the run's `xp_results/` directory and are logged to a
     fresh wandb run with `wb_prefix` (default `XP`).
+
+    `no_op` strips every `other_play_*` env kwarg before `make_env`, so an
+    OP-trained run is cross-played in the shared identity frame (both agents see
+    the true board) rather than under per-agent random relabelling. This is the
+    deployment-condition XP; results go to a separate `rerun_noop/` dir.
     """
     hydra_cfg = _load_hydra_config(checkpoint_path)
     if task_name is not None:
@@ -1343,6 +1349,10 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
         env_kwargs["communication"] = True
     if task_cfg["ENV_NAME"] == "card-game":
         env_kwargs["scramble_partner_msg"] = False
+    if no_op:
+        removed = [k for k in list(env_kwargs)
+                   if k.startswith("other_play_") and env_kwargs.pop(k, None)]
+        print(f"[xp_seeds] --no-op: identity-frame XP, removed OP kwargs {removed}")
     env = make_env(task_cfg["ENV_NAME"], env_kwargs)
     env = LogWrapper(env)
 
@@ -1359,7 +1369,11 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     policy, _init_params = initialize_ja_image_agent(algo_cfg, env, init_rng)
     # Avoid overwriting the original training run's xp_results/ when re-evaluating with overrides.
     savedir = run_dir
-    if params_key == "best_params":
+    if no_op:
+        savedir = os.path.join(run_dir, "rerun_noop")
+        os.makedirs(savedir, exist_ok=True)
+        print(f"[xp_seeds] writing no-OP rerun outputs to {savedir}")
+    elif params_key == "best_params":
         savedir = os.path.join(run_dir, "rerun_best")
         os.makedirs(savedir, exist_ok=True)
         print(f"[xp_seeds] writing rerun outputs to {savedir}")
@@ -1617,6 +1631,10 @@ if __name__ == "__main__":
     parser.add_argument("--no-xp-videos", action="store_true",
                         help="Skip XP video rendering entirely (overrides "
                              "EVAL_VIDEO_LOG_XP from the saved Hydra config).")
+    parser.add_argument("--no-op", action="store_true",
+                        help="Remove Other-Play env wrappers at eval: cross-play in "
+                             "the shared identity frame (deployment condition), not "
+                             "under per-agent random relabelling. Writes to rerun_noop/.")
     parser.add_argument("--best-from-run", default=None,
                         help="Rundir (with .hydra/config.yaml): post-hoc XP on each "
                              "seed's best checkpoint, from chunk_scores.json + per-ckpt folders")
@@ -1637,6 +1655,7 @@ if __name__ == "__main__":
         run_xp_evaluation(args.task, args.checkpoint, greedy_eval=not args.sampled,
                           use_best=args.use_best,
                           xp_video_max_pairs=max_pairs,
-                          no_xp_videos=args.no_xp_videos)
+                          no_xp_videos=args.no_xp_videos,
+                          no_op=args.no_op)
     else:
         parser.error("Either --checkpoint or --checkpoints is required")
