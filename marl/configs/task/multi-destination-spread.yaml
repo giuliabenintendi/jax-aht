@@ -1,8 +1,0 @@
-ENV_NAME: multi-destination-spread
-ROLLOUT_LENGTH: 100   # = max_steps (episode length); 256 envs * 100 = paper batch 25,600
-ENV_KWARGS:
-  obs_type: image
-  layout: cardinal_5x5
-  max_steps: 100   # Multi-Destination Spread: 100 steps then done (dense reward, no early term)
-  random_reset: false
-TASK_NAME: multi-destination-spread

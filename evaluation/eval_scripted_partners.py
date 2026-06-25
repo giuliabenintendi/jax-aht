@@ -331,7 +331,7 @@ def main():
     )
     alg_config = cfg["algorithm"]
     env_name = alg_config["ENV_NAME"]
-    if env_name not in ("lbf", "lbf-reward-shaping"):
+    if env_name != "lbf":
         raise SystemExit(f"This eval is LBF-only; got env_name={env_name!r}")
 
     env = make_env(env_name, alg_config["ENV_KWARGS"])

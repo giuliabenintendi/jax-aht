@@ -174,9 +174,6 @@ def _build_tags(config) -> list[str]:
 
     if alg_config.get("JA_CARD_ATTN", False):
         tags.append("ja_card/on")
-    card_jsd = alg_config.get("JA_CARD_JSD_COEF", 0.0)
-    if card_jsd > 0:
-        tags.append(f"ja_card_jsd/{card_jsd}")
     if alg_config.get("FEED_OTHER_ATTN", False):
         tags.append("feed_attn/on")
     if alg_config.get("QUERY_PARTNER_LSTM", False):
