@@ -1,17 +1,15 @@
-"""Other-Play wrappers for the image-based LBF environment.
+"""Other-Play wrapper for the image-based LBF environment.
 
 Implements Other-Play (Hu et al., 2020) over geometric symmetries of the square
 LBF grid. LBF has no label/colour symmetry to permute (food is unlabelled), so
 the symmetries that create arbitrary conventions between independently-trained
-agents are geometric: reflections (handedness) and rotations (orientation).
+agents are geometric reflections (handedness).
 
-Two composable wrappers, mirroring the card-game OP design:
+The wrapper mirrors the card-game OP design:
 
 - `LBFMirrorOtherPlayWrapper` — per-agent reflection group V4 = {identity,
   horizontal flip, vertical flip, both (= 180-degree rotation)}. Breaks
   left-right and up-down handedness conventions.
-- `LBFRotationOtherPlayWrapper` — per-agent rotation group C4 = {0, 90, 180,
-  270}. Breaks absolute-orientation conventions.
 
 Each agent independently samples one group element per episode. Its observation
 (the rendered grid image) is transformed by that element, and the action it
@@ -22,7 +20,7 @@ the four movement actions permute. The ground-truth MDP runs inside the base env
 
 Usage:
     env = LBFImageWrapper(jumanji_env, ...)
-    env = LBFMirrorOtherPlayWrapper(env)      # and/or LBFRotationOtherPlayWrapper
+    env = LBFMirrorOtherPlayWrapper(env)
 """
 from __future__ import annotations
 
@@ -43,10 +41,8 @@ _NUM_ACTIONS = 6
 _FIXED_ACTIONS = (0, 5)  # NOOP, LOAD: orientation-invariant
 
 # Group elements as (horizontal_flip, vertical_flip, num_quarter_turns_cw),
-# applied in that order. The reflection group V4 and the rotation group C4 are
-# the two subgroups we expose; both are exact symmetries of the square grid.
+# applied in that order. Public LBF OP uses only the reflection group V4.
 MIRROR_V4 = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)]   # id, H, V, H+V(=rot180)
-ROT_C4 = [(0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 0, 3)]      # id, 90, 180, 270 CW
 
 
 def _dir_after(vec: np.ndarray, h_flip: int, v_flip: int, k: int) -> tuple[int, int]:
@@ -203,9 +199,3 @@ class LBFMirrorOtherPlayWrapper(_GeometricOtherPlayWrapper):
     """Per-agent reflection Other-Play: V4 = {identity, H-flip, V-flip, both}."""
 
     elements = MIRROR_V4
-
-
-class LBFRotationOtherPlayWrapper(_GeometricOtherPlayWrapper):
-    """Per-agent rotation Other-Play: C4 = {0, 90, 180, 270 degrees}."""
-
-    elements = ROT_C4
