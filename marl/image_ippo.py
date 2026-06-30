@@ -176,6 +176,10 @@ def make_train(config, env):
 
 def run_image_ippo(config, logger):
     algorithm_config = dict(config.algorithm)
+    if algorithm_config["ENV_NAME"] == "overcooked-v2":
+        env_kwargs = dict(algorithm_config["ENV_KWARGS"])
+        env_kwargs["do_reward_shaping"] = True
+        algorithm_config["ENV_KWARGS"] = env_kwargs
     env = make_env(algorithm_config["ENV_NAME"], algorithm_config["ENV_KWARGS"])
     env = LogWrapper(env)
 
