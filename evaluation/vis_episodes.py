@@ -25,11 +25,21 @@ def _action_to_ground_truth(env, state, action):
 
 
 def _get_card_game_position_perm(state, agent_name: str):
-    """Return per-agent OP position perm, or identity when OP shuffle is disabled."""
+    """Return view-position -> GT-card map for this agent.
+
+    With position OP this is the per-agent shuffle. Without position OP, the
+    base card game may still have a shared card_permutation (e.g. recolour-only
+    OP), so fall back to that shared layout rather than identity.
+    """
     s = state
     while s is not None:
         if hasattr(s, "per_agent_perm"):
             return s.per_agent_perm[agent_name]
+        s = getattr(s, "env_state", None)
+    s = state
+    while s is not None:
+        if hasattr(s, "card_permutation"):
+            return s.card_permutation
         s = getattr(s, "env_state", None)
     return jnp.arange(NUM_CARDS, dtype=jnp.int32)
 

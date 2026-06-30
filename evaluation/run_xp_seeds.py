@@ -80,11 +80,21 @@ def load_algo_config() -> dict:
 
 
 def _get_card_game_position_perm(state, agent_name: str):
-    """Return per-agent OP position perm, or identity when OP shuffle is off."""
+    """Return view-position -> GT-card map for this agent.
+
+    With position OP this is the per-agent shuffle. Without position OP, the
+    base card game can still have a shared random card_permutation (notably in
+    recolour-only OP), so use that shared layout before falling back to identity.
+    """
     s = state
     while s is not None:
         if hasattr(s, "per_agent_perm"):
             return s.per_agent_perm[agent_name]
+        s = getattr(s, "env_state", None)
+    s = state
+    while s is not None:
+        if hasattr(s, "card_permutation"):
+            return s.card_permutation
         s = getattr(s, "env_state", None)
     return jnp.arange(NUM_CARDS, dtype=jnp.int32)
 

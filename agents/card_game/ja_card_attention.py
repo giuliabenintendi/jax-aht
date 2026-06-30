@@ -388,7 +388,8 @@ class CardMechanism:
             perm_0 = per_agent_perm["agent_0"]
             perm_1 = per_agent_perm["agent_1"]
         else:
-            # No OP: both agents share the base env's single card_permutation frame.
+            # No position OP: both agents share the base env's card_permutation frame.
+            # In recolour-only OP this shared layout is still shuffled.
             shared_perm = self._shared_card_permutation(env_state)
             perm_0 = perm_1 = shared_perm
         batch_idx = jnp.arange(num_envs)[:, None]
