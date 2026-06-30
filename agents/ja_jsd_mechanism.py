@@ -23,6 +23,8 @@ class JSDMechanism:
         ("jsd_mean", "JA/jsd"),
         ("ja_beta", "JA/beta"),
         ("rew_shaping_frac", "JA/rew_shaping_frac"),
+        ("delivery_per_step", "Reward/delivery_per_step"),
+        ("shaped_applied_per_step", "Reward/shaped_applied_per_step"),
     ]
 
     def __init__(self, config, env):
@@ -90,6 +92,8 @@ class JSDMechanism:
             "jsd": jsd_actors,
             "ja_beta": jnp.broadcast_to(ja_beta, (num_actors,)),
             "rew_shaping_frac": jnp.broadcast_to(shaping_frac, (num_actors,)),
+            "delivery": env_reward,          # sparse env (delivery) reward, per step
+            "shaped_applied": shaped_total,  # anneal_factor * shaped, per step
         }
         return reward, carry, extras
 
@@ -104,6 +108,8 @@ class JSDMechanism:
             "jsd_mean": ex["jsd"].mean(),
             "ja_beta": ex["ja_beta"].mean(),
             "rew_shaping_frac": ex["rew_shaping_frac"].mean(),
+            "delivery_per_step": ex["delivery"].mean(),
+            "shaped_applied_per_step": ex["shaped_applied"].mean(),
         }
 
     def report(self, config, out, logger):
