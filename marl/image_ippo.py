@@ -45,6 +45,8 @@ def make_train(config, env):
     num_envs = config["NUM_ENVS"]
     num_actors = config["NUM_ACTORS"]
     normalize_rewards = bool(config.get("NORMALIZE_REWARDS", False))
+    rew_shaping_horizon = float(config.get("REW_SHAPING_HORIZON", 0.0))
+    env_steps_per_update = int(config["ROLLOUT_LENGTH"]) * int(config["NUM_ENVS"])
 
     def init(rng):
         rng, init_rng = jax.random.split(rng)
@@ -105,13 +107,24 @@ def make_train(config, env):
                     rng_step, env_state, env_act
                 )
 
+                env_reward = batchify(reward, env.agents, num_actors).squeeze()
+                shaping_frac = jnp.array(0.0)
+                combined_reward = env_reward
+                if rew_shaping_horizon > 0.0 and "shaped_reward" in info:
+                    shaped_actors = info["shaped_reward"].swapaxes(0, 1).reshape(-1)
+                    env_steps = update_steps * env_steps_per_update
+                    shaping_frac = jnp.clip(1.0 - env_steps / rew_shaping_horizon, 0.0, 1.0)
+                    combined_reward = env_reward + shaping_frac * shaped_actors
+
                 info = jax.tree.map(lambda x: x.reshape((num_actors,)), info)
+                info["rew_shaping_frac"] = jnp.broadcast_to(shaping_frac, (num_actors,))
+                info["combined_reward"] = combined_reward
 
                 transition = Transition(
                     batchify(new_done, env.agents, num_actors).squeeze(),
                     action,
                     value,
-                    batchify(reward, env.agents, num_actors).squeeze(),
+                    combined_reward,
                     log_prob,
                     last_obs_batch,
                     info,
@@ -176,10 +189,6 @@ def make_train(config, env):
 
 def run_image_ippo(config, logger):
     algorithm_config = dict(config.algorithm)
-    if algorithm_config["ENV_NAME"] == "overcooked-v2":
-        env_kwargs = dict(algorithm_config["ENV_KWARGS"])
-        env_kwargs["do_reward_shaping"] = True
-        algorithm_config["ENV_KWARGS"] = env_kwargs
     env = make_env(algorithm_config["ENV_NAME"], algorithm_config["ENV_KWARGS"])
     env = LogWrapper(env)
 
