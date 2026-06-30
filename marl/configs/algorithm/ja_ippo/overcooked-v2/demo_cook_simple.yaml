@@ -8,7 +8,7 @@ defaults:
 TOTAL_TIMESTEPS: 3e7   # paper Demo Cook SP uses 30M
 NUM_ENVS: 160          # max that fits a 32GB V100 with headroom (256 OOMs)
 CHECKPOINT_FREQ_TIMESTEPS: 1000000   # 30 checkpoints over the run
-SAVE_CKPT_VIDEOS: true               # god's-eye gameplay video per checkpoint
+SAVE_CKPT_VIDEOS: true               # render capped checkpoint gameplay videos; all checkpoints still saved
 
 # Back to the tyv31465 recipe that cooked well (LR 4e-4, GAE 0.8), now with LR
 # annealing on to tame the late collapse that run hit.

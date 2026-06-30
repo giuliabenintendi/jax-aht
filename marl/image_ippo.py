@@ -228,6 +228,7 @@ def run_image_ippo(config, logger):
     # Per-checkpoint episode videos (shared path, every env). Default off so the
     # baseline outputs are unchanged unless explicitly enabled.
     save_ckpt_videos = bool(algorithm_config.get("SAVE_CKPT_VIDEOS", False))
+    max_ckpt_videos = int(algorithm_config.get("MAX_CKPT_VIDEOS", num_ckpts))
     inner_env = env._env
     env_name = algorithm_config["ENV_NAME"]
     eval_max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
@@ -255,7 +256,7 @@ def run_image_ippo(config, logger):
 
             if (step + 1) in boundary_set and len(checkpoints) < num_ckpts:
                 checkpoints.append(runner_state[0].params)
-                if save_ckpt_videos:
+                if save_ckpt_videos and s == 0 and len(checkpoints) <= max_ckpt_videos:
                     ckpt_idx = len(checkpoints) - 1
                     try:
                         from common.eval_media import rollout_and_log_video

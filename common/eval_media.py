@@ -101,7 +101,7 @@ def render_and_log_video(inner_env, env_name, ep_states, tag, savedir, logger, *
         )
         from moviepy import ImageSequenceClip
         ImageSequenceClip(list(frames), fps=fps).write_videofile(
-            video_path, fps=fps, codec="libx264", audio=False,
+            video_path, fps=fps, codec="libx264", audio=False, preset="ultrafast",
         )
 
     if logger is not None and getattr(logger, "run", None) is not None:

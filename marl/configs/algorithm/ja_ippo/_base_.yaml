@@ -9,6 +9,8 @@ USE_BEST_CKPT_FOR_EVAL: true   # at end of training, run greedy/video/XP eval on
 SAVE_CHECKPOINT_FOLDER: true   # write each checkpoint as its own orbax sub-dir under <CHECKPOINT_ROOT>/<run_name>/ (plus chunk_scores.json)
 CHECKPOINT_ROOT: "checkpoints" # repo-root-relative path (or absolute) where checkpoint folders are stored, separate from hydra output dir
 LIVE_WANDB_LOGGING: true       # push aggregated metrics to wandb after each training chunk (same cadence as checkpoint saves) for live monitoring
+MAX_CKPT_VIDEOS: 3             # cap per-checkpoint videos per run; checkpoints are still all saved
+CKPT_VIDEO_ATTENTION: false    # checkpoint videos are gameplay-only by default; final eval keeps attention videos
 
 # Eval-video volume controls (videos are slow + heavy on disk/wandb).
 # With NUM_SEEDS=N the previous defaults rendered ~N SP videos + N*C(N,2) XP videos (XP was duplicated per seed).

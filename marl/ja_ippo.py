@@ -360,6 +360,7 @@ def run_ja_ippo(config, logger):
     # Per-checkpoint episode videos via the shared helper. Default off so the
     # paper pipeline is byte-identical unless explicitly enabled.
     save_ckpt_videos = bool(algorithm_config.get("SAVE_CKPT_VIDEOS", False))
+    max_ckpt_videos = int(algorithm_config.get("MAX_CKPT_VIDEOS", num_ckpts))
     inner_env = getattr(env, "_env", env)
     env_name = algorithm_config["ENV_NAME"]
     eval_max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
@@ -392,7 +393,7 @@ def run_ja_ippo(config, logger):
             steps_done = chunk_end
             if len(seed_ckpts) < num_ckpts:
                 seed_ckpts.append(jax.tree.map(jnp.copy, runner_state[0].params))
-                if save_ckpt_videos:
+                if save_ckpt_videos and seed_idx == 0 and len(seed_ckpts) <= max_ckpt_videos:
                     ckpt_idx = len(seed_ckpts) - 1
                     tag = f"Eval/seed_{seed_idx}/ckpt_{ckpt_idx}"
                     ckpt_video = getattr(mech, "log_ckpt_video", None)

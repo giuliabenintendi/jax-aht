@@ -156,8 +156,9 @@ class JSDMechanism:
         # follows `.env` down to the raw symbolic OvercookedV2 (no get_avail_actions).
         inner_env = getattr(env, "_env", env)
         max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
+        ckpt_attention = bool(algorithm_config.get("CKPT_VIDEO_ATTENTION", True))
 
-        if env_name != "overcooked-v2":
+        if env_name != "overcooked-v2" or not ckpt_attention:
             try:
                 from common.eval_media import rollout_and_log_video
                 rollout_and_log_video(
