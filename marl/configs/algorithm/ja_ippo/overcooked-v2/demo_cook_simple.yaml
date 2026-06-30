@@ -1,0 +1,16 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# IPPO + attention (JSDMechanism). JA_BETA_MAX=0 (from _base_) => attention
+# actor-critic trained with plain PPO; set >0 to activate the Lee et al. JSD
+# intrinsic reward.
+TOTAL_TIMESTEPS: 3e7   # paper Demo Cook SP uses 30M
+NUM_ENVS: 160          # max that fits a 32GB V100 with headroom (256 OOMs)
+CHECKPOINT_FREQ_TIMESTEPS: 1000000   # 30 checkpoints over the run
+SAVE_CKPT_VIDEOS: true               # god's-eye gameplay video per checkpoint
+
+# Paper Demo Cook self-play hyperparameters (Table 11) — fixes for the collapse
+LR: 2.5e-4             # paper 0.00025 (was 4e-4)
+GAE_LAMBDA: 0.95       # paper 0.95 (was 0.8)
+REW_SHAPING_HORIZON: 15000000   # linear shaped-reward anneal 1->0 over 15M env steps

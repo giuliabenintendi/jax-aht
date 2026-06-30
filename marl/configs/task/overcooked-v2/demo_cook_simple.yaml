@@ -1,0 +1,15 @@
+ENV_NAME: overcooked-v2
+ROLLOUT_LENGTH: 400
+ENV_KWARGS:
+  layout: demo_cook_simple
+  obs_type: image
+  agent_view_size: 2
+  max_steps: 400
+  negative_rewards: true
+  random_agent_positions: true
+  sample_recipe_on_delivery: true
+  # ja_ippo path: wrapper returns sparse reward + exposes shaped_reward in info;
+  # the JSD mechanism adds the annealed shaping (REW_SHAPING_HORIZON). Set true
+  # only for a non-mechanism trainer (e.g. image_ippo) that needs constant shaping.
+  do_reward_shaping: false
+TASK_NAME: overcooked-v2/demo_cook_simple

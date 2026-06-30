@@ -22,6 +22,7 @@ class JSDMechanism:
     scalar_keys = [
         ("jsd_mean", "JA/jsd"),
         ("ja_beta", "JA/beta"),
+        ("rew_shaping_frac", "JA/rew_shaping_frac"),
     ]
 
     def __init__(self, config, env):
@@ -30,7 +31,12 @@ class JSDMechanism:
         self.ja_beta_max = float(config.get("JA_BETA_MAX", 0.0))
         ja_warmup_env_steps = float(config.get("JA_WARMUP_ENV_STEPS", 0))
         env_steps_per_update = int(config["ROLLOUT_LENGTH"]) * int(config["NUM_ENVS"])
+        self.env_steps_per_update = env_steps_per_update
         self.ja_warmup_updates = ja_warmup_env_steps / max(env_steps_per_update, 1)
+        # Linear reward-shaping anneal (1 -> 0 over REW_SHAPING_HORIZON env steps),
+        # matching JaxMARL's Overcooked PPO. 0 disables annealing (shaping then comes
+        # from the wrapper's do_reward_shaping fold, as for overcooked-v1/hanabi).
+        self.rew_shaping_horizon = float(config.get("REW_SHAPING_HORIZON", 0.0))
         # The pairwise attention JSD is only defined for 2 agents. Allow >2-agent
         # envs only as a no-method baseline (JA_BETA_MAX=0); fail fast otherwise so
         # a requested JSD reward is never silently dropped.
@@ -52,7 +58,7 @@ class JSDMechanism:
 
     def step(self, *, attn_map, env_state, new_env_state, action, env_reward,
              info, done_actors, carry, num_actors, update_steps):
-        del env_state, new_env_state, action, info, done_actors
+        del env_state, new_env_state, action, done_actors
         ja_beta = jnp.minimum(
             self.ja_beta_max,
             self.ja_beta_max * update_steps / jnp.maximum(self.ja_warmup_updates, 1.0),
@@ -67,11 +73,23 @@ class JSDMechanism:
             # >2 agents: no pairwise JSD signal (beta is forced 0 by __init__), so
             # emit zero — the JA network then trains as a plain-PPO baseline.
             jsd_actors = jnp.zeros((num_actors,))
+        # Linear reward-shaping anneal (JaxMARL-style): the wrapper exposes the
+        # per-agent shaped reward in info and returns the sparse reward, so we add
+        # the decaying shaped term here. shaped_reward is (num_envs, num_agents);
+        # transpose+flatten to agent-major (num_actors,) to match env_reward.
+        shaping_frac = jnp.array(1.0)
+        shaped_total = jnp.zeros((num_actors,))
+        if self.rew_shaping_horizon > 0.0 and "shaped_reward" in info:
+            shaped_actors = info["shaped_reward"].swapaxes(0, 1).reshape(-1)
+            env_steps = update_steps * self.env_steps_per_update
+            shaping_frac = jnp.clip(1.0 - env_steps / self.rew_shaping_horizon, 0.0, 1.0)
+            shaped_total = shaping_frac * shaped_actors
         # Intrinsic reward = beta * (-JSD): reward attention agreement.
-        reward = env_reward - ja_beta * jsd_actors
+        reward = env_reward + shaped_total - ja_beta * jsd_actors
         extras = {
             "jsd": jsd_actors,
             "ja_beta": jnp.broadcast_to(ja_beta, (num_actors,)),
+            "rew_shaping_frac": jnp.broadcast_to(shaping_frac, (num_actors,)),
         }
         return reward, carry, extras
 
@@ -82,7 +100,11 @@ class JSDMechanism:
     def rollout_metrics(self, traj_batch, loss_info):
         del loss_info
         ex = traj_batch.extras
-        return {"jsd_mean": ex["jsd"].mean(), "ja_beta": ex["ja_beta"].mean()}
+        return {
+            "jsd_mean": ex["jsd"].mean(),
+            "ja_beta": ex["ja_beta"].mean(),
+            "rew_shaping_frac": ex["rew_shaping_frac"].mean(),
+        }
 
     def report(self, config, out, logger):
         from common.train_logging import report_ja_training_outputs
@@ -115,3 +137,55 @@ class JSDMechanism:
         from marl.eval_logging import log_eval_video, log_greedy_eval
         log_greedy_eval(algorithm_config, env, out, logger)
         log_eval_video(algorithm_config, env, out, logger)
+
+    def log_ckpt_video(self, algorithm_config, env, params, policy, tag, savedir, logger):
+        """Per-checkpoint video. For overcooked-v2 render the god's-eye gameplay
+        plus per-agent (Blues/Reds) and combined (jet) attention overlays; other
+        envs fall back to the generic gameplay-only video.
+        """
+        import os
+
+        env_name = algorithm_config["ENV_NAME"]
+        # One-level unwrap (LogWrapper -> image wrapper). NOT get_inner_env, which
+        # follows `.env` down to the raw symbolic OvercookedV2 (no get_avail_actions).
+        inner_env = getattr(env, "_env", env)
+        max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
+
+        if env_name != "overcooked-v2":
+            try:
+                from common.eval_media import rollout_and_log_video
+                rollout_and_log_video(
+                    jax.random.PRNGKey(42), inner_env, env_name, params, policy,
+                    max_steps, tag=tag, savedir=savedir, logger=logger,
+                )
+            except Exception as e:
+                print(f"[ja_ippo:{self.name}] WARN: ckpt video failed ({e}); continuing.", flush=True)
+            return
+
+        try:
+            from evaluation.vis_episodes import make_attention_video, run_episode_with_states
+            from envs.render_registry import get_eval_frames
+            from moviepy import ImageSequenceClip
+
+            ep_states, attn_data, _a, _m = run_episode_with_states(
+                jax.random.PRNGKey(42), inner_env, params, policy, params, policy,
+                max_steps, collect_attention=True,
+            )
+            os.makedirs(savedir, exist_ok=True)
+            frames = get_eval_frames(env_name, inner_env, ep_states)
+            # ep_states has the initial state plus the post-done auto-reset state;
+            # trim to the attention length so overlay and gameplay stay aligned.
+            n_attn = len(attn_data.get("agent_0", []))
+            frames = list(frames[:n_attn] if n_attn else frames)
+            stem = f"{savedir}/{tag.replace('/', '_')}"
+            ImageSequenceClip(frames, fps=10).write_videofile(
+                f"{stem}.mp4", fps=10, codec="libx264", audio=False, preset="ultrafast",
+            )
+            logger.log_video(tag, f"{stem}.mp4", commit=False)
+            make_attention_video(frames, attn_data, filename=f"{stem}_attn.mp4", fps=10)
+            for suffix in ("agent0", "agent1", "combined"):
+                p = f"{stem}_attn_{suffix}.mp4"
+                if os.path.exists(p):
+                    logger.log_video(f"{tag}_attention_{suffix}", p, commit=False)
+        except Exception as e:
+            print(f"[ja_ippo:{self.name}] WARN: ckpt attention video failed ({e}); continuing.", flush=True)

@@ -122,6 +122,29 @@ def make_env(env_name: str, env_kwargs: dict = {}):
             from envs.overcooked.overcooked_wrapper import OvercookedWrapper
             env = OvercookedWrapper(**env_kwargs_copy)
     
+    elif env_name == 'overcooked-v2':
+        env_kwargs_copy = dict(copy.deepcopy(env_kwargs))
+        obs_type = env_kwargs_copy.pop("obs_type", "image")
+        # Wrapper-only kwargs, not accepted by OvercookedV2.
+        tile_size = env_kwargs_copy.pop("tile_size", None)
+        do_reward_shaping = env_kwargs_copy.pop("do_reward_shaping", True)
+
+        if obs_type != "image":
+            raise NotImplementedError(
+                "overcooked-v2 currently only supports obs_type=image."
+            )
+
+        from envs.overcooked_v2.overcooked_v2_image_wrapper import (
+            OvercookedV2ImageWrapper,
+        )
+        from envs.overcooked_v2.rendering import TILE_PIXELS
+
+        env = OvercookedV2ImageWrapper(
+            tile_size=tile_size if tile_size is not None else TILE_PIXELS,
+            do_reward_shaping=do_reward_shaping,
+            **env_kwargs_copy,
+        )
+
     elif env_name == 'card-game':
         from envs.card_game.card_game import CardGameEnv
         env_kwargs = dict(env_kwargs)

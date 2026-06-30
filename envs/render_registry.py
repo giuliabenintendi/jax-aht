@@ -30,6 +30,9 @@ def get_eval_frames(env_name, inner_env, ep_states, *, ep_obs=None, ep_actions=N
     if env_name == "hanabi":
         from envs.hanabi.rendering import render_hanabi_eval_frames
         return render_hanabi_eval_frames(ep_states)
+    if env_name == "overcooked-v2":
+        from envs.overcooked_v2.rendering import render_eval_frames
+        return render_eval_frames(ep_states)
     raise NotImplementedError(
         f"No eval-frame renderer registered for env '{env_name}'. "
         "(overcooked-v1 is handled inline in common.eval_media.render_and_log_video.)"

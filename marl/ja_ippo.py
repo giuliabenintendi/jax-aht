@@ -68,7 +68,7 @@ def select_mechanism(config, env):
     if env_name == "card-game":
         from agents.card_game.ja_card_attention import CardMechanism
         return CardMechanism(config, env)
-    if env_name in ("overcooked-v1", "hanabi"):
+    if env_name in ("overcooked-v1", "overcooked-v2", "hanabi"):
         from agents.ja_jsd_mechanism import JSDMechanism
         return JSDMechanism(config, env)
     raise NotImplementedError(f"No JA mechanism registered for env '{env_name}'.")
