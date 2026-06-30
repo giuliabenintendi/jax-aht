@@ -1,0 +1,31 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# MATE recipe as run for qvublwxp (gaze-only, no comm shaping), at 12 seeds for ablations.
+# Restates card-game-op-delib-actions (deliberation actions every step, env reward only on
+# the final step) with the MATE deltas baked in: deliberation reward is gaze-pick only plus
+# the partner-argmax-occupancy aux loss; the per-step attention match/self shaping is off.
+TOTAL_TIMESTEPS: 5e6
+NUM_ENVS: 1024
+NUM_SEEDS: 12
+EVAL_VIDEO_NUM_SEEDS: 0
+LR: 5e-4
+ANNEAL_LR: false
+GAE_LAMBDA: 0.95
+ENT_COEF: 0.01
+
+COMMUNICATION: false
+COMM_WARMUP_ENV_STEPS: 0
+COMM_REWARD_START_SCALE: 0.0
+
+JA_CARD_ATTN: true
+JA_CARD_PARTNER_FEED: true
+JA_CARD_METRIC: true
+JA_CARD_JSD_COEF: 0.0
+
+JA_ATTN_MATCH_COEF: 0.0
+JA_ATTN_SELF_COEF: 0.0
+JA_GAZE_PICK_COEF: 0.1
+JA_AUX_PARTNER_ARGMAX_COEF: 0.25
+JA_AUX_PARTNER_PICK: true

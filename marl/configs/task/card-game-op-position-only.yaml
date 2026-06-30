@@ -1,0 +1,15 @@
+ENV_NAME: card-game
+ROLLOUT_LENGTH: 8   # = max_steps; one full episode per env per rollout
+ENV_KWARGS:
+  max_steps: 8
+  obs_type: image
+  shuffle: true
+  other_play_position_shuffle: true
+  other_play_recolouring: false
+  match_coef: 0.0
+  stability_coef: 0.0
+  follow_coef: 0.0
+  gaze_mode: false
+  # Single-component OP: position shuffle only (per-agent card positions), colours shared.
+  # Isolates whether the position symmetry alone is enough to require the JA signal.
+TASK_NAME: card-game-op-position-only

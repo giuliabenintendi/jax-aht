@@ -1,0 +1,14 @@
+ENV_NAME: card-game
+ROLLOUT_LENGTH: 8   # = max_steps; one full episode per env per rollout
+ENV_KWARGS:
+  max_steps: 8
+  obs_type: image
+  shuffle: true
+  match_coef: 0.0
+  stability_coef: 0.0
+  follow_coef: 0.0
+  gaze_mode: false
+  # Other-Play off: omitting the two other_play flags makes op_active=False and the card
+  # mechanism falls back to the env's shared card_permutation. gaze_mode stays false so this
+  # is a single-variable change from card-game-op-delib-actions (OP removed, nothing else).
+TASK_NAME: card-game-delib-noop

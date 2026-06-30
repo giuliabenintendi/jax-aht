@@ -1,0 +1,29 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# No-OP JA card-game run. Pair this with task=card-game-noop.
+# Deliberation actions are forced to the noop slot by the environment, so the
+# JA auxiliary target is built from partner attention rather than emitted
+# deliberation actions.
+TOTAL_TIMESTEPS: 5e6
+NUM_ENVS: 1024
+NUM_SEEDS: 5
+EVAL_VIDEO_NUM_SEEDS: 100
+LR: 5e-4
+ANNEAL_LR: false
+GAE_LAMBDA: 0.95
+ENT_COEF: 0.01
+
+COMMUNICATION: false
+COMM_WARMUP_ENV_STEPS: 0
+COMM_REWARD_START_SCALE: 0.0
+
+JA_CARD_ATTN: true
+JA_CARD_PARTNER_FEED: true
+JA_CARD_METRIC: true
+
+JA_ATTN_SELF_COEF: 0.20
+JA_GAZE_PICK_COEF: 0.10
+JA_AUX_PARTNER_ARGMAX_COEF: 0.25
+JA_AUX_PARTNER_PICK: true
