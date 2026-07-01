@@ -6,7 +6,7 @@ defaults:
 # actor-critic trained with plain PPO; set >0 to activate the Lee et al. JSD
 # intrinsic reward.
 TOTAL_TIMESTEPS: 3e7   # paper Demo Cook SP uses 30M
-NUM_ENVS: 160          # max that fits a 32GB V100 with headroom (256 OOMs)
+NUM_ENVS: 256          # 256x400 OOMs, but 256x256 fits after the shorter rollout shrinks the buffer
 CHECKPOINT_FREQ_TIMESTEPS: 1000000   # 30 checkpoints over the run
 SAVE_CKPT_VIDEOS: true               # render capped checkpoint gameplay videos; all checkpoints still saved
 
