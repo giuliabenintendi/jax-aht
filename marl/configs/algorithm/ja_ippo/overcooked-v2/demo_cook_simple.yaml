@@ -10,9 +10,12 @@ NUM_ENVS: 256          # 256x400 OOMs, but 256x256 fits after the shorter rollou
 CHECKPOINT_FREQ_TIMESTEPS: 1000000   # 30 checkpoints over the run
 SAVE_CKPT_VIDEOS: true               # render capped checkpoint gameplay videos; all checkpoints still saved
 
-# Back to the tyv31465 recipe that cooked well (LR 4e-4, GAE 0.8), now with LR
-# annealing on to tame the late collapse that run hit.
+# LR 4e-4 cooks well (~3.4 soups) but all three prior runs collapsed ~6-8M and
+# LR annealing alone didn't tame it. Keep the cooking LR, add the stabilizers we
+# were most aggressive on vs the paper/DreamTeam: GAE 0.9 (was 0.8) and a tighter
+# grad clip 0.25 (was _base_'s 0.5; both references clip ~2x tighter).
 LR: 4e-4
-GAE_LAMBDA: 0.8
+GAE_LAMBDA: 0.9
 ANNEAL_LR: true
+MAX_GRAD_NORM: 0.25
 REW_SHAPING_HORIZON: 15000000   # linear shaped-reward anneal 1->0 over 15M env steps
