@@ -461,6 +461,14 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
                     ep_states, agent_idx=0, scale=32,
                     ep_obs=ep_obs, ep_actions=ep_actions,
                 )
+            elif env_name == "overcooked-v2":
+                # v2 State has no maze_map, so the V1 render_episode_frames path
+                # crashes. Use the v2 god's-eye renderer (as the ckpt videos do)
+                # and trim to the attention length to keep the overlay aligned.
+                from envs.render_registry import get_eval_frames
+                frames = get_eval_frames(env_name, inner_env, ep_states)
+                n_attn = len(attn_data.get("agent_0", []))
+                frames = list(frames[:n_attn] if n_attn else frames)
             else:
                 from evaluation.vis_episodes import render_episode_frames
                 frames = render_episode_frames(ep_states, inner_env.agent_view_size, pixels_per_tile=32)
