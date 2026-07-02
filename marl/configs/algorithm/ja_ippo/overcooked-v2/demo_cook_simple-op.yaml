@@ -3,5 +3,5 @@
 # (Other-Play on, via the task config). Kept as a thin include so the two stay
 # in lockstep — tune the baseline file and this inherits it.
 defaults:
-  - demo_cook_simple
+  - ja_ippo/overcooked-v2/demo_cook_simple
   - _self_
