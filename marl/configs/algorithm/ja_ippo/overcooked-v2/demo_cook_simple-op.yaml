@@ -1,7 +1,19 @@
-# Other-Play variant: identical training recipe to the no-OP baseline
-# (algorithm/ja_ippo/overcooked-v2/demo_cook_simple). Only the task/env differs
-# (Other-Play on, via the task config). Kept as a thin include so the two stay
-# in lockstep — tune the baseline file and this inherits it.
 defaults:
-  - ja_ippo/overcooked-v2/demo_cook_simple
+  - ja_ippo/_base_
   - _self_
+
+# Other-Play variant: DUPLICATE of the no-OP baseline algo config
+# (algorithm/ja_ippo/overcooked-v2/demo_cook_simple) — kept as a copy rather than
+# a hydra include because relative-defaults resolution breaks on the nested
+# include. Only the task/env differs (OP on, via the task config). If you tune
+# the baseline recipe, mirror the change here.
+TOTAL_TIMESTEPS: 3e7
+NUM_ENVS: 256
+CHECKPOINT_FREQ_TIMESTEPS: 1000000
+SAVE_CKPT_VIDEOS: true
+
+LR: 4e-4
+GAE_LAMBDA: 0.9
+ANNEAL_LR: true
+MAX_GRAD_NORM: 0.25
+REW_SHAPING_HORIZON: 15000000
