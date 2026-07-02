@@ -144,6 +144,12 @@ def make_env(env_name: str, env_kwargs: dict = {}):
             do_reward_shaping=do_reward_shaping,
             **env_kwargs_copy,
         )
+        # Other-Play: the base env samples per-agent ingredient permutations into
+        # state.ingredient_permutations; the wrapper reproduces that relabeling in
+        # image space. Keyed off the same kwarg so declaring it activates OP.
+        if env_kwargs_copy.get("op_ingredient_permutations"):
+            from envs.overcooked_v2.other_play import OvercookedV2OtherPlayWrapper
+            env = OvercookedV2OtherPlayWrapper(env)
 
     elif env_name == 'card-game':
         from envs.card_game.card_game import CardGameEnv

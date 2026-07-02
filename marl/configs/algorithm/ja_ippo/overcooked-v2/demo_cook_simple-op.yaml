@@ -1,0 +1,7 @@
+# Other-Play variant: identical training recipe to the no-OP baseline
+# (algorithm/ja_ippo/overcooked-v2/demo_cook_simple). Only the task/env differs
+# (Other-Play on, via the task config). Kept as a thin include so the two stay
+# in lockstep — tune the baseline file and this inherits it.
+defaults:
+  - demo_cook_simple
+  - _self_
