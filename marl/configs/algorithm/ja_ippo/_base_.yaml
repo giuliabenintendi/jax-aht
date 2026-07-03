@@ -20,6 +20,7 @@ EVAL_VIDEO_NUM_EPISODES: 10    # episodes per per-seed (SP) eval video
 EVAL_VIDEO_XP_NUM_EPISODES: 3  # episodes per cross-play pair video
 XP_VIDEO_MAX_PAIRS: 3          # cap on number of XP-pair videos when EVAL_VIDEO_LOG_XP is on (set to N*(N-1)/2 for full upper triangle)
 ANNEAL_LR: False
+LR_WARMUP_FRAC: 0.0  # >0 switches to linear warmup + cosine decay (paper: 0.05), overriding ANNEAL_LR
 MAX_GRAD_NORM: 0.5
 NORMALIZE_REWARDS: true
 

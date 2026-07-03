@@ -35,6 +35,22 @@ def linear_schedule(config, count):
 
 
 def make_optimizer(config):
+    warmup_frac = float(config.get("LR_WARMUP_FRAC", 0.0) or 0.0)
+    if warmup_frac > 0.0:
+        # Forkel et al. 2025 schedule: linear warmup over the first
+        # `warmup_frac` of gradient steps, then cosine decay to 0.
+        total_steps = config["NUM_UPDATES"] * config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]
+        schedule = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=config["LR"],
+            warmup_steps=max(1, int(total_steps * warmup_frac)),
+            decay_steps=total_steps,
+        )
+        return optax.chain(
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            optax.adam(learning_rate=schedule, eps=1e-5),
+        )
+
     if config["ANNEAL_LR"]:
         learning_rate = lambda count: linear_schedule(config, count)
         return optax.chain(
