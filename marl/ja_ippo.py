@@ -48,7 +48,8 @@ from marl.ppo_utils import _create_minibatches, batchify, unbatchify
 # Unified trainer.
 # --------------------------------------------------------------------------- #
 class JATransition(NamedTuple):
-    done: jnp.ndarray
+    done: jnp.ndarray  # post-step done_t; masks the GAE bootstrap
+    prev_done: jnp.ndarray  # pre-step done_{t-1}; the LSTM reset flag paired with obs_t when acting
     action: jnp.ndarray
     value: jnp.ndarray
     reward: jnp.ndarray
@@ -74,8 +75,13 @@ def select_mechanism(config, env):
     raise NotImplementedError(f"No JA mechanism registered for env '{env_name}'.")
 
 
-def _run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets, rng, num_actors, mech):
-    """PPO update; the mechanism supplies the auxiliary loss term."""
+def _run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets, init_hstate, rng, num_actors, mech):
+    """PPO update; the mechanism supplies the auxiliary loss term.
+
+    `init_hstate` must be the actors' hidden state at the START of the rollout:
+    episodes span rollout cuts, so replaying from a zero state would condition
+    the recomputed action distributions differently than during acting.
+    """
 
     def _update_epoch(update_state, unused):
         def _update_minbatch(train_state, batch_info):
@@ -83,7 +89,7 @@ def _run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets
 
             def _loss_fn(params, traj_batch, gae, targets):
                 hidden = policy._unpack_hstate(init_hstate)
-                inputs_apply = (traj_batch.obs, traj_batch.done, traj_batch.avail_actions)
+                inputs_apply = (traj_batch.obs, traj_batch.prev_done, traj_batch.avail_actions)
                 _, pi, value, attn_map_apply = policy.network.apply(params, hidden, inputs_apply)
 
                 aux_coef, aux_loss = mech.aux_loss(attn_map_apply, traj_batch, config)
@@ -142,7 +148,6 @@ def _run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets
         update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
         return update_state, stats
 
-    init_hstate = policy.init_hstate(num_actors)
     update_state = (train_state, init_hstate, traj_batch, advantages, targets, rng)
     update_state, loss_info = jax.lax.scan(
         _update_epoch, update_state, None, config["UPDATE_EPOCHS"],
@@ -226,6 +231,7 @@ def make_train(config, env, mech):
 
                 transition = JATransition(
                     done=done_actors,
+                    prev_done=last_done_batch.squeeze().astype(bool),
                     action=action,
                     value=value,
                     reward=shaped_reward,
@@ -240,6 +246,9 @@ def make_train(config, env, mech):
                 )
                 return runner_state, transition
 
+            # Snapshot the hidden state before the rollout: the PPO replay
+            # must unroll the LSTM from here, not from zeros.
+            rollout_start_hstate = runner_state[4]
             runner_state, traj_batch = jax.lax.scan(
                 _env_step, runner_state, None, rollout_length,
             )
@@ -272,7 +281,7 @@ def make_train(config, env, mech):
 
             train_state, loss_info, rng = _run_ppo_epochs(
                 config, policy, train_state, traj_batch, advantages, targets,
-                rng, num_actors, mech,
+                rollout_start_hstate, rng, num_actors, mech,
             )
 
             metric = traj_batch.info
