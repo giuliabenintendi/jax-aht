@@ -84,7 +84,10 @@ def _render_dynamic_item(
     plate_fn=rendering.point_in_circle(0.5, 0.5, 0.3),
     ingredient_fn=rendering.point_in_circle(0.5, 0.5, 0.15),
     dish_positions=jnp.array([(0.5, 0.4), (0.4, 0.6), (0.6, 0.6)]),
+    ingredient_colors=None,
 ):
+    colors = INGREDIENT_COLORS if ingredient_colors is None else ingredient_colors
+
     def _no_op(img, ingredients):
         return img
 
@@ -93,14 +96,14 @@ def _render_dynamic_item(
 
     def _render_ingredient(img, ingredients):
         idx = DynamicObject.get_ingredient_idx(ingredients)
-        return rendering.fill_coords(img, ingredient_fn, INGREDIENT_COLORS[idx])
+        return rendering.fill_coords(img, ingredient_fn, colors[idx])
 
     def _render_dish(img, ingredients):
         img = rendering.fill_coords(img, plate_fn, COLORS["white"])
         ingredient_indices = DynamicObject.get_ingredient_idx_list_jit(ingredients)
 
         for idx, ingredient_idx in enumerate(ingredient_indices):
-            color = INGREDIENT_COLORS[ingredient_idx]
+            color = colors[ingredient_idx]
             pos = dish_positions[idx]
             ing_fn = rendering.point_in_circle(pos[0], pos[1], 0.1)
             img_ing = rendering.fill_coords(img, ing_fn, color)
@@ -129,7 +132,8 @@ def _render_dynamic_item(
     return img
 
 
-def _render_pot(cell, img):
+def _render_pot(cell, img, ingredient_colors=None):
+    colors = INGREDIENT_COLORS if ingredient_colors is None else ingredient_colors
     ingredients = cell[1]
     time_left = cell[2]
 
@@ -148,7 +152,7 @@ def _render_pot(cell, img):
 
     for i, ingredient_idx in enumerate(ingredients):
         img_ing = rendering.fill_coords(
-            img, ingredient_fns[i], INGREDIENT_COLORS[ingredient_idx]
+            img, ingredient_fns[i], colors[ingredient_idx]
         )
         img = jax.lax.select(ingredient_idx != -1, img_ing, img)
 
@@ -179,7 +183,7 @@ def _render_pot(cell, img):
     return img
 
 
-def _render_cell(cell, img):
+def _render_cell(cell, img, ingredient_colors=None):
     static_object = cell[0]
 
     def _render_empty(cell, img):
@@ -189,7 +193,7 @@ def _render_cell(cell, img):
         img = rendering.fill_coords(
             img, rendering.point_in_rect(0, 1, 0, 1), COLORS["grey"]
         )
-        img = _render_dynamic_item(cell[1], img)
+        img = _render_dynamic_item(cell[1], img, ingredient_colors=ingredient_colors)
         return img
 
     def _render_agent(cell, img):
@@ -218,6 +222,7 @@ def _render_cell(cell, img):
             plate_fn=rendering.point_in_circle(0.75, 0.75, 0.2),
             ingredient_fn=rendering.point_in_circle(0.75, 0.75, 0.15),
             dish_positions=jnp.array([(0.65, 0.65), (0.85, 0.65), (0.75, 0.85)]),
+            ingredient_colors=ingredient_colors,
         )
 
         return img
@@ -235,7 +240,7 @@ def _render_cell(cell, img):
         return img
 
     def _render_pot_cell(cell, img):
-        return _render_pot(cell, img)
+        return _render_pot(cell, img, ingredient_colors=ingredient_colors)
 
     def _render_recipe_indicator(cell, img):
         img = rendering.fill_coords(
@@ -244,7 +249,7 @@ def _render_cell(cell, img):
         img = rendering.fill_coords(
             img, rendering.point_in_rect(0.1, 0.9, 0.1, 0.9), COLORS["brown"]
         )
-        img = _render_dynamic_item(cell[1], img)
+        img = _render_dynamic_item(cell[1], img, ingredient_colors=ingredient_colors)
         return img
 
     def _render_button_recipe_indicator(cell, img):
@@ -254,7 +259,7 @@ def _render_cell(cell, img):
         img = rendering.fill_coords(
             img, rendering.point_in_rect(0.1, 0.9, 0.1, 0.9), COLORS["brown"]
         )
-        img = _render_dynamic_item(cell[1], img)
+        img = _render_dynamic_item(cell[1], img, ingredient_colors=ingredient_colors)
 
         time_left = cell[2]
         progress_fn = rendering.point_in_rect(
@@ -284,6 +289,7 @@ def _render_cell(cell, img):
         return img
 
     def _render_ingredient_pile(cell, img):
+        colors = INGREDIENT_COLORS if ingredient_colors is None else ingredient_colors
         ingredient_idx = cell[0] - StaticObject.INGREDIENT_PILE_BASE
 
         img = rendering.fill_coords(
@@ -302,7 +308,7 @@ def _render_cell(cell, img):
 
         for ingredient_fn in ingredient_fns:
             img = rendering.fill_coords(
-                img, ingredient_fn, INGREDIENT_COLORS[ingredient_idx]
+                img, ingredient_fn, colors[ingredient_idx]
             )
 
         return img
@@ -329,7 +335,7 @@ def _render_cell(cell, img):
     return jax.lax.switch(branch_idx, render_fns, cell, img)
 
 
-def _render_tile(obj, tile_size, subdivs):
+def _render_tile(obj, tile_size, subdivs, ingredient_colors=None):
     img = jnp.zeros(
         shape=(tile_size * subdivs, tile_size * subdivs, 3),
         dtype=jnp.uint8,
@@ -343,7 +349,7 @@ def _render_tile(obj, tile_size, subdivs):
         img, rendering.point_in_rect(0, 1, 0, 0.031), COLORS["grey"]
     )
 
-    img = _render_cell(obj, img)
+    img = _render_cell(obj, img, ingredient_colors=ingredient_colors)
 
     img = rendering.downsample(img, subdivs)
     return img
@@ -382,15 +388,23 @@ def _bake_agents(grid, agents, recipe):
     return grid
 
 
-def render_state(state, tile_size=TILE_PIXELS, subdivs=SUBDIVS):
+def render_state(state, tile_size=TILE_PIXELS, subdivs=SUBDIVS, ingredient_colors=None):
     """Render the full god's-eye RGB image with agents baked in.
 
     Returns a `(height * tile_size, width * tile_size, 3)` uint8 array. View
     masking and the ego marker are the wrapper's responsibility.
+
+    `ingredient_colors` optionally replaces the ingredient palette (shape like
+    `INGREDIENT_COLORS`). Other-Play passes a per-agent permuted palette so ALL
+    ingredient pixels (piles, pots, dishes, recipe indicator) are relabeled
+    BEFORE anti-aliasing — a post-hoc pixel recolour cannot reach the
+    anti-aliased mixes.
     """
     grid = _bake_agents(state.grid, state.agents, state.recipe)
 
-    img_grid = jax.vmap(jax.vmap(lambda obj: _render_tile(obj, tile_size, subdivs)))(grid)
+    img_grid = jax.vmap(
+        jax.vmap(lambda obj: _render_tile(obj, tile_size, subdivs, ingredient_colors))
+    )(grid)
     grid_rows, grid_cols, tile_h, tile_w, channels = img_grid.shape
     big_image = img_grid.transpose(0, 2, 1, 3, 4).reshape(
         grid_rows * tile_h, grid_cols * tile_w, channels

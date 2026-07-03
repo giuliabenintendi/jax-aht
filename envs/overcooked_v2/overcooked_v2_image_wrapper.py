@@ -12,6 +12,11 @@ The underlying env returns a sparse delivery reward plus a separate per-agent
 shaped reward in `info["shaped_reward"]`. When `do_reward_shaping` is set the
 shaped term is folded into the agent reward used for learning, while the
 sparse delivery return is tracked separately in `base_return_so_far`.
+
+Other-Play: when the base env is built with `op_ingredient_permutations`, each
+agent's view is rendered with its own permuted ingredient palette (see
+`_agent_palettes`), reproducing the paper's per-agent observation relabeling.
+Evaluation with non-permuted observations = build the env without the kwarg.
 """
 from __future__ import annotations
 
@@ -25,7 +30,7 @@ from jaxmarl.environments import spaces
 
 from envs.base_env import BaseEnv, WrappedEnvState
 from envs.overcooked_v2.overcooked import OvercookedV2
-from envs.overcooked_v2.rendering import TILE_PIXELS, render_state
+from envs.overcooked_v2.rendering import INGREDIENT_COLORS, TILE_PIXELS, render_state
 from envs.overcooked_v2.utils import compute_view_box
 
 # Magenta, distinct from all Overcooked tile colors
@@ -100,8 +105,35 @@ class OvercookedV2ImageWrapper(BaseEnv):
         col_vis = (cols >= x_low) & (cols < x_high)
         return row_vis[:, None] & col_vis[None, :]
 
+    def _agent_palettes(self, env_state) -> jnp.ndarray:
+        """Per-agent ingredient palettes implementing Other-Play in image space.
+
+        The base env samples a per-agent permutation into
+        `state.ingredient_permutations`; true ingredient i must be shown with the
+        colour of slot perm^{-1}[i] (matching the symbolic `get_obs` relabeling).
+        Permuting the palette at render time relabels ALL ingredient pixels —
+        piles, pots, dishes, recipe indicator — before anti-aliasing, which a
+        post-hoc pixel recolour cannot do.
+        """
+        perms = env_state.ingredient_permutations  # (num_agents, n_ing)
+        n_ing = perms.shape[-1]
+        inv = jax.vmap(
+            lambda p: jnp.zeros_like(p).at[p].set(jnp.arange(n_ing, dtype=p.dtype))
+        )(perms)
+        return jax.vmap(
+            lambda iv: INGREDIENT_COLORS.at[:n_ing].set(INGREDIENT_COLORS[iv])
+        )(inv)
+
     def _make_obs(self, env_state) -> Dict[str, jnp.ndarray]:
-        img = render_state(env_state, self.tile_size)  # (H_px, W_px, 3) uint8
+        if self.env.op_ingredient_permutations:
+            palettes = self._agent_palettes(env_state)
+            imgs = [
+                render_state(env_state, self.tile_size, ingredient_colors=palettes[i])
+                for i in range(self.num_agents)
+            ]
+        else:
+            img = render_state(env_state, self.tile_size)  # (H_px, W_px, 3) uint8
+            imgs = [img] * self.num_agents
 
         positions = env_state.agents.pos
         obs = {}
@@ -112,7 +144,7 @@ class OvercookedV2ImageWrapper(BaseEnv):
             pixel_mask = jnp.repeat(
                 jnp.repeat(cell_mask, self.tile_size, axis=0), self.tile_size, axis=1
             )
-            masked = jnp.where(pixel_mask[:, :, None], img, 0)
+            masked = jnp.where(pixel_mask[:, :, None], imgs[i], 0)
             masked = _draw_border(masked, x, y, self.tile_size, _EGO_HIGHLIGHT_COLOR)
             obs[self.agents[i]] = masked.flatten().astype(jnp.float32) / 255.0
         return obs
