@@ -1,0 +1,33 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# MATE = IPPO + attention with the dense attended-object occupancy aux and the
+# partner-attention feed. Duplicates the validated demo_cook_simple hyperparameters
+# (Hydra nested-defaults include breaks, per the -op config) and adds the
+# object-occupancy mechanism, which select_mechanism picks on JA_OBJECT_OCCUPANCY.
+TOTAL_TIMESTEPS: 3e7   # paper Demo Cook SP uses 30M
+NUM_ENVS: 256          # 256x256 fits a 32GB V100; drop to ~192 if the 4th channel OOMs
+CHECKPOINT_FREQ_TIMESTEPS: 1000000
+SAVE_CKPT_VIDEOS: true
+
+# Validated stabilizers from the IPPO baseline (czbkm1yq): cooking LR 4e-4 with
+# GAE 0.9 and a tight grad clip 0.25 to prevent the ~6-8M collapse.
+LR: 4e-4
+GAE_LAMBDA: 0.9
+ANNEAL_LR: true
+MAX_GRAD_NORM: 0.25
+REW_SHAPING_HORIZON: 15000000   # linear shaped-reward anneal 1->0 over 15M env steps
+
+# Dense attended-object occupancy (MATE): pool spatial attention onto the detected
+# task objects, select the partner-attended object, build a discounted
+# future-occupancy blob at it, and train the full attention map with a dense
+# cross-entropy. Attention-only (no overlap-reward shaping). Partner attention is
+# fed back as a 4th image channel.
+JA_OBJECT_OCCUPANCY: true
+FEED_OTHER_ATTN: true
+JA_OBJECT_AUX_COEF: 0.005
+JA_FUTURE_GAMMA_OCC: 0.95
+JA_OBJECT_ROI_RADIUS: 1
+JA_FUTURE_PARTNER_COEF: 0.0
+JA_FUTURE_SELF_COEF: 0.0

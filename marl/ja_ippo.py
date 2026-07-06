@@ -69,6 +69,11 @@ def select_mechanism(config, env):
     if env_name == "card-game":
         from agents.card_game.ja_card_attention import CardMechanism
         return CardMechanism(config, env)
+    if env_name == "overcooked-v2" and config.get("JA_OBJECT_OCCUPANCY", False):
+        from agents.overcooked_v2.ja_overcooked_v2_dense_occupancy import (
+            OvercookedV2DenseObjectOccupancyMechanism,
+        )
+        return OvercookedV2DenseObjectOccupancyMechanism(config, env)
     if env_name in ("overcooked-v1", "overcooked-v2", "hanabi"):
         from agents.ja_jsd_mechanism import JSDMechanism
         return JSDMechanism(config, env)
