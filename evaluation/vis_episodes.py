@@ -113,7 +113,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            max_episode_steps, collect_attention=False,
                            greedy=True, feed_other_attn_dims=None,
                            ja_card_masks=None, collect_obs=False,
-                           partner_feed_dim=5, lbf_ctx=None):
+                           partner_feed_dim=5, lbf_ctx=None,
+                           feed_mask_fn=None):
     '''
     Run a single episode and collect states for rendering.
 
@@ -122,6 +123,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             attention maps via get_action_and_attention.
         feed_other_attn_dims: if not None, a tuple (img_h, img_w, feat_h, feat_w)
             for augmenting obs with the other agent's previous attention map.
+        feed_mask_fn: optional visibility hook `state -> (mask_0, mask_1)`
+            applied to the feed channel per receiver (train-time gating parity).
         collect_obs: if True, also return per-step per-agent observations (the
             obs the agent saw BEFORE each action, including the decision step).
 
@@ -207,8 +210,11 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
         # Augment obs with other agent's previous attention as 4th channel
         if feed_other_attn_dims is not None:
-            obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
-            obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+            _fm_0 = _fm_1 = None
+            if feed_mask_fn is not None:
+                _fm_0, _fm_1 = feed_mask_fn(env_state)
+            obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w, mask=_fm_0)
+            obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w, mask=_fm_1)
         if _ja_card or _lbf:
             obs_0 = jnp.concatenate([obs_0, prev_pca_0])
             obs_1 = jnp.concatenate([obs_1, prev_pca_1])

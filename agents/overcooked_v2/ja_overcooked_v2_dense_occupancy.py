@@ -23,13 +23,30 @@ Overcooked V2 also needs the JaxMARL-style reward-shaping anneal that
 `JSDMechanism` applies (folding the decaying `info["shaped_reward"]` into the
 learning reward); without it V2 self-play collapses. It is reproduced here so
 the mechanism is self-contained.
+
+Visibility gating (`JA_VISIBILITY_GATING`, strict gaze-following): V2 obs are
+view-masked, so without gating the feed would leak attention the receiver could
+not perceive and the aux would pull attention toward events it could never have
+known about. When on, the feed channel is cell-masked to the receiver's view box
+and zeroed entirely unless the partner is inside it, and the aux occupancy
+target only counts partner-attention events that were witnessable (cell AND
+partner in the receiver's view) AT THE MOMENT they happened — masked inside the
+backward scan, so an unwitnessed event neither creates a target nor shadows a
+later witnessed one. The receiver's attention may still anticipate currently
+off-view cells; it is just never supervised by events it could not have seen.
 """
 from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
 
-from agents.overcooked_v2.ja_overcooked_v2_attention import overcooked_v2_object_ctx
+from agents.overcooked_v2.ja_overcooked_v2_attention import (
+    agent_tiles_from_state,
+    make_visibility_mask_fn,
+    overcooked_v2_object_ctx,
+    partner_in_view,
+    view_feature_masks,
+)
 
 
 def _as_spatial_attention(attn_map):
@@ -53,6 +70,8 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         ("ja_future_self_overlap", "JA"),
         ("aux_partner_occ_loss", "Losses"),
         ("ja_obj_on_mass", "JA"),
+        ("ja_partner_visible_frac", "JA"),
+        ("ja_aux_active_frac", "JA"),
         ("rew_shaping_frac", "JA/rew_shaping_frac"),
         ("delivery_per_step", "Reward/delivery_per_step"),
         ("shaped_applied_per_step", "Reward/shaped_applied_per_step"),
@@ -66,6 +85,15 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         self.img_h, self.img_w = ctx["img_h"], ctx["img_w"]
         self.feat_h, self.feat_w = ctx["feat_h"], ctx["feat_w"]
         self.tile_size = ctx["tile_size"]
+        self.grid_h, self.grid_w = ctx["grid_h"], ctx["grid_w"]
+        self.view_size = ctx["agent_view_size"]
+
+        self.visibility_gating = bool(config.get("JA_VISIBILITY_GATING", False))
+        if self.visibility_gating and self.view_size is None:
+            raise ValueError(
+                "JA_VISIBILITY_GATING needs a partially observable env "
+                "(agent_view_size set); with full observability there is nothing to gate."
+            )
         # Fixed feature-grid cell (fr, fc) of each detected task object. Constant
         # across steps and episodes because task objects are static.
         self.object_feat_rc = ctx["object_feat_rc"]  # (M, 2)
@@ -101,25 +129,39 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             (num_actors, self.feat_h, self.feat_w),
             dtype=jnp.float32,
         ) / float(self.feat_h * self.feat_w)
-        return {"partner_attn": uniform}
+        # Positions are unknown before the first step; under gating start fully
+        # masked (conservative), otherwise pass-through.
+        mask_init = jnp.zeros if self.visibility_gating else jnp.ones
+        return {
+            "partner_attn": uniform,
+            "feed_mask": mask_init((num_actors, self.feat_h, self.feat_w), dtype=jnp.float32),
+        }
 
     def augment_obs(self, obs_batch_2d, carry):
         if not self.feed_other_attn:
             return obs_batch_2d
         rgb = obs_batch_2d.reshape(obs_batch_2d.shape[0], self.img_h, self.img_w, 3)
         partner_attn = carry["partner_attn"]  # shared frame; no OP transform in V2
+        # Normalize by the UNMASKED peak, then mask: masked-out attention reads
+        # as zero instead of re-normalizing residual leakage into a fake peak.
+        peak = jnp.maximum(partner_attn.max(axis=(1, 2), keepdims=True), 1e-8)
+        partner_attn = partner_attn * carry["feed_mask"]
         partner_attn_img = jax.image.resize(
             partner_attn,
             (partner_attn.shape[0], self.img_h, self.img_w),
             method="nearest",
         )
-        partner_attn_img = partner_attn_img / jnp.maximum(
-            partner_attn_img.max(axis=(1, 2), keepdims=True),
-            1e-8,
-        )
+        partner_attn_img = partner_attn_img / peak
         return jnp.concatenate([rgb, partner_attn_img[..., None]], axis=-1).reshape(
             obs_batch_2d.shape[0], -1,
         )
+
+    def _actor_tiles(self, env_state, num_actors):
+        """Agent-major (rows, cols, partner_rows, partner_cols), each (num_actors,)."""
+        rows, cols = agent_tiles_from_state(env_state)  # (num_envs, num_agents)
+        rows = rows.swapaxes(0, 1).reshape(-1)
+        cols = cols.swapaxes(0, 1).reshape(-1)
+        return rows, cols, self._swap_partner(rows, num_actors), self._swap_partner(cols, num_actors)
 
     def _object_roi_mass(self, attn_2d):
         """Raw attention mass inside a (2r+1)^2 ROI around each task object cell.
@@ -146,12 +188,35 @@ class OvercookedV2DenseObjectOccupancyMechanism:
 
     def step(self, *, attn_map, env_state, new_env_state, action, env_reward,
              info, done_actors, carry, num_actors, update_steps):
-        del action, new_env_state, env_state
+        del action
         attn_2d = _as_spatial_attention(attn_map).squeeze(0)  # (A, feat_h, feat_w)
         object_mass, on_mass = self._object_roi_mass(attn_2d)  # (A, M), (A,)
 
         sel = jnp.argmax(object_mass, axis=-1)  # (A,) most-attended object
         attended_feat = self.object_feat_rc[sel]  # (A, 2) feature cell (fr, fc)
+
+        # Receiver tile + partner-visible flag at t (pre-step state = the state
+        # that generated obs_t / attn_t); consumed by the aux witness mask and
+        # logged as a diagnostic even when gating is off.
+        if self.view_size is not None:
+            rows_t, cols_t, prow_t, pcol_t = self._actor_tiles(env_state, num_actors)
+            pvis_t = partner_in_view(rows_t, cols_t, prow_t, pcol_t, self.view_size)
+            self_rc_t = jnp.stack([rows_t, cols_t], axis=-1).astype(jnp.int32)
+        else:
+            pvis_t = jnp.ones((num_actors,), dtype=jnp.float32)
+            self_rc_t = jnp.zeros((num_actors, 2), dtype=jnp.int32)
+
+        # Feed mask consumed at t+1, from the post-step state (whose obs the
+        # receiver sees next): receiver's view box, zeroed unless the partner is
+        # inside it (strict gaze-following).
+        if self.visibility_gating:
+            rows_n, cols_n, prow_n, pcol_n = self._actor_tiles(new_env_state, num_actors)
+            feed_mask = view_feature_masks(
+                rows_n, cols_n, self.view_size,
+                self.grid_h, self.grid_w, self.feat_h, self.feat_w,
+            ) * partner_in_view(rows_n, cols_n, prow_n, pcol_n, self.view_size)[:, None, None]
+        else:
+            feed_mask = jnp.ones((num_actors, self.feat_h, self.feat_w), dtype=jnp.float32)
 
         # JaxMARL-style annealed reward shaping (the V2 collapse fix). shaped_reward
         # is (num_envs, num_agents); transpose+flatten to agent-major (num_actors,).
@@ -167,6 +232,8 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             "ja_future_attn_2d": jax.lax.stop_gradient(attn_2d.astype(jnp.float32)),
             "ja_future_feat_post": attended_feat.astype(jnp.int32),
             "ja_obj_on_mass": jax.lax.stop_gradient(on_mass),
+            "ja_self_rc": self_rc_t,
+            "ja_partner_visible": pvis_t,
             "rew_shaping_frac": jnp.broadcast_to(shaping_frac, (num_actors,)),
             "delivery": env_reward,
             "shaped_applied": shaped_total,
@@ -177,11 +244,18 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         )
         new_partner_attn = jnp.where(done_actors[:, None, None], uniform[None], swapped_attn)
         reward = env_reward + shaped_total
-        return reward, {"partner_attn": jax.lax.stop_gradient(new_partner_attn)}, extras
+        return reward, {"partner_attn": jax.lax.stop_gradient(new_partner_attn),
+                        "feed_mask": feed_mask}, extras
 
-    def _attended_box_occupancy(self, fr, fc, done, radius):
+    def _attended_box_occupancy(self, fr, fc, done, radius, witness=None):
         """Discounted first-occupancy of a (2*radius+1)^2 box around the attended
-        object cell. radius=0 reduces to the single-cell target."""
+        object cell. radius=0 reduces to the single-cell target.
+
+        `witness` (optional, (T, A, C) in {0,1}) is ANDed into the box BEFORE the
+        backward scan: an unwitnessed attention event neither creates a target
+        nor shadows a later witnessed one — the discount passes through it, so
+        the target is gamma^k to the first WITNESSED event.
+        """
         num_cells = self.feat_h * self.feat_w
         box = jnp.zeros(fr.shape + (num_cells,), dtype=jnp.float32)  # (T, A, C)
         for dr in range(-radius, radius + 1):
@@ -199,6 +273,8 @@ class OvercookedV2DenseObjectOccupancyMechanism:
                     0.0,
                 )
         box = (box > 0.0).astype(jnp.float32)
+        if witness is not None:
+            box = box * witness
 
         def _scan(m_next, x_t):
             box_t, done_t = x_t
@@ -212,12 +288,29 @@ class OvercookedV2DenseObjectOccupancyMechanism:
 
     def _occupancy_targets(self, traj_batch):
         feat_rc = traj_batch.extras["ja_future_feat_post"]  # (T, A, 2)
+        t_dim, a_dim = feat_rc.shape[0], feat_rc.shape[1]
         fr, fc = feat_rc[..., 0], feat_rc[..., 1]  # (T, A)
         self_occ = self._attended_box_occupancy(
             fr, fc, traj_batch.done, self.obj_target_radius,
-        ).reshape(feat_rc.shape[0], feat_rc.shape[1], self.feat_h, self.feat_w)
-        half = self_occ.shape[1] // 2
-        partner_occ = jnp.concatenate([self_occ[:, half:], self_occ[:, :half]], axis=1)
+        ).reshape(t_dim, a_dim, self.feat_h, self.feat_w)
+
+        # Partner target built from the PARTNER's attended cells, witness-masked
+        # in the RECEIVER's frame (equivalent to swap-after-scan when gating is
+        # off; the mask must be the receiver's, so swap the events first).
+        half = a_dim // 2
+        p_fr = jnp.concatenate([fr[:, half:], fr[:, :half]], axis=1)
+        p_fc = jnp.concatenate([fc[:, half:], fc[:, :half]], axis=1)
+        witness = None
+        if self.visibility_gating:
+            rc = traj_batch.extras["ja_self_rc"]  # (T, A, 2) receiver tile
+            wit = view_feature_masks(
+                rc[..., 0], rc[..., 1], self.view_size,
+                self.grid_h, self.grid_w, self.feat_h, self.feat_w,
+            ) * traj_batch.extras["ja_partner_visible"][..., None, None]
+            witness = wit.reshape(t_dim, a_dim, self.feat_h * self.feat_w)
+        partner_occ = self._attended_box_occupancy(
+            p_fr, p_fc, traj_batch.done, self.obj_target_radius, witness=witness,
+        ).reshape(t_dim, a_dim, self.feat_h, self.feat_w)
         return self_occ, partner_occ
 
     def _swap_partner(self, x, num_actors):
@@ -279,6 +372,10 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             "ja_future_self_overlap": ex["ja_future_self_overlap"].mean(),
             "aux_partner_occ_loss": loss_info.aux_loss.mean(),
             "ja_obj_on_mass": ex["ja_obj_on_mass"].mean(),
+            "ja_partner_visible_frac": ex["ja_partner_visible"].mean(),
+            # Normalized target sums to ~1 when any witnessed event lies ahead,
+            # ~0 otherwise -> mean = aux signal density under gating.
+            "ja_aux_active_frac": ex["ja_future_partner_occ"].sum(axis=(-2, -1)).mean(),
             "rew_shaping_frac": ex["rew_shaping_frac"].mean(),
             "delivery_per_step": ex["delivery"].mean(),
             "shaped_applied_per_step": ex["shaped_applied"].mean(),
@@ -320,10 +417,18 @@ class OvercookedV2DenseObjectOccupancyMechanism:
                 (self.img_h, self.img_w, self.feat_h, self.feat_w)
                 if self.feed_other_attn else None
             )
+            feed_mask_fn = None
+            if self.feed_other_attn and self.visibility_gating:
+                feed_mask_fn = make_visibility_mask_fn({
+                    "feat_h": self.feat_h, "feat_w": self.feat_w,
+                    "grid_h": self.grid_h, "grid_w": self.grid_w,
+                    "agent_view_size": self.view_size,
+                })
             max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
             ep_states, attn_data, _a, _m = run_episode_with_states(
                 jax.random.PRNGKey(42), inner_env, params, policy, params, policy,
                 max_steps, collect_attention=True, feed_other_attn_dims=feed_dims,
+                feed_mask_fn=feed_mask_fn,
             )
             os.makedirs(savedir, exist_ok=True)
             frames = get_eval_frames(env_name, inner_env, ep_states)

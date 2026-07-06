@@ -184,3 +184,95 @@ def test_overcooked_v2_op_agents_see_permuted_views():
     assert not (np.abs(id_tile - c1).max(axis=-1) < 1.0).any()
     assert (np.abs(sw_tile - c1).max(axis=-1) < 1.0).any()
     assert not (np.abs(sw_tile - c0).max(axis=-1) < 1.0).any()
+
+
+def _make_mate_mechanism(gating):
+    from agents.overcooked_v2.ja_overcooked_v2_dense_occupancy import (
+        OvercookedV2DenseObjectOccupancyMechanism,
+    )
+    env = make_env(
+        "overcooked-v2",
+        {
+            "layout": "demo_cook_simple",
+            "obs_type": "image",
+            "agent_view_size": 2,
+            "random_agent_positions": False,
+        },
+    )
+    config = {
+        "ROLLOUT_LENGTH": 4,
+        "NUM_ENVS": 1,
+        "FEED_OTHER_ATTN": True,
+        "JA_VISIBILITY_GATING": gating,
+    }
+    return OvercookedV2DenseObjectOccupancyMechanism(config, env)
+
+
+def _witness_traj_extras(mech, T, A):
+    """Partner of actor 0 (= actor 1) attends OUT-of-view, IN-view, OUT-of-view;
+    receiver 0 sits at tile (2, 2) so feature cols 0-9 are visible."""
+    from types import SimpleNamespace
+
+    own = jnp.array([[1, 1], [1, 1]], dtype=jnp.int32)  # actor 0's own cells (unused targets)
+    a1 = jnp.array([[5, 12], [5, 4], [5, 12]], dtype=jnp.int32)  # actor 1's attended cells
+    feat_post = jnp.stack(
+        [jnp.broadcast_to(own[0], (T, 2)), a1], axis=1,
+    )  # (T, A, 2)
+    extras = {
+        "ja_future_feat_post": feat_post,
+        "ja_self_rc": jnp.broadcast_to(jnp.array([2, 2], dtype=jnp.int32), (T, A, 2)),
+        "ja_partner_visible": jnp.ones((T, A), dtype=jnp.float32),
+    }
+    return SimpleNamespace(done=jnp.zeros((T, A), dtype=bool), extras=extras)
+
+
+def test_ocv2_mate_witness_masked_occupancy():
+    mech = _make_mate_mechanism(gating=True)
+    assert (mech.feat_h, mech.feat_w) == (10, 22)
+    T, A = 3, 2
+    traj = _witness_traj_extras(mech, T, A)
+
+    _, partner_occ = mech._occupancy_targets(traj)
+    tgt = partner_occ[:, 0].reshape(T, mech.feat_h * mech.feat_w)
+    in_idx = 5 * mech.feat_w + 4    # witnessed event cell (tile col 2, in view)
+    out_idx = 5 * mech.feat_w + 12  # unwitnessed event cell (tile col 6, out of view)
+
+    # The out-of-view events at t=0/t=2 neither create a target nor shadow the
+    # witnessed t=1 event; the discount passes through them.
+    assert float(tgt[0, in_idx]) > 0.99 and float(tgt[0, out_idx]) == 0.0
+    assert float(tgt[1, in_idx]) > 0.99
+    # No witnessed event remains after t=1 -> empty target, ~zero CE weight.
+    assert float(tgt[2].sum()) < 1e-3
+
+    # Partner-out-of-view gates everything off even for in-view cells.
+    traj.extras["ja_partner_visible"] = jnp.zeros((T, A), dtype=jnp.float32)
+    _, occ_gated = mech._occupancy_targets(traj)
+    assert float(occ_gated[:, 0].sum()) < 1e-3
+
+
+def test_ocv2_mate_gating_off_matches_swap():
+    mech = _make_mate_mechanism(gating=False)
+    T, A = 3, 2
+    traj = _witness_traj_extras(mech, T, A)
+    self_occ, partner_occ = mech._occupancy_targets(traj)
+    half = A // 2
+    swapped = jnp.concatenate([self_occ[:, half:], self_occ[:, :half]], axis=1)
+    assert bool(jnp.allclose(partner_occ, swapped, atol=1e-6))
+
+
+def test_ocv2_mate_feed_mask_keeps_unmasked_peak_scale():
+    mech = _make_mate_mechanism(gating=True)
+    A, fh, fw = 2, mech.feat_h, mech.feat_w
+    attn = jnp.zeros((A, fh, fw)).at[:, 5, 12].set(0.9).at[:, 5, 4].set(0.1)
+    # Receiver 0's view covers feature cols 0-9 only; receiver 1 sees everything.
+    mask = jnp.stack([
+        jnp.zeros((fh, fw)).at[:, :10].set(1.0),
+        jnp.ones((fh, fw)),
+    ])
+    obs = jnp.zeros((A, mech.img_h * mech.img_w * 3))
+    aug = mech.augment_obs(obs, {"partner_attn": attn, "feed_mask": mask})
+    ch = aug.reshape(A, mech.img_h, mech.img_w, 4)[..., 3]
+    # Masked receiver: peak removed, residual normalized by the UNMASKED peak
+    # (0.1/0.9), not re-inflated to 1. Unmasked receiver keeps its true peak.
+    assert 0.05 < float(ch[0].max()) < 0.2
+    assert float(ch[1].max()) > 0.99

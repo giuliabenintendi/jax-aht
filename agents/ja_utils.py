@@ -179,12 +179,20 @@ def build_card_masks(img_h, img_w, feat_h, feat_w):
     return jnp.array(masks)
 
 
-def augment_obs_for_eval(obs_flat, other_attn, img_h, img_w):
-    """Append other agent's attention as 4th channel during eval."""
+def augment_obs_for_eval(obs_flat, other_attn, img_h, img_w, mask=None):
+    """Append other agent's attention as 4th channel during eval.
+
+    `mask` (optional, (feat_h, feat_w) in {0,1}) is a visibility mask applied
+    AFTER normalizing by the unmasked peak, so masked-out attention reads as
+    zero rather than re-normalizing residual leakage into a fake peak — matches
+    the training-time feed masking.
+    """
     rgb = obs_flat.reshape(img_h, img_w, 3)
     upsampled = jax.image.resize(other_attn, (img_h, img_w), method='nearest')
     # Normalize to [0, 1] so attention channel matches RGB scale
     attn_max = jnp.max(upsampled)
     upsampled = upsampled / jnp.maximum(attn_max, 1e-8)
+    if mask is not None:
+        upsampled = upsampled * jax.image.resize(mask, (img_h, img_w), method='nearest')
     augmented = jnp.concatenate([rgb, upsampled[..., None]], axis=-1)
     return augmented.reshape(-1)

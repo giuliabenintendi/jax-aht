@@ -45,6 +45,7 @@ from envs.log_wrapper import LogWrapper
 from evaluation.card_game.action_distributions import (
     generate_action_distribution_artifacts,
 )
+from evaluation.card_game.xp_stats import xp_mean_se
 from marl.eval_card_game import _log_card_game_xp_videos
 
 
@@ -142,12 +143,15 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 max_episode_steps, action_sizes,
                                 feed_attn_dims=None, ja_card_masks=None,
                                 greedy_eval=True, partner_feed_dim=5,
-                                lbf_ctx=None):
+                                lbf_ctx=None, feed_mask_fn=None):
     """Run one eval episode, returning LogWrapper info + mean JSD between attention maps.
 
     Args:
         feed_attn_dims: if not None, (img_h, img_w, feat_h, feat_w) for obs augmentation
             with the other agent's previous attention map (4th channel).
+        feed_mask_fn: optional visibility hook `state -> (mask_0, mask_1)` applied to
+            the feed channel per receiver (train-time gating parity, e.g. ocv2
+            JA_VISIBILITY_GATING).
         lbf_ctx: if not None, dict with num_fruits/tile_size/feat_h/feat_w/img_h/img_w
             describing the LBF env so each agent's obs is augmented with the
             partner's previous per-fruit attention vector (length num_fruits,
@@ -231,8 +235,11 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     obs_0 = init_obs["agent_0"]
     obs_1 = init_obs["agent_1"]
     if feed_attn_dims is not None:
-        obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w)
-        obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w)
+        _fm_0 = _fm_1 = None
+        if feed_mask_fn is not None:
+            _fm_0, _fm_1 = feed_mask_fn(init_env_state)
+        obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w, mask=_fm_0)
+        obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w, mask=_fm_1)
     if _ja_card or _lbf:
         obs_0 = jnp.concatenate([obs_0, prev_pca_0])
         obs_1 = jnp.concatenate([obs_1, prev_pca_1])
@@ -361,8 +368,11 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             obs_0 = obs["agent_0"]
             obs_1 = obs["agent_1"]
             if feed_attn_dims is not None:
-                obs_0 = augment_obs_for_eval(obs_0, prev_a1, _img_h, _img_w)
-                obs_1 = augment_obs_for_eval(obs_1, prev_a0, _img_h, _img_w)
+                _fm_0 = _fm_1 = None
+                if feed_mask_fn is not None:
+                    _fm_0, _fm_1 = feed_mask_fn(env_state)
+                obs_0 = augment_obs_for_eval(obs_0, prev_a1, _img_h, _img_w, mask=_fm_0)
+                obs_1 = augment_obs_for_eval(obs_1, prev_a0, _img_h, _img_w, mask=_fm_1)
             if _ja_card or _lbf:
                 obs_0 = jnp.concatenate([obs_0, prev_pca_0])
                 obs_1 = jnp.concatenate([obs_1, prev_pca_1])
@@ -490,7 +500,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
                           max_episode_steps, num_eps, action_sizes,
                           feed_attn_dims=None, ja_card_masks=None,
                           greedy_eval=True, partner_feed_dim=5,
-                          lbf_ctx=None):
+                          lbf_ctx=None, feed_mask_fn=None):
     """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
@@ -501,7 +511,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, action_sizes,
             feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
             greedy_eval=greedy_eval, partner_feed_dim=partner_feed_dim,
-            lbf_ctx=lbf_ctx,
+            lbf_ctx=lbf_ctx, feed_mask_fn=feed_mask_fn,
         )
     )
     all_info, all_jsd, all_card_jsd, all_match = vmap_fn(ep_rngs)
@@ -514,7 +524,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
                      max_episode_steps, num_eps, action_sizes,
                      feed_attn_dims=None, ja_card_masks=None,
                      greedy_eval=True, partner_feed_dim=5,
-                     lbf_ctx=None):
+                     lbf_ctx=None, feed_mask_fn=None):
     """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
     num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
     partner_rngs = jax.random.split(rng, num_partners)
@@ -526,29 +536,27 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
             agent_1_param, agent_1_policy, max_episode_steps, num_eps, action_sizes,
             feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
             greedy_eval=greedy_eval, partner_feed_dim=partner_feed_dim,
-            lbf_ctx=lbf_ctx,
+            lbf_ctx=lbf_ctx, feed_mask_fn=feed_mask_fn,
         )
 
     return jax.vmap(eval_one_partner)(partner_rngs, all_agent_1_params)
 
 
 def xp_mean_and_sem(xp_matrix):
-    """Compute XP mean and SEM over all off-diagonal entries.
+    """XP mean and standard error via the disjoint-pair estimator.
 
-    Uses std of all off-diagonal values but divides by sqrt(n) (number of
-    independent seeds) rather than sqrt(n*(n-1)) since entries sharing a
-    seed are correlated.
+    Delegates to `xp_stats.xp_mean_se` (Forkel et al. 2511.22581 eq 30/31): the
+    role-symmetric mean over m = floor(N/2) disjoint seed pairs and its
+    std(ddof=1)/sqrt(m). Single XP estimator shared across the codebase.
 
     Args:
         xp_matrix: (n, n) array where entry (i,j) is the mean metric
                    when seed i is agent 0 and seed j is agent 1.
     Returns:
-        (mean, sem) over off-diagonal entries with n-based SEM.
+        (mean, se) over the disjoint-pair samples.
     """
-    n = xp_matrix.shape[0]
-    mask = ~np.eye(n, dtype=bool)
-    off_diag = xp_matrix[mask]
-    return np.mean(off_diag), np.std(off_diag) / np.sqrt(n)
+    mean, se, _ = xp_mean_se(xp_matrix)
+    return mean, se
 
 
 def _score_color_range(env_name: str, num_agents: int) -> tuple[float, float | None]:
@@ -874,12 +882,22 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         lbf_ctx = lbf_attention_ctx(algo_cfg, env)
         print(f"[xp_seeds] lbf partner-feed: N_fruits={lbf_ctx['num_fruits']}")
 
+    # Ocv2 visibility gating: mask the feed exactly as at train time.
+    feed_mask_fn = None
+    if (feed_attn_dims is not None and env_name == "overcooked-v2"
+            and algo_cfg.get("JA_VISIBILITY_GATING", False)):
+        from agents.overcooked_v2.ja_overcooked_v2_attention import (
+            make_visibility_mask_fn, overcooked_v2_object_ctx,
+        )
+        feed_mask_fn = make_visibility_mask_fn(overcooked_v2_object_ctx(algo_cfg, env))
+        print("[xp_seeds] ocv2 visibility gating enabled for the feed channel")
+
     xp_partner_feed_dim = 5
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks, greedy_eval=greedy_eval,
-        partner_feed_dim=xp_partner_feed_dim, lbf_ctx=lbf_ctx,
+        partner_feed_dim=xp_partner_feed_dim, lbf_ctx=lbf_ctx, feed_mask_fn=feed_mask_fn,
     ))
 
     all_row_metrics = []
@@ -1057,10 +1075,10 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
                 def __init__(self, run):
                     self.run = run
 
-                def log_video(self, tag, path, commit=True):
+                def log_video(self, tag, path, commit=True, caption=None):
                     import wandb
 
-                    self.run.log({tag: wandb.Video(path, format="mp4")}, commit=commit)
+                    self.run.log({tag: wandb.Video(path, format="mp4", caption=caption)}, commit=commit)
 
             xp_video_dir = os.path.join(xp_dir, "videos")
             os.makedirs(xp_video_dir, exist_ok=True)
@@ -1566,13 +1584,23 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
         )
         ja_card_masks = build_card_masks(_img_h, _img_w, _feat_h, _feat_w)
 
+    # Ocv2 visibility gating: mask the feed exactly as at train time.
+    feed_mask_fn = None
+    if (feed_attn_dims is not None and task_cfg["ENV_NAME"] == "overcooked-v2"
+            and algo_cfg.get("JA_VISIBILITY_GATING", False)):
+        from agents.overcooked_v2.ja_overcooked_v2_attention import (
+            make_visibility_mask_fn, overcooked_v2_object_ctx,
+        )
+        feed_mask_fn = make_visibility_mask_fn(overcooked_v2_object_ctx(algo_cfg, env))
+        print("[xp_seeds] ocv2 visibility gating enabled for the feed channel")
+
     xp_partner_feed_dim = 5
     greedy_eval = True
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks, greedy_eval=greedy_eval,
-        partner_feed_dim=xp_partner_feed_dim,
+        partner_feed_dim=xp_partner_feed_dim, feed_mask_fn=feed_mask_fn,
     ))
 
     all_row_metrics = []

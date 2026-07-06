@@ -2,22 +2,25 @@ defaults:
   - ja_ippo/_base_
   - _self_
 
-# MATE = IPPO + attention with the dense attended-object occupancy aux and the
-# partner-attention feed. Duplicates the validated demo_cook_simple hyperparameters
-# (Hydra nested-defaults include breaks, per the -op config) and adds the
-# object-occupancy mechanism, which select_mechanism picks on JA_OBJECT_OCCUPANCY.
-TOTAL_TIMESTEPS: 3e7   # paper Demo Cook SP uses 30M
+# MATE = attention with the dense attended-object occupancy aux and the
+# partner-attention feed; run on the -op task for the full method. Duplicates the
+# tuned demo_cook_simple recipe (Hydra nested-defaults include breaks, per the
+# -op config); select_mechanism picks the mechanism on JA_OBJECT_OCCUPANCY.
+TOTAL_TIMESTEPS: 3e7   # set at launch: SP block ran 2e7; OP block runs 5e7 (+ h25M)
 NUM_ENVS: 256          # 256x256 fits a 32GB V100; drop to ~192 if the 4th channel OOMs
 CHECKPOINT_FREQ_TIMESTEPS: 1000000
 SAVE_CKPT_VIDEOS: true
 
-# Validated stabilizers from the IPPO baseline (czbkm1yq): cooking LR 4e-4 with
-# GAE 0.9 and a tight grad clip 0.25 to prevent the ~6-8M collapse.
-LR: 4e-4
-GAE_LAMBDA: 0.9
+# Locked recipe from the 2026-07-04/06 sweep (papercore + LR interp): mb64 keeps
+# updates bounded (mb16 collapses at every LR on the fixed-replay code), GAE 0.95
+# protects entropy, LR 3e-4 is the hot-but-stable point. Grad clip 0.25 as in the
+# sweep runs.
+NUM_MINIBATCHES: 64
+LR: 3e-4
+GAE_LAMBDA: 0.95
 ANNEAL_LR: true
 MAX_GRAD_NORM: 0.25
-REW_SHAPING_HORIZON: 15000000   # linear shaped-reward anneal 1->0 over 15M env steps
+REW_SHAPING_HORIZON: 15000000   # linear shaped-reward anneal 1->0; 25M on the OP schedule
 
 # Dense attended-object occupancy (MATE): pool spatial attention onto the detected
 # task objects, select the partner-attended object, build a discounted
@@ -26,6 +29,10 @@ REW_SHAPING_HORIZON: 15000000   # linear shaped-reward anneal 1->0 over 15M env 
 # fed back as a 4th image channel.
 JA_OBJECT_OCCUPANCY: true
 FEED_OTHER_ATTN: true
+# Strict gaze-following under partial observability: the feed is cell-masked to
+# the receiver's view and zeroed unless the partner is in view; the aux target
+# only counts partner-attention events that were witnessable when they happened.
+JA_VISIBILITY_GATING: true
 JA_OBJECT_AUX_COEF: 0.005
 JA_FUTURE_GAMMA_OCC: 0.95
 JA_OBJECT_ROI_RADIUS: 1
