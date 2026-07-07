@@ -836,7 +836,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         seed_params.append(params_i)
         print(f"  seed {i}: {status}")
 
-    max_steps = int(algo_cfg.get("ROLLOUT_LENGTH", algo_cfg.get("ENV_KWARGS", {}).get("max_steps", 400)))
+    max_steps = int(algo_cfg.get("ENV_KWARGS", {}).get("max_steps") or algo_cfg.get("ROLLOUT_LENGTH", 400))
     rng = jax.random.PRNGKey(EVAL_SEED)
     rng, eval_rng = jax.random.split(rng)
     outer_rngs = jax.random.split(eval_rng, num_seeds)
@@ -1547,7 +1547,10 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
 
     stacked_params = jax.tree.map(lambda *xs: jnp.stack(xs), *seed_params)
 
-    max_steps = task_cfg["ROLLOUT_LENGTH"]
+    # Eval over full episodes: ROLLOUT_LENGTH is the training chunk, which can be
+    # shorter than an episode (ocv2: 256 < 400) so no episode completes and the
+    # return metric stays empty. Use the env's episode length.
+    max_steps = int(task_cfg.get("ENV_KWARGS", {}).get("max_steps") or task_cfg["ROLLOUT_LENGTH"])
     rng, eval_rng = jax.random.split(rng)
     outer_rngs = jax.random.split(eval_rng, num_seeds)
     action_sizes = {k: int(env.action_space(k).n) for k in env.agents}
@@ -1606,13 +1609,18 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     all_row_metrics = []
     jsd_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
     start_time = time.time()
+    # Prefer the env's sparse-return metric where present (ocv2 exposes
+    # `base_return`; card/LBF fall back to `returned_episode_returns`).
+    score_key = None
     for i in range(num_seeds):
         print(f"  row {i} (seed {i} vs all) ...", end=" ", flush=True)
         row_metrics, row_jsds, _row_card_jsds, _row_matches = row_fn(outer_rngs[i], seed_params[i])
         jsd_matrix[i] = np.array(row_jsds)
         all_row_metrics.append(row_metrics)
+        if score_key is None:
+            score_key = "base_return" if "base_return" in row_metrics else "returned_episode_returns"
         for j in range(num_seeds):
-            ret = np.array(row_metrics["returned_episode_returns"][j]).mean()
+            ret = np.array(row_metrics[score_key][j]).mean()
             jsd_val = np.array(row_jsds[j]).mean()
             tag = "SP" if i == j else "XP"
             print(f"  [{tag}] {i}x{j}: return={ret:.2f} jsd={jsd_val:.4f}", end="")
@@ -1621,10 +1629,14 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     elapsed = time.time() - start_time
     print(f"[xp_seeds] evaluation done in {elapsed:.1f}s")
 
-    # Build score matrix
+    # Build score matrix; reduce any trailing per-agent axis (ocv2 base_return
+    # is per-agent, and the team reward makes both agents identical).
     score_matrix = np.zeros((num_seeds, num_seeds, NUM_EVAL_EPISODES))
     for i in range(num_seeds):
-        score_matrix[i] = np.array(all_row_metrics[i]["returned_episode_returns"])
+        arr = np.array(all_row_metrics[i][score_key])
+        if arr.ndim == 3:
+            arr = arr.mean(axis=-1)
+        score_matrix[i] = arr
 
     score_mean = score_matrix.mean(axis=-1)
     jsd_ep_means = jsd_matrix.mean(axis=-1)
