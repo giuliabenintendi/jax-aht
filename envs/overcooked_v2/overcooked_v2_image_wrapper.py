@@ -66,6 +66,10 @@ class OvercookedV2ImageWrapper(BaseEnv):
         self,
         tile_size: int = TILE_PIXELS,
         do_reward_shaping: bool = True,
+        egocentric: bool = False,
+        agent_fov_size: int = 5,
+        agent_fov_centered: bool = True,
+        rotate_obs: bool = True,
         **kwargs,
     ):
         self.env = OvercookedV2(**kwargs)
@@ -79,9 +83,25 @@ class OvercookedV2ImageWrapper(BaseEnv):
         self.agent_view_size = self.env.agent_view_size
         self.do_reward_shaping = do_reward_shaping
 
+        # Egocentric obs (DreamTeam / Ye et al. 2020): a square agent_fov_size
+        # window around the agent, rotated (when rotate_obs) so the agent's facing
+        # is always up. agent_fov_centered keeps the agent at the window centre —
+        # a symmetric radius (agent_fov_size-1)//2 view matching the allocentric
+        # mask exactly, so egocentric vs allocentric isolates only the frame, not
+        # the amount seen. False = DreamTeam's bottom-anchored (forward-biased) crop.
+        self.egocentric = egocentric
+        self.agent_fov_size = agent_fov_size
+        self.agent_fov_centered = agent_fov_centered
+        self.rotate_obs = rotate_obs
+
         self._img_h = self.grid_height * self.tile_size
         self._img_w = self.grid_width * self.tile_size
-        self._obs_dim = self._img_h * self._img_w * 3
+        if egocentric:
+            # Square obs read by agents.initialize_agents._get_image_dims via fov_px.
+            self.fov_px = agent_fov_size * self.tile_size
+            self._obs_dim = self.fov_px * self.fov_px * 3
+        else:
+            self._obs_dim = self._img_h * self._img_w * 3
 
         self.observation_spaces = {a: self.observation_space(a) for a in self.agents}
         self.action_spaces = {a: self.action_space(a) for a in self.agents}
@@ -124,7 +144,85 @@ class OvercookedV2ImageWrapper(BaseEnv):
             lambda iv: INGREDIENT_COLORS.at[:n_ing].set(INGREDIENT_COLORS[iv])
         )(inv)
 
+    def _forward_up(self, crop: jnp.ndarray, direction: jnp.ndarray) -> jnp.ndarray:
+        """Rotate the crop so the agent's facing points up (DreamTeam align_forward_up)."""
+        k = jnp.array([0, 2, 1, 3])[direction]
+        return jax.lax.switch(
+            k,
+            (
+                lambda c: c,
+                lambda c: jnp.rot90(c, 1, axes=(0, 1)),
+                lambda c: jnp.rot90(c, 2, axes=(0, 1)),
+                lambda c: jnp.rot90(c, 3, axes=(0, 1)),
+            ),
+            crop,
+        )
+
+    def _crop_bottom(
+        self, img: jnp.ndarray, x: jnp.ndarray, y: jnp.ndarray, direction: jnp.ndarray
+    ) -> jnp.ndarray:
+        """Bottom-anchored FOV crop around the agent (DreamTeam crop_field_of_view_3d_bottom).
+
+        The agent sits near the bottom-center of the crop looking up, so it sees
+        mostly the tiles ahead of it; combined with `_forward_up` this yields the
+        forward-up egocentric view. Off-grid area is black-padded.
+        """
+        fov = self.fov_px
+        padded = jnp.pad(img, ((fov, fov), (fov, fov), (0, 0)))
+        ax = x * self.tile_size + self.tile_size // 2 + fov
+        ay = y * self.tile_size + self.tile_size // 2 + fov
+        half = fov // 2
+        half_tile = self.tile_size // 2
+        starts = (
+            lambda: jnp.array([ay - fov + 1 + half_tile, ax - half, 0]),
+            lambda: jnp.array([ay - half, ax - half_tile, 0]),
+            lambda: jnp.array([ay - half_tile, ax - half, 0]),
+            lambda: jnp.array([ay - half, ax - fov + 1 + half_tile, 0]),
+        )
+        idx = jnp.array([0, 2, 1, 3])[direction]
+        start = jax.lax.switch(idx, starts)
+        return jax.lax.dynamic_slice(padded, start, (fov, fov, img.shape[2]))
+
+    def _crop_center(
+        self, img: jnp.ndarray, x: jnp.ndarray, y: jnp.ndarray
+    ) -> jnp.ndarray:
+        """Symmetric FOV crop centred on the agent (radius (agent_fov_size-1)//2)."""
+        fov = self.fov_px
+        padded = jnp.pad(img, ((fov, fov), (fov, fov), (0, 0)))
+        cx = x * self.tile_size + self.tile_size // 2 + fov
+        cy = y * self.tile_size + self.tile_size // 2 + fov
+        half = fov // 2
+        start = jnp.array([cy - half, cx - half, 0])
+        return jax.lax.dynamic_slice(padded, start, (fov, fov, img.shape[2]))
+
+    def _egocentric_obs(self, env_state) -> Dict[str, jnp.ndarray]:
+        positions = env_state.agents.pos
+        dirs = env_state.agents.dir
+        if self.env.op_ingredient_permutations:
+            palettes = self._agent_palettes(env_state)
+            imgs = [
+                render_state(env_state, self.tile_size, ingredient_colors=palettes[i])
+                for i in range(self.num_agents)
+            ]
+        else:
+            img = render_state(env_state, self.tile_size)
+            imgs = [img] * self.num_agents
+
+        obs = {}
+        for i in range(self.num_agents):
+            if self.agent_fov_centered:
+                crop = self._crop_center(imgs[i], positions.x[i], positions.y[i])
+            else:
+                crop = self._crop_bottom(imgs[i], positions.x[i], positions.y[i], dirs[i])
+            if self.rotate_obs:
+                crop = self._forward_up(crop, dirs[i])
+            obs[self.agents[i]] = crop.flatten().astype(jnp.float32) / 255.0
+        return obs
+
     def _make_obs(self, env_state) -> Dict[str, jnp.ndarray]:
+        if self.egocentric:
+            return self._egocentric_obs(env_state)
+
         if self.env.op_ingredient_permutations:
             palettes = self._agent_palettes(env_state)
             imgs = [
