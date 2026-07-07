@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from enum import IntEnum
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -121,6 +122,98 @@ def object_feature_coords(object_pos, tile_size, feat_h, feat_w, img_h, img_w):
     return fr, fc
 
 
+def object_feature_masks_from_tiles(
+    local_rows,
+    local_cols,
+    visible,
+    *,
+    tile_size,
+    feat_h,
+    feat_w,
+    img_h,
+    img_w,
+):
+    """Feature-cell masks covering each object's full tile footprint.
+
+    `local_rows`/`local_cols` and `visible` are `(A, M)`. Returns
+    `(A, M, feat_h, feat_w)` masks. A feature cell belongs to an object when
+    the feature-cell centre, projected into input-image pixels, lies inside the
+    object's tile.
+    """
+    feat_r = jnp.arange(feat_h, dtype=jnp.float32)
+    feat_c = jnp.arange(feat_w, dtype=jnp.float32)
+    pix_r = (feat_r + 0.5) * (float(img_h) / float(feat_h))
+    pix_c = (feat_c + 0.5) * (float(img_w) / float(feat_w))
+
+    r0 = local_rows[..., None, None] * tile_size
+    r1 = (local_rows[..., None, None] + 1) * tile_size
+    c0 = local_cols[..., None, None] * tile_size
+    c1 = (local_cols[..., None, None] + 1) * tile_size
+
+    row_in = (pix_r[None, None, :, None] >= r0) & (pix_r[None, None, :, None] < r1)
+    col_in = (pix_c[None, None, None, :] >= c0) & (pix_c[None, None, None, :] < c1)
+    masks = (row_in & col_in).astype(jnp.float32)
+    return masks * visible[..., None, None].astype(jnp.float32)
+
+
+def crop_local_object_feature_masks(
+    object_pos,
+    agent_rows,
+    agent_cols,
+    dirs,
+    *,
+    view_size,
+    crop_size,
+    rotate_obs,
+    tile_size,
+    feat_h,
+    feat_w,
+    img_h,
+    img_w,
+):
+    """Object tile-footprint masks in each actor's crop-local feature grid."""
+    obj_r = object_pos[:, 0][None, :]
+    obj_c = object_pos[:, 1][None, :]
+
+    local_r = obj_r - agent_rows[:, None] + view_size
+    local_c = obj_c - agent_cols[:, None] + view_size
+    visible = (
+        (local_r >= 0)
+        & (local_r < crop_size)
+        & (local_c >= 0)
+        & (local_c < crop_size)
+    )
+
+    if rotate_obs:
+        k = jnp.array([0, 2, 1, 3])[dirs]
+
+        def _rot_one(r, c, kk):
+            return jax.lax.switch(
+                kk,
+                (
+                    lambda x: x,
+                    lambda x: (crop_size - 1 - x[1], x[0]),
+                    lambda x: (crop_size - 1 - x[0], crop_size - 1 - x[1]),
+                    lambda x: (x[1], crop_size - 1 - x[0]),
+                ),
+                (r, c),
+            )
+
+        local_r, local_c = jax.vmap(_rot_one)(local_r, local_c, k)
+
+    masks = object_feature_masks_from_tiles(
+        local_r,
+        local_c,
+        visible,
+        tile_size=tile_size,
+        feat_h=feat_h,
+        feat_w=feat_w,
+        img_h=img_h,
+        img_w=img_w,
+    )
+    return masks, visible.astype(jnp.float32)
+
+
 def _unwrap_env_state(state):
     """Descend wrapper states (LogWrapper / WrappedEnvState) to the raw
     OvercookedV2 `State`. Works on traced pytrees (attribute access is static)."""
@@ -191,6 +284,7 @@ def overcooked_v2_object_ctx(config, env) -> dict:
     from agents.initialize_agents import _get_image_dims
     from agents.ja_actor_critic import _compute_resnet_output_dims
 
+    wrapper = env._env if hasattr(env, "_env") else env
     img_h, img_w, _ = _get_image_dims(env)
     feat_h, feat_w = _compute_resnet_output_dims(
         img_h,
@@ -214,6 +308,10 @@ def overcooked_v2_object_ctx(config, env) -> dict:
         "grid_h": grid_h,
         "grid_w": grid_w,
         "agent_view_size": raw.agent_view_size,  # None = fully observable
+        "egocentric": bool(getattr(wrapper, "egocentric", False)),
+        "agent_fov_size": int(getattr(wrapper, "agent_fov_size", 0) or 0),
+        "agent_fov_centered": bool(getattr(wrapper, "agent_fov_centered", True)),
+        "rotate_obs": bool(getattr(wrapper, "rotate_obs", False)),
         "num_objects": int(obj_pos.shape[0]),
         "object_pos": jnp.asarray(obj_pos),  # (M, 2) (row, col)
         "object_cat": jnp.asarray(obj_cat),  # (M,)

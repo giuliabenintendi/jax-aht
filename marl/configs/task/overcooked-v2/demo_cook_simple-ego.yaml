@@ -1,0 +1,19 @@
+ENV_NAME: overcooked-v2
+ROLLOUT_LENGTH: 256   # paper (Forkel et al. 2025); < max_steps, GAE bootstraps at the cut
+ENV_KWARGS:
+  layout: demo_cook_simple
+  obs_type: image
+  agent_view_size: 2
+  max_steps: 400
+  negative_rewards: true
+  random_agent_positions: true
+  sample_recipe_on_delivery: true
+  do_reward_shaping: false
+  # Egocentric north-up obs: a 5x5 centered crop around the agent, but not
+  # forward-up rotated. It sees the same cells as agent_view_size=2 allocentric
+  # while keeping image directions coherent with world-frame actions.
+  egocentric: true
+  agent_fov_size: 5
+  agent_fov_centered: true
+  rotate_obs: false
+TASK_NAME: overcooked-v2/demo_cook_simple-ego

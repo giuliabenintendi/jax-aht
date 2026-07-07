@@ -42,7 +42,9 @@ import jax.numpy as jnp
 
 from agents.overcooked_v2.ja_overcooked_v2_attention import (
     agent_tiles_from_state,
+    crop_local_object_feature_masks,
     make_visibility_mask_fn,
+    object_feature_masks_from_tiles,
     overcooked_v2_object_ctx,
     partner_in_view,
     view_feature_masks,
@@ -87,6 +89,24 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         self.tile_size = ctx["tile_size"]
         self.grid_h, self.grid_w = ctx["grid_h"], ctx["grid_w"]
         self.view_size = ctx["agent_view_size"]
+        self.egocentric = ctx["egocentric"]
+        self.agent_fov_size = ctx["agent_fov_size"]
+        self.agent_fov_centered = ctx["agent_fov_centered"]
+        self.rotate_obs = ctx["rotate_obs"]
+        if self.egocentric and not self.agent_fov_centered:
+            raise ValueError(
+                "OvercookedV2 egocentric MATE currently supports centered crops only."
+            )
+        if self.egocentric and self.view_size is None:
+            raise ValueError(
+                "OvercookedV2 egocentric MATE needs agent_view_size for crop-local "
+                "object transforms."
+            )
+        if self.egocentric and self.agent_fov_size != 2 * self.view_size + 1:
+            raise ValueError(
+                "OvercookedV2 egocentric MATE expects agent_fov_size to match "
+                "2 * agent_view_size + 1."
+            )
 
         self.visibility_gating = bool(config.get("JA_VISIBILITY_GATING", False))
         if self.visibility_gating and self.view_size is None:
@@ -97,6 +117,7 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         # Fixed feature-grid cell (fr, fc) of each detected task object. Constant
         # across steps and episodes because task objects are static.
         self.object_feat_rc = ctx["object_feat_rc"]  # (M, 2)
+        self.object_pos = ctx["object_pos"]  # (M, 2) tile row/col in layout frame
         self.num_objects = ctx["num_objects"]
 
         self.partner_coef = float(config.get("JA_FUTURE_PARTNER_COEF", 0.0))
@@ -106,11 +127,6 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         self.ramp_env_steps = float(config.get("JA_FUTURE_RAMP_ENV_STEPS", 1.0))
         self.feed_other_attn = bool(config.get("FEED_OTHER_ATTN", False))
 
-        self.obj_roi_radius = int(config.get("JA_OBJECT_ROI_RADIUS", 1))
-        # Target blob half-width on the feature grid. 0 -> single attended-object
-        # cell; >0 -> a (2r+1)^2 box, so the dense CE rewards attention NEAR the
-        # object, not only on its centre cell.
-        self.obj_target_radius = int(config.get("JA_OBJECT_TARGET_RADIUS", 0))
         self.aux_occ_coef = float(config.get("JA_OBJECT_AUX_COEF", 0.005))
         self.aux_coef = self.aux_occ_coef
         self.aux_active = self.aux_occ_coef > 0.0
@@ -163,37 +179,157 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         cols = cols.swapaxes(0, 1).reshape(-1)
         return rows, cols, self._swap_partner(rows, num_actors), self._swap_partner(cols, num_actors)
 
-    def _object_roi_mass(self, attn_2d):
-        """Raw attention mass inside a (2r+1)^2 ROI around each task object cell.
+    def _actor_dirs(self, env_state):
+        raw = env_state
+        while hasattr(raw, "env_state"):
+            raw = raw.env_state
+        return raw.agents.dir.swapaxes(0, 1).reshape(-1)
+
+    def _object_roi_mass(self, attn_2d, object_masks, object_visible):
+        """Raw attention mass inside each task object's feature-mask footprint.
 
         attn_2d: (A, feat_h, feat_w). Returns (object_mass (A, M), on_mass (A,)).
         """
-        fr = self.object_feat_rc[:, 0]  # (M,)
-        fc = self.object_feat_rc[:, 1]
-        attn_flat = attn_2d.reshape(attn_2d.shape[0], self.feat_h * self.feat_w)
-        object_mass = jnp.zeros((attn_2d.shape[0], self.num_objects), dtype=attn_2d.dtype)
-        radius = self.obj_roi_radius
-        for dr in range(-radius, radius + 1):
-            rr = fr + dr
-            valid_r = (rr >= 0) & (rr < self.feat_h)
-            rr = jnp.clip(rr, 0, self.feat_h - 1)
-            for dc in range(-radius, radius + 1):
-                cc = fc + dc
-                valid = valid_r & (cc >= 0) & (cc < self.feat_w)
-                cc = jnp.clip(cc, 0, self.feat_w - 1)
-                idx = rr * self.feat_w + cc  # (M,)
-                mass = attn_flat[:, idx]  # (A, M)
-                object_mass = object_mass + jnp.where(valid[None, :], mass, 0.0)
+        object_mass = (attn_2d[:, None, :, :] * object_masks).sum(axis=(-2, -1))
+        object_mass = object_mass * object_visible
         return object_mass, object_mass.sum(axis=-1)
+
+    def _object_frame(self, env_state, num_actors):
+        if not self.egocentric:
+            local_rows = jnp.broadcast_to(
+                self.object_pos[:, 0][None, :],
+                (num_actors, self.num_objects),
+            )
+            local_cols = jnp.broadcast_to(
+                self.object_pos[:, 1][None, :],
+                (num_actors, self.num_objects),
+            )
+            visible = jnp.ones((num_actors, self.num_objects), dtype=jnp.float32)
+            masks = object_feature_masks_from_tiles(
+                local_rows,
+                local_cols,
+                visible,
+                tile_size=self.tile_size,
+                feat_h=self.feat_h,
+                feat_w=self.feat_w,
+                img_h=self.img_h,
+                img_w=self.img_w,
+            )
+            return masks, visible
+
+        rows, cols = agent_tiles_from_state(env_state)
+        rows = rows.swapaxes(0, 1).reshape(-1)
+        cols = cols.swapaxes(0, 1).reshape(-1)
+        dirs = self._actor_dirs(env_state)
+        return crop_local_object_feature_masks(
+            self.object_pos,
+            rows,
+            cols,
+            dirs,
+            view_size=self.view_size,
+            crop_size=self.agent_fov_size,
+            rotate_obs=self.rotate_obs,
+            tile_size=self.tile_size,
+            feat_h=self.feat_h,
+            feat_w=self.feat_w,
+            img_h=self.img_h,
+            img_w=self.img_w,
+        )
+
+    def _reframe_partner_attention(self, attn_2d, env_state, new_env_state, num_actors):
+        """Partner attention from its old crop frame into receiver's new crop frame."""
+        partner_attn = self._swap_partner(attn_2d, num_actors)
+        if not self.egocentric:
+            return partner_attn
+
+        rows_t, cols_t = agent_tiles_from_state(env_state)
+        src_rows = self._swap_partner(rows_t.swapaxes(0, 1).reshape(-1), num_actors)
+        src_cols = self._swap_partner(cols_t.swapaxes(0, 1).reshape(-1), num_actors)
+        src_dirs = self._swap_partner(self._actor_dirs(env_state), num_actors)
+
+        dst_rows, dst_cols = agent_tiles_from_state(new_env_state)
+        dst_rows = dst_rows.swapaxes(0, 1).reshape(-1)
+        dst_cols = dst_cols.swapaxes(0, 1).reshape(-1)
+        dst_dirs = self._actor_dirs(new_env_state)
+
+        feat_r, feat_c = jnp.meshgrid(
+            jnp.arange(self.feat_h), jnp.arange(self.feat_w), indexing="ij"
+        )
+        feat_r = feat_r.reshape(-1)
+        feat_c = feat_c.reshape(-1)
+        # Nearest tile represented by each source feature cell. The default
+        # OvercookedV2 crop has an exact 2x2 feature-cell-per-tile ratio.
+        local_r = feat_r * self.agent_fov_size // self.feat_h
+        local_c = feat_c * self.agent_fov_size // self.feat_w
+        num_cells = self.feat_h * self.feat_w
+
+        def _inv_rot(r, c, direction):
+            k = jnp.array([0, 2, 1, 3])[direction]
+            return jax.lax.switch(
+                k,
+                (
+                    lambda x: x,
+                    lambda x: (x[1], self.agent_fov_size - 1 - x[0]),
+                    lambda x: (self.agent_fov_size - 1 - x[0], self.agent_fov_size - 1 - x[1]),
+                    lambda x: (self.agent_fov_size - 1 - x[1], x[0]),
+                ),
+                (r, c),
+            )
+
+        def _fwd_rot(r, c, direction):
+            k = jnp.array([0, 2, 1, 3])[direction]
+            return jax.lax.switch(
+                k,
+                (
+                    lambda x: x,
+                    lambda x: (self.agent_fov_size - 1 - x[1], x[0]),
+                    lambda x: (self.agent_fov_size - 1 - x[0], self.agent_fov_size - 1 - x[1]),
+                    lambda x: (x[1], self.agent_fov_size - 1 - x[0]),
+                ),
+                (r, c),
+            )
+
+        def _one(src_map, sr, sc, sd, dr, dc, dd):
+            rr, cc = local_r, local_c
+            if self.rotate_obs:
+                rr, cc = _inv_rot(rr, cc, sd)
+            raw_r = rr + sr - self.view_size
+            raw_c = cc + sc - self.view_size
+            dst_r = raw_r - dr + self.view_size
+            dst_c = raw_c - dc + self.view_size
+            valid = (
+                (dst_r >= 0)
+                & (dst_r < self.agent_fov_size)
+                & (dst_c >= 0)
+                & (dst_c < self.agent_fov_size)
+            )
+            if self.rotate_obs:
+                dst_r, dst_c = _fwd_rot(dst_r, dst_c, dd)
+            centre_r = dst_r * self.tile_size + self.tile_size // 2
+            centre_c = dst_c * self.tile_size + self.tile_size // 2
+            fr = jnp.clip(centre_r * self.feat_h // self.img_h, 0, self.feat_h - 1)
+            fc = jnp.clip(centre_c * self.feat_w // self.img_w, 0, self.feat_w - 1)
+            dst_idx = (fr * self.feat_w + fc).astype(jnp.int32)
+            mass = jnp.where(valid, src_map.reshape(-1), 0.0)
+            return jnp.zeros((num_cells,), dtype=src_map.dtype).at[dst_idx].add(mass).reshape(
+                self.feat_h, self.feat_w
+            )
+
+        return jax.vmap(_one)(
+            partner_attn, src_rows, src_cols, src_dirs, dst_rows, dst_cols, dst_dirs
+        )
 
     def step(self, *, attn_map, env_state, new_env_state, action, env_reward,
              info, done_actors, carry, num_actors, update_steps):
         del action
         attn_2d = _as_spatial_attention(attn_map).squeeze(0)  # (A, feat_h, feat_w)
-        object_mass, on_mass = self._object_roi_mass(attn_2d)  # (A, M), (A,)
+        object_masks, object_visible = self._object_frame(env_state, num_actors)
+        object_mass, on_mass = self._object_roi_mass(
+            attn_2d, object_masks, object_visible
+        )  # (A, M), (A,)
 
         sel = jnp.argmax(object_mass, axis=-1)  # (A,) most-attended object
-        attended_feat = self.object_feat_rc[sel]  # (A, 2) feature cell (fr, fc)
+        attended_visible = object_visible[jnp.arange(num_actors), sel]
 
         # Receiver tile + partner-visible flag at t (pre-step state = the state
         # that generated obs_t / attn_t); consumed by the aux witness mask and
@@ -211,10 +347,16 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         # inside it (strict gaze-following).
         if self.visibility_gating:
             rows_n, cols_n, prow_n, pcol_n = self._actor_tiles(new_env_state, num_actors)
-            feed_mask = view_feature_masks(
-                rows_n, cols_n, self.view_size,
-                self.grid_h, self.grid_w, self.feat_h, self.feat_w,
-            ) * partner_in_view(rows_n, cols_n, prow_n, pcol_n, self.view_size)[:, None, None]
+            pvis_n = partner_in_view(rows_n, cols_n, prow_n, pcol_n, self.view_size)
+            if self.egocentric:
+                feed_mask = jnp.ones(
+                    (num_actors, self.feat_h, self.feat_w), dtype=jnp.float32
+                ) * pvis_n[:, None, None]
+            else:
+                feed_mask = view_feature_masks(
+                    rows_n, cols_n, self.view_size,
+                    self.grid_h, self.grid_w, self.feat_h, self.feat_w,
+                ) * pvis_n[:, None, None]
         else:
             feed_mask = jnp.ones((num_actors, self.feat_h, self.feat_w), dtype=jnp.float32)
 
@@ -230,7 +372,10 @@ class OvercookedV2DenseObjectOccupancyMechanism:
 
         extras = {
             "ja_future_attn_2d": jax.lax.stop_gradient(attn_2d.astype(jnp.float32)),
-            "ja_future_feat_post": attended_feat.astype(jnp.int32),
+            "ja_future_event_visible": attended_visible,
+            "ja_future_object_idx": sel.astype(jnp.int32),
+            "ja_future_object_mask_all": object_masks.astype(jnp.float32),
+            "ja_future_object_visible_all": object_visible,
             "ja_obj_on_mass": jax.lax.stop_gradient(on_mass),
             "ja_self_rc": self_rc_t,
             "ja_partner_visible": pvis_t,
@@ -238,78 +383,82 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             "delivery": env_reward,
             "shaped_applied": shaped_total,
         }
-        swapped_attn = self._swap_partner(attn_2d, num_actors)
+        partner_attn_next = self._reframe_partner_attention(
+            attn_2d, env_state, new_env_state, num_actors
+        )
         uniform = jnp.ones((self.feat_h, self.feat_w), dtype=jnp.float32) / float(
             self.feat_h * self.feat_w
         )
-        new_partner_attn = jnp.where(done_actors[:, None, None], uniform[None], swapped_attn)
+        new_partner_attn = jnp.where(done_actors[:, None, None], uniform[None], partner_attn_next)
         reward = env_reward + shaped_total
         return reward, {"partner_attn": jax.lax.stop_gradient(new_partner_attn),
                         "feed_mask": feed_mask}, extras
 
-    def _attended_box_occupancy(self, fr, fc, done, radius, witness=None):
-        """Discounted first-occupancy of a (2*radius+1)^2 box around the attended
-        object cell. radius=0 reduces to the single-cell target.
+    def _attended_mask_occupancy(self, event_mask, done, witness=None, event_valid=None):
+        """Discounted first-occupancy over full object footprint masks.
 
-        `witness` (optional, (T, A, C) in {0,1}) is ANDed into the box BEFORE the
-        backward scan: an unwitnessed attention event neither creates a target
-        nor shadows a later witnessed one — the discount passes through it, so
-        the target is gamma^k to the first WITNESSED event.
+        `event_mask` is `(T, A, feat_h, feat_w)` in the receiver's feature frame.
         """
-        num_cells = self.feat_h * self.feat_w
-        box = jnp.zeros(fr.shape + (num_cells,), dtype=jnp.float32)  # (T, A, C)
-        for dr in range(-radius, radius + 1):
-            rr = fr + dr
-            valid_r = (rr >= 0) & (rr < self.feat_h)
-            rr = jnp.clip(rr, 0, self.feat_h - 1)
-            for dc in range(-radius, radius + 1):
-                cc = fc + dc
-                valid = valid_r & (cc >= 0) & (cc < self.feat_w)
-                cc = jnp.clip(cc, 0, self.feat_w - 1)
-                idx = rr * self.feat_w + cc
-                box = box + jnp.where(
-                    valid[..., None],
-                    jax.nn.one_hot(idx, num_cells, dtype=jnp.float32),
-                    0.0,
-                )
+        box = event_mask.reshape(*event_mask.shape[:2], self.feat_h * self.feat_w)
         box = (box > 0.0).astype(jnp.float32)
+        if event_valid is not None:
+            box = box * event_valid[..., None]
         if witness is not None:
             box = box * witness
 
         def _scan(m_next, x_t):
             box_t, done_t = x_t
             m_next = jnp.where(done_t[..., None], 0.0, m_next)
-            m_t = jnp.where(box_t > 0.0, 1.0, self.gamma_occ * m_next)
+            m_t = jnp.where(box_t > 0.0, box_t, self.gamma_occ * m_next)
             return m_t, m_t
 
-        init = jnp.zeros(box.shape[1:], dtype=jnp.float32)  # (A, C)
-        _, m = jax.lax.scan(_scan, init, (box, done), reverse=True)  # (T, A, C)
+        init = jnp.zeros(box.shape[1:], dtype=jnp.float32)
+        _, m = jax.lax.scan(_scan, init, (box, done), reverse=True)
         return m / (m.sum(axis=-1, keepdims=True) + 1e-8)
 
     def _occupancy_targets(self, traj_batch):
-        feat_rc = traj_batch.extras["ja_future_feat_post"]  # (T, A, 2)
-        t_dim, a_dim = feat_rc.shape[0], feat_rc.shape[1]
-        fr, fc = feat_rc[..., 0], feat_rc[..., 1]  # (T, A)
-        self_occ = self._attended_box_occupancy(
-            fr, fc, traj_batch.done, self.obj_target_radius,
+        mask_all = traj_batch.extras["ja_future_object_mask_all"]  # (T, A, M, fh, fw)
+        vis_all = traj_batch.extras["ja_future_object_visible_all"]  # (T, A, M)
+        sel = traj_batch.extras["ja_future_object_idx"]  # (T, A)
+        t_dim, a_dim = sel.shape[0], sel.shape[1]
+        t_idx = jnp.arange(t_dim)[:, None]
+        a_idx = jnp.arange(a_dim)[None, :]
+        self_valid = vis_all[t_idx, a_idx, sel]
+        self_mask = mask_all[t_idx, a_idx, sel]
+        self_occ = self._attended_mask_occupancy(
+            self_mask, traj_batch.done,
+            event_valid=self_valid,
         ).reshape(t_dim, a_dim, self.feat_h, self.feat_w)
 
         # Partner target built from the PARTNER's attended cells, witness-masked
-        # in the RECEIVER's frame (equivalent to swap-after-scan when gating is
-        # off; the mask must be the receiver's, so swap the events first).
+        # in the RECEIVER's frame. For egocentric crops, each receiver has its
+        # own crop-local coordinates for the partner-selected object, so gather
+        # the partner's selected object ID from the receiver's per-object table.
         half = a_dim // 2
-        p_fr = jnp.concatenate([fr[:, half:], fr[:, :half]], axis=1)
-        p_fc = jnp.concatenate([fc[:, half:], fc[:, :half]], axis=1)
+        p_sel = jnp.concatenate([sel[:, half:], sel[:, :half]], axis=1)
+        p_event_valid_src = jnp.concatenate(
+            [self_valid[:, half:], self_valid[:, :half]], axis=1
+        )
+        p_mask = mask_all[t_idx, a_idx, p_sel]
+        p_visible_receiver = vis_all[t_idx, a_idx, p_sel]
+        p_event_valid = p_event_valid_src * p_visible_receiver
         witness = None
         if self.visibility_gating:
-            rc = traj_batch.extras["ja_self_rc"]  # (T, A, 2) receiver tile
-            wit = view_feature_masks(
-                rc[..., 0], rc[..., 1], self.view_size,
-                self.grid_h, self.grid_w, self.feat_h, self.feat_w,
-            ) * traj_batch.extras["ja_partner_visible"][..., None, None]
+            if self.egocentric:
+                wit = jnp.ones(
+                    (t_dim, a_dim, self.feat_h, self.feat_w), dtype=jnp.float32
+                ) * traj_batch.extras["ja_partner_visible"][..., None, None]
+            else:
+                rc = traj_batch.extras["ja_self_rc"]  # (T, A, 2) receiver tile
+                wit = view_feature_masks(
+                    rc[..., 0], rc[..., 1], self.view_size,
+                    self.grid_h, self.grid_w, self.feat_h, self.feat_w,
+                ) * traj_batch.extras["ja_partner_visible"][..., None, None]
             witness = wit.reshape(t_dim, a_dim, self.feat_h * self.feat_w)
-        partner_occ = self._attended_box_occupancy(
-            p_fr, p_fc, traj_batch.done, self.obj_target_radius, witness=witness,
+        partner_occ = self._attended_mask_occupancy(
+            p_mask, traj_batch.done,
+            witness=witness,
+            event_valid=p_event_valid,
         ).reshape(t_dim, a_dim, self.feat_h, self.feat_w)
         return self_occ, partner_occ
 

@@ -1399,7 +1399,7 @@ class OvercookedV2(MultiAgentEnv):
         """State space of the environment."""
         h = self.height
         w = self.width
-        agent_view_size = self.agent_view_size
+        agent_view_size = self.agent_view_size or 0
         return spaces.Dict(
             {
                 "agent_pos": spaces.Box(0, max(w, h), (2,), dtype=jnp.uint32),

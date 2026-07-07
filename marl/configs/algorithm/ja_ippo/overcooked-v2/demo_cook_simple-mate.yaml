@@ -34,12 +34,10 @@ FEED_OTHER_ATTN: true
 # only counts partner-attention events that were witnessable when they happened.
 JA_VISIBILITY_GATING: true
 # Aux knobs matched to the winning LBF dense-object run (ycghndhm): a full-strength
-# aux (0.005) on a single-cell target corrupts the shared trunk before the sparse
-# delivery task ignites and blocks learning; LBF's 1e-4 coef + 3x3 target box is
-# the same mechanism at a scale the base task survives.
+# aux (0.005) corrupts the shared trunk before the sparse delivery task ignites
+# and blocks learning. Overcooked object regions are tile-footprint masks in the
+# current observation frame rather than radius boxes around object centers.
 JA_OBJECT_AUX_COEF: 1e-4
-JA_OBJECT_TARGET_RADIUS: 1
 JA_FUTURE_GAMMA_OCC: 0.95
-JA_OBJECT_ROI_RADIUS: 1
 JA_FUTURE_PARTNER_COEF: 0.0
 JA_FUTURE_SELF_COEF: 0.0
