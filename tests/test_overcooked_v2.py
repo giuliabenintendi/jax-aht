@@ -11,6 +11,7 @@ import numpy as np
 from envs import make_env
 from envs.overcooked_v2.overcooked import OvercookedV2
 from envs.overcooked_v2.common import Actions, StaticObject
+from envs.overcooked_v2.observation_rendering import render_obs_state
 from envs.overcooked_v2.overcooked_v2_image_wrapper import OvercookedV2ImageWrapper
 from envs.overcooked_v2.rendering import INGREDIENT_COLORS, TILE_PIXELS, render_state
 
@@ -42,6 +43,23 @@ def test_overcooked_v2_render_state_shape():
     img = render_state(state, TILE_PIXELS)
     assert img.shape == (env.height * TILE_PIXELS, env.width * TILE_PIXELS, 3)
     assert img.dtype == jnp.uint8
+
+
+def test_overcooked_v2_obs_render_state_shape():
+    env = OvercookedV2(layout="demo_cook_simple", agent_view_size=2)
+    _, state = env.reset(jax.random.PRNGKey(0))
+    img = render_obs_state(state, TILE_PIXELS)
+    assert img.shape == (env.height * TILE_PIXELS, env.width * TILE_PIXELS, 3)
+    assert img.dtype == jnp.uint8
+
+
+def test_overcooked_v2_obs_renderer_is_separate_from_eval_renderer():
+    env = OvercookedV2(layout="demo_cook_simple", agent_view_size=2)
+    _, state = env.reset(jax.random.PRNGKey(0))
+    obs_img = render_obs_state(state, TILE_PIXELS)
+    eval_img = render_state(state, TILE_PIXELS)
+    assert obs_img.shape == eval_img.shape
+    assert not bool(jnp.array_equal(obs_img, eval_img))
 
 
 def test_overcooked_v2_image_wrapper():

@@ -1,12 +1,10 @@
 """Image-based observation wrapper for Overcooked V2.
 
 Overcooked V2 is partially observable: each agent sees a square view radius
-around itself. This wrapper renders the full god's-eye grid and then, per
-agent, zeroes out every cell outside the agent's view box (allocentric
-view-masking) and draws a magenta border around the agent's own tile. Keeping
-a shared allocentric frame (rather than an egocentric crop) means both agents'
-observations live in the same spatial coordinates, which the joint-attention
-machinery relies on.
+around itself. This wrapper renders a policy-observation canvas (separate from
+the human/eval renderer) and then, per agent, either masks a shared allocentric
+frame or crops an egocentric frame. The allocentric path draws a magenta border
+around the agent's own tile.
 
 The underlying env returns a sparse delivery reward plus a separate per-agent
 shaped reward in `info["shaped_reward"]`. When `do_reward_shaping` is set the
@@ -30,7 +28,8 @@ from jaxmarl.environments import spaces
 
 from envs.base_env import BaseEnv, WrappedEnvState
 from envs.overcooked_v2.overcooked import OvercookedV2
-from envs.overcooked_v2.rendering import INGREDIENT_COLORS, TILE_PIXELS, render_state
+from envs.overcooked_v2.observation_rendering import render_obs_state
+from envs.overcooked_v2.rendering import INGREDIENT_COLORS, TILE_PIXELS
 from envs.overcooked_v2.utils import compute_view_box
 
 # Magenta, distinct from all Overcooked tile colors
@@ -131,9 +130,8 @@ class OvercookedV2ImageWrapper(BaseEnv):
         The base env samples a per-agent permutation into
         `state.ingredient_permutations`; true ingredient i must be shown with the
         colour of slot perm^{-1}[i] (matching the symbolic `get_obs` relabeling).
-        Permuting the palette at render time relabels ALL ingredient pixels —
-        piles, pots, dishes, recipe indicator — before anti-aliasing, which a
-        post-hoc pixel recolour cannot do.
+        Permuting the palette at observation-render time relabels all ingredient
+        pixels: piles, pots, dishes, and recipe indicator.
         """
         perms = env_state.ingredient_permutations  # (num_agents, n_ing)
         n_ing = perms.shape[-1]
@@ -201,11 +199,11 @@ class OvercookedV2ImageWrapper(BaseEnv):
         if self.env.op_ingredient_permutations:
             palettes = self._agent_palettes(env_state)
             imgs = [
-                render_state(env_state, self.tile_size, ingredient_colors=palettes[i])
+                render_obs_state(env_state, self.tile_size, ingredient_colors=palettes[i])
                 for i in range(self.num_agents)
             ]
         else:
-            img = render_state(env_state, self.tile_size)
+            img = render_obs_state(env_state, self.tile_size)
             imgs = [img] * self.num_agents
 
         obs = {}
@@ -226,11 +224,11 @@ class OvercookedV2ImageWrapper(BaseEnv):
         if self.env.op_ingredient_permutations:
             palettes = self._agent_palettes(env_state)
             imgs = [
-                render_state(env_state, self.tile_size, ingredient_colors=palettes[i])
+                render_obs_state(env_state, self.tile_size, ingredient_colors=palettes[i])
                 for i in range(self.num_agents)
             ]
         else:
-            img = render_state(env_state, self.tile_size)  # (H_px, W_px, 3) uint8
+            img = render_obs_state(env_state, self.tile_size)  # (H_px, W_px, 3) uint8
             imgs = [img] * self.num_agents
 
         positions = env_state.agents.pos
