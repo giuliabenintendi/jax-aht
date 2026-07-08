@@ -409,7 +409,8 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         def _scan(m_next, x_t):
             box_t, done_t = x_t
             m_next = jnp.where(done_t[..., None], 0.0, m_next)
-            m_t = jnp.where(box_t > 0.0, box_t, self.gamma_occ * m_next)
+            event_t = box_t.sum(axis=-1, keepdims=True) > 0.0
+            m_t = jnp.where(event_t, box_t, self.gamma_occ * m_next)
             return m_t, m_t
 
         init = jnp.zeros(box.shape[1:], dtype=jnp.float32)

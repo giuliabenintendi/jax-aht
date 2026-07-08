@@ -231,13 +231,20 @@ def _witness_traj_extras(mech, T, A):
     receiver 0 sits at tile (2, 2) so feature cols 0-9 are visible."""
     from types import SimpleNamespace
 
-    own = jnp.array([[1, 1], [1, 1]], dtype=jnp.int32)  # actor 0's own cells (unused targets)
-    a1 = jnp.array([[5, 12], [5, 4], [5, 12]], dtype=jnp.int32)  # actor 1's attended cells
-    feat_post = jnp.stack(
-        [jnp.broadcast_to(own[0], (T, 2)), a1], axis=1,
-    )  # (T, A, 2)
+    M = 2
+    mask_all = jnp.zeros((T, A, M, mech.feat_h, mech.feat_w), dtype=jnp.float32)
+    # Object 0 is actor 0's self-selected dummy object.
+    mask_all = mask_all.at[:, :, 0, 1, 1].set(1.0)
+    # Object 1 is the partner-selected object. For receiver 0, put it outside
+    # the receiver's view at t=0/t=2 and inside at t=1.
+    mask_all = mask_all.at[0, :, 1, 5, 12].set(1.0)
+    mask_all = mask_all.at[1, :, 1, 5, 4].set(1.0)
+    mask_all = mask_all.at[2, :, 1, 5, 12].set(1.0)
+    sel = jnp.array([[0, 1], [0, 1], [0, 1]], dtype=jnp.int32)
     extras = {
-        "ja_future_feat_post": feat_post,
+        "ja_future_object_mask_all": mask_all,
+        "ja_future_object_visible_all": jnp.ones((T, A, M), dtype=jnp.float32),
+        "ja_future_object_idx": sel,
         "ja_self_rc": jnp.broadcast_to(jnp.array([2, 2], dtype=jnp.int32), (T, A, 2)),
         "ja_partner_visible": jnp.ones((T, A), dtype=jnp.float32),
     }
@@ -276,6 +283,24 @@ def test_ocv2_mate_gating_off_matches_swap():
     half = A // 2
     swapped = jnp.concatenate([self_occ[:, half:], self_occ[:, :half]], axis=1)
     assert bool(jnp.allclose(partner_occ, swapped, atol=1e-6))
+
+
+def test_ocv2_mate_mask_event_shadows_future_object():
+    mech = _make_mate_mechanism(gating=False)
+    T, A = 2, 1
+    current = jnp.zeros((T, A, mech.feat_h, mech.feat_w), dtype=jnp.float32)
+    current = current.at[0, 0, 1, 1].set(1.0)
+    current = current.at[0, 0, 1, 2].set(1.0)
+    current = current.at[1, 0, 7, 7].set(1.0)
+    target = mech._attended_mask_occupancy(
+        current, jnp.zeros((T, A), dtype=bool),
+    ).reshape(T, A, mech.feat_h, mech.feat_w)
+
+    # A valid event at t=0 should produce exactly the t=0 object mask. The old
+    # per-cell rule incorrectly mixed in discounted t=1 mass at unrelated cells.
+    assert float(target[0, 0, 7, 7]) == 0.0
+    assert float(target[0, 0, 1, 1]) > 0.49
+    assert float(target[0, 0, 1, 2]) > 0.49
 
 
 def test_ocv2_mate_feed_mask_keeps_unmasked_peak_scale():
