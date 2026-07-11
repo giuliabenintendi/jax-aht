@@ -72,6 +72,10 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         ("ja_future_partner_overlap", "JA"),
         ("ja_future_self_overlap", "JA"),
         ("aux_partner_occ_loss", "Losses"),
+        ("aux_partner_occ_weighted", "Losses"),
+        ("aux_to_policy_loss_abs", "Losses"),
+        ("aux_to_value_term_abs", "Losses"),
+        ("aux_to_total_loss_abs", "Losses"),
         ("ja_obj_on_mass", "JA"),
         ("ja_partner_visible_frac", "JA"),
         ("ja_aux_active_frac", "JA"),
@@ -138,6 +142,7 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         self.aux_occ_coef = float(config.get("JA_OBJECT_AUX_COEF", 0.005))
         self.aux_coef = self.aux_occ_coef
         self.aux_active = self.aux_occ_coef > 0.0
+        self.vf_coef = float(config.get("VF_COEF", 0.5))
 
         # JaxMARL-style linear shaped-reward anneal (1 -> 0 over REW_SHAPING_HORIZON
         # env steps). 0 disables it (shaping then comes from the wrapper's
@@ -598,10 +603,19 @@ class OvercookedV2DenseObjectOccupancyMechanism:
 
     def rollout_metrics(self, traj_batch, loss_info):
         ex = traj_batch.extras
+        aux_loss = loss_info.aux_loss.mean()
+        weighted_aux = self.aux_occ_coef * aux_loss
+        eps = jnp.float32(1e-8)
         return {
             "ja_future_partner_overlap": ex["ja_future_partner_overlap"].mean(),
             "ja_future_self_overlap": ex["ja_future_self_overlap"].mean(),
-            "aux_partner_occ_loss": loss_info.aux_loss.mean(),
+            "aux_partner_occ_loss": aux_loss,
+            "aux_partner_occ_weighted": weighted_aux,
+            "aux_to_policy_loss_abs": weighted_aux / (jnp.abs(loss_info.policy_loss.mean()) + eps),
+            "aux_to_value_term_abs": weighted_aux / (
+                self.vf_coef * jnp.abs(loss_info.value_loss.mean()) + eps
+            ),
+            "aux_to_total_loss_abs": weighted_aux / (jnp.abs(loss_info.total_loss.mean()) + eps),
             "ja_obj_on_mass": ex["ja_obj_on_mass"].mean(),
             "ja_partner_visible_frac": ex["ja_partner_visible"].mean(),
             # Normalized target sums to ~1 when any witnessed event lies ahead,
@@ -639,6 +653,10 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             from envs.render_registry import get_eval_frames
             from evaluation.vis_episodes import make_attention_video, run_episode_with_states
             from moviepy import ImageSequenceClip
+            from agents.overcooked_v2.ja_overcooked_v2_attention import (
+                egocentric_attention_to_world_tiles,
+                reframe_partner_attention_for_eval,
+            )
 
             # One-level unwrap (LogWrapper -> image wrapper); NOT get_inner_env, which
             # descends to the raw symbolic OvercookedV2 (no get_avail_actions).
@@ -654,23 +672,56 @@ class OvercookedV2DenseObjectOccupancyMechanism:
                     "feat_h": self.feat_h, "feat_w": self.feat_w,
                     "grid_h": self.grid_h, "grid_w": self.grid_w,
                     "agent_view_size": self.view_size,
+                    "egocentric": self.egocentric,
                 })
+            feed_reframe_fn = None
+            if self.feed_other_attn and self.egocentric:
+                feed_reframe_ctx = {
+                    "feat_h": self.feat_h,
+                    "feat_w": self.feat_w,
+                    "img_h": self.img_h,
+                    "img_w": self.img_w,
+                    "tile_size": self.tile_size,
+                    "grid_h": self.grid_h,
+                    "grid_w": self.grid_w,
+                    "agent_view_size": self.view_size,
+                    "agent_fov_size": self.agent_fov_size,
+                    "rotate_obs": self.rotate_obs,
+                    "egocentric": self.egocentric,
+                }
+
+                def feed_reframe_fn(a0, a1, s0, s1):
+                    return reframe_partner_attention_for_eval(a0, a1, s0, s1, feed_reframe_ctx)
+
             max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
             ep_states, attn_data, _a, _m = run_episode_with_states(
                 jax.random.PRNGKey(42), inner_env, params, policy, params, policy,
                 max_steps, collect_attention=True, feed_other_attn_dims=feed_dims,
-                feed_mask_fn=feed_mask_fn,
+                feed_mask_fn=feed_mask_fn, feed_reframe_fn=feed_reframe_fn,
             )
             os.makedirs(savedir, exist_ok=True)
             frames = get_eval_frames(env_name, inner_env, ep_states)
             n_attn = len(attn_data.get("agent_0", []))
             frames = list(frames[:n_attn] if n_attn else frames)
+            if self.egocentric:
+                attn_video = {"agent_0": [], "agent_1": []}
+                for t in range(min(n_attn, len(ep_states))):
+                    a0, a1 = egocentric_attention_to_world_tiles(
+                        jnp.asarray(attn_data["agent_0"][t]).squeeze(),
+                        jnp.asarray(attn_data["agent_1"][t]).squeeze(),
+                        ep_states[t],
+                        feed_reframe_ctx,
+                    )
+                    attn_video["agent_0"].append(a0)
+                    attn_video["agent_1"].append(a1)
+            else:
+                attn_video = attn_data
             stem = f"{savedir}/{tag.replace('/', '_')}"
             ImageSequenceClip(frames, fps=10).write_videofile(
                 f"{stem}.mp4", fps=10, codec="libx264", audio=False, preset="ultrafast",
             )
             logger.log_video(tag, f"{stem}.mp4", commit=False)
-            make_attention_video(frames, attn_data, filename=f"{stem}_attn.mp4", fps=10)
+            make_attention_video(frames, attn_video, filename=f"{stem}_attn.mp4", fps=10)
             for suffix in ("agent0", "agent1", "combined"):
                 p = f"{stem}_attn_{suffix}.mp4"
                 if os.path.exists(p):
