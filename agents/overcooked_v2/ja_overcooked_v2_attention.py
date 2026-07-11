@@ -148,7 +148,8 @@ def useful_dynamic_item_mask(dynamic_item, recipe):
         & ((dynamic_item & plate) != 0)
         & ((dynamic_item & ~cooked_plate_mask) == recipe)
     )
-    idx = DynamicObject.get_ingredient_idx(dynamic_item)
+    # get_ingredient_idx is scalar-only (while_loop); vectorize over the object array.
+    idx = jax.vmap(DynamicObject.get_ingredient_idx)(dynamic_item.reshape(-1)).reshape(dynamic_item.shape)
     is_recipe_ingredient = (
         DynamicObject.is_ingredient(dynamic_item)
         & (idx >= 0)
