@@ -30,7 +30,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from envs.base_env import get_inner_env
-from envs.overcooked_v2.common import StaticObject
+from envs.overcooked_v2.common import DynamicObject, StaticObject
 
 _INGREDIENT_BASE = int(StaticObject.INGREDIENT_PILE_BASE)
 
@@ -46,9 +46,10 @@ class TaskObject(IntEnum):
 
     POT = 0
     GOAL = 1
-    RECIPE_INDICATOR = 2
-    PLATE_PILE = 3
-    INGREDIENT_PILE = 4
+    PLATE_PILE = 2
+    INGREDIENT_PILE = 3
+    DYNAMIC_ITEM = 4
+    AGENT_INVENTORY = 5
 
 
 def _static_to_task(obj: int) -> int | None:
@@ -59,8 +60,6 @@ def _static_to_task(obj: int) -> int | None:
         return int(TaskObject.POT)
     if obj == StaticObject.GOAL:
         return int(TaskObject.GOAL)
-    if obj in (StaticObject.RECIPE_INDICATOR, StaticObject.BUTTON_RECIPE_INDICATOR):
-        return int(TaskObject.RECIPE_INDICATOR)
     if obj == StaticObject.PLATE_PILE:
         return int(TaskObject.PLATE_PILE)
     if obj >= _INGREDIENT_BASE:
@@ -76,6 +75,11 @@ def detect_task_objects(
     Accepts either the layout's `static_objects` (host, at init) or a materialised
     `state.grid[:, :, 0]` — identical for a fixed layout. Cells are read in
     row-major order so slot `k` is stable across calls (positions never change).
+
+    Recipe indicators are intentionally excluded. In the centered 5x5
+    demo-cook-simple view they are not part of the actionable local workspace
+    for both agents, and supervising attention toward them creates an impossible
+    target for the agent that never observes them.
 
     Returns `(positions, categories, ingredient_idx)`:
         positions:      `(M, 2)` int — `(row, col)` of each detected object.
@@ -120,6 +124,37 @@ def object_feature_coords(object_pos, tile_size, feat_h, feat_w, img_h, img_w):
     fr = jnp.clip(centre_r * feat_h // img_h, 0, feat_h - 1).astype(jnp.int32)
     fc = jnp.clip(centre_c * feat_w // img_w, 0, feat_w - 1).astype(jnp.int32)
     return fr, fc
+
+
+def recipe_contains_ingredient(recipe, ingredient_idx):
+    """True where the current recipe contains `ingredient_idx` at least once."""
+    shift = 2 + 2 * ingredient_idx
+    return ((recipe >> shift) & 0x3) > 0
+
+
+def useful_dynamic_item_mask(dynamic_item, recipe):
+    """Whether a dynamic item is a useful MATE target for the current recipe.
+
+    Includes plates, correct completed dishes, and ingredients that occur in the
+    current recipe. This excludes distractor ingredients and wrong completed
+    dishes from the MATE object target set.
+    """
+    plate = int(DynamicObject.PLATE)
+    cooked = int(DynamicObject.COOKED)
+    cooked_plate_mask = cooked | plate
+    is_plate = dynamic_item == plate
+    is_correct_dish = (
+        ((dynamic_item & cooked) != 0)
+        & ((dynamic_item & plate) != 0)
+        & ((dynamic_item & ~cooked_plate_mask) == recipe)
+    )
+    idx = DynamicObject.get_ingredient_idx(dynamic_item)
+    is_recipe_ingredient = (
+        DynamicObject.is_ingredient(dynamic_item)
+        & (idx >= 0)
+        & recipe_contains_ingredient(recipe, idx)
+    )
+    return is_plate | is_correct_dish | is_recipe_ingredient
 
 
 def object_feature_masks_from_tiles(
@@ -298,7 +333,22 @@ def overcooked_v2_object_ctx(config, env) -> dict:
     grid_h, grid_w = int(raw.height), int(raw.width)
     tile_size = img_h // grid_h
     obj_pos, obj_cat, obj_ing = detect_task_objects(raw.layout.static_objects)
-    fr, fc = object_feature_coords(obj_pos, tile_size, feat_h, feat_w, img_h, img_w)
+    grid_pos = np.array(
+        [(r, c) for r in range(grid_h) for c in range(grid_w)],
+        dtype=np.int32,
+    )
+    agent_slot_pos = np.zeros((env.num_agents, 2), dtype=np.int32)
+    all_pos = np.concatenate([obj_pos, grid_pos, agent_slot_pos], axis=0)
+    all_cat = np.concatenate([
+        obj_cat,
+        np.full((grid_pos.shape[0],), int(TaskObject.DYNAMIC_ITEM), dtype=np.int32),
+        np.full((env.num_agents,), int(TaskObject.AGENT_INVENTORY), dtype=np.int32),
+    ])
+    all_ing = np.concatenate([
+        obj_ing,
+        np.full((grid_pos.shape[0] + env.num_agents,), -1, dtype=np.int32),
+    ])
+    fr, fc = object_feature_coords(all_pos, tile_size, feat_h, feat_w, img_h, img_w)
     return {
         "img_h": img_h,
         "img_w": img_w,
@@ -312,10 +362,17 @@ def overcooked_v2_object_ctx(config, env) -> dict:
         "agent_fov_size": int(getattr(wrapper, "agent_fov_size", 0) or 0),
         "agent_fov_centered": bool(getattr(wrapper, "agent_fov_centered", True)),
         "rotate_obs": bool(getattr(wrapper, "rotate_obs", False)),
-        "num_objects": int(obj_pos.shape[0]),
-        "object_pos": jnp.asarray(obj_pos),  # (M, 2) (row, col)
-        "object_cat": jnp.asarray(obj_cat),  # (M,)
-        "object_ing": jnp.asarray(obj_ing),  # (M,)
+        "static_num_objects": int(obj_pos.shape[0]),
+        "dynamic_grid_num_objects": int(grid_pos.shape[0]),
+        "inventory_num_objects": int(env.num_agents),
+        "num_objects": int(all_pos.shape[0]),
+        "object_pos": jnp.asarray(all_pos),  # (M, 2) (row, col); inventory slots are filled per state.
+        "object_cat": jnp.asarray(all_cat),  # (M,)
+        "object_ing": jnp.asarray(all_ing),  # (M,)
+        "static_object_pos": jnp.asarray(obj_pos),
+        "static_object_cat": jnp.asarray(obj_cat),
+        "static_object_ing": jnp.asarray(obj_ing),
+        "dynamic_grid_pos": jnp.asarray(grid_pos),
         "object_feat_rc": jnp.stack([fr, fc], axis=-1),  # (M, 2) feature cell
     }
 
@@ -329,12 +386,11 @@ def test_detect_task_objects_demo_cook_simple():
     layout = overcooked_v2_layouts["demo_cook_simple"]
     pos, cat, ing = detect_task_objects(layout.static_objects)
 
-    # Every interactable static cell: 1 pot, 1 goal, 2 recipe indicators,
-    # 2 plate piles, 6 ingredient piles (distractor included).
-    assert pos.shape == (12, 2)
+    # Actionable static cells only: 1 pot, 1 goal, 2 plate piles, and
+    # 6 ingredient piles. Recipe indicators are excluded from MATE targets.
+    assert pos.shape == (10, 2)
     assert (cat == TaskObject.POT).sum() == 1
     assert (cat == TaskObject.GOAL).sum() == 1
-    assert (cat == TaskObject.RECIPE_INDICATOR).sum() == 2
     assert (cat == TaskObject.PLATE_PILE).sum() == 2
     assert (cat == TaskObject.INGREDIENT_PILE).sum() == 6
 

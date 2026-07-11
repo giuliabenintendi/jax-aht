@@ -42,11 +42,12 @@ import jax.numpy as jnp
 
 from agents.overcooked_v2.ja_overcooked_v2_attention import (
     agent_tiles_from_state,
-    crop_local_object_feature_masks,
     make_visibility_mask_fn,
     object_feature_masks_from_tiles,
     overcooked_v2_object_ctx,
     partner_in_view,
+    recipe_contains_ingredient,
+    useful_dynamic_item_mask,
     view_feature_masks,
 )
 
@@ -115,9 +116,16 @@ class OvercookedV2DenseObjectOccupancyMechanism:
                 "(agent_view_size set); with full observability there is nothing to gate."
             )
         # Fixed feature-grid cell (fr, fc) of each detected task object. Constant
-        # across steps and episodes because task objects are static.
-        self.object_feat_rc = ctx["object_feat_rc"]  # (M, 2)
+        # across steps and episodes for static objects. Dynamic slots are fixed
+        # candidate cells/inventory slots whose validity is recomputed per state.
         self.object_pos = ctx["object_pos"]  # (M, 2) tile row/col in layout frame
+        self.static_object_pos = ctx["static_object_pos"]
+        self.static_object_cat = ctx["static_object_cat"]
+        self.static_object_ing = ctx["static_object_ing"]
+        self.dynamic_grid_pos = ctx["dynamic_grid_pos"]
+        self.static_num_objects = int(ctx["static_num_objects"])
+        self.dynamic_grid_num_objects = int(ctx["dynamic_grid_num_objects"])
+        self.inventory_num_objects = int(ctx["inventory_num_objects"])
         self.num_objects = ctx["num_objects"]
 
         self.partner_coef = float(config.get("JA_FUTURE_PARTNER_COEF", 0.0))
@@ -194,17 +202,18 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         object_mass = object_mass * object_visible
         return object_mass, object_mass.sum(axis=-1)
 
-    def _object_frame(self, env_state, num_actors):
+    def _feature_masks_for_actor_positions(self, object_pos_actor, actor_rows, actor_cols,
+                                           actor_dirs, valid):
+        """Feature masks for per-actor object positions.
+
+        `object_pos_actor` is `(A, M, 2)` in layout tile coordinates. `valid`
+        marks whether the slot currently contains a useful target before
+        visibility/crop constraints are applied.
+        """
         if not self.egocentric:
-            local_rows = jnp.broadcast_to(
-                self.object_pos[:, 0][None, :],
-                (num_actors, self.num_objects),
-            )
-            local_cols = jnp.broadcast_to(
-                self.object_pos[:, 1][None, :],
-                (num_actors, self.num_objects),
-            )
-            visible = jnp.ones((num_actors, self.num_objects), dtype=jnp.float32)
+            local_rows = object_pos_actor[..., 0]
+            local_cols = object_pos_actor[..., 1]
+            visible = valid.astype(jnp.float32)
             masks = object_feature_masks_from_tiles(
                 local_rows,
                 local_cols,
@@ -217,23 +226,95 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             )
             return masks, visible
 
-        rows, cols = agent_tiles_from_state(env_state)
-        rows = rows.swapaxes(0, 1).reshape(-1)
-        cols = cols.swapaxes(0, 1).reshape(-1)
-        dirs = self._actor_dirs(env_state)
-        return crop_local_object_feature_masks(
-            self.object_pos,
-            rows,
-            cols,
-            dirs,
-            view_size=self.view_size,
-            crop_size=self.agent_fov_size,
-            rotate_obs=self.rotate_obs,
+        local_r = object_pos_actor[..., 0] - actor_rows[:, None] + self.view_size
+        local_c = object_pos_actor[..., 1] - actor_cols[:, None] + self.view_size
+        visible = (
+            (local_r >= 0)
+            & (local_r < self.agent_fov_size)
+            & (local_c >= 0)
+            & (local_c < self.agent_fov_size)
+            & valid.astype(bool)
+        )
+
+        if self.rotate_obs:
+            k = jnp.array([0, 2, 1, 3])[actor_dirs]
+
+            def _rot_one(r, c, kk):
+                return jax.lax.switch(
+                    kk,
+                    (
+                        lambda x: x,
+                        lambda x: (self.agent_fov_size - 1 - x[1], x[0]),
+                        lambda x: (self.agent_fov_size - 1 - x[0], self.agent_fov_size - 1 - x[1]),
+                        lambda x: (x[1], self.agent_fov_size - 1 - x[0]),
+                    ),
+                    (r, c),
+                )
+
+            local_r, local_c = jax.vmap(_rot_one)(local_r, local_c, k)
+
+        visible = visible.astype(jnp.float32)
+        masks = object_feature_masks_from_tiles(
+            local_r,
+            local_c,
+            visible,
             tile_size=self.tile_size,
             feat_h=self.feat_h,
             feat_w=self.feat_w,
             img_h=self.img_h,
             img_w=self.img_w,
+        )
+        return masks, visible
+
+    def _object_frame(self, env_state, num_actors):
+        raw = env_state
+        while hasattr(raw, "env_state"):
+            raw = raw.env_state
+        rows_env, cols_env = agent_tiles_from_state(raw)  # (num_envs, num_agents)
+        actor_rows = rows_env.swapaxes(0, 1).reshape(-1)
+        actor_cols = cols_env.swapaxes(0, 1).reshape(-1)
+        actor_dirs = self._actor_dirs(raw)
+        num_envs = rows_env.shape[0]
+
+        recipe = raw.recipe  # (num_envs,)
+        actor_recipe = jnp.tile(recipe, self.num_agents)  # agent-major actor order
+
+        # Static actionable objects. Ingredient piles are valid only if their
+        # ingredient appears in the current recipe; this removes distractor piles.
+        static_pos = jnp.broadcast_to(
+            self.static_object_pos[None, :, :],
+            (num_actors, self.static_num_objects, 2),
+        )
+        static_ing = self.static_object_ing[None, :]
+        static_is_ing = static_ing >= 0
+        safe_static_ing = jnp.maximum(static_ing, 0)
+        static_valid = (~static_is_ing) | recipe_contains_ingredient(
+            actor_recipe[:, None], safe_static_ing
+        )
+
+        # Dynamic objects on the grid: plates, recipe ingredients, and correct
+        # cooked dishes. Empty/wrong/distractor cells are invalid targets.
+        grid = raw.grid
+        dyn = grid[:, self.dynamic_grid_pos[:, 0], self.dynamic_grid_pos[:, 1], 1]
+        dyn_valid_env = useful_dynamic_item_mask(dyn, recipe[:, None])
+        dyn_valid = jnp.tile(dyn_valid_env, (self.num_agents, 1))
+        dyn_pos = jnp.broadcast_to(
+            self.dynamic_grid_pos[None, :, :],
+            (num_actors, self.dynamic_grid_num_objects, 2),
+        )
+
+        # Dynamic objects carried by either agent. Each receiver gets slots for
+        # both inventories in its environment, located at the carrier's tile.
+        inv = raw.agents.inventory  # (num_envs, num_agents)
+        inv_valid_env = useful_dynamic_item_mask(inv, recipe[:, None])
+        inv_valid = jnp.tile(inv_valid_env, (self.num_agents, 1))
+        inv_pos_env = jnp.stack([rows_env, cols_env], axis=-1)  # (num_envs, num_agents, 2)
+        inv_pos = jnp.tile(inv_pos_env, (self.num_agents, 1, 1))
+
+        object_pos_actor = jnp.concatenate([static_pos, dyn_pos, inv_pos], axis=1)
+        valid = jnp.concatenate([static_valid, dyn_valid, inv_valid], axis=1)
+        return self._feature_masks_for_actor_positions(
+            object_pos_actor, actor_rows, actor_cols, actor_dirs, valid
         )
 
     def _reframe_partner_attention(self, attn_2d, env_state, new_env_state, num_actors):

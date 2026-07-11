@@ -33,11 +33,11 @@ FEED_OTHER_ATTN: true
 # the receiver's view and zeroed unless the partner is in view; the aux target
 # only counts partner-attention events that were witnessable when they happened.
 JA_VISIBILITY_GATING: true
-# Aux knobs matched to the winning LBF dense-object run (ycghndhm): a full-strength
-# aux (0.005) corrupts the shared trunk before the sparse delivery task ignites
-# and blocks learning. Overcooked object regions are tile-footprint masks in the
-# current observation frame rather than radius boxes around object centers.
-JA_OBJECT_AUX_COEF: 1e-4
-JA_FUTURE_GAMMA_OCC: 0.95
+# Aux is intentionally weak and short-horizon in Overcooked: useful coordination
+# is complementary and stage-dependent, not persistent same-object convergence.
+# The object set filters out recipe indicators/distractors and includes dynamic
+# useful items, so keep the supervised attention signal conservative.
+JA_OBJECT_AUX_COEF: 3e-5
+JA_FUTURE_GAMMA_OCC: 0.8
 JA_FUTURE_PARTNER_COEF: 0.0
 JA_FUTURE_SELF_COEF: 0.0
