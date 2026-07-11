@@ -114,7 +114,8 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                            greedy=True, feed_other_attn_dims=None,
                            ja_card_masks=None, collect_obs=False,
                            partner_feed_dim=5, lbf_ctx=None,
-                           feed_mask_fn=None):
+                           feed_mask_fn=None, feed_reframe_fn=None,
+                           collect_info=False):
     '''
     Run a single episode and collect states for rendering.
 
@@ -125,8 +126,14 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
             for augmenting obs with the other agent's previous attention map.
         feed_mask_fn: optional visibility hook `state -> (mask_0, mask_1)`
             applied to the feed channel per receiver (train-time gating parity).
+        feed_reframe_fn: optional hook
+            `(attn_0, attn_1, env_state, new_env_state) -> (feed_0, feed_1)`.
+            Used by egocentric OvercookedV2 to project partner attention into the
+            receiver's next crop before it is appended as the fourth channel.
         collect_obs: if True, also return per-step per-agent observations (the
             obs the agent saw BEFORE each action, including the decision step).
+        collect_info: if True, append a list of per-step env info dicts to the
+            returned tuple.
 
     Returns:
         When collect_attention=False: (ep_states, ep_actions, ep_messages)
@@ -141,9 +148,10 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
     obs, env_state = env.reset(reset_rng)
     done = {k: jnp.zeros((1), dtype=bool) for k in env.agents + ["__all__"]}
 
-    # Initialize hidden states
-    hstate_0 = agent_0_policy.init_hstate(1)
-    hstate_1 = agent_1_policy.init_hstate(1)
+    # Initialize hidden states. Pass agent_id so agent-id-conditioned policies
+    # (ocv2) start in the right per-agent role — matches the XP eval rollout.
+    hstate_0 = agent_0_policy.init_hstate(1, aux_info={"agent_id": 0})
+    hstate_1 = agent_1_policy.init_hstate(1, aux_info={"agent_id": 1})
     use_prev_io = (
         getattr(agent_0_policy, "uses_prev_reward_action", False)
         and getattr(agent_1_policy, "uses_prev_reward_action", False)
@@ -154,11 +162,15 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         prev_action_0 = jnp.zeros((1, 1), dtype=jnp.float32)
         prev_action_1 = jnp.zeros((1, 1), dtype=jnp.float32)
 
-    # Initialize previous attention maps for feed_other_attn
+    # Initialize uniform partner feeds for feed_other_attn. feed_X is what
+    # agent X consumes as its 4th channel (the PARTNER's previous attention,
+    # reframed into X's crop for egocentric ocv2) — the same per-receiver
+    # semantics as the training mechanism's carry["partner_attn"], so no swap
+    # happens at consumption time.
     if feed_other_attn_dims is not None:
         _img_h, _img_w, _feat_h, _feat_w = feed_other_attn_dims
-        prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
-        prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+        feed_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+        feed_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
     _ja_card = ja_card_masks is not None
     _lbf = lbf_ctx is not None
@@ -191,6 +203,7 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
     ep_actions = []
     ep_messages = []  # (msg_0, msg_1) per step, empty if no communication
     ep_obs = []       # per-step {"agent_0": obs, "agent_1": obs}, collected at the start of each step
+    ep_infos = []
     attn_maps = {"agent_0": [], "agent_1": []}
 
     # Run episode until done or max steps reached
@@ -212,9 +225,15 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         if feed_other_attn_dims is not None:
             _fm_0 = _fm_1 = None
             if feed_mask_fn is not None:
-                _fm_0, _fm_1 = feed_mask_fn(env_state)
-            obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w, mask=_fm_0)
-            obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w, mask=_fm_1)
+                # Training starts fully masked under gating (init_carry
+                # feed_mask is zeros); match it on the first step.
+                if step == 0:
+                    _fm_0 = jnp.zeros((_feat_h, _feat_w))
+                    _fm_1 = jnp.zeros((_feat_h, _feat_w))
+                else:
+                    _fm_0, _fm_1 = feed_mask_fn(env_state)
+            obs_0 = augment_obs_for_eval(obs_0, feed_0, _img_h, _img_w, mask=_fm_0)
+            obs_1 = augment_obs_for_eval(obs_1, feed_1, _img_h, _img_w, mask=_fm_1)
         if _ja_card or _lbf:
             obs_0 = jnp.concatenate([obs_0, prev_pca_0])
             obs_1 = jnp.concatenate([obs_1, prev_pca_1])
@@ -239,7 +258,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_0,
                 rng=act_rng,
                 greedy=greedy,
-                agent_id=0,
                 prev_reward=prev_reward_0 if use_prev_io else None,
                 prev_action=prev_action_0 if use_prev_io else None,
             )
@@ -271,7 +289,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 hstate=hstate_1,
                 rng=part_rng,
                 greedy=greedy,
-                agent_id=1,
                 prev_reward=prev_reward_1 if use_prev_io else None,
                 prev_action=prev_action_1 if use_prev_io else None,
                 )
@@ -292,11 +309,6 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
                 **extra_kwargs_1,
             )
         act_1 = act_1.squeeze()
-
-        # Update previous attention maps for feed_other_attn
-        if feed_other_attn_dims is not None and collect_attention:
-            prev_attn_0 = attn_0.squeeze()  # (feat_h, feat_w)
-            prev_attn_1 = attn_1.squeeze()  # (feat_h, feat_w)
 
         # Update partner card attention for JA_CARD_ATTN
         if _ja_card and collect_attention:
@@ -327,7 +339,20 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
         both_actions = [act_0, act_1]
         env_act = {k: both_actions[i] for i, k in enumerate(env.agents)}
         render_act = _action_to_ground_truth(env, env_state, env_act)
+        prev_env_state = env_state
         obs, env_state, reward, done, info = env.step(step_rng, env_state, env_act)
+        # Per-receiver feed update: reframe already assigns per receiver; the
+        # plain path swaps here (consumption applies no further swap).
+        if feed_other_attn_dims is not None and collect_attention:
+            if feed_reframe_fn is not None:
+                feed_0, feed_1 = feed_reframe_fn(
+                    attn_0.squeeze(), attn_1.squeeze(), prev_env_state, env_state
+                )
+            else:
+                feed_0 = attn_1.squeeze()
+                feed_1 = attn_0.squeeze()
+        if collect_info:
+            ep_infos.append(jax.tree.map(lambda x: np.array(x), info))
         if use_prev_io:
             prev_reward_0 = reward["agent_0"].reshape(1, 1).astype(jnp.float32)
             prev_reward_1 = reward["agent_1"].reshape(1, 1).astype(jnp.float32)
@@ -353,13 +378,19 @@ def run_episode_with_states(rng, env, agent_0_param, agent_0_policy,
 
         step += 1
 
+    out = None
     if collect_attention:
         if collect_obs:
-            return ep_states, attn_maps, ep_actions, ep_messages, ep_obs
-        return ep_states, attn_maps, ep_actions, ep_messages
-    if collect_obs:
-        return ep_states, ep_actions, ep_messages, ep_obs
-    return ep_states, ep_actions, ep_messages
+            out = (ep_states, attn_maps, ep_actions, ep_messages, ep_obs)
+        else:
+            out = (ep_states, attn_maps, ep_actions, ep_messages)
+    elif collect_obs:
+        out = (ep_states, ep_actions, ep_messages, ep_obs)
+    else:
+        out = (ep_states, ep_actions, ep_messages)
+    if collect_info:
+        out = out + (ep_infos,)
+    return out
 
 def _render_heatmap_panel(attn, title, cmap, target_height, figwidth=3.0):
     """Render a single attention heatmap with grid, numbers, and colorbar.

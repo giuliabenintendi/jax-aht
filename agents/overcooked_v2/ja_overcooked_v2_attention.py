@@ -299,15 +299,191 @@ def make_visibility_mask_fn(ctx):
     feat_h, feat_w = ctx["feat_h"], ctx["feat_w"]
     grid_h, grid_w = ctx["grid_h"], ctx["grid_w"]
     view_size = ctx["agent_view_size"]
+    egocentric = bool(ctx.get("egocentric", False))
 
     def mask_fn(state):
         rows, cols = agent_tiles_from_state(state)  # (2,)
-        vm = view_feature_masks(rows, cols, view_size, grid_h, grid_w, feat_h, feat_w)
         gate = partner_in_view(rows, cols, rows[::-1], cols[::-1], view_size)
+        if egocentric:
+            return (
+                jnp.ones((feat_h, feat_w), dtype=jnp.float32) * gate[0],
+                jnp.ones((feat_h, feat_w), dtype=jnp.float32) * gate[1],
+            )
+        vm = view_feature_masks(rows, cols, view_size, grid_h, grid_w, feat_h, feat_w)
         gated = vm * gate[:, None, None]
         return gated[0], gated[1]
 
     return mask_fn
+
+
+def reframe_partner_attention_for_eval(
+    attn_0,
+    attn_1,
+    env_state,
+    new_env_state,
+    ctx,
+):
+    """Reframe previous partner attention for egocentric OCV2 eval rollouts.
+
+    Training stores the partner feed in the receiver's next observation frame:
+    partner attention from state t is projected from the partner's old crop into
+    the receiver's crop at state t+1. Eval/video helpers must do the same before
+    appending the fourth channel; otherwise ego runs feed raw partner-crop maps.
+
+    Returns `(feed_for_agent_0, feed_for_agent_1)`.
+    """
+    feat_h = int(ctx["feat_h"])
+    feat_w = int(ctx["feat_w"])
+    egocentric = bool(ctx.get("egocentric", False))
+    if not egocentric:
+        return attn_1, attn_0
+
+    img_h = int(ctx["img_h"])
+    img_w = int(ctx["img_w"])
+    view_size = int(ctx["agent_view_size"])
+    agent_fov_size = int(ctx["agent_fov_size"])
+    tile_size = int(ctx["tile_size"])
+    rotate_obs = bool(ctx.get("rotate_obs", False))
+
+    rows_t, cols_t = agent_tiles_from_state(env_state)
+    rows_n, cols_n = agent_tiles_from_state(new_env_state)
+    dirs_t = _unwrap_env_state(env_state).agents.dir
+    dirs_n = _unwrap_env_state(new_env_state).agents.dir
+
+    src_maps = jnp.stack([attn_1, attn_0], axis=0)
+    src_rows = jnp.stack([rows_t[1], rows_t[0]], axis=0)
+    src_cols = jnp.stack([cols_t[1], cols_t[0]], axis=0)
+    src_dirs = jnp.stack([dirs_t[1], dirs_t[0]], axis=0)
+    dst_rows = jnp.stack([rows_n[0], rows_n[1]], axis=0)
+    dst_cols = jnp.stack([cols_n[0], cols_n[1]], axis=0)
+    dst_dirs = jnp.stack([dirs_n[0], dirs_n[1]], axis=0)
+
+    feat_r, feat_c = jnp.meshgrid(
+        jnp.arange(feat_h), jnp.arange(feat_w), indexing="ij"
+    )
+    feat_r = feat_r.reshape(-1)
+    feat_c = feat_c.reshape(-1)
+    local_r = feat_r * agent_fov_size // feat_h
+    local_c = feat_c * agent_fov_size // feat_w
+    num_cells = feat_h * feat_w
+
+    def _inv_rot(r, c, direction):
+        k = jnp.array([0, 2, 1, 3])[direction]
+        return jax.lax.switch(
+            k,
+            (
+                lambda x: x,
+                lambda x: (x[1], agent_fov_size - 1 - x[0]),
+                lambda x: (agent_fov_size - 1 - x[0], agent_fov_size - 1 - x[1]),
+                lambda x: (agent_fov_size - 1 - x[1], x[0]),
+            ),
+            (r, c),
+        )
+
+    def _fwd_rot(r, c, direction):
+        k = jnp.array([0, 2, 1, 3])[direction]
+        return jax.lax.switch(
+            k,
+            (
+                lambda x: x,
+                lambda x: (agent_fov_size - 1 - x[1], x[0]),
+                lambda x: (agent_fov_size - 1 - x[0], agent_fov_size - 1 - x[1]),
+                lambda x: (x[1], agent_fov_size - 1 - x[0]),
+            ),
+            (r, c),
+        )
+
+    def _one(src_map, sr, sc, sd, dr, dc, dd):
+        rr, cc = local_r, local_c
+        if rotate_obs:
+            rr, cc = _inv_rot(rr, cc, sd)
+        raw_r = rr + sr - view_size
+        raw_c = cc + sc - view_size
+        dst_r = raw_r - dr + view_size
+        dst_c = raw_c - dc + view_size
+        valid = (
+            (dst_r >= 0)
+            & (dst_r < agent_fov_size)
+            & (dst_c >= 0)
+            & (dst_c < agent_fov_size)
+        )
+        if rotate_obs:
+            dst_r, dst_c = _fwd_rot(dst_r, dst_c, dd)
+        centre_r = dst_r * tile_size + tile_size // 2
+        centre_c = dst_c * tile_size + tile_size // 2
+        fr = jnp.clip(centre_r * feat_h // img_h, 0, feat_h - 1)
+        fc = jnp.clip(centre_c * feat_w // img_w, 0, feat_w - 1)
+        dst_idx = (fr * feat_w + fc).astype(jnp.int32)
+        mass = jnp.where(valid, src_map.reshape(-1), 0.0)
+        return jnp.zeros((num_cells,), dtype=src_map.dtype).at[dst_idx].add(mass).reshape(
+            feat_h, feat_w
+        )
+
+    reframed = jax.vmap(_one)(
+        src_maps, src_rows, src_cols, src_dirs, dst_rows, dst_cols, dst_dirs
+    )
+    return reframed[0], reframed[1]
+
+
+def egocentric_attention_to_world_tiles(attn_0, attn_1, env_state, ctx):
+    """Project each agent's crop-local attention onto world tile coordinates.
+
+    This is for diagnostics/videos only. The policy attention in egocentric OCV2
+    is over the 5x5 local crop, while the rendered video is a global kitchen.
+    Directly resizing the crop map over the global frame makes local corners look
+    like global corners.
+    """
+    grid_h = int(ctx["grid_h"])
+    grid_w = int(ctx["grid_w"])
+    feat_h = int(ctx["feat_h"])
+    feat_w = int(ctx["feat_w"])
+    agent_fov_size = int(ctx["agent_fov_size"])
+    view_size = int(ctx["agent_view_size"])
+    rotate_obs = bool(ctx.get("rotate_obs", False))
+    if not bool(ctx.get("egocentric", False)):
+        return attn_0, attn_1
+
+    rows, cols = agent_tiles_from_state(env_state)
+    dirs = _unwrap_env_state(env_state).agents.dir
+    maps = jnp.stack([attn_0, attn_1], axis=0)
+    feat_r, feat_c = jnp.meshgrid(
+        jnp.arange(feat_h), jnp.arange(feat_w), indexing="ij"
+    )
+    local_r = (feat_r.reshape(-1) * agent_fov_size // feat_h).astype(jnp.int32)
+    local_c = (feat_c.reshape(-1) * agent_fov_size // feat_w).astype(jnp.int32)
+
+    def _inv_rot(r, c, direction):
+        k = jnp.array([0, 2, 1, 3])[direction]
+        return jax.lax.switch(
+            k,
+            (
+                lambda x: x,
+                lambda x: (x[1], agent_fov_size - 1 - x[0]),
+                lambda x: (agent_fov_size - 1 - x[0], agent_fov_size - 1 - x[1]),
+                lambda x: (agent_fov_size - 1 - x[1], x[0]),
+            ),
+            (r, c),
+        )
+
+    def _one(src_map, row, col, direction):
+        rr, cc = local_r, local_c
+        if rotate_obs:
+            rr, cc = _inv_rot(rr, cc, direction)
+        world_r = rr + row - view_size
+        world_c = cc + col - view_size
+        valid = (
+            (world_r >= 0)
+            & (world_r < grid_h)
+            & (world_c >= 0)
+            & (world_c < grid_w)
+        )
+        idx = (world_r * grid_w + world_c).astype(jnp.int32)
+        mass = jnp.where(valid, src_map.reshape(-1), 0.0)
+        world = jnp.zeros((grid_h * grid_w,), dtype=src_map.dtype).at[idx].add(mass)
+        return world.reshape(grid_h, grid_w)
+
+    world = jax.vmap(_one)(maps, rows, cols, dirs)
+    return world[0], world[1]
 
 
 def overcooked_v2_object_ctx(config, env) -> dict:
@@ -432,3 +608,41 @@ def test_partner_in_view_chebyshev():
     # (0,7): both deltas <= 2 -> visible; (4,5): row delta 2 -> visible;
     # (2,8): col delta 3 -> hidden.
     assert vis.tolist() == [1.0, 1.0, 0.0]
+
+
+def test_reframe_partner_attention_for_eval_order_and_geometry():
+    """Pins the return ORDER (feed for agent 0 derives from attn_1) and the
+    crop-to-crop projection. Eval loops consume the outputs per receiver with
+    no further swap; a swapped return here silently feeds each agent its own
+    attention in the partner's frame (the 2026-07-12 XP eval bug)."""
+    from collections import namedtuple
+
+    Pos = namedtuple("Pos", ["y", "x"])
+    Agents = namedtuple("Agents", ["pos", "dir"])
+    State = namedtuple("State", ["agents"])
+
+    # demo_cook_simple egocentric geometry: 5x5-tile crop, 40x40 px, 10x10 feat.
+    ctx = {
+        "feat_h": 10, "feat_w": 10, "img_h": 40, "img_w": 40,
+        "tile_size": 8, "grid_h": 5, "grid_w": 11,
+        "agent_view_size": 2, "agent_fov_size": 5,
+        "rotate_obs": False, "egocentric": True,
+    }
+    # Agent 0 at tile (2, 3), agent 1 at (2, 5); nobody moves between t and t+1.
+    state = State(Agents(Pos(y=jnp.array([2, 2]), x=jnp.array([3, 5])),
+                         jnp.array([0, 0])))
+
+    # Agent 1 attends its own crop centre = its own tile, world (2, 5).
+    # Agent 0 attends its crop's top-left tile = world (0, 1), which lies
+    # OUTSIDE agent 1's view box (col delta 4 > 2).
+    attn_1 = jnp.zeros((10, 10)).at[5, 5].set(1.0)
+    attn_0 = jnp.zeros((10, 10)).at[0, 0].set(1.0)
+
+    feed_for_0, feed_for_1 = reframe_partner_attention_for_eval(
+        attn_0, attn_1, state, state, ctx
+    )
+    # World (2, 5) sits at agent 0's crop tile (2, 4) -> feature cell (5, 9).
+    assert float(feed_for_0[5, 9]) == 1.0
+    assert float(feed_for_0.sum()) == 1.0
+    # Agent 0's attended tile falls outside agent 1's crop -> mass dropped.
+    assert float(feed_for_1.sum()) == 0.0

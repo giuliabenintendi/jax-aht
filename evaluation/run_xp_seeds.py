@@ -143,7 +143,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                                 max_episode_steps, action_sizes,
                                 feed_attn_dims=None, ja_card_masks=None,
                                 greedy_eval=True, partner_feed_dim=5,
-                                lbf_ctx=None, feed_mask_fn=None):
+                                lbf_ctx=None, feed_mask_fn=None,
+                                feed_reframe_fn=None):
     """Run one eval episode, returning LogWrapper info + mean JSD between attention maps.
 
     Args:
@@ -152,6 +153,9 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         feed_mask_fn: optional visibility hook `state -> (mask_0, mask_1)` applied to
             the feed channel per receiver (train-time gating parity, e.g. ocv2
             JA_VISIBILITY_GATING).
+        feed_reframe_fn: optional hook
+            `(attn_0, attn_1, env_state, new_env_state) -> (feed_0, feed_1)`.
+            Used by egocentric OCV2 to match train-time partner-attention carry.
         lbf_ctx: if not None, dict with num_fruits/tile_size/feat_h/feat_w/img_h/img_w
             describing the LBF env so each agent's obs is augmented with the
             partner's previous per-fruit attention vector (length num_fruits,
@@ -218,11 +222,15 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_pca_0 = jnp.ones(partner_feed_dim) / float(partner_feed_dim)
         prev_pca_1 = jnp.ones(partner_feed_dim) / float(partner_feed_dim)
 
-    # Initialize uniform attention maps for feed_other_attn
+    # Initialize uniform partner feeds for feed_other_attn. feed_X is what
+    # agent X consumes as its 4th channel (the PARTNER's previous attention,
+    # reframed into X's crop for egocentric ocv2) — the same per-receiver
+    # semantics as the training mechanism's carry["partner_attn"], so no swap
+    # happens at consumption time.
     if feed_attn_dims is not None:
         _img_h, _img_w, _feat_h, _feat_w = feed_attn_dims
-        prev_attn_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
-        prev_attn_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+        feed_0 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
+        feed_1 = jnp.ones((_feat_h, _feat_w)) / (_feat_h * _feat_w)
 
     avail_actions = env.get_avail_actions(init_env_state)
     avail_actions = jax.lax.stop_gradient(avail_actions)
@@ -237,9 +245,12 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
     if feed_attn_dims is not None:
         _fm_0 = _fm_1 = None
         if feed_mask_fn is not None:
-            _fm_0, _fm_1 = feed_mask_fn(init_env_state)
-        obs_0 = augment_obs_for_eval(obs_0, prev_attn_1, _img_h, _img_w, mask=_fm_0)
-        obs_1 = augment_obs_for_eval(obs_1, prev_attn_0, _img_h, _img_w, mask=_fm_1)
+            # Training starts fully masked under gating (init_carry feed_mask
+            # is zeros: positions unknown before the first step); match it.
+            _fm_0 = jnp.zeros((_feat_h, _feat_w))
+            _fm_1 = jnp.zeros((_feat_h, _feat_w))
+        obs_0 = augment_obs_for_eval(obs_0, feed_0, _img_h, _img_w, mask=_fm_0)
+        obs_1 = augment_obs_for_eval(obs_1, feed_1, _img_h, _img_w, mask=_fm_1)
     if _ja_card or _lbf:
         obs_0 = jnp.concatenate([obs_0, prev_pca_0])
         obs_1 = jnp.concatenate([obs_1, prev_pca_1])
@@ -295,10 +306,17 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         prev_action_0 = act_0.reshape(1, 1).astype(jnp.float32)
         prev_action_1 = act_1.reshape(1, 1).astype(jnp.float32)
 
-    # Include prev attention in carry for feed_other_attn
-    if feed_attn_dims is not None:
-        prev_attn_0 = attn_0.squeeze()
-        prev_attn_1 = attn_1.squeeze()
+    # Per-receiver feeds consumed at the next step (kept in the carry even when
+    # the feed is off — the scan needs stable shapes). feed_reframe_fn already
+    # returns (feed_for_agent_0, feed_for_agent_1); the plain path swaps HERE,
+    # so consumption applies no further swap.
+    if feed_attn_dims is not None and feed_reframe_fn is not None:
+        feed_0, feed_1 = feed_reframe_fn(
+            attn_0.squeeze(), attn_1.squeeze(), init_env_state, env_state
+        )
+    else:
+        feed_0 = attn_1.squeeze()
+        feed_1 = attn_0.squeeze()
 
     card_jsd_sum = jnp.float32(0.0)
     card_jsd_count = jnp.float32(0.0)
@@ -340,7 +358,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                   prev_reward_1 if use_prev_io else None,
                   prev_action_0 if use_prev_io else None,
                   prev_action_1 if use_prev_io else None,
-                  attn_0.squeeze(), attn_1.squeeze(),
+                  feed_0, feed_1,
                   pe_a0, pe_c0, pe_a1, pe_c1,
                   prev_pca_0 if (_ja_card or _lbf) else jnp.zeros(5),
                   prev_pca_1 if (_ja_card or _lbf) else jnp.zeros(5),
@@ -352,7 +370,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             (ep_ts, env_state, obs, rng, done, reward, act_onehot,
              hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
              prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
-             prev_a0, prev_a1,
+             feed_0, feed_1,
              pe_a0, pe_c0, pe_a1, pe_c1,
              prev_pca_0, prev_pca_1,
              card_jsd_sum, card_jsd_count,
@@ -371,8 +389,8 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
                 _fm_0 = _fm_1 = None
                 if feed_mask_fn is not None:
                     _fm_0, _fm_1 = feed_mask_fn(env_state)
-                obs_0 = augment_obs_for_eval(obs_0, prev_a1, _img_h, _img_w, mask=_fm_0)
-                obs_1 = augment_obs_for_eval(obs_1, prev_a0, _img_h, _img_w, mask=_fm_1)
+                obs_0 = augment_obs_for_eval(obs_0, feed_0, _img_h, _img_w, mask=_fm_0)
+                obs_1 = augment_obs_for_eval(obs_1, feed_1, _img_h, _img_w, mask=_fm_1)
             if _ja_card or _lbf:
                 obs_0 = jnp.concatenate([obs_0, prev_pca_0])
                 obs_1 = jnp.concatenate([obs_1, prev_pca_1])
@@ -462,10 +480,20 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
             step_match = (gt_a0_step == gt_a1_step).astype(jnp.float32)
             match_per_step_next = match_per_step.at[ep_ts].set(step_match)
 
+            # Per-receiver feed update: reframe already assigns per receiver;
+            # the plain path swaps here (consumption applies no further swap).
+            if feed_attn_dims is not None and feed_reframe_fn is not None:
+                next_feed_0, next_feed_1 = feed_reframe_fn(
+                    attn_0.squeeze(), attn_1.squeeze(), env_state, env_state_next
+                )
+            else:
+                next_feed_0 = attn_1.squeeze()
+                next_feed_1 = attn_0.squeeze()
+
             return (ep_ts + 1, env_state_next, obs_next, rng, done_next, reward, env_act_onehot,
                     hstate_0_next, hstate_1_next, info_next, jsd_sum_next, jsd_count_next,
                     next_prev_reward_0, next_prev_reward_1, next_prev_action_0, next_prev_action_1,
-                    attn_0.squeeze(), attn_1.squeeze(),
+                    next_feed_0, next_feed_1,
                     pe_a0, pe_c0, pe_a1, pe_c1,
                     next_pca_0, next_pca_1,
                     card_jsd_sum_next, card_jsd_count_next,
@@ -474,7 +502,7 @@ def run_single_episode_with_jsd(rng, env, agent_0_param, agent_0_policy,
         (ep_ts, env_state, obs, rng, done, reward, act_onehot,
          hstate_0, hstate_1, last_info, jsd_sum, jsd_count,
          prev_reward_0, prev_reward_1, prev_action_0, prev_action_1,
-         prev_a0, prev_a1,
+         feed_0, feed_1,
          pe_a0, pe_c0, pe_a1, pe_c1,
          prev_pca_0, prev_pca_1,
          card_jsd_sum, card_jsd_count,
@@ -500,7 +528,8 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
                           max_episode_steps, num_eps, action_sizes,
                           feed_attn_dims=None, ja_card_masks=None,
                           greedy_eval=True, partner_feed_dim=5,
-                          lbf_ctx=None, feed_mask_fn=None):
+                          lbf_ctx=None, feed_mask_fn=None,
+                          feed_reframe_fn=None):
     """Run num_eps episodes in parallel, returning LogWrapper info + per-episode mean JSD."""
     rngs = jax.random.split(rng, num_eps + 1)
     ep_rngs = rngs[1:]
@@ -512,6 +541,7 @@ def run_episodes_with_jsd(rng, env, agent_0_param, agent_0_policy,
             feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
             greedy_eval=greedy_eval, partner_feed_dim=partner_feed_dim,
             lbf_ctx=lbf_ctx, feed_mask_fn=feed_mask_fn,
+            feed_reframe_fn=feed_reframe_fn,
         )
     )
     all_info, all_jsd, all_card_jsd, all_match = vmap_fn(ep_rngs)
@@ -524,7 +554,8 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
                      max_episode_steps, num_eps, action_sizes,
                      feed_attn_dims=None, ja_card_masks=None,
                      greedy_eval=True, partner_feed_dim=5,
-                     lbf_ctx=None, feed_mask_fn=None):
+                     lbf_ctx=None, feed_mask_fn=None,
+                     feed_reframe_fn=None):
     """Run one row of the XP matrix: agent_0 vs all partners, vmapped over partners and episodes."""
     num_partners = jax.tree.leaves(all_agent_1_params)[0].shape[0]
     partner_rngs = jax.random.split(rng, num_partners)
@@ -537,6 +568,7 @@ def run_row_with_jsd(rng, env, agent_0_param, agent_0_policy,
             feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks,
             greedy_eval=greedy_eval, partner_feed_dim=partner_feed_dim,
             lbf_ctx=lbf_ctx, feed_mask_fn=feed_mask_fn,
+            feed_reframe_fn=feed_reframe_fn,
         )
 
     return jax.vmap(eval_one_partner)(partner_rngs, all_agent_1_params)
@@ -884,13 +916,22 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
 
     # Ocv2 visibility gating: mask the feed exactly as at train time.
     feed_mask_fn = None
-    if (feed_attn_dims is not None and env_name == "overcooked-v2"
-            and algo_cfg.get("JA_VISIBILITY_GATING", False)):
+    feed_reframe_fn = None
+    if feed_attn_dims is not None and env_name == "overcooked-v2":
         from agents.overcooked_v2.ja_overcooked_v2_attention import (
-            make_visibility_mask_fn, overcooked_v2_object_ctx,
+            make_visibility_mask_fn,
+            overcooked_v2_object_ctx,
+            reframe_partner_attention_for_eval,
         )
-        feed_mask_fn = make_visibility_mask_fn(overcooked_v2_object_ctx(algo_cfg, env))
-        print("[xp_seeds] ocv2 visibility gating enabled for the feed channel")
+        ocv2_ctx = overcooked_v2_object_ctx(algo_cfg, env)
+        if algo_cfg.get("JA_VISIBILITY_GATING", False):
+            feed_mask_fn = make_visibility_mask_fn(ocv2_ctx)
+            print("[xp_seeds] ocv2 visibility gating enabled for the feed channel")
+        if ocv2_ctx.get("egocentric", False):
+            feed_reframe_fn = lambda a0, a1, s0, s1: reframe_partner_attention_for_eval(
+                a0, a1, s0, s1, ocv2_ctx
+            )
+            print("[xp_seeds] ocv2 egocentric partner-attention reframe enabled")
 
     xp_partner_feed_dim = 5
 
@@ -898,6 +939,7 @@ def run_xp_from_params(env, policy, stacked_params, algo_cfg: dict,
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks, greedy_eval=greedy_eval,
         partner_feed_dim=xp_partner_feed_dim, lbf_ctx=lbf_ctx, feed_mask_fn=feed_mask_fn,
+        feed_reframe_fn=feed_reframe_fn,
     ))
 
     all_row_metrics = []
@@ -1378,8 +1420,7 @@ def run_xp_evaluation(task_name: str | None, checkpoint_path: str, greedy_eval: 
     if task_cfg["ENV_NAME"] == "card-game":
         env_kwargs["scramble_partner_msg"] = False
     if no_op:
-        removed = [k for k in list(env_kwargs)
-                   if k.startswith("other_play_") and env_kwargs.pop(k, None)]
+        removed = _strip_other_play_kwargs(env_kwargs)
         print(f"[xp_seeds] --no-op: identity-frame XP, removed OP kwargs {removed}")
     env = make_env(task_cfg["ENV_NAME"], env_kwargs)
     env = LogWrapper(env)
@@ -1499,7 +1540,17 @@ def print_sp_vs_xp_summary(xp_metrics, metric_names, jsd_matrix, num_seeds):
         print(f"  JSD:  SP = {sp_jsd_mean:.4f} +/- {sp_jsd_sem:.4f}  |  XP = {xp_jsd_mean:.4f} +/- {xp_jsd_sem:.4f}")
 
 
-def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
+def _strip_other_play_kwargs(env_kwargs: dict) -> list[str]:
+    removed = []
+    for key in list(env_kwargs):
+        if key.startswith("other_play_") or key == "op_ingredient_permutations":
+            if env_kwargs.pop(key, None):
+                removed.append(key)
+    return removed
+
+
+def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str],
+                            no_op: bool = False):
     """Cross-play evaluation loading one seed from each of multiple checkpoints.
 
     Used for fixed-partner experiments where each seed was trained separately.
@@ -1508,7 +1559,20 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
     hydra_cfg = _load_hydra_config(checkpoint_paths[0])
     if task_name is not None:
         task_cfg = load_task_config(task_name)
-        algo_cfg = load_algo_config()
+        if hydra_cfg is None:
+            raise ValueError(
+                "Multi-checkpoint XP with --task still needs the first checkpoint's "
+                ".hydra/config.yaml to recover the algorithm/network config."
+            )
+        # Keep the checkpoint's algorithm config (e.g. MATE's 4-channel
+        # FEED_OTHER_ATTN network) while allowing --task to override only the
+        # evaluation environment kwargs.
+        algo_cfg = hydra_cfg["algorithm"]
+        algo_cfg["ENV_NAME"] = task_cfg["ENV_NAME"]
+        algo_cfg["ENV_KWARGS"] = dict(task_cfg["ENV_KWARGS"])
+        algo_cfg["ROLLOUT_LENGTH"] = task_cfg.get(
+            "ROLLOUT_LENGTH", algo_cfg.get("ROLLOUT_LENGTH")
+        )
     else:
         if hydra_cfg is None:
             raise ValueError("No --task provided and no .hydra/config.yaml found")
@@ -1523,6 +1587,9 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
         eval_env_kwargs["communication"] = True
     if task_cfg["ENV_NAME"] == "card-game":
         eval_env_kwargs["scramble_partner_msg"] = False
+    if no_op:
+        removed = _strip_other_play_kwargs(eval_env_kwargs)
+        print(f"[xp_seeds] --no-op: identity-frame XP, removed OP kwargs {removed}")
     env = make_env(task_cfg["ENV_NAME"], eval_env_kwargs)
     env = LogWrapper(env)
 
@@ -1589,13 +1656,22 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
 
     # Ocv2 visibility gating: mask the feed exactly as at train time.
     feed_mask_fn = None
-    if (feed_attn_dims is not None and task_cfg["ENV_NAME"] == "overcooked-v2"
-            and algo_cfg.get("JA_VISIBILITY_GATING", False)):
+    feed_reframe_fn = None
+    if feed_attn_dims is not None and task_cfg["ENV_NAME"] == "overcooked-v2":
         from agents.overcooked_v2.ja_overcooked_v2_attention import (
-            make_visibility_mask_fn, overcooked_v2_object_ctx,
+            make_visibility_mask_fn,
+            overcooked_v2_object_ctx,
+            reframe_partner_attention_for_eval,
         )
-        feed_mask_fn = make_visibility_mask_fn(overcooked_v2_object_ctx(algo_cfg, env))
-        print("[xp_seeds] ocv2 visibility gating enabled for the feed channel")
+        ocv2_ctx = overcooked_v2_object_ctx(algo_cfg, env)
+        if algo_cfg.get("JA_VISIBILITY_GATING", False):
+            feed_mask_fn = make_visibility_mask_fn(ocv2_ctx)
+            print("[xp_seeds] ocv2 visibility gating enabled for the feed channel")
+        if ocv2_ctx.get("egocentric", False):
+            feed_reframe_fn = lambda a0, a1, s0, s1: reframe_partner_attention_for_eval(
+                a0, a1, s0, s1, ocv2_ctx
+            )
+            print("[xp_seeds] ocv2 egocentric partner-attention reframe enabled")
 
     xp_partner_feed_dim = 5
     greedy_eval = True
@@ -1604,6 +1680,7 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str]):
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
         feed_attn_dims=feed_attn_dims, ja_card_masks=ja_card_masks, greedy_eval=greedy_eval,
         partner_feed_dim=xp_partner_feed_dim, feed_mask_fn=feed_mask_fn,
+        feed_reframe_fn=feed_reframe_fn,
     ))
 
     all_row_metrics = []
@@ -1699,7 +1776,7 @@ if __name__ == "__main__":
         run_xp_best_from_run(args.best_from_run, scores_path=args.scores,
                              wandb_resume=args.wandb_resume)
     elif args.checkpoints:
-        run_xp_multi_checkpoint(args.task, args.checkpoints)
+        run_xp_multi_checkpoint(args.task, args.checkpoints, no_op=args.no_op)
     elif args.checkpoint:
         max_pairs = 0 if args.xp_video_all_pairs else args.xp_video_max_pairs
         run_xp_evaluation(args.task, args.checkpoint, greedy_eval=not args.sampled,
