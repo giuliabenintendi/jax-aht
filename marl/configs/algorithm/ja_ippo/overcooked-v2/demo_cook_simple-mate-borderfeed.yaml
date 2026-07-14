@@ -12,7 +12,10 @@ defaults:
 # task/algorithm/TRAIN_SEED/label on the CLI (run names must stay short: the
 # logger dies past the filename length limit).
 TOTAL_TIMESTEPS: 3e7
-NUM_ENVS: 192
+# Full-map allocentric obs is 40x88 (~2.2x the egocentric 40x40 pixels), so the
+# per-batch activation footprint blows past a 32GB V100 at 192 envs (OOM ~25GB).
+# 64 keeps mb16 and fits with headroom for the ckpt-video render spike.
+NUM_ENVS: 64
 CHECKPOINT_FREQ_TIMESTEPS: 1000000
 SAVE_CKPT_VIDEOS: true
 CKPT_VIDEO_EVERY: 5

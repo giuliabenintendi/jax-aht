@@ -1550,7 +1550,7 @@ def _strip_other_play_kwargs(env_kwargs: dict) -> list[str]:
 
 
 def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str],
-                            no_op: bool = False):
+                            no_op: bool = False, greedy_eval: bool = True):
     """Cross-play evaluation loading one seed from each of multiple checkpoints.
 
     Used for fixed-partner experiments where each seed was trained separately.
@@ -1674,7 +1674,9 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str],
             print("[xp_seeds] ocv2 egocentric partner-attention reframe enabled")
 
     xp_partner_feed_dim = 5
-    greedy_eval = True
+    # Until 2026-07-13 this was hardcoded True, silently ignoring --sampled in
+    # the --checkpoints path: every multi-checkpoint XP before then is greedy.
+    print(f"[xp_seeds] action decoding: {'greedy' if greedy_eval else 'sampled'}")
 
     row_fn = jax.jit(lambda rng_i, p0: run_row_with_jsd(
         rng_i, env, p0, policy, stacked_params, policy, max_steps, NUM_EVAL_EPISODES, action_sizes,
@@ -1732,6 +1734,33 @@ def run_xp_multi_checkpoint(task_name: str | None, checkpoint_paths: list[str],
         xp_jsd_mean, xp_jsd_sem = xp_mean_and_sem(jsd_ep_means)
         print(f"  JSD:   SP = {sp_jsd_mean:.4f} +/- {sp_jsd_sem:.4f}  |  XP = {xp_jsd_mean:.4f} +/- {xp_jsd_sem:.4f}")
 
+    # Save heatmaps/CSVs and log to wandb through the same helpers the multi-seed
+    # path uses, so a --checkpoints run also produces the XP_ run + score_matrix
+    # heatmap. Results land under the first checkpoint's rundir.
+    savedir = os.path.dirname(checkpoint_paths[0].rstrip("/"))
+    xp_dir = os.path.join(savedir, "xp_results")
+    os.makedirs(xp_dir, exist_ok=True)
+    run_label = _build_run_label(algo_cfg, task_name)
+    score_std = score_matrix.std(axis=-1)
+    score_vmin, score_vmax = _score_color_range(task_cfg["ENV_NAME"], env.num_agents)
+    save_xp_heatmap(score_mean, score_std, f"XP Episode Return — {run_label}",
+                    os.path.join(xp_dir, "xp_score_matrix.png"),
+                    vmin=score_vmin, vmax=score_vmax)
+    save_xp_csv(score_mean, score_std,
+                os.path.join(xp_dir, "xp_score_matrix.csv"), label="episode_return")
+    is_card = task_cfg["ENV_NAME"] == "card-game"
+    if not is_card:
+        jsd_mean = jsd_matrix.mean(axis=-1)
+        jsd_std = jsd_matrix.std(axis=-1)
+        save_xp_heatmap(jsd_mean, jsd_std, f"XP JSD — {run_label}",
+                        os.path.join(xp_dir, "xp_jsd_matrix.png"),
+                        fmt=".4f", cmap="YlGnBu", vmin=0.0, vmax=0.693)
+        save_xp_csv(jsd_mean, jsd_std,
+                    os.path.join(xp_dir, "xp_jsd_matrix.csv"), label="jsd")
+    wb_prefix = "XP_noop" if no_op else "XP"
+    _log_xp_to_wandb(None if is_card else jsd_matrix, score_mean, xp_dir,
+                     algo_cfg, task_name, savedir, wb_prefix=wb_prefix)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cross-play evaluation across seeds")
@@ -1776,7 +1805,8 @@ if __name__ == "__main__":
         run_xp_best_from_run(args.best_from_run, scores_path=args.scores,
                              wandb_resume=args.wandb_resume)
     elif args.checkpoints:
-        run_xp_multi_checkpoint(args.task, args.checkpoints, no_op=args.no_op)
+        run_xp_multi_checkpoint(args.task, args.checkpoints, no_op=args.no_op,
+                                greedy_eval=not args.sampled)
     elif args.checkpoint:
         max_pairs = 0 if args.xp_video_all_pairs else args.xp_video_max_pairs
         run_xp_evaluation(args.task, args.checkpoint, greedy_eval=not args.sampled,

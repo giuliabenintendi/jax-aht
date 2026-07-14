@@ -375,6 +375,7 @@ def run_ja_ippo(config, logger):
     # paper pipeline is byte-identical unless explicitly enabled.
     save_ckpt_videos = bool(algorithm_config.get("SAVE_CKPT_VIDEOS", False))
     max_ckpt_videos = int(algorithm_config.get("MAX_CKPT_VIDEOS", num_ckpts))
+    ckpt_video_every = int(algorithm_config.get("CKPT_VIDEO_EVERY", 0))
     inner_env = getattr(env, "_env", env)
     env_name = algorithm_config["ENV_NAME"]
     eval_max_steps = int(algorithm_config.get("ENV_KWARGS", {}).get("max_steps", 400))
@@ -407,8 +408,14 @@ def run_ja_ippo(config, logger):
             steps_done = chunk_end
             if len(seed_ckpts) < num_ckpts:
                 seed_ckpts.append(jax.tree.map(jnp.copy, runner_state[0].params))
-                if save_ckpt_videos and seed_idx == 0 and len(seed_ckpts) <= max_ckpt_videos:
-                    ckpt_idx = len(seed_ckpts) - 1
+                ckpt_idx = len(seed_ckpts) - 1
+                # CKPT_VIDEO_EVERY>0 renders at a fixed cadence (ckpt 0, N, 2N, ...) so
+                # videos span the whole run; else cap to the first MAX_CKPT_VIDEOS.
+                want_ckpt_video = (
+                    ckpt_idx % ckpt_video_every == 0 if ckpt_video_every > 0
+                    else len(seed_ckpts) <= max_ckpt_videos
+                )
+                if save_ckpt_videos and seed_idx == 0 and want_ckpt_video:
                     tag = f"Eval/seed_{seed_idx}/ckpt_{ckpt_idx}"
                     ckpt_video = getattr(mech, "log_ckpt_video", None)
                     try:

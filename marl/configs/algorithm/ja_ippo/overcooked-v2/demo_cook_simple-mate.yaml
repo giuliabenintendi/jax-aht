@@ -10,6 +10,7 @@ TOTAL_TIMESTEPS: 3e7   # set at launch: SP block ran 2e7; OP block runs 5e7 (+ h
 NUM_ENVS: 256          # 256x256 fits a 32GB V100; drop to ~192 if the 4th channel OOMs
 CHECKPOINT_FREQ_TIMESTEPS: 1000000
 SAVE_CKPT_VIDEOS: true
+CKPT_VIDEO_EVERY: 5            # render a checkpoint video every 5th ckpt (0,5,...,30) to span training, not just the first 3
 
 # Locked recipe from the 2026-07-04/06 sweep (papercore + LR interp): mb64 keeps
 # updates bounded (mb16 collapses at every LR on the fixed-replay code), GAE 0.95
@@ -29,15 +30,14 @@ REW_SHAPING_HORIZON: 15000000   # linear shaped-reward anneal 1->0; 25M on the O
 # fed back as a 4th image channel.
 JA_OBJECT_OCCUPANCY: true
 FEED_OTHER_ATTN: true
-# Strict gaze-following under partial observability: the feed is cell-masked to
-# the receiver's view and zeroed unless the partner is in view; the aux target
-# only counts partner-attention events that were witnessable when they happened.
+# Strict gaze-following under partial observability: when the partner is in view,
+# the receiver gets the partner's whole allocentric attention map; otherwise the
+# feed is zero. The aux target uses the same partner-visible gate.
 JA_VISIBILITY_GATING: true
-# Aux is intentionally weak and short-horizon in Overcooked: useful coordination
-# is complementary and stage-dependent, not persistent same-object convergence.
-# The object set filters out recipe indicators/distractors and includes dynamic
-# useful items, so keep the supervised attention signal conservative.
-JA_OBJECT_AUX_COEF: 3e-5
+# Match the LBF working-point scale for the weighted aux term. In OCV2 the value
+# term is much larger, so 3e-5 leaves the attention objective visibly weak versus
+# PPO; 1e-4 gives aux_loss~7 a weighted term around 7e-4.
+JA_OBJECT_AUX_COEF: 1e-4
 JA_FUTURE_GAMMA_OCC: 0.8
 JA_FUTURE_PARTNER_COEF: 0.0
 JA_FUTURE_SELF_COEF: 0.0

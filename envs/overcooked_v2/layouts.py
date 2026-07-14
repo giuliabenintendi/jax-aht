@@ -400,6 +400,15 @@ overcooked_v2_layouts = {
     "demo_cook_simple": Layout.from_string(
         demo_cook_simple, possible_recipes=[[0, 0, 0], [1, 1, 1]]
     ),
+    # Pinned-recipe eval variants: same grid, recipe fixed to one dish so
+    # per-recipe scores expose convention asymmetries (a seed with a
+    # default-ingredient convention aces one variant and fails the other).
+    "demo_cook_simple_onion": Layout.from_string(
+        demo_cook_simple, possible_recipes=[[0, 0, 0]]
+    ),
+    "demo_cook_simple_broccoli": Layout.from_string(
+        demo_cook_simple, possible_recipes=[[1, 1, 1]]
+    ),
     "demo_cook_wide": Layout.from_string(
         demo_cook_wide, possible_recipes=[[0, 0, 0], [1, 1, 1]]
     ),
