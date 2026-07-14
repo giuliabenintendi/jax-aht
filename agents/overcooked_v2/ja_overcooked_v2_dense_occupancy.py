@@ -24,16 +24,12 @@ Overcooked V2 also needs the JaxMARL-style reward-shaping anneal that
 learning reward); without it V2 self-play collapses. It is reproduced here so
 the mechanism is self-contained.
 
-Visibility gating (`JA_VISIBILITY_GATING`, strict gaze-following): V2 obs are
-view-masked, so without gating the feed would leak attention the receiver could
-not perceive and the aux would pull attention toward events it could never have
-known about. When on, the feed channel is cell-masked to the receiver's view box
-and zeroed entirely unless the partner is inside it, and the aux occupancy
-target only counts partner-attention events that were witnessable (cell AND
-partner in the receiver's view) AT THE MOMENT they happened — masked inside the
-backward scan, so an unwitnessed event neither creates a target nor shadows a
-later witnessed one. The receiver's attention may still anticipate currently
-off-view cells; it is just never supervised by events it could not have seen.
+Visibility gating (`JA_VISIBILITY_GATING`, strict gaze-following): V2 image obs
+are full-map but zero-masked outside the receiver's view radius. When the
+partner is inside that radius, the receiver can observe the partner's gaze and
+gets the partner's entire allocentric attention map as the feed; otherwise the
+feed is zero. The auxiliary occupancy target uses the same partner-visible gate,
+so off-view attended cells remain valid targets only while the partner is seen.
 """
 from __future__ import annotations
 
@@ -48,7 +44,6 @@ from agents.overcooked_v2.ja_overcooked_v2_attention import (
     partner_in_view,
     recipe_contains_ingredient,
     useful_dynamic_item_mask,
-    view_feature_masks,
 )
 
 
@@ -119,6 +114,10 @@ class OvercookedV2DenseObjectOccupancyMechanism:
                 "JA_VISIBILITY_GATING needs a partially observable env "
                 "(agent_view_size set); with full observability there is nothing to gate."
             )
+        # Legacy egocentric-only option: project off-crop partner attention onto
+        # the receiver crop border. Full-map observations ignore this because the
+        # partner feed already lives in the same allocentric frame as RGB obs.
+        self.feed_border_project = bool(config.get("JA_FEED_BORDER_PROJECT", False))
         # Fixed feature-grid cell (fr, fc) of each detected task object. Constant
         # across steps and episodes for static objects. Dynamic slots are fixed
         # candidate cells/inventory slots whose validity is recomputed per state.
@@ -240,6 +239,17 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             & (local_c < self.agent_fov_size)
             & valid.astype(bool)
         )
+        # Border projection: every valid object gets a mask in this actor's frame,
+        # out-of-crop ones clamped onto the border cell in their direction —
+        # matching the whole-map feed so the aux can supervise toward the same
+        # border spikes the feed transmits. `visible` keeps TRUE in-crop
+        # visibility (attended-object selection and event validity still use it).
+        if self.feed_border_project:
+            local_r = jnp.clip(local_r, 0, self.agent_fov_size - 1)
+            local_c = jnp.clip(local_c, 0, self.agent_fov_size - 1)
+            mask_exists = valid.astype(bool)
+        else:
+            mask_exists = visible
 
         if self.rotate_obs:
             k = jnp.array([0, 2, 1, 3])[actor_dirs]
@@ -262,7 +272,7 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         masks = object_feature_masks_from_tiles(
             local_r,
             local_c,
-            visible,
+            mask_exists.astype(jnp.float32),
             tile_size=self.tile_size,
             feat_h=self.feat_h,
             feat_w=self.feat_w,
@@ -383,12 +393,25 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             raw_c = cc + sc - self.view_size
             dst_r = raw_r - dr + self.view_size
             dst_c = raw_c - dc + self.view_size
-            valid = (
-                (dst_r >= 0)
-                & (dst_r < self.agent_fov_size)
-                & (dst_c >= 0)
-                & (dst_c < self.agent_fov_size)
-            )
+            if self.feed_border_project:
+                # Keep all real-world mass; out-of-window cells clamp onto the
+                # receiver's border in the target's direction. Attention on the
+                # partner's off-grid crop padding is still dropped.
+                valid = (
+                    (raw_r >= 0)
+                    & (raw_r < self.grid_h)
+                    & (raw_c >= 0)
+                    & (raw_c < self.grid_w)
+                )
+                dst_r = jnp.clip(dst_r, 0, self.agent_fov_size - 1)
+                dst_c = jnp.clip(dst_c, 0, self.agent_fov_size - 1)
+            else:
+                valid = (
+                    (dst_r >= 0)
+                    & (dst_r < self.agent_fov_size)
+                    & (dst_c >= 0)
+                    & (dst_c < self.agent_fov_size)
+                )
             if self.rotate_obs:
                 dst_r, dst_c = _fwd_rot(dst_r, dst_c, dd)
             centre_r = dst_r * self.tile_size + self.tile_size // 2
@@ -429,20 +452,14 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             self_rc_t = jnp.zeros((num_actors, 2), dtype=jnp.int32)
 
         # Feed mask consumed at t+1, from the post-step state (whose obs the
-        # receiver sees next): receiver's view box, zeroed unless the partner is
-        # inside it (strict gaze-following).
+        # receiver sees next): the whole partner map is available when the
+        # partner is in view; otherwise the feed is zero.
         if self.visibility_gating:
             rows_n, cols_n, prow_n, pcol_n = self._actor_tiles(new_env_state, num_actors)
             pvis_n = partner_in_view(rows_n, cols_n, prow_n, pcol_n, self.view_size)
-            if self.egocentric:
-                feed_mask = jnp.ones(
-                    (num_actors, self.feat_h, self.feat_w), dtype=jnp.float32
-                ) * pvis_n[:, None, None]
-            else:
-                feed_mask = view_feature_masks(
-                    rows_n, cols_n, self.view_size,
-                    self.grid_h, self.grid_w, self.feat_h, self.feat_w,
-                ) * pvis_n[:, None, None]
+            feed_mask = jnp.ones(
+                (num_actors, self.feat_h, self.feat_w), dtype=jnp.float32
+            ) * pvis_n[:, None, None]
         else:
             feed_mask = jnp.ones((num_actors, self.feat_h, self.feat_w), dtype=jnp.float32)
 
@@ -528,19 +545,20 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         )
         p_mask = mask_all[t_idx, a_idx, p_sel]
         p_visible_receiver = vis_all[t_idx, a_idx, p_sel]
-        p_event_valid = p_event_valid_src * p_visible_receiver
+        # Border projection: the receiver need not see the attended CELL — the
+        # partner's gaze direction is observable whenever the partner is (the
+        # witness below stays partner-visible). Event validity then only requires
+        # the ATTENDER to actually see its object (p_event_valid_src); the
+        # receiver-frame mask is the border-clamped blob, matching the feed.
+        if self.feed_border_project:
+            p_event_valid = p_event_valid_src
+        else:
+            p_event_valid = p_event_valid_src * p_visible_receiver
         witness = None
         if self.visibility_gating:
-            if self.egocentric:
-                wit = jnp.ones(
-                    (t_dim, a_dim, self.feat_h, self.feat_w), dtype=jnp.float32
-                ) * traj_batch.extras["ja_partner_visible"][..., None, None]
-            else:
-                rc = traj_batch.extras["ja_self_rc"]  # (T, A, 2) receiver tile
-                wit = view_feature_masks(
-                    rc[..., 0], rc[..., 1], self.view_size,
-                    self.grid_h, self.grid_w, self.feat_h, self.feat_w,
-                ) * traj_batch.extras["ja_partner_visible"][..., None, None]
+            wit = jnp.ones(
+                (t_dim, a_dim, self.feat_h, self.feat_w), dtype=jnp.float32
+            ) * traj_batch.extras["ja_partner_visible"][..., None, None]
             witness = wit.reshape(t_dim, a_dim, self.feat_h * self.feat_w)
         partner_occ = self._attended_mask_occupancy(
             p_mask, traj_batch.done,
@@ -688,6 +706,7 @@ class OvercookedV2DenseObjectOccupancyMechanism:
                     "agent_fov_size": self.agent_fov_size,
                     "rotate_obs": self.rotate_obs,
                     "egocentric": self.egocentric,
+                    "feed_border_project": self.feed_border_project,
                 }
 
                 def feed_reframe_fn(a0, a1, s0, s1):

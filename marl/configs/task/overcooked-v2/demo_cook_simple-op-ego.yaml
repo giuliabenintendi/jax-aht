@@ -1,0 +1,19 @@
+ENV_NAME: overcooked-v2
+ROLLOUT_LENGTH: 256   # paper (Forkel et al. 2025); < max_steps, GAE bootstraps at the cut
+ENV_KWARGS:
+  layout: demo_cook_simple
+  obs_type: image
+  agent_view_size: 2
+  max_steps: 400
+  negative_rewards: true
+  random_agent_positions: true
+  sample_recipe_on_delivery: true
+  do_reward_shaping: false
+  # Full-map image with cells outside agent_view_size zero-masked. This keeps
+  # partner-attention feed and RGB observations in the same allocentric frame.
+  # Other-Play on top: per-agent recipe-ingredient permutation
+  # (distractor 2 fixed), recoloured into each agent's rendered obs by the
+  # OvercookedV2OtherPlayWrapper. This is the transfer regime -- breaks any
+  # private colour convention so cross-play can't rely on it.
+  op_ingredient_permutations: [0, 1]
+TASK_NAME: overcooked-v2/demo_cook_simple-op-ego

@@ -290,28 +290,25 @@ def partner_in_view(rows, cols, partner_rows, partner_cols, view_size):
 
 
 def make_visibility_mask_fn(ctx):
-    """Single-episode eval hook implementing strict gaze-following feed masking.
+    """Single-episode eval hook implementing the whole-map partner-visible gate.
 
-    Returns `state -> (mask_0, mask_1)`, each `(feat_h, feat_w)`: receiver i's
-    view mask, zeroed entirely unless the partner is inside i's view box —
-    matching the training-time feed gating so eval obs stay on-distribution.
+    Returns `state -> (mask_0, mask_1)`, each `(feat_h, feat_w)`: all-ones when
+    the partner is inside receiver i's view box, else zero — matching the
+    training-time feed gating (`feed_mask = ones * partner_visible`) so eval obs
+    stay on-distribution. The whole partner attention map is available once the
+    partner is seen (its gaze is observable even where the receiver's own RGB is
+    masked); it is not clipped to the receiver's view box.
     """
     feat_h, feat_w = ctx["feat_h"], ctx["feat_w"]
-    grid_h, grid_w = ctx["grid_h"], ctx["grid_w"]
     view_size = ctx["agent_view_size"]
-    egocentric = bool(ctx.get("egocentric", False))
 
     def mask_fn(state):
         rows, cols = agent_tiles_from_state(state)  # (2,)
         gate = partner_in_view(rows, cols, rows[::-1], cols[::-1], view_size)
-        if egocentric:
-            return (
-                jnp.ones((feat_h, feat_w), dtype=jnp.float32) * gate[0],
-                jnp.ones((feat_h, feat_w), dtype=jnp.float32) * gate[1],
-            )
-        vm = view_feature_masks(rows, cols, view_size, grid_h, grid_w, feat_h, feat_w)
-        gated = vm * gate[:, None, None]
-        return gated[0], gated[1]
+        return (
+            jnp.ones((feat_h, feat_w), dtype=jnp.float32) * gate[0],
+            jnp.ones((feat_h, feat_w), dtype=jnp.float32) * gate[1],
+        )
 
     return mask_fn
 
@@ -344,6 +341,9 @@ def reframe_partner_attention_for_eval(
     agent_fov_size = int(ctx["agent_fov_size"])
     tile_size = int(ctx["tile_size"])
     rotate_obs = bool(ctx.get("rotate_obs", False))
+    grid_h = int(ctx["grid_h"])
+    grid_w = int(ctx["grid_w"])
+    border_project = bool(ctx.get("feed_border_project", False))
 
     rows_t, cols_t = agent_tiles_from_state(env_state)
     rows_n, cols_n = agent_tiles_from_state(new_env_state)
@@ -401,12 +401,24 @@ def reframe_partner_attention_for_eval(
         raw_c = cc + sc - view_size
         dst_r = raw_r - dr + view_size
         dst_c = raw_c - dc + view_size
-        valid = (
-            (dst_r >= 0)
-            & (dst_r < agent_fov_size)
-            & (dst_c >= 0)
-            & (dst_c < agent_fov_size)
-        )
+        if border_project:
+            # Mirror of the training-side JA_FEED_BORDER_PROJECT branch: keep all
+            # real-world mass, clamp out-of-window cells onto the receiver border.
+            valid = (
+                (raw_r >= 0)
+                & (raw_r < grid_h)
+                & (raw_c >= 0)
+                & (raw_c < grid_w)
+            )
+            dst_r = jnp.clip(dst_r, 0, agent_fov_size - 1)
+            dst_c = jnp.clip(dst_c, 0, agent_fov_size - 1)
+        else:
+            valid = (
+                (dst_r >= 0)
+                & (dst_r < agent_fov_size)
+                & (dst_c >= 0)
+                & (dst_c < agent_fov_size)
+            )
         if rotate_obs:
             dst_r, dst_c = _fwd_rot(dst_r, dst_c, dd)
         centre_r = dst_r * tile_size + tile_size // 2
@@ -535,6 +547,7 @@ def overcooked_v2_object_ctx(config, env) -> dict:
         "grid_h": grid_h,
         "grid_w": grid_w,
         "agent_view_size": raw.agent_view_size,  # None = fully observable
+        "feed_border_project": bool(config.get("JA_FEED_BORDER_PROJECT", False)),
         "egocentric": bool(getattr(wrapper, "egocentric", False)),
         "agent_fov_size": int(getattr(wrapper, "agent_fov_size", 0) or 0),
         "agent_fov_centered": bool(getattr(wrapper, "agent_fov_centered", True)),
