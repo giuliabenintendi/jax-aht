@@ -24,12 +24,15 @@ Overcooked V2 also needs the JaxMARL-style reward-shaping anneal that
 learning reward); without it V2 self-play collapses. It is reproduced here so
 the mechanism is self-contained.
 
-Visibility gating (`JA_VISIBILITY_GATING`, strict gaze-following): V2 image obs
-are full-map but zero-masked outside the receiver's view radius. When the
-partner is inside that radius, the receiver can observe the partner's gaze and
-gets the partner's entire allocentric attention map as the feed; otherwise the
-feed is zero. The auxiliary occupancy target uses the same partner-visible gate,
-so off-view attended cells remain valid targets only while the partner is seen.
+Visibility gating (`JA_VISIBILITY_GATING`, gaze following): V2 image obs are
+full-map but zero-masked outside the receiver's view radius. When the partner
+is inside that radius, the receiver observes the partner's gaze: the partner's
+entire allocentric attention map arrives as the feed, and the aux target is the
+full footprint of the partner-attended object -- even when that object lies
+outside the receiver's own view box, since the feed channel lights up exactly
+those cells and makes the target inferable from input. Gaze events are grounded
+on the attender side: an event only counts while the attender can see the
+object it attends. A hidden partner contributes neither feed nor aux.
 """
 from __future__ import annotations
 
@@ -141,6 +144,16 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         self.aux_occ_coef = float(config.get("JA_OBJECT_AUX_COEF", 0.005))
         self.aux_coef = self.aux_occ_coef
         self.aux_active = self.aux_occ_coef > 0.0
+        # Supervise attention only at steps where the partner is currently
+        # visible (the only steps where the feed lights up the target cells);
+        # off = also supervise anticipatorily toward the next witnessed event.
+        self.aux_visible_only = bool(config.get("JA_AUX_PARTNER_VISIBLE_ONLY", False))
+        # LBF-style per-cell discounted first-occupancy (Algorithm-1 line 14):
+        # current focus cells get 1, every other cell keeps gamma-per-step
+        # decayed future mass, so the target is the LIST of upcoming witnessed
+        # objects at discounted relative weights. Off = replace: the next
+        # witnessed event's footprint is the whole target.
+        self.occ_future_blend = bool(config.get("JA_OCC_FUTURE_BLEND", False))
         self.vf_coef = float(config.get("VF_COEF", 0.5))
 
         # JaxMARL-style linear shaped-reward anneal (1 -> 0 over REW_SHAPING_HORIZON
@@ -217,11 +230,22 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         if not self.egocentric:
             local_rows = object_pos_actor[..., 0]
             local_cols = object_pos_actor[..., 1]
-            visible = valid.astype(jnp.float32)
+            # Masks keep the full world-frame footprint of every valid object
+            # (the receiver may be supervised toward objects it cannot see).
+            # `visible` additionally requires the ACTOR to see the object, so
+            # its own gaze events stay grounded in what it observes.
+            if self.view_size is not None:
+                in_view = (
+                    (jnp.abs(local_rows - actor_rows[:, None]) <= self.view_size)
+                    & (jnp.abs(local_cols - actor_cols[:, None]) <= self.view_size)
+                )
+            else:
+                in_view = jnp.ones_like(local_rows, dtype=bool)
+            visible = (valid.astype(bool) & in_view).astype(jnp.float32)
             masks = object_feature_masks_from_tiles(
                 local_rows,
                 local_cols,
-                visible,
+                valid.astype(jnp.float32),
                 tile_size=self.tile_size,
                 feat_h=self.feat_h,
                 feat_w=self.feat_w,
@@ -440,16 +464,14 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         sel = jnp.argmax(object_mass, axis=-1)  # (A,) most-attended object
         attended_visible = object_visible[jnp.arange(num_actors), sel]
 
-        # Receiver tile + partner-visible flag at t (pre-step state = the state
-        # that generated obs_t / attn_t); consumed by the aux witness mask and
-        # logged as a diagnostic even when gating is off.
+        # Partner-visible flag at t (pre-step state = the state that generated
+        # obs_t / attn_t); consumed by the aux witness mask and logged as a
+        # diagnostic even when gating is off.
         if self.view_size is not None:
             rows_t, cols_t, prow_t, pcol_t = self._actor_tiles(env_state, num_actors)
             pvis_t = partner_in_view(rows_t, cols_t, prow_t, pcol_t, self.view_size)
-            self_rc_t = jnp.stack([rows_t, cols_t], axis=-1).astype(jnp.int32)
         else:
             pvis_t = jnp.ones((num_actors,), dtype=jnp.float32)
-            self_rc_t = jnp.zeros((num_actors, 2), dtype=jnp.int32)
 
         # Feed mask consumed at t+1, from the post-step state (whose obs the
         # receiver sees next): the whole partner map is available when the
@@ -480,7 +502,6 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             "ja_future_object_mask_all": object_masks.astype(jnp.float32),
             "ja_future_object_visible_all": object_visible,
             "ja_obj_on_mass": jax.lax.stop_gradient(on_mass),
-            "ja_self_rc": self_rc_t,
             "ja_partner_visible": pvis_t,
             "rew_shaping_frac": jnp.broadcast_to(shaping_frac, (num_actors,)),
             "delivery": env_reward,
@@ -513,7 +534,13 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             box_t, done_t = x_t
             m_next = jnp.where(done_t[..., None], 0.0, m_next)
             event_t = box_t.sum(axis=-1, keepdims=True) > 0.0
-            m_t = jnp.where(event_t, box_t, self.gamma_occ * m_next)
+            if self.occ_future_blend:
+                # Same line as the LBF mechanism: witnessed-focus cells get 1,
+                # everything else decays by gamma per STEP (non-witnessed steps
+                # are pure decay), so relative weights encode time-to-focus.
+                m_t = jnp.where(box_t > 0.0, 1.0, self.gamma_occ * m_next)
+            else:
+                m_t = jnp.where(event_t, box_t, self.gamma_occ * m_next)
             return m_t, m_t
 
         init = jnp.zeros(box.shape[1:], dtype=jnp.float32)
@@ -545,15 +572,15 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         )
         p_mask = mask_all[t_idx, a_idx, p_sel]
         p_visible_receiver = vis_all[t_idx, a_idx, p_sel]
-        # Border projection: the receiver need not see the attended CELL — the
-        # partner's gaze direction is observable whenever the partner is (the
-        # witness below stays partner-visible). Event validity then only requires
-        # the ATTENDER to actually see its object (p_event_valid_src); the
-        # receiver-frame mask is the border-clamped blob, matching the feed.
-        if self.feed_border_project:
-            p_event_valid = p_event_valid_src
-        else:
+        # Receiver-side visibility of the partner's object gates events only in
+        # legacy egocentric configs, where targets live in the receiver's crop.
+        # Allocentric aux supervises the object's full footprint even when the
+        # receiver cannot see it: with the partner in view, the feed channel
+        # lights up those cells, so the target is inferable from input.
+        if self.egocentric and not self.feed_border_project:
             p_event_valid = p_event_valid_src * p_visible_receiver
+        else:
+            p_event_valid = p_event_valid_src
         witness = None
         if self.visibility_gating:
             wit = jnp.ones(
@@ -616,6 +643,8 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         attn = _as_spatial_attention(attn_map_apply)  # (T, A, fh, fw); shared frame
         nll = -(target * jnp.log(attn + 1e-8)).sum(axis=(-2, -1))
         valid = (~traj_batch.done).astype(jnp.float32)
+        if self.aux_visible_only:
+            valid = valid * traj_batch.extras["ja_partner_visible"]
         loss = (nll * valid).sum() / jnp.maximum(valid.sum(), 1e-8)
         return self.aux_occ_coef, loss
 

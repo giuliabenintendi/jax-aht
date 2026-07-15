@@ -184,6 +184,19 @@ W     APA X
 1      W  B
 WWWWWR2W1WW
 """
+# Single recipe indicator on the flip axis (middle row). The two-indicator
+# variant hands agents a free binary signal: WHICH indicator is approached
+# carries one convention bit while displaying identical content. With one
+# indicator at a mirror-symmetric fixed point there is no interchangeable
+# referent pair to signal with, and the layout stays exactly symmetric under
+# vertical-flip + ingredient-swap.
+demo_cook_simple_1r = """
+WWWWWW2W0WW
+0      W  B
+R     APA X
+1      W  B
+WWWWWW2W1WW
+"""
 demo_cook_wide = """
 WWWWBXBWWWW
 WWW0 A 1WWW
@@ -399,6 +412,9 @@ overcooked_v2_layouts = {
     # Demo Cook Layouts
     "demo_cook_simple": Layout.from_string(
         demo_cook_simple, possible_recipes=[[0, 0, 0], [1, 1, 1]]
+    ),
+    "demo_cook_simple_1r": Layout.from_string(
+        demo_cook_simple_1r, possible_recipes=[[0, 0, 0], [1, 1, 1]]
     ),
     # Pinned-recipe eval variants: same grid, recipe fixed to one dish so
     # per-recipe scores expose convention asymmetries (a seed with a

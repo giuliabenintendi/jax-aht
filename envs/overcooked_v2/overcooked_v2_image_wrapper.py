@@ -69,6 +69,7 @@ class OvercookedV2ImageWrapper(BaseEnv):
         agent_fov_size: int = 5,
         agent_fov_centered: bool = True,
         rotate_obs: bool = True,
+        op_vertical_flip: bool = False,
         **kwargs,
     ):
         self.env = OvercookedV2(**kwargs)
@@ -92,6 +93,18 @@ class OvercookedV2ImageWrapper(BaseEnv):
         self.agent_fov_size = agent_fov_size
         self.agent_fov_centered = agent_fov_centered
         self.rotate_obs = rotate_obs
+        # Other-Play vertical-flip half of the layout's only spatial symmetry
+        # (vertical mirror composed with ingredient swap). Tied to the colour
+        # permutation the base env already samples: the agents whose ingredients
+        # are swapped ALSO see a vertically mirrored world and have their up/down
+        # actions swapped, so the per-agent lens is the true flip-swap symmetry.
+        # Pure flip (without the swap) is not a layout symmetry, so it is never
+        # applied alone. Requires op_ingredient_permutations to be active.
+        self.op_vertical_flip = op_vertical_flip
+        if op_vertical_flip and egocentric:
+            raise NotImplementedError(
+                "op_vertical_flip is implemented for allocentric obs only."
+            )
 
         self._img_h = self.grid_height * self.tile_size
         self._img_w = self.grid_width * self.tile_size
@@ -123,6 +136,20 @@ class OvercookedV2ImageWrapper(BaseEnv):
         row_vis = (rows >= y_low) & (rows < y_high)
         col_vis = (cols >= x_low) & (cols < x_high)
         return row_vis[:, None] & col_vis[None, :]
+
+    def _flip_bits(self, env_state) -> jnp.ndarray:
+        """Per-agent vertical-flip mask, tied to the ingredient swap (num_agents,).
+
+        An agent is flipped exactly when its sampled ingredient permutation swaps
+        ingredients 0 and 1, so the vertical mirror always co-occurs with the
+        colour swap -- together they are the layout's flip-swap symmetry.
+        """
+        if not (self.op_vertical_flip and self.env.op_ingredient_permutations):
+            return jnp.zeros(self.num_agents, dtype=bool)
+        return env_state.ingredient_permutations[:, 0] == 1
+
+    # Vertical flip swaps up<->down actions; right/left/stay/interact unchanged.
+    _FLIP_ACTION = jnp.array([0, 3, 2, 1, 4, 5])
 
     def _agent_palettes(self, env_state) -> jnp.ndarray:
         """Per-agent ingredient palettes implementing Other-Play in image space.
@@ -232,6 +259,7 @@ class OvercookedV2ImageWrapper(BaseEnv):
             imgs = [img] * self.num_agents
 
         positions = env_state.agents.pos
+        flip_bits = self._flip_bits(env_state)
         obs = {}
         for i in range(self.num_agents):
             x = positions.x[i]
@@ -242,6 +270,9 @@ class OvercookedV2ImageWrapper(BaseEnv):
             )
             masked = jnp.where(pixel_mask[:, :, None], imgs[i], 0)
             masked = _draw_border(masked, x, y, self.tile_size, _EGO_HIGHLIGHT_COLOR)
+            # Whole masked+bordered frame mirrors together, so the view window,
+            # self-marker and content stay coherent in the flipped lens.
+            masked = jnp.where(flip_bits[i], jnp.flip(masked, axis=0), masked)
             obs[self.agents[i]] = masked.flatten().astype(jnp.float32) / 255.0
         return obs
 
@@ -272,6 +303,11 @@ class OvercookedV2ImageWrapper(BaseEnv):
         actions: Dict[str, chex.Array],
         reset_state: Optional[WrappedEnvState] = None,  # noqa: ARG002 — auto-reset
     ) -> Tuple[Dict[str, chex.Array], WrappedEnvState, Dict[str, float], Dict[str, bool], Dict]:
+        flip_bits = self._flip_bits(state.env_state)
+        actions = {
+            a: jnp.where(flip_bits[i], self._FLIP_ACTION[actions[a]], actions[a])
+            for i, a in enumerate(self.agents)
+        }
         obs_sym, env_state, rewards, dones, infos = self.env.step(
             key, state.env_state, actions
         )
