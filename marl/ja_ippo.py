@@ -404,7 +404,10 @@ def run_ja_ippo(config, logger):
             runner_state, update_steps, rew_norm_state, chunk_metrics = chunked_step_fn(
                 runner_state, update_steps, rew_norm_state, chunk_size,
             )
-            seed_metrics.append(chunk_metrics)
+            # Keep historical metrics on host so GPU memory does not grow per chunk.
+            host_chunk_metrics = jax.device_get(chunk_metrics)
+            del chunk_metrics
+            seed_metrics.append(host_chunk_metrics)
             steps_done = chunk_end
             if len(seed_ckpts) < num_ckpts:
                 seed_ckpts.append(jax.tree.map(jnp.copy, runner_state[0].params))
@@ -434,7 +437,7 @@ def run_ja_ippo(config, logger):
             print(f"[ja_ippo:{mech.name}]   step {steps_done}/{num_updates}", flush=True)
             if live_wandb:
                 log_live_chunk_metrics(
-                    chunk_metrics,
+                    host_chunk_metrics,
                     env_step=steps_done * env_steps_per_update,
                     seed_idx=seed_idx,
                     logger=logger,
@@ -442,8 +445,8 @@ def run_ja_ippo(config, logger):
                 )
 
         all_seed_final_params.append(jax.device_get(runner_state[0].params))
-        all_seed_metrics.append(jax.device_get(
-            jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *seed_metrics)))
+        all_seed_metrics.append(
+            jax.tree.map(lambda *xs: np.concatenate(xs, axis=0), *seed_metrics))
         all_seed_ckpts.append(jax.device_get(
             jax.tree.map(lambda *xs: jnp.stack(xs), *seed_ckpts)))
 
