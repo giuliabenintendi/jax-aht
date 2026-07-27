@@ -63,11 +63,11 @@ EKW = dict(ecolor="black", elinewidth=0.5, capsize=1.8, capthick=0.5)
 
 # Copied from evaluation/card_game/plot_ablation_bars.py (see module docstring).
 # (label, colour, SP, SPsem, XP, XPsem) -- HE = highest all-pairs XP over the
-# 48-seed entropy sweep rerun of 2026-07-27 (alpha=2; archived cardGame/HE/2).
+# live-deliberation 48-seed sweep (alpha=1.75, all-pairs); IPPO = delib task too.
 CARD_COND = [
-    ("IPPO",       "#7D5A3C", 1.000, 0.001, 0.167, 0.078),
+    ("IPPO",       "#7D5A3C", 1.000, 0.000, 0.208, 0.084),
     ("OP",         "#1f77b4", 0.200, 0.002, 0.201, 0.002),
-    ("HE IPPO",    "#e377c2", 1.000, 0.000, 0.209, 0.006),
+    ("HE IPPO",    "#e377c2", 1.000, 0.000, 0.214, 0.008),
     ("Lee et al.", "#8EBB69", 1.000, 0.000, 0.195, 0.002),
     ("w/o OP",     "#ff7f0e", 1.000, 0.000, 0.218, 0.028),
     ("w/o feed",   "#9467bd", 0.203, 0.058, 0.200, 0.004),

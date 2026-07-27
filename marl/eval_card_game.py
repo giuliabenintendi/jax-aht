@@ -739,7 +739,7 @@ def _log_card_game_action_distributions(
             partner_feed_dim=partner_feed_dim,
         )
         # `ep_messages` is only populated when env communication is on; in
-        # delib-actions mode (comm off, gaze off) the deliberation action is
+        # delib-actions mode (comm off) the deliberation action is
         # still recorded in `ep_actions[t]` for non-final steps.
         has_messages = len(ep_messages) > 0
         n_steps = len(ep_actions)

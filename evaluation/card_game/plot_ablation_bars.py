@@ -19,11 +19,11 @@ LEEGREEN  = "#8EBB69"   # Lee et al.
 DARKGREEN = "#3E8347"   # MATE-aux (medium green: clearly lighter than the dark swatch, still distinct from Lee's light green)
 RANDOM_COLOR, RANDOM_BASELINE, SP_HATCH = "#8B0000", 0.20, "//"
 
-# (label, colour, SP, SPsem, XP, XPsem)  -- HE = highest all-pairs XP over the 48-seed entropy sweep rerun of 2026-07-27 (alpha=2; archived cardGame/HE/2)
+# (label, colour, SP, SPsem, XP, XPsem)  -- HE = highest all-pairs XP over the live-deliberation 48-seed sweep (alpha=1.75); IPPO = delib task
 COND = [
-    ("IPPO",       BROWN,     1.000, 0.001, 0.167, 0.078),
+    ("IPPO",       BROWN,     1.000, 0.000, 0.208, 0.084),
     ("OP",         BLUE,      0.200, 0.002, 0.201, 0.002),
-    ("HE IPPO",    PINK,      1.000, 0.000, 0.209, 0.006),
+    ("HE IPPO",    PINK,      1.000, 0.000, 0.214, 0.008),
     ("Lee et al.", LEEGREEN,  1.000, 0.000, 0.195, 0.002),
     ("MATE$-$OP",  ORANGE,    1.000, 0.000, 0.218, 0.028),
     ("MATE$-$feed", LILAC,    0.203, 0.058, 0.200, 0.004),

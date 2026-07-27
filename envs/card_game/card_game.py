@@ -13,11 +13,9 @@ The older full-scene render with agent triangles still exists only as a
 debug/eval helper in `rendering.py`; it is not the observation emitted by
 this environment.
 
-Actions: a single Discrete(NUM_CARDS) at every step. Outside gaze mode the
-same emitted card is interpreted as a deliberation message when not on the
-decision step and as a pick on the decision step (intent-expression layout).
-In gaze mode, deliberation-step actions are still emitted but ignored by the
-env dynamics; only the final-step action is committed as a pick.
+Actions: a single Discrete(NUM_CARDS) at every step. The emitted card is
+interpreted as a deliberation message when not on the decision step and as a
+pick on the decision step (intent-expression layout).
 
 The `communication` flag now toggles only whether the partner's last
 emitted card is rendered into each agent's obs as a coloured dot — the

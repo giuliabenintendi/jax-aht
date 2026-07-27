@@ -34,15 +34,10 @@ from envs.card_game.rendering import TILE_PIXELS, NUM_CARDS, CARD_COLORS
 def remap_recoloured_action(action, inv_recolouring):
     """Map a recoloured-space action back to ground-truth color identity.
 
-    inv_recolouring has shape (NUM_CARDS,) — one entry per card. The helper
-    still passes through out-of-range actions unchanged for backward
-    compatibility with older gaze-mode checkpoints that exposed a noop slot.
+    inv_recolouring has shape (NUM_CARDS,) — one entry per card.
     """
     action = jnp.asarray(action, dtype=jnp.int32)
-    is_noop = action >= NUM_CARDS
-    safe_idx = jnp.minimum(action, NUM_CARDS - 1)
-    mapped = inv_recolouring[safe_idx]
-    return jnp.where(is_noop, action, mapped)
+    return inv_recolouring[action]
 
 
 # ---------------------------------------------------------------------------
