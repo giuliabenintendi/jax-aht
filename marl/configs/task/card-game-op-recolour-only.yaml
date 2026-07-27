@@ -9,7 +9,6 @@ ENV_KWARGS:
   match_coef: 0.0
   stability_coef: 0.0
   follow_coef: 0.0
-  gaze_mode: false
   # Single-component OP: recolouring only (per-agent colours), positions shared. Isolates
   # whether the recolour symmetry alone is enough to require the JA signal for transfer.
 TASK_NAME: card-game-op-recolour-only

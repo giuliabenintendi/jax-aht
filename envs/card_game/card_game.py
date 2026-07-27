@@ -76,13 +76,11 @@ class CardGameEnv(BaseEnv):
         self.match_coef = match_coef
         self.stability_coef = stability_coef
         self.follow_coef = follow_coef
-        # gaze_mode: forced-noop deliberation. The action space gains a trailing
-        # noop slot (index NUM_CARDS); avail_actions forces noop on every
-        # deliberation step and forbids it at the decision step. So the only
-        # real action is the decision-step pick — deliberation is pure
-        # attention. (gaze_mode=False keeps the unified card-only action space
-        # where deliberation actions populate `messages`.)
-        self.gaze_mode = gaze_mode
+        # gaze_mode (forced-noop deliberation) was removed 2026-07-27; the
+        # parameter is still accepted because stored run configs carry
+        # `gaze_mode: false` in ENV_KWARGS, but enabling it is an error.
+        if gaze_mode:
+            raise ValueError("gaze_mode was removed; retrain on the live-deliberation task")
         # When True, the partner-message dot rendered into each agent's obs is
         # drawn at a uniformly random card color instead of the color the
         # partner actually sent. env_state.messages is left untouched, so the
@@ -110,16 +108,10 @@ class CardGameEnv(BaseEnv):
         return jaxmarl_spaces.Box(0.0, 1.0, (self._obs_dim,))
 
     def action_space(self, agent: str):
-        n = self.num_cards + (1 if self.gaze_mode else 0)
-        return jaxmarl_spaces.Discrete(num_categories=n)
+        return jaxmarl_spaces.Discrete(num_categories=self.num_cards)
 
     @property
     def action_dim(self) -> int:
-        return self.num_cards + (1 if self.gaze_mode else 0)
-
-    @property
-    def noop_action(self) -> int:
-        """Noop action index (the trailing slot). Only valid under gaze_mode."""
         return self.num_cards
 
     def _make_obs(
@@ -205,27 +197,17 @@ class CardGameEnv(BaseEnv):
         steps the action populates `messages`; on the decision step it
         populates the pick and `messages` is held at its previous value.
 
-        Under gaze_mode there is no message channel: deliberation actions are
-        forced to the noop slot (index NUM_CARDS) by avail_actions, and only the
-        decision-step pick is committed. Outside gaze mode, deliberation-step
-        actions populate `messages`.
         """
         a0 = jnp.asarray(raw_a0, dtype=jnp.int32)
         a1 = jnp.asarray(raw_a1, dtype=jnp.int32)
 
-        if self.gaze_mode:
-            noop = jnp.int32(self.num_cards)
-            pick_0 = jnp.where(is_decision & (a0 != noop), a0, jnp.int32(-1))
-            pick_1 = jnp.where(is_decision & (a1 != noop), a1, jnp.int32(-1))
-            new_messages = prev_messages
-        else:
-            pick_0 = jnp.where(is_decision, a0, jnp.int32(-1))
-            pick_1 = jnp.where(is_decision, a1, jnp.int32(-1))
-            new_messages = jnp.where(
-                is_decision,
-                prev_messages,
-                jnp.array([a0, a1], dtype=jnp.int32),
-            )
+        pick_0 = jnp.where(is_decision, a0, jnp.int32(-1))
+        pick_1 = jnp.where(is_decision, a1, jnp.int32(-1))
+        new_messages = jnp.where(
+            is_decision,
+            prev_messages,
+            jnp.array([a0, a1], dtype=jnp.int32),
+        )
         return pick_0, pick_1, new_messages
 
     def _base_reward(self, pick_0, pick_1, is_decision):
@@ -377,18 +359,7 @@ class CardGameEnv(BaseEnv):
 
     @partial(jax.jit, static_argnums=(0,))
     def get_avail_actions(self, state: WrappedEnvState) -> Dict[str, jnp.ndarray]:
-        if self.gaze_mode:
-            # Layout [pick_0..pick_{N-1}, noop]. Deliberation: only noop.
-            # Decision: only the N picks.
-            is_decision = (state.env_state.step_count + 1) >= self.max_steps
-            picks = jnp.where(is_decision, 1.0, 0.0)
-            noop = jnp.where(is_decision, 0.0, 1.0)
-            mask = jnp.concatenate([
-                jnp.full((self.num_cards,), picks, dtype=jnp.float32),
-                jnp.array([noop], dtype=jnp.float32),
-            ])
-        else:
-            mask = jnp.ones(self.num_cards, dtype=jnp.float32)
+        mask = jnp.ones(self.num_cards, dtype=jnp.float32)
         return {agent: mask for agent in self.agents}
 
     @partial(jax.jit, static_argnums=(0,))

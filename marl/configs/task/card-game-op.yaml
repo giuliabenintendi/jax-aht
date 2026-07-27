@@ -9,5 +9,4 @@ ENV_KWARGS:
   match_coef: 0.1
   stability_coef: 0.05
   follow_coef: 0.5
-  gaze_mode: false
 TASK_NAME: card-game-op

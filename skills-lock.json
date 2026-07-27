@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "remote-gpu-train": {
+      "source": "maedmatt/remote-gpu-train",
+      "sourceType": "github",
+      "skillPath": "skills/remote-gpu-train/SKILL.md",
+      "computedHash": "761596a051ef10e546a26064e5d3b90c4f9200482e455c95e953a133010220b8"
+    }
+  }
+}

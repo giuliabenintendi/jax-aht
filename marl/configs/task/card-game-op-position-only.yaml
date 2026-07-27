@@ -9,7 +9,6 @@ ENV_KWARGS:
   match_coef: 0.0
   stability_coef: 0.0
   follow_coef: 0.0
-  gaze_mode: false
   # Single-component OP: position shuffle only (per-agent card positions), colours shared.
   # Isolates whether the position symmetry alone is enough to require the JA signal.
 TASK_NAME: card-game-op-position-only

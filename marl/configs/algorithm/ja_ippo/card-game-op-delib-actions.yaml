@@ -11,8 +11,8 @@ ANNEAL_LR: false
 GAE_LAMBDA: 0.95
 ENT_COEF: 0.01
 
-# New mode: deliberation actions are enabled every step (task uses gaze_mode=false,
-# communication=false), but the env reward still only fires on the final step.
+# Deliberation actions are enabled every step (communication=false), but the env
+# reward still only fires on the final step.
 COMMUNICATION: false
 COMM_WARMUP_ENV_STEPS: 0
 COMM_REWARD_START_SCALE: 0.0

@@ -5,8 +5,8 @@ defaults:
 # Naked No-OP self-play control. Matches the OP-delib conditions
 # (card-game-op-delib-actions) training config EXACTLY -- LR, ANNEAL_LR, GAE_LAMBDA,
 # ENT_COEF, TOTAL_TIMESTEPS, NUM_ENVS, and the _base_ minibatch/epoch defaults --
-# so the only differences from the other figure bars are: OP off + gaze_mode true
-# (both via the card-game-noop task) and joint attention OFF (naked IPPO).
+# so the only differences from the other figure bars are: OP off (via the
+# card-game-delib-noop task) and joint attention OFF (plain IPPO).
 TOTAL_TIMESTEPS: 5e6
 NUM_ENVS: 1024
 LR: 5e-4

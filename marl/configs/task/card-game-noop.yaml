@@ -1,9 +1,0 @@
-ENV_NAME: card-game
-ROLLOUT_LENGTH: 8   # 1024 envs * 8 = 8192/update -> 61 updates at 500K (vs ~4 with rollout 128)
-ENV_KWARGS:
-  max_steps: 8
-  obs_type: image
-  shuffle: true
-  fixed_partner_pos: -1
-  gaze_mode: true   # forced-noop deliberation (Discrete(6), single real pick) -> recovers SP=1.0, the canonical y0pwaxl5 mechanic
-TASK_NAME: card-game-noop
