@@ -1,0 +1,33 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# Lee et al. (2021) JSD-intrinsic reward on the NO-OP card game. Pair with
+# task=card-game-delib-noop. Strips the MATE machinery (OP is off in the task, the
+# partner feed and the aux loss are off here); keeps only the gaze-pick shaping (0.1)
+# plus a per-step penalty -JA_CARD_JSD_COEF * card_jsd (card-level attention divergence
+# in the shared frame). Sweep JA_CARD_JSD_COEF (beta) via CLI:
+#   algorithm.JA_CARD_JSD_COEF=<beta>
+TOTAL_TIMESTEPS: 5e6
+NUM_ENVS: 1024
+NUM_SEEDS: 3
+EVAL_VIDEO_NUM_SEEDS: 0
+LR: 5e-4
+ANNEAL_LR: false
+GAE_LAMBDA: 0.95
+ENT_COEF: 0.01
+
+COMMUNICATION: false
+COMM_WARMUP_ENV_STEPS: 0
+COMM_REWARD_START_SCALE: 0.0
+
+JA_CARD_ATTN: false
+JA_CARD_PARTNER_FEED: false
+JA_CARD_METRIC: true
+JA_CARD_JSD_COEF: 0.1
+
+JA_ATTN_MATCH_COEF: 0.0
+JA_ATTN_SELF_COEF: 0.0
+JA_GAZE_PICK_COEF: 0.1
+JA_AUX_PARTNER_ARGMAX_COEF: 0.0
+JA_AUX_PARTNER_PICK: false

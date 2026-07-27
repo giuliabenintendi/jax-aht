@@ -1,0 +1,27 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# Faithful Lee et al. (2021) JSD-intrinsic reward on LBF. Pair with
+# task=lbf-image-12x12-8food-50steps (same footprint as the 12-seed baselines).
+# No OP, no partner feed, no aux loss, no overlap shaping: the only JA signal is a
+# per-step penalty -JA_LBF_JSD_COEF * JSD(a0, a1) on the raw spatial attention.
+# Live even without OP because each LBF agent's obs differs (ego-highlight border).
+# Sweep beta via CLI: algorithm.JA_LBF_JSD_COEF=<beta>
+TOTAL_TIMESTEPS: 3e6
+NUM_ENVS: 128
+NUM_MINIBATCHES: 32
+ANNEAL_LR: true
+NORMALIZE_REWARDS: false
+SAVE_CKPT_VIDEOS: true
+
+# ENV_NAME=lbf routes to LBFDenseObjectOccupancyMechanism; with aux/feed/overlap
+# all zeroed it collapses to the Lee JSD-penalty-only mechanism.
+FEED_OTHER_ATTN: false
+JA_OBJECT_AUX_COEF: 0.0
+JA_FUTURE_PARTNER_COEF: 0.0
+JA_FUTURE_SELF_COEF: 0.0
+
+# Constant beta (no ramp): the base default warmup (3.5M) exceeds this 3M run.
+JA_WARMUP_ENV_STEPS: 0
+JA_LBF_JSD_COEF: 0.001

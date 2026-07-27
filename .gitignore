@@ -46,3 +46,4 @@ tests/*
 **/*_test.py
 
 *logs/*
+xp_matrices/

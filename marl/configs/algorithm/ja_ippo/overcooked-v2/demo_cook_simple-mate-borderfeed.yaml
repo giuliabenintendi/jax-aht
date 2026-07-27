@@ -12,14 +12,17 @@ defaults:
 # task/algorithm/TRAIN_SEED/label on the CLI (run names must stay short: the
 # logger dies past the filename length limit).
 TOTAL_TIMESTEPS: 3e7
-# Full-map allocentric obs is 40x88 (~2.2x the egocentric 40x40 pixels), so the
-# per-batch activation footprint blows past a 32GB V100 at 192 envs (OOM ~25GB).
-# 64 keeps mb16 and fits with headroom for the ckpt-video render spike.
-NUM_ENVS: 64
+# Full-map allocentric obs is 40x88 (~2.2x the egocentric 40x40 pixels). 192 fits
+# a 32GB V100 ONLY with ckpt videos off: the original 192 OOM was the ckpt-video
+# machinery's compiled footprint coexisting with training, not training itself
+# (probe: 192 ran real updates, no OOM). Keeps mb16.
+NUM_ENVS: 192
 CHECKPOINT_FREQ_TIMESTEPS: 1000000
-SAVE_CKPT_VIDEOS: true
-CKPT_VIDEO_EVERY: 5
-CKPT_VIDEO_ATTENTION: true
+# Ckpt-video render off for the sweep: at allocentric obs size the per-checkpoint
+# attention-video rollout stalls the run (~17min hang at the first checkpoint,
+# likely an XLA recompile it triggers). Checkpoints still save; render attention
+# videos post-hoc from them (eval_attention_video.py) on 1-2 chosen seeds.
+SAVE_CKPT_VIDEOS: false
 
 LR: 4e-4
 NUM_MINIBATCHES: 16

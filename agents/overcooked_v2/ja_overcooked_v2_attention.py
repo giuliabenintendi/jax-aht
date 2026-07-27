@@ -50,18 +50,27 @@ class TaskObject(IntEnum):
     INGREDIENT_PILE = 3
     DYNAMIC_ITEM = 4
     AGENT_INVENTORY = 5
+    RECIPE_INDICATOR = 6
 
 
-def _static_to_task(obj: int) -> int | None:
+def _static_to_task(obj: int, include_recipe_indicator: bool = False) -> int | None:
     """Map a `StaticObject` value to its `TaskObject` category, or None for
     non-interactable cells (walls, empty). The button recipe indicator is treated
-    as a recipe indicator so button-variant layouts detect it too."""
+    as a recipe indicator so button-variant layouts detect it too.
+
+    Recipe indicators are excluded by default (see `detect_task_objects`); pass
+    `include_recipe_indicator=True` to add them as `RECIPE_INDICATOR` objects."""
     if obj == StaticObject.POT:
         return int(TaskObject.POT)
     if obj == StaticObject.GOAL:
         return int(TaskObject.GOAL)
     if obj == StaticObject.PLATE_PILE:
         return int(TaskObject.PLATE_PILE)
+    if include_recipe_indicator and obj in (
+        int(StaticObject.RECIPE_INDICATOR),
+        int(StaticObject.BUTTON_RECIPE_INDICATOR),
+    ):
+        return int(TaskObject.RECIPE_INDICATOR)
     if obj >= _INGREDIENT_BASE:
         return int(TaskObject.INGREDIENT_PILE)
     return None
@@ -69,6 +78,7 @@ def _static_to_task(obj: int) -> int | None:
 
 def detect_task_objects(
     static_grid: np.ndarray,
+    include_recipe_indicator: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Detect task-object cells in a `StaticObject`-encoded `(H, W)` grid.
 
@@ -97,7 +107,7 @@ def detect_task_objects(
     for row in range(height):
         for col in range(width):
             obj = int(grid[row, col])
-            cat = _static_to_task(obj)
+            cat = _static_to_task(obj, include_recipe_indicator)
             if cat is None:
                 continue
             positions.append((row, col))
@@ -437,13 +447,19 @@ def reframe_partner_attention_for_eval(
     return reframed[0], reframed[1]
 
 
-def egocentric_attention_to_world_tiles(attn_0, attn_1, env_state, ctx):
+def egocentric_attention_to_world_tiles(attn_0, attn_1, env_state, ctx, subdiv=1):
     """Project each agent's crop-local attention onto world tile coordinates.
 
     This is for diagnostics/videos only. The policy attention in egocentric OCV2
     is over the 5x5 local crop, while the rendered video is a global kitchen.
     Directly resizing the crop map over the global frame makes local corners look
     like global corners.
+
+    `subdiv>1` keeps sub-tile detail: each feature cell lands on its own cell of a
+    `(grid_h*subdiv, grid_w*subdiv)` world grid instead of being binned to one
+    world tile, so the 10x10 crop feature map is not flattened to blocky per-tile
+    squares. Only used when the feature grid tiles the crop evenly and obs is not
+    rotated; otherwise falls back to the per-tile (subdiv=1) projection.
     """
     grid_h = int(ctx["grid_h"])
     grid_w = int(ctx["grid_w"])
@@ -461,6 +477,24 @@ def egocentric_attention_to_world_tiles(attn_0, attn_1, env_state, ctx):
     feat_r, feat_c = jnp.meshgrid(
         jnp.arange(feat_h), jnp.arange(feat_w), indexing="ij"
     )
+
+    if (subdiv > 1 and not rotate_obs
+            and feat_h == agent_fov_size * subdiv and feat_w == agent_fov_size * subdiv):
+        gh2, gw2 = grid_h * subdiv, grid_w * subdiv
+        sr = feat_r.reshape(-1).astype(jnp.int32)
+        sc = feat_c.reshape(-1).astype(jnp.int32)
+
+        def _one_fine(src_map, row, col):
+            wr = sr + (row - view_size) * subdiv
+            wc = sc + (col - view_size) * subdiv
+            valid = (wr >= 0) & (wr < gh2) & (wc >= 0) & (wc < gw2)
+            idx = (wr * gw2 + wc).astype(jnp.int32)
+            mass = jnp.where(valid, src_map.reshape(-1), 0.0)
+            return jnp.zeros((gh2 * gw2,), src_map.dtype).at[idx].add(mass).reshape(gh2, gw2)
+
+        world = jax.vmap(_one_fine)(maps, rows, cols)
+        return world[0], world[1]
+
     local_r = (feat_r.reshape(-1) * agent_fov_size // feat_h).astype(jnp.int32)
     local_c = (feat_c.reshape(-1) * agent_fov_size // feat_w).astype(jnp.int32)
 
@@ -521,7 +555,10 @@ def overcooked_v2_object_ctx(config, env) -> dict:
     raw = get_inner_env(env)
     grid_h, grid_w = int(raw.height), int(raw.width)
     tile_size = img_h // grid_h
-    obj_pos, obj_cat, obj_ing = detect_task_objects(raw.layout.static_objects)
+    obj_pos, obj_cat, obj_ing = detect_task_objects(
+        raw.layout.static_objects,
+        include_recipe_indicator=bool(config.get("JA_INCLUDE_RECIPE_INDICATOR", False)),
+    )
     grid_pos = np.array(
         [(r, c) for r in range(grid_h) for c in range(grid_w)],
         dtype=np.int32,

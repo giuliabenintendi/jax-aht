@@ -27,6 +27,7 @@ import jax.numpy as jnp
 from jaxmarl.environments import spaces
 
 from envs.base_env import BaseEnv, WrappedEnvState
+from envs.overcooked_v2.common import Direction
 from envs.overcooked_v2.overcooked import OvercookedV2
 from envs.overcooked_v2.observation_rendering import render_obs_state
 from envs.overcooked_v2.rendering import INGREDIENT_COLORS, TILE_PIXELS
@@ -100,6 +101,10 @@ class OvercookedV2ImageWrapper(BaseEnv):
         # actions swapped, so the per-agent lens is the true flip-swap symmetry.
         # Pure flip (without the swap) is not a layout symmetry, so it is never
         # applied alone. Requires op_ingredient_permutations to be active.
+        # The mirror is applied to the renderer's INPUTS (grid rows + agent
+        # poses), never to rendered pixels: within-tile artwork (pot rim/timer,
+        # recipe dots, pile layouts) must stay upright or the flipped lens is
+        # recognisable to the agent.
         self.op_vertical_flip = op_vertical_flip
         if op_vertical_flip and egocentric:
             raise NotImplementedError(
@@ -150,6 +155,28 @@ class OvercookedV2ImageWrapper(BaseEnv):
 
     # Vertical flip swaps up<->down actions; right/left/stay/interact unchanged.
     _FLIP_ACTION = jnp.array([0, 3, 2, 1, 4, 5])
+    # Same swap for facing: UP<->DOWN, RIGHT/LEFT unchanged.
+    _FLIP_DIR = jnp.array(
+        [Direction.DOWN, Direction.UP, Direction.RIGHT, Direction.LEFT]
+    )
+
+    def _mirrored_state(self, env_state):
+        """Vertically mirrored copy of the state, used only as renderer input.
+
+        Mirroring the inputs (grid rows and agent poses, with up/down facing
+        swapped) lets the untouched painter draw the flipped lens with every
+        sprite upright. Flipping the rendered pixels instead would mirror
+        within-tile artwork -- pot rim/timer, recipe dots, pile layouts -- and
+        betray to the agent that its frame is flipped.
+        """
+        agents = env_state.agents
+        return env_state.replace(
+            grid=jnp.flip(env_state.grid, axis=0),
+            agents=agents.replace(
+                pos=agents.pos.replace(y=self.grid_height - 1 - agents.pos.y),
+                dir=self._FLIP_DIR[agents.dir],
+            ),
+        )
 
     def _agent_palettes(self, env_state) -> jnp.ndarray:
         """Per-agent ingredient palettes implementing Other-Play in image space.
@@ -248,20 +275,33 @@ class OvercookedV2ImageWrapper(BaseEnv):
         if self.egocentric:
             return self._egocentric_obs(env_state)
 
+        flip_bits = self._flip_bits(env_state)
+        if self.op_vertical_flip and self.env.op_ingredient_permutations:
+            mirrored = self._mirrored_state(env_state)
+            lens_states = [
+                jax.tree.map(partial(jnp.where, flip_bits[i]), mirrored, env_state)
+                for i in range(self.num_agents)
+            ]
+        else:
+            lens_states = [env_state] * self.num_agents
+
         if self.env.op_ingredient_permutations:
             palettes = self._agent_palettes(env_state)
             imgs = [
-                render_obs_state(env_state, self.tile_size, ingredient_colors=palettes[i])
+                render_obs_state(
+                    lens_states[i], self.tile_size, ingredient_colors=palettes[i]
+                )
                 for i in range(self.num_agents)
             ]
         else:
             img = render_obs_state(env_state, self.tile_size)  # (H_px, W_px, 3) uint8
             imgs = [img] * self.num_agents
 
-        positions = env_state.agents.pos
-        flip_bits = self._flip_bits(env_state)
         obs = {}
         for i in range(self.num_agents):
+            # Mask and self-marker use the lens-state pose so they match the
+            # (possibly mirrored) frame the agent was rendered in.
+            positions = lens_states[i].agents.pos
             x = positions.x[i]
             y = positions.y[i]
             cell_mask = self._visibility_mask(x, y)
@@ -270,9 +310,6 @@ class OvercookedV2ImageWrapper(BaseEnv):
             )
             masked = jnp.where(pixel_mask[:, :, None], imgs[i], 0)
             masked = _draw_border(masked, x, y, self.tile_size, _EGO_HIGHLIGHT_COLOR)
-            # Whole masked+bordered frame mirrors together, so the view window,
-            # self-marker and content stay coherent in the flipped lens.
-            masked = jnp.where(flip_bits[i], jnp.flip(masked, axis=0), masked)
             obs[self.agents[i]] = masked.flatten().astype(jnp.float32) / 255.0
         return obs
 

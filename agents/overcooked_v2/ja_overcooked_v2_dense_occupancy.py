@@ -160,6 +160,13 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         # env steps). 0 disables it (shaping then comes from the wrapper's
         # do_reward_shaping fold). Required to keep V2 self-play from collapsing.
         self.rew_shaping_horizon = float(config.get("REW_SHAPING_HORIZON", 0.0))
+        # Hold shaping at full strength for the first REW_SHAPING_HOLD_STEPS env
+        # steps, THEN anneal 1 -> 0 over the horizon. This is "ignite-then-anneal":
+        # keeps early shaping strong through the ignition-critical phase (the
+        # collapse the anneal-from-zero risks), and only removes it in the final
+        # part of training, so the blind-pour incentive is withdrawn once the
+        # policy is competent. 0 = anneal from step 0 (legacy behaviour).
+        self.rew_shaping_hold = float(config.get("REW_SHAPING_HOLD_STEPS", 0.0))
         self.env_steps_per_update = int(config["ROLLOUT_LENGTH"]) * int(config["NUM_ENVS"])
 
     def entity_feed_dim(self) -> int:
@@ -492,7 +499,8 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         if self.rew_shaping_horizon > 0.0 and "shaped_reward" in info:
             shaped_actors = info["shaped_reward"].swapaxes(0, 1).reshape(-1)
             env_steps = update_steps * self.env_steps_per_update
-            shaping_frac = jnp.clip(1.0 - env_steps / self.rew_shaping_horizon, 0.0, 1.0)
+            annealed = jnp.maximum(env_steps - self.rew_shaping_hold, 0.0)
+            shaping_frac = jnp.clip(1.0 - annealed / self.rew_shaping_horizon, 0.0, 1.0)
             shaped_total = shaping_frac * shaped_actors
 
         extras = {

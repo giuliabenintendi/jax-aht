@@ -7,9 +7,9 @@ Bar values:
 
 - OP-condition SP/XP are computed from the cross-play matrices in
   `xp_matrices/` via `xp_stats.py`: SP = diagonal mean (SEM over seeds),
-  XP = all-pairs off-diagonal mean with delete-one-seed SE. The matrices
-  live on the GPU box; the numbers are inlined here so the figure renders
-  without them.
+  XP = disjoint-pair mean + SE (`xp_mean_se`, Forkel 2511.22581 eq 30/31).
+  The matrices live on the GPU box; the numbers are inlined here so the
+  figure renders without them.
 - The self-play control (no OP): self-play solves the game (SP = 1.0); its
   cross-play sits near chance because two independently-trained policies
   share a convention only ~1/5 of the time (5 cards). Measured over the
@@ -43,13 +43,14 @@ XP_HATCH = "//"
 
 # (label, base colour, SP mean, SP sem, XP mean, XP sem).
 # OP rows are computed from xp_matrices/ via xp_stats.py (SP = diagonal mean,
-# SEM over seeds; XP = all-pairs off-diagonal mean, delete-one-seed SE). The
-# self-play control is the measured 48-seed no-OP run.
-# Unshaped block (SP, OP only, OP + JA, OP + comm) then shaped block.
+# SEM over seeds; XP = disjoint-pair mean + SE, xp_stats.xp_mean_se, Forkel
+# 2511.22581 eq 30/31). The self-play control is the measured 48-seed no-OP run.
+# JA rows (IPPO/OP/MATE) use the disjoint estimator; the comm/shaping rows below
+# predate it (not in the JA figure).
 COND = [
-    ("IPPO",                 "#B7B6E1", 1.000, 0.001, 0.211, 0.059),  # lavender control (no OP); 48-seed noop_1M_48s
-    ("OP",                   "#457BE8", 0.200, 0.002, 0.200, 0.002),  # blue (chance)
-    ("MATE",                 "#E68D3C", 0.872, 0.008, 0.832, 0.008),  # orange; qvublwxp best-ckpt (48 seeds)
+    ("IPPO",                 "#B7B6E1", 1.000, 0.001, 0.167, 0.078),  # IPPO objective on shared JA net, no OP/aux; 48-seed noop_1M_48s
+    ("OP",                   "#457BE8", 0.200, 0.002, 0.201, 0.002),  # blue (chance)
+    ("MATE",                 "#E68D3C", 0.872, 0.008, 0.823, 0.010),  # orange; qvublwxp best-ckpt (48 seeds)
     ("OP + comm",            "#8C82F6", 0.344, 0.027, 0.355, 0.028),  # purple (no shaping)
     ("OP + JA\n+ shaping",   "#51B18D", 0.984, 0.002, 0.933, 0.007),  # green; hm3x0pdv best-ckpt (48 seeds)
     ("OP + comm\n+ shaping", "#F55F74", 0.847, 0.038, 0.874, 0.032),  # pink

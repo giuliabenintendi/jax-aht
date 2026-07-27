@@ -207,6 +207,10 @@ def test_overcooked_v2_op_agents_see_permuted_views():
 def test_ocv2_op_vertical_flip_mirrors_swapped_agents():
     # flip-swap OP: agents whose ingredients are swapped ALSO see a vertically
     # mirrored world and have up/down actions swapped; identity agents untouched.
+    # The mirror is input-side (grid rows + agent poses fed to the renderer), so
+    # tile POSITIONS swap rows while within-tile artwork stays upright -- a
+    # pixel-level flip of the frame would mirror pot rims/timers and recipe dots,
+    # betraying the flipped lens.
     kw = dict(layout="demo_cook_simple", obs_type="image", agent_view_size=2,
               random_agent_positions=False, op_ingredient_permutations=[0, 1])
     flip_env = make_env("overcooked-v2", {**kw, "op_vertical_flip": True})
@@ -217,17 +221,37 @@ def test_ocv2_op_vertical_flip_mirrors_swapped_agents():
     perm = jnp.array([[1, 0, 2], [0, 1, 2]])
     state = state.replace(env_state=state.env_state.replace(ingredient_permutations=perm))
 
-    h = flip_env.grid_height * flip_env.tile_size
-    w = flip_env.grid_width * flip_env.tile_size
+    ts = flip_env.tile_size
+    h = flip_env.grid_height * ts
+    w = flip_env.grid_width * ts
     obs_flip = flip_env._make_obs(state.env_state)
     obs_ref = ref_env._make_obs(state.env_state)
     a0, a1 = flip_env.agents
     f0 = obs_flip[a0].reshape(h, w, 3)
     r0 = obs_ref[a0].reshape(h, w, 3)
-    # Swapped agent 0: flip obs is the vertical mirror of the same-palette
-    # unflipped obs; identity agent 1 is unchanged.
-    assert bool(jnp.allclose(f0, jnp.flip(r0, axis=0)))
+
+    def tile(img, row, col):
+        return img[row * ts : (row + 1) * ts, col * ts : (col + 1) * ts]
+
+    # Positions mirror: the visible ingredient piles at (0,8)/(4,8) hold
+    # different ingredients, so their pixel-exact swap checks a real row swap.
+    assert bool(jnp.array_equal(tile(f0, 0, 8), tile(r0, 4, 8)))
+    assert bool(jnp.array_equal(tile(f0, 4, 8), tile(r0, 0, 8)))
+    assert not bool(jnp.array_equal(tile(r0, 0, 8), tile(r0, 4, 8)))
+    # Artwork stays upright: the pot sits ON the mirror axis (2,7), so its tile
+    # must be untouched, not a pixel mirror of itself.
+    assert bool(jnp.array_equal(tile(f0, 2, 7), tile(r0, 2, 7)))
+    assert not bool(jnp.array_equal(tile(f0, 2, 7), jnp.flip(tile(r0, 2, 7), axis=0)))
+    # Identity agent 1 is unchanged.
     assert bool(jnp.allclose(obs_flip[a1], obs_ref[a1]))
+
+    # The lens state mirrors poses and facing: UP<->DOWN, RIGHT/LEFT unchanged.
+    m = flip_env._mirrored_state(state.env_state)
+    dir_flip = jnp.array([1, 0, 2, 3])  # Direction UP, DOWN, RIGHT, LEFT
+    assert bool(jnp.array_equal(m.agents.dir, dir_flip[state.env_state.agents.dir]))
+    assert bool(jnp.array_equal(
+        m.agents.pos.y, flip_env.grid_height - 1 - state.env_state.agents.pos.y
+    ))
 
     # Action remap: flipped agent 0 issuing 'up' reaches the env as 'down'.
     up = {a0: jnp.array(int(Actions.up)), a1: jnp.array(int(Actions.stay))}

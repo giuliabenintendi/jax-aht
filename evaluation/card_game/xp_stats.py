@@ -1,21 +1,17 @@
-"""XP mean / SE and OP-vs-X significance.
+"""XP mean / SE and OP-vs-X significance, both on the disjoint-pair estimator.
 
-Two estimators are provided.
+Single XP estimator (`xp_mean_se`, Forkel et al. 2511.22581 eq 30/31): form
+m = floor(N/2) independent samples from disjoint seed pairs (0,1),(2,3),...,
+each the role-symmetric score 0.5*(M[i,j] + M[j,i]); report their mean and
+std(ddof=1)/sqrt(m). This is the only XP estimator in the codebase; the
+all-pairs jackknife and the std/sqrt(N) heuristic were removed.
 
-1) For PLOTTING (`xp_mean_se`):
-   All-pairs XP mean (mean of every off-diagonal cell) with delete-one-seed
-   resampling SE. Uses every pairwise observation while keeping the seed as
-   the unit of replication — a degree-2 U-statistic SE.
+Significance (`paired_test_vs_baseline`): paired t-test on those same m
+disjoint-pair samples, condition vs baseline (one-sided 'greater').
 
-2) For SIGNIFICANCE (`paired_test_vs_baseline`):
-   Disjoint-pair paired t-test (m = N/2 independent samples). For each pair
-   (i, j), score = (M[i,j] + M[j,i]) / 2 (symmetric over role). Paired
-   t-test (one-sided 'greater') between the condition's m samples and the
-   baseline's m samples.
-
-The naive cell-level t-test on N(N-1) off-diagonal entries is invalid
-(pseudoreplication: each seed appears in 2(N-1) cells). Both estimators above
-respect the seed as the unit of independence.
+The naive cell-level statistic on N(N-1) off-diagonal entries is invalid
+(pseudoreplication: each seed appears in 2(N-1) cells); disjoint pairing keeps
+the seed as the unit of independence.
 
 Usage:
     uv run --no-project --with numpy --with scipy \\
@@ -26,7 +22,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from scipy import stats
 
 MATRIX_DIR = Path(__file__).parent / "xp_matrices"
 
@@ -60,40 +55,31 @@ def parse_xp_matrix(path: Path) -> np.ndarray:
     return np.array(rows)
 
 
-def offdiag_mean(mat: np.ndarray) -> float:
-    """XP mean = average over every off-diagonal cell (all cross-play pairs)."""
+def disjoint_pair_samples(mat: np.ndarray) -> np.ndarray:
+    """m = floor(N/2) role-symmetric XP scores from disjoint pairs (0,1),(2,3),...
+
+    Each pair (i, j) contributes one sample: 0.5 * (M[i,j] + M[j,i]). Odd N drops
+    the last, unpaired seed.
+    """
     n = mat.shape[0]
-    return float(mat[~np.eye(n, dtype=bool)].mean())
+    m = n // 2
+    i_idx = np.arange(0, 2 * m, 2)
+    j_idx = np.arange(1, 2 * m, 2)
+    return 0.5 * (mat[i_idx, j_idx] + mat[j_idx, i_idx])
 
 
 def xp_mean_se(mat: np.ndarray) -> tuple[float, float, int]:
-    """All-pairs XP mean and its delete-one-seed standard error.
+    """Disjoint-pair XP mean and standard error (Forkel et al. 2511.22581, eq 30/31).
 
-    Returns (xp_mean, sem, n_seeds).
+    The single XP estimator: mean and std(ddof=1)/sqrt(m) of the m = floor(N/2)
+    disjoint-pair samples. Returns (mean, se, m); se is 0.0 when m < 2 (a single
+    sample cannot estimate a standard error).
     """
-    n = mat.shape[0]
-    theta = offdiag_mean(mat)
-    loo = np.empty(n)
-    keep = np.ones(n, dtype=bool)
-    for k in range(n):
-        keep[k] = False
-        loo[k] = offdiag_mean(mat[np.ix_(keep, keep)])
-        keep[k] = True
-    sem = float(np.sqrt((n - 1) / n * np.sum((loo - loo.mean()) ** 2)))
-    return theta, sem, n
-
-
-def disjoint_pair_samples(mat: np.ndarray) -> np.ndarray:
-    """m = N/2 symmetric XP scores from disjoint pairs (0,1),(2,3),...,(N-2,N-1).
-
-    Each pair (i, j) contributes one sample: 0.5 * (M[i,j] + M[j,i]).
-    """
-    n = mat.shape[0]
-    if n % 2 != 0:
-        raise ValueError(f"need even N for disjoint pairing, got {n}")
-    i_idx = np.arange(0, n, 2)
-    j_idx = np.arange(1, n, 2)
-    return 0.5 * (mat[i_idx, j_idx] + mat[j_idx, i_idx])
+    s = disjoint_pair_samples(mat)
+    m = len(s)
+    mean = float(s.mean())
+    se = float(s.std(ddof=1) / np.sqrt(m)) if m >= 2 else 0.0
+    return mean, se, m
 
 
 def paired_test_vs_baseline(mat_cond: np.ndarray, mat_baseline: np.ndarray,
@@ -103,6 +89,8 @@ def paired_test_vs_baseline(mat_cond: np.ndarray, mat_baseline: np.ndarray,
     Returns dict with: a_mean, a_std, b_mean, b_std, mean_diff, ci_lo, ci_hi,
     t, p, n.
     """
+    from scipy import stats
+
     a = disjoint_pair_samples(mat_cond)
     b = disjoint_pair_samples(mat_baseline)
     if len(a) != len(b):

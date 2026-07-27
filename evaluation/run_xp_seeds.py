@@ -50,7 +50,7 @@ from marl.eval_card_game import _log_card_game_xp_videos
 
 
 EVAL_SEED = 34957
-NUM_EVAL_EPISODES = 256
+NUM_EVAL_EPISODES = int(os.environ.get("XP_NUM_EVAL_EPISODES", "256"))
 CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs", "task")
 ALGO_BASE_CONFIG = os.path.join(
     os.path.dirname(__file__), "..", "marl", "configs", "algorithm", "ja_ippo", "_base_.yaml"

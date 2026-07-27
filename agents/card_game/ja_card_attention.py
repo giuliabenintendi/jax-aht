@@ -4,10 +4,11 @@ Implements the OP-corrected card-level JA path as a mechanism the unified
 trainer plugs in. Keeps: per-card attention pooling
 (Other-Play permutation translation), the partner card-attention feed, comm
 shaping (with warmup scale), gaze_pick / attn_self shaping, the
-partner-argmax aux NLL, and the card-level JSD diagnostic.
+partner-argmax aux NLL, the card-level JSD diagnostic, and the card-level
+JSD-divergence penalty (JA_CARD_JSD_COEF, Lee et al. 2021 style).
 
 Dropped (never used by the card path): FEED_OTHER_ATTN, QUERY_PARTNER_LSTM, the
-JSD-intrinsic r_ja reward, the JA_CARD_JSD shaping reward, the attn_match shaping
+spatial JSD-intrinsic r_ja reward, the attn_match shaping
 reward, the alternate aux targets (partner pick, card occupancy), SPO, and the
 symbolic encoder. Report + eval reuse the proven card-game helpers
 (report_ja_training_outputs, log_greedy_eval, log_eval_video, run_xp_from_params).
@@ -49,8 +50,12 @@ class CardMechanism:
         self.attn_self_coef = float(config.get("JA_ATTN_SELF_COEF", 0.0))
         self.gaze_pick_coef = float(config.get("JA_GAZE_PICK_COEF", 0.0))
         self.aux_coef = float(config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0))
+        # Lee et al. (2021) intrinsic reward: per-step penalty -coef * card_jsd, pulling
+        # the two agents' per-card attention distributions together in the shared frame.
+        self.card_jsd_coef = float(config.get("JA_CARD_JSD_COEF", 0.0))
         self.gaze_pick_active = self.gaze_pick_coef > 0
         self.aux_active = self.aux_coef > 0
+        self.card_jsd_penalty_active = self.card_jsd_coef > 0
         # Aux target: partner's gamma-discounted first-occupancy over its ATTENTION
         # (argmax each step) — the LBF future-occupancy method on the card game's
         # observable, co-adaptive intent signal (NOT the raw emission, which is an
@@ -63,6 +68,7 @@ class CardMechanism:
         self.card_metric = (
             self.ja_card_attn or bool(config.get("JA_CARD_METRIC", False))
             or self.attn_shaping_active or self.aux_active or self.gaze_pick_active
+            or self.card_jsd_penalty_active
         )
         # Other-Play provides each agent's independent position/recolour permutations.
         # The two components are corrected independently: position shuffle governs the
@@ -198,7 +204,11 @@ class CardMechanism:
             q_phys_0, q_phys_1, carry["prev_partner_phys"], carry["prev_partner_valid"],
             action_0_gt, action_1_gt, pick_0_is_card, pick_1_is_card, num_actors)
 
-        reward = env_reward + comm_scale * comm_reward + r_attn_shaping + r_gaze_pick
+        if self.card_jsd_penalty_active:
+            r_card_jsd = jax.lax.stop_gradient(-self.card_jsd_coef * card_jsd)
+        else:
+            r_card_jsd = jnp.zeros((num_actors,))
+        reward = env_reward + comm_scale * comm_reward + r_attn_shaping + r_gaze_pick + r_card_jsd
 
         # Advance carry (reset on episode boundary).
         if self.ja_card_attn:

@@ -1,0 +1,20 @@
+ENV_NAME: overcooked-v2
+ROLLOUT_LENGTH: 256   # paper (Forkel et al. 2025); < max_steps, GAE bootstraps at the cut
+ENV_KWARGS:
+  layout: demo_cook_simple
+  obs_type: image
+  agent_view_size: 2
+  max_steps: 400
+  negative_rewards: true
+  random_agent_positions: true
+  sample_recipe_on_delivery: true
+  do_reward_shaping: false
+  # Full-map image with cells outside agent_view_size zero-masked.
+  # Other-Play with the layout's FULL spatial symmetry: per-agent ingredient
+  # colour permutation AND vertical flip together (flip-swap). The agents whose
+  # ingredients are swapped also see a vertically mirrored world with up/down
+  # actions swapped, breaking spatial (row/indicator) conventions that colour-OP
+  # alone leaves intact.
+  op_ingredient_permutations: [0, 1]
+  op_vertical_flip: true
+TASK_NAME: overcooked-v2/demo_cook_simple-op-flip-ego

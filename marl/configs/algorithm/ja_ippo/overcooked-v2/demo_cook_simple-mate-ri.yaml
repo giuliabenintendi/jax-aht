@@ -1,0 +1,36 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# MATE (headline 12-seed recipe, SP 143 / XP 128) PLUS recipe indicators added to
+# the aux object set (JA_INCLUDE_RECIPE_INDICATOR). Bakes in the Forkel-recipe CLI
+# overrides the headline used (LR 4e-4, mb16, GAE 0.8, grad 0.5, 192 envs, constant
+# shaping, ENT 0.02) so the launch command stays short — otherwise the run name
+# exceeds the 250-char wandb limit. Only the shaping/recipe additions differ from
+# demo_cook_simple-mate; everything else matches the headline exactly.
+TOTAL_TIMESTEPS: 3e7
+NUM_ENVS: 192
+CHECKPOINT_FREQ_TIMESTEPS: 1000000
+SAVE_CKPT_VIDEOS: true
+CKPT_VIDEO_EVERY: 5
+CKPT_VIDEO_ATTENTION: true
+
+LR: 4e-4
+NUM_MINIBATCHES: 16
+GAE_LAMBDA: 0.8
+ANNEAL_LR: true
+MAX_GRAD_NORM: 0.5
+ENT_COEF: 0.02
+REW_SHAPING_HORIZON: 1000000000000   # constant shaping (headline), NOT the anneal
+
+JA_OBJECT_OCCUPANCY: true
+FEED_OTHER_ATTN: true
+JA_VISIBILITY_GATING: true
+JA_OBJECT_AUX_COEF: 1e-4
+JA_FUTURE_GAMMA_OCC: 0.8
+JA_FUTURE_PARTNER_COEF: 0.0
+JA_FUTURE_SELF_COEF: 0.0
+
+# The one addition under test: recipe indicators become RECIPE_INDICATOR objects
+# in the aux object set (10 -> 12 static objects on demo_cook_simple).
+JA_INCLUDE_RECIPE_INDICATOR: true

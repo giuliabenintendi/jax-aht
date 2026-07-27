@@ -18,6 +18,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
+from agents.ja_utils import jsd_divergence
 from agents.lbf.ja_lbf_attention import (
     as_spatial_attention,
     food_state_from_log_state,
@@ -45,6 +46,7 @@ class LBFDenseObjectOccupancyMechanism:
         ("ja_future_self_overlap", "JA"),
         ("aux_partner_occ_loss", "Losses"),
         ("ja_obj_on_mass", "JA"),
+        ("ja_lbf_jsd", "JA"),
     ]
 
     def __init__(self, config, env):
@@ -80,6 +82,13 @@ class LBFDenseObjectOccupancyMechanism:
         ))
         self.aux_coef = self.aux_occ_coef
         self.aux_active = self.aux_occ_coef > 0.0
+
+        # Faithful Lee et al. (2021) JSD-intrinsic reward: r = r_env - beta*JSD(a0,a1)
+        # on the raw spatial attention (true frame; un-mirror is identity with OP off).
+        # Off by default (MATE uses the aux); set JA_LBF_JSD_COEF>0 with aux/feed off
+        # for the Lee ablation. Live even without OP because each LBF agent's obs
+        # differs (ego-highlight border), so a0 != a1 during self-play.
+        self.jsd_coef = float(config.get("JA_LBF_JSD_COEF", 0.0))
 
     def entity_feed_dim(self) -> int:
         return 0
@@ -170,10 +179,17 @@ class LBFDenseObjectOccupancyMechanism:
         attended_pos = jnp.take_along_axis(
             food_pos, sel[:, None, None], axis=1).squeeze(1)  # (A, 2) tile [row, col]
 
+        # Lee JSD penalty on the un-mirrored attention halves (identity with OP off).
+        half = num_actors // self.num_agents
+        jsd_env = jsd_divergence(attn_2d[:half], attn_2d[half:])  # (num_envs,)
+        jsd_actors = jnp.concatenate([jsd_env, jsd_env])          # (A,)
+        reward = env_reward - self.jsd_coef * jsd_actors
+
         extras = {
             "ja_future_attn_2d": jax.lax.stop_gradient(attn_2d.astype(jnp.float32)),
             "ja_future_pos_post": attended_pos.astype(jnp.int32),
             "ja_obj_on_mass": jax.lax.stop_gradient(on_mass),
+            "ja_lbf_jsd": jax.lax.stop_gradient(jsd_actors),
             "op_elem": op_elem,
         }
         swapped_attn = self._swap_partner(attn_2d, num_actors)
@@ -181,8 +197,8 @@ class LBFDenseObjectOccupancyMechanism:
             self.feat_h * self.feat_w
         )
         new_partner_attn = jnp.where(done_actors[:, None, None], uniform[None], swapped_attn)
-        return env_reward, {"partner_attn": jax.lax.stop_gradient(new_partner_attn),
-                            "op_elem": op_elem}, extras
+        return reward, {"partner_attn": jax.lax.stop_gradient(new_partner_attn),
+                        "op_elem": op_elem}, extras
 
     def _attended_box_occupancy(self, fr, fc, done, radius):
         """Discounted first-occupancy of a (2*radius+1)^2 box around the attended
@@ -293,6 +309,7 @@ class LBFDenseObjectOccupancyMechanism:
             "ja_future_self_overlap": traj_batch.extras["ja_future_self_overlap"].mean(),
             "aux_partner_occ_loss": loss_info.aux_loss.mean(),
             "ja_obj_on_mass": traj_batch.extras["ja_obj_on_mass"].mean(),
+            "ja_lbf_jsd": traj_batch.extras["ja_lbf_jsd"].mean(),
         }
 
     def report(self, config, out, logger):
