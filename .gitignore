@@ -17,6 +17,10 @@ results*/*
 !results/card_game/
 !results/lbf/
 !results/overcooked_v2/
+# ...but run-output subdirs inside them stay ignored.
+results/card_game/*/
+results/lbf/*/
+results/overcooked_v2/*/
 !results/card_game/*.json
 !results/lbf/*.json
 !results/overcooked_v2/*.json
