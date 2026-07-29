@@ -12,10 +12,15 @@ notebooks/*
 
 results*/
 results*/*
-# Keep the small JSON result files the figure scripts read as input.
+# Training-run outputs stay ignored; only the curated figure inputs are kept.
 !results/
-!results/**/
-!results/**/*.json
+!results/card_game/
+!results/lbf/
+!results/overcooked_v2/
+!results/card_game/*.json
+!results/lbf/*.json
+!results/overcooked_v2/*.json
+!results/overcooked_v2/*.csv
 eval_teammates/
 eval_teammates/*
 Eval/
@@ -57,3 +62,6 @@ xp_matrices/
 # Keep the XP score matrices the bar/significance scripts read.
 !xp_matrices/
 !xp_matrices/*.csv
+
+# Test artefact dirs (rendered obs, diagnostics); test sources stay tracked.
+tests/*/
