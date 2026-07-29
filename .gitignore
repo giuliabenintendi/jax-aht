@@ -67,5 +67,6 @@ xp_matrices/
 !xp_matrices/
 !xp_matrices/*.csv
 
-# Test artefact dirs (rendered obs, diagnostics); test sources stay tracked.
+# Test artefacts (rendered obs, diagnostics); test sources stay tracked.
 tests/*/
+lbf_image_obs_*.png
