@@ -1,7 +1,7 @@
 """Shared per-fruit attention geometry for LBF joint attention.
 
 These helpers are used by the LBF JA mechanism
-(`agents/lbf/ja_lbf_dense_object_occupancy.py`) and by both evaluation paths
+(`agents/lbf/ja_lbf_mate.py`) and by both evaluation paths
 (`evaluation/vis_episodes.py`, `evaluation/run_xp_seeds.py`).
 They live here, in the leaf `agents` package, so evaluation no longer has to
 reach into the training module for them.
@@ -76,16 +76,6 @@ def as_spatial_attention(attn_map):
     raise ValueError(f"Unexpected attention map rank: {attn_map.ndim}")
 
 
-def swap_partner(x, num_agents):
-    """Swap the agent block in an actor-ordered tensor.
-
-    Actor order: [agent_0 envs, agent_1 envs, ...]. For 2 agents, this swaps
-    halves so position i is now occupied by the partner's value.
-    """
-    if num_agents != 2:
-        raise NotImplementedError("ja_ippo_lbf assumes 2 agents (parameter-shared).")
-    half = x.shape[0] // 2
-    return jnp.concatenate([x[half:], x[:half]], axis=0)
 
 
 def _unwrap_lbf_state(state):
@@ -107,10 +97,6 @@ def _unwrap_lbf_state(state):
     )
 
 
-def agent_positions_from_log_state(log_state):
-    """Extract (num_envs, num_agents, 2) agent positions. Works for both
-    LogWrapper-wrapped (training) and raw (eval video) state shapes."""
-    return _unwrap_lbf_state(log_state).agents.position
 
 
 def food_state_from_log_state(log_state):

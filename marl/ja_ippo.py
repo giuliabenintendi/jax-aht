@@ -1,5 +1,11 @@
 """Unified Joint-Attention IPPO trainer (all environments).
 
+This is the trainer behind every result in the paper: IPPO, OP, HE IPPO, the
+Lee et al. (2021) baseline and MATE all run through it, differing only in config
+flags and in which mechanism `select_mechanism` returns. It implements Algorithm 1
+(MATE): the rollout scan reframes and feeds the partner's attention map each step
+(lines 5-6), and `_run_ppo_epochs` assembles Eq. 11's objective (line 14).
+
 One trainer for every JA env. The env-agnostic skeleton lives here — rollout
 scan, PPO update, chunked stepping, Welford reward-norm, orbax checkpointing,
 best-checkpoint selection, live logging — and the per-env JA *mechanism*
@@ -64,19 +70,20 @@ def select_mechanism(config, env):
     """Pick the per-env JA mechanism by ENV_NAME (imported lazily)."""
     env_name = config.get("ENV_NAME", "")
     if env_name == "lbf":
-        from agents.lbf.ja_lbf_dense_object_occupancy import LBFDenseObjectOccupancyMechanism
+        from agents.lbf.ja_lbf_mate import LBFDenseObjectOccupancyMechanism
         return LBFDenseObjectOccupancyMechanism(config, env)
     if env_name == "card-game":
         from agents.card_game.ja_card_attention import CardMechanism
         return CardMechanism(config, env)
     if env_name == "overcooked-v2" and config.get("JA_OBJECT_OCCUPANCY", False):
-        from agents.overcooked_v2.ja_overcooked_v2_dense_occupancy import (
+        from agents.overcooked_v2.ja_overcooked_v2_mate import (
             OvercookedV2DenseObjectOccupancyMechanism,
         )
         return OvercookedV2DenseObjectOccupancyMechanism(config, env)
-    if env_name in ("overcooked-v1", "overcooked-v2", "hanabi"):
-        from agents.ja_jsd_mechanism import JSDMechanism
-        return JSDMechanism(config, env)
+    if env_name == "overcooked-v2":
+        # No MATE flags: the IPPO / OP / HE IPPO baselines.
+        from agents.baseline_mechanism import BaselineMechanism
+        return BaselineMechanism(config, env)
     raise NotImplementedError(f"No JA mechanism registered for env '{env_name}'.")
 
 
@@ -107,6 +114,9 @@ def _run_ppo_epochs(config, policy, train_state, traj_batch, advantages, targets
                     clip_eps=config["CLIP_EPS"],
                     policy_loss_type=config.get("POLICY_LOSS_TYPE", "ppo"),
                 )
+                # Eq. 11: L = L_IPPO + lambda_MATE * L_MATE. The first three terms are
+                # L_IPPO; aux_coef is lambda_MATE and aux_loss is L_MATE (Eq. 10),
+                # both supplied by the env's mechanism. Baselines return coef 0.
                 total_loss = (
                     terms.policy_loss
                     + config["VF_COEF"] * terms.value_loss
@@ -330,11 +340,6 @@ def make_train(config, env, mech):
 def run_ja_ippo(config, logger):
     """Unified JA-IPPO entry. Dispatches the per-env mechanism via select_mechanism."""
     algorithm_config = dict(config.algorithm)
-    # Propagate COMMUNICATION into ENV_KWARGS so the env is created with it.
-    if algorithm_config.get("COMMUNICATION", False):
-        env_kwargs = dict(algorithm_config["ENV_KWARGS"])
-        env_kwargs["communication"] = True
-        algorithm_config["ENV_KWARGS"] = env_kwargs
     env = make_env(algorithm_config["ENV_NAME"], algorithm_config["ENV_KWARGS"])
     env = LogWrapper(env)
     mech = select_mechanism(algorithm_config, env)

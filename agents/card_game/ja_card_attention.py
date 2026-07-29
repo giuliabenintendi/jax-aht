@@ -1,19 +1,29 @@
-"""Card-game joint-attention mechanism for the unified ja_ippo trainer.
+"""MATE for the Card Alignment Game (paper Sec. 4, Algorithm 1).
 
-Implements the OP-corrected card-level JA path as a mechanism the unified
-trainer plugs in. Keeps: per-card attention pooling
-(Other-Play permutation translation), the partner card-attention feed, comm
-shaping (with warmup scale), gaze_pick / attn_self shaping, the
-partner-argmax aux NLL, the card-level JSD diagnostic, and the card-level
-JSD-divergence penalty (JA_CARD_JSD_COEF, Lee et al. 2021 style).
+Plugs into the unified ja_ippo trainer and implements both MATE components for
+this environment:
 
-Dropped (never used by the card path): FEED_OTHER_ATTN, QUERY_PARTNER_LSTM, the
-spatial JSD-intrinsic r_ja reward, the attn_match shaping
-reward, the alternate aux targets (partner pick, card occupancy), SPO, and the
-symbolic encoder. Report + eval reuse the proven card-game helpers
-(report_ja_training_outputs, log_greedy_eval, log_eval_video, run_xp_from_params).
+  Sec. 4.1 - partner-attention feed. Each agent receives the partner's previous
+      per-card attention appended to its observation (`augment_obs`). The Eq. 9
+      reframing (undo the partner's OP symmetry, apply the receiver's) is the
+      permutation translation in `_project_card_attention` / `_partner_card_feed`:
+      attention is pooled into the shared unpermuted frame, then re-expressed in
+      the receiver's frame.
 
-Other-Play (position shuffle + recolouring) is required for the card metric.
+  Sec. 4.2 - object-grounded auxiliary loss. The five cards are the object set
+      E_t, one region R(e) per card (`build_card_masks`). `postprocess_trajectory`
+      builds the partner's eta-discounted future focus q_t^j by a reverse scan over
+      its per-step attention argmax; `aux_loss` is the cross-entropy of the agent's
+      own card distribution p_t^i against that target (Eq. 10), weighted by
+      lambda_MATE = JA_AUX_PARTNER_ARGMAX_COEF (Eq. 11). eta is JA_FUTURE_GAMMA_OCC,
+      default 0.9 for this env.
+
+The module also hosts the Lee et al. (2021) baseline (JA_CARD_JSD_COEF), which
+applies their beta * r^JA intrinsic reward (Preliminaries Eq. 7-8) at the card
+level. MATE does not use it: MATE is loss-only.
+
+Other-Play (position shuffle + recolouring, Sec. 5.1) is required for the card
+metric; without it the shared frame is undefined.
 """
 from __future__ import annotations
 
@@ -34,7 +44,6 @@ class CardMechanism:
         ("ja_attn_self_mean", "JA/action_matches_own_attn"),
         ("ja_gaze_pick_mean", "JA/action_matches_prev_partner_attn"),
         ("aux_partner_argmax_loss", "JA/aux_partner_argmax_nll"),
-        ("comm_reward_mean", "Reward/comm"),
     ]
 
     def __init__(self, config, env):
@@ -49,6 +58,7 @@ class CardMechanism:
         self.ja_card_partner_feed = self.ja_card_attn and bool(config.get("JA_CARD_PARTNER_FEED", True))
         self.attn_self_coef = float(config.get("JA_ATTN_SELF_COEF", 0.0))
         self.gaze_pick_coef = float(config.get("JA_GAZE_PICK_COEF", 0.0))
+        # lambda_MATE in Eq. 11.
         self.aux_coef = float(config.get("JA_AUX_PARTNER_ARGMAX_COEF", 0.0))
         # Lee et al. (2021) intrinsic reward: per-step penalty -coef * card_jsd, pulling
         # the two agents' per-card attention distributions together in the shared frame.
@@ -62,6 +72,7 @@ class CardMechanism:
         # unlearnable stochastic action). The plain-argmax aux is the gamma->0 limit.
         # Built in postprocess_trajectory; gamma reuses the LBF occupancy discount.
         self.aux_target_pick = bool(config.get("JA_AUX_PARTNER_PICK", False))
+        # eta in Eq. 10: discount on the partner's future focus.
         self.aux_pick_gamma = float(config.get("JA_FUTURE_GAMMA_OCC", 0.9))
         self.attn_shaping_active = self.attn_self_coef > 0
         self.prev_partner_phys_active = self.gaze_pick_active
@@ -80,11 +91,6 @@ class CardMechanism:
         self.op_pos_active = bool(ek.get("other_play_position_shuffle"))
         self.op_recolour_active = bool(ek.get("other_play_recolouring"))
         self.op_active = self.op_pos_active and self.op_recolour_active
-
-        env_steps_per_update = int(config["ROLLOUT_LENGTH"]) * int(config["NUM_ENVS"])
-        self.comm_warmup_env_steps = float(config.get("COMM_WARMUP_ENV_STEPS", 0))
-        self.comm_reward_start_scale = float(config.get("COMM_REWARD_START_SCALE", 0.5))
-        self.comm_warmup_updates = self.comm_warmup_env_steps / max(env_steps_per_update, 1)
 
         img_h, img_w, _ = _get_image_dims(env)
         feat_h, feat_w = _compute_resnet_output_dims(
@@ -128,22 +134,6 @@ class CardMechanism:
         num_envs = num_actors // self.num_agents
         num_cards = self.num_cards
 
-        # Comm-reward scale schedule (constant within an update).
-        comm_scale = jnp.where(
-            self.comm_warmup_env_steps > 0,
-            self.comm_reward_start_scale + (1.0 - self.comm_reward_start_scale)
-            * jnp.minimum(1.0, update_steps / jnp.maximum(self.comm_warmup_updates, 1.0)),
-            1.0,
-        )
-
-        # Comm reward components from info; pop so the stored info stays clean.
-        def _pop(key):
-            raw = info.pop(key, jnp.zeros((num_envs, self.num_agents)))
-            return raw.transpose(1, 0).reshape(-1)
-        comm_reward = _pop("comm_reward")
-        comm_match = _pop("comm_reward_match")
-        comm_stable = _pop("comm_reward_stable")
-        comm_follow = _pop("comm_reward_follow")
         info.pop("step_count", None)
 
         # Spatial JSD diagnostic. Stored per env then tiled to actors so every
@@ -208,7 +198,7 @@ class CardMechanism:
             r_card_jsd = jax.lax.stop_gradient(-self.card_jsd_coef * card_jsd)
         else:
             r_card_jsd = jnp.zeros((num_actors,))
-        reward = env_reward + comm_scale * comm_reward + r_attn_shaping + r_gaze_pick + r_card_jsd
+        reward = env_reward + r_attn_shaping + r_gaze_pick + r_card_jsd
 
         # Advance carry (reset on episode boundary).
         if self.ja_card_attn:
@@ -249,8 +239,6 @@ class CardMechanism:
             "partner_argmax": aux_argmax,
             "partner_argmax_valid": aux_valid,
             "partner_argmax_weight": aux_weight,
-            "comm_reward": comm_reward, "comm_match": comm_match,
-            "comm_stable": comm_stable, "comm_follow": comm_follow,
             "card_jsd": card_jsd, "jsd": jsd_spatial,
             "r_attn_shaping": r_attn_shaping,
             "r_attn_self": r_attn_self, "r_gaze_pick": r_gaze_pick,
@@ -258,7 +246,11 @@ class CardMechanism:
         return reward, new_carry, extras
 
     def postprocess_trajectory(self, traj_batch, config, update_steps):
-        """Build the partner's gamma-discounted first-occupancy over its ATTENTION.
+        """Build the partner's eta-discounted future focus q_t^j (Eq. 10 target).
+
+        Algorithm 1, lines 11-13: find the partner's focus m_t^j = argmax_e p_t^j(e),
+        then q_t^j <- eta * q_{t+1}^j with q_t^j(m_t^j) <- 1, normalised.
+
 
         Each step the partner attends to some card (argmax of its per-card
         attention); over the episode this forms a discrete trajectory. A reverse
@@ -292,10 +284,13 @@ class CardMechanism:
         return traj_batch._replace(extras=new_extras)
 
     def aux_loss(self, attn_map_apply, traj_batch, config):
-        """Mass-weighted NLL pulling per-card attention onto the partner target.
+        """L_MATE for the card game (Eq. 10), returned with lambda_MATE (Eq. 11).
 
-        Target is the partner's argmax attention by default, or the partner's
-        terminal pick when `JA_AUX_PARTNER_PICK` is set.
+        Pools attention onto cards to get p_t^i (Algorithm 1, line 9-10) and takes
+        the cross-entropy against the partner target, weighted by the agent's
+        on-card attention mass. Target is the eta-discounted future focus q_t^j
+        when `JA_AUX_PARTNER_PICK` is set (the paper setting), else the partner's
+        plain attention argmax, which is the eta -> 0 limit.
         """
         del config
         if not self.aux_active:
@@ -340,9 +335,6 @@ class CardMechanism:
             "ja_attn_self_mean": ex["r_attn_self"].mean(),
             "ja_gaze_pick_mean": ex["r_gaze_pick"].sum() / gaze_count,
             "aux_partner_argmax_loss": loss_info.aux_loss.mean(),
-            "comm_reward_mean": ex["comm_reward"].mean(),
-            "comm_match_bonus_mean": ex["comm_match"].mean(),
-            "comm_stability_bonus_mean": ex["comm_stable"].mean(),
         }
 
     def report(self, config, out, logger):

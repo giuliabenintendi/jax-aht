@@ -61,14 +61,12 @@ def log_greedy_eval(algorithm_config, env, out, logger, num_episodes=64, init_fn
     greedy = True
     all_returns = []
     all_jsds = []
-    # Confusion matrices for card game communication analysis (per seed)
     _num_cards = getattr(inner_env, 'num_cards', 5)
-    _is_comm_env = hasattr(inner_env, 'communication') and inner_env.communication
+    _is_comm_env = False
     for seed_idx in range(num_seeds):
         params = jax.tree.map(lambda x: x[seed_idx], out["final_params"])
         seed_returns = []
         seed_jsds = []
-        # Per-seed communication matrices
         own_msg_vs_pick = np.zeros((_num_cards, _num_cards), dtype=np.int32)
         partner_msg_vs_pick = np.zeros((_num_cards, _num_cards), dtype=np.int32)
         first_msg_pair = np.zeros((_num_cards, _num_cards), dtype=np.int32)
@@ -441,10 +439,6 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
             # Render frames from episode states
             if env_name == "lbf":
                 frames = _render_lbf_eval_frames(inner_env, ep_states)
-            elif env_name == "hanabi":
-                from envs.hanabi.rendering import render_hanabi_eval_frames
-                frames = render_hanabi_eval_frames(ep_states, scale=8)
-                attn_backdrop_frames = frames
             elif env_name == "card-game":
                 from envs.card_game.rendering import (
                     render_card_game_eval_frames,
@@ -538,7 +532,7 @@ def log_eval_video(algorithm_config, env, out, logger, init_fn=None):
         import numpy as np
 
         num_eval_episodes = int(algorithm_config.get("NUM_EVAL_EPISODES", 64))
-        is_overcooked = env_name in ("overcooked-v1",)
+        is_overcooked = False
 
         attn_feat_h = attn_feat_w = None
         if is_overcooked:

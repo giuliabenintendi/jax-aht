@@ -12,7 +12,7 @@ from flax.training.train_state import TrainState
 
 from agents.initialize_agents import initialize_image_agent
 from common.train_logging import (
-    IMAGE_IPPO_SCALAR_KEYS,
+    BASE_SCALAR_KEYS,
     log_live_chunk_metrics,
     report_basic_training_outputs,
 )
@@ -317,7 +317,7 @@ def run_image_ippo(config, logger):
         config,
         out,
         logger,
-        scalar_keys=IMAGE_IPPO_SCALAR_KEYS,
+        scalar_keys=BASE_SCALAR_KEYS,
         print_prefix="image_ippo",
     )
     return out

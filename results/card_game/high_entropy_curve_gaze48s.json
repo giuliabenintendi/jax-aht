@@ -1,0 +1,110 @@
+{
+  "0.25": {
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.1427,
+    "xp_greedy_sem": 0.0698,
+    "sp_samp": 0.9991,
+    "sp_samp_sem": 0.0009,
+    "xp_samp": 0.1427,
+    "xp_samp_sem": 0.0698,
+    "n": 48,
+    "_run": "cg_hent_a025_1M_48s"
+  },
+  "0.5": {
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.0883,
+    "xp_greedy_sem": 0.039,
+    "sp_samp": 0.9437,
+    "sp_samp_sem": 0.0152,
+    "xp_samp": 0.0943,
+    "xp_samp_sem": 0.037,
+    "n": 48,
+    "_run": "cg_hent_a050_1M_48s"
+  },
+  "0.75": {
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.1816,
+    "xp_greedy_sem": 0.0265,
+    "sp_samp": 0.2184,
+    "sp_samp_sem": 0.004,
+    "xp_samp": 0.2079,
+    "xp_samp_sem": 0.0038,
+    "n": 48,
+    "_run": "cg_hent_a075_1M_48s"
+  },
+  "1": {
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.1798,
+    "xp_greedy_sem": 0.0312,
+    "sp_samp": 0.2099,
+    "sp_samp_sem": 0.0043,
+    "xp_samp": 0.2042,
+    "xp_samp_sem": 0.0035,
+    "n": 48,
+    "_run": "cg_hent_a100c_1M_48s"
+  },
+  "1.25": {
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.1837,
+    "xp_greedy_sem": 0.0432,
+    "sp_samp": 0.2077,
+    "sp_samp_sem": 0.0037,
+    "xp_samp": 0.2047,
+    "xp_samp_sem": 0.0037,
+    "n": 48,
+    "_run": "cg_hent_a125r_1M_48s"
+  },
+  "1.5": {
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.2399,
+    "xp_greedy_sem": 0.067,
+    "sp_samp": 0.2054,
+    "sp_samp_sem": 0.0039,
+    "xp_samp": 0.2051,
+    "xp_samp_sem": 0.0039,
+    "n": 48,
+    "_run": "cg_hent_a150r_1M_48s"
+  },
+  "1.75": {
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.1515,
+    "xp_greedy_sem": 0.0586,
+    "sp_samp": 0.2059,
+    "sp_samp_sem": 0.0036,
+    "xp_samp": 0.2053,
+    "xp_samp_sem": 0.0037,
+    "n": 48,
+    "_run": "cg_hent_a175r_1M_48s"
+  },
+  "2": {
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.2108,
+    "xp_greedy_sem": 0.0628,
+    "sp_samp": 0.2054,
+    "sp_samp_sem": 0.0036,
+    "xp_samp": 0.2055,
+    "xp_samp_sem": 0.004,
+    "n": 48,
+    "_run": "cg_hent_a200_1M_48s"
+  },
+  "100000": {
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.2083,
+    "xp_greedy_sem": 0.0847,
+    "sp_samp": 0.203,
+    "sp_samp_sem": 0.0036,
+    "xp_samp": 0.2062,
+    "xp_samp_sem": 0.0041,
+    "n": 48,
+    "_run": "cg_hent_a1e5_1M_48s"
+  }
+}

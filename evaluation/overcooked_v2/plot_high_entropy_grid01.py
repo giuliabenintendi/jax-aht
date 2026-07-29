@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from plot_high_entropy import render
+from evaluation.overcooked_v2.plot_high_entropy import render
 
 DATA = Path("results/overcooked_v2/high_entropy_curve_grid01.json")
 OUT = Path("plots/overcooked_v2/high_entropy_curve_ocv2_grid01.png")

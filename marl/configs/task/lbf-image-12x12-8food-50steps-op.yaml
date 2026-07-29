@@ -1,0 +1,14 @@
+ENV_NAME: lbf
+ROLLOUT_LENGTH: 128
+ENV_KWARGS:
+  obs_type: image
+  grid_size: 12
+  num_agents: 2
+  num_food: 8
+  max_agent_level: 3
+  force_coop: true
+  time_limit: 50
+  # Other-Play: per-episode random horizontal/vertical reflection of the grid,
+  # applied independently per agent.
+  other_play_mirror: true
+TASK_NAME: lbf-image-12x12-8food-50steps-op

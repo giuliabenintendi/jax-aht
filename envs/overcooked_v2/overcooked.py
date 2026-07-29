@@ -33,7 +33,6 @@ from envs.overcooked_v2.settings import (
 from envs.overcooked_v2.utils import (
     OvercookedPathPlanner,
     compute_view_box,
-    get_closest_true_pos_no_directions,
     mark_adjacent_cells,
     tree_select,
     compute_enclosed_spaces,

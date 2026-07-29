@@ -1,0 +1,27 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# MATE w/o aux ablation. Identical to card-game-mate except
+# JA_AUX_PARTNER_ARGMAX_COEF (lambda_MATE): the partner's attention is still fed in,
+# but nothing trains the agent's own attention toward the partner's future focus.
+# (Duplicated rather than composed from card-game-mate: Hydra cannot chain nested
+# algorithm defaults.)
+TOTAL_TIMESTEPS: 5e6
+NUM_ENVS: 1024
+NUM_SEEDS: 48
+EVAL_VIDEO_NUM_SEEDS: 0
+LR: 5e-4
+ANNEAL_LR: false
+GAE_LAMBDA: 0.95
+ENT_COEF: 0.01
+
+JA_CARD_ATTN: true
+JA_CARD_PARTNER_FEED: true
+JA_CARD_METRIC: true
+JA_CARD_JSD_COEF: 0.0
+
+JA_ATTN_SELF_COEF: 0.0
+JA_GAZE_PICK_COEF: 0.1
+JA_AUX_PARTNER_ARGMAX_COEF: 0.0   # <- the ablation
+JA_AUX_PARTNER_PICK: true

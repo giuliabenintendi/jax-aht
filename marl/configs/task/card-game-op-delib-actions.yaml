@@ -6,7 +6,4 @@ ENV_KWARGS:
   shuffle: true
   other_play_position_shuffle: true
   other_play_recolouring: true
-  match_coef: 0.0
-  stability_coef: 0.0
-  follow_coef: 0.0
 TASK_NAME: card-game-op-delib-actions

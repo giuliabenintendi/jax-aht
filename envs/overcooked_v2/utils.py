@@ -84,23 +84,6 @@ def mark_adjacent_cells(mask):
     return expanded_mask
 
 
-def get_closest_true_pos_no_directions(arr: jnp.ndarray, pos: Position) -> Position:
-    height, width = arr.shape
-
-    y, x = pos.y, pos.x
-    yy, xx = jnp.meshgrid(jnp.arange(height), jnp.arange(width), indexing="ij")
-
-    dist = jnp.abs(yy - y) + jnp.abs(xx - x)
-    dist = jnp.where(arr, dist, jnp.inf)
-
-    min_idx = jnp.argmin(dist)
-    min_y, min_x = jnp.divmod(min_idx, width)
-
-    is_valid = jnp.any(arr)
-
-    return Position(x=min_x, y=min_y), is_valid
-
-
 class OvercookedPathPlanner:
     def __init__(self, move_area: jnp.ndarray):
         self._precompute(move_area)

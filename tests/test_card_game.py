@@ -105,35 +105,59 @@ def test_mismatching_reward():
     assert dones["__all__"]
 
 
-def test_match_reward_mirrors_partner_previous_message():
-    """match shaping rewards agent i when its current message equals the
-    partner's previous message — lagged and per-agent (see _comm_shaping)."""
-    env = make_env("card-game", {"max_steps": 10, "communication": True,
-                                 "match_coef": 0.1})
-    key = jax.random.PRNGKey(0)
+def test_action_space_is_unified():
+    """Unified intent-expression layout: Discrete(NUM_CARDS) at every step.
+
+    All cards are always legal; the env's `is_decision` flag routes the
+    same emitted card to either `messages` (deliberation) or `agent_choices`
+    (decision).
+    """
+    env = make_env("card-game", {"max_steps": 3, "shuffle": False})
+    assert env.action_space("agent_0").n == NUM_CARDS
+
+    key = jax.random.PRNGKey(5)
     obs, state = env.reset(key)
 
-    # Step 1: no previous partner message exists yet -> no match reward.
-    key, subkey = jax.random.split(key)
-    obs, state, _, _, info = env.step(
-        subkey, state, {"agent_0": jnp.int32(2), "agent_1": jnp.int32(2)})
-    assert float(info["comm_reward_match"][0]) == 0.0
-    assert float(info["comm_reward_match"][1]) == 0.0
+    expected_mask = jnp.ones(NUM_CARDS, dtype=jnp.float32)
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
 
-    # Step 2: each agent's current message equals the partner's previous (2).
     key, subkey = jax.random.split(key)
-    obs, state, _, _, info = env.step(
-        subkey, state, {"agent_0": jnp.int32(2), "agent_1": jnp.int32(2)})
-    assert float(info["comm_reward_match"][0]) > 0.0
-    assert float(info["comm_reward_match"][1]) > 0.0
+    actions = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(1)}
+    obs, state, _, dones, _ = env.step(subkey, state, actions)
+    assert not dones["__all__"]
+    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
 
-    # Step 3: only agent 1 still sends the partner's previous message (2) ->
-    # the reward is assigned per agent.
+
+def test_message_updates_state():
+    """Deliberation-step actions populate the messages field."""
+    env = make_env("card-game", {"max_steps": 3, "shuffle": False})
+    key = jax.random.PRNGKey(11)
+    obs, state = env.reset(key)
+
     key, subkey = jax.random.split(key)
-    obs, state, _, _, info = env.step(
-        subkey, state, {"agent_0": jnp.int32(4), "agent_1": jnp.int32(2)})
-    assert float(info["comm_reward_match"][0]) == 0.0
-    assert float(info["comm_reward_match"][1]) > 0.0
+    actions = {"agent_0": jnp.int32(2), "agent_1": jnp.int32(4)}
+    obs, state, _, dones, _ = env.step(subkey, state, actions)
+    assert not dones["__all__"]
+    assert int(state.env_state.messages[0]) == 2
+    assert int(state.env_state.messages[1]) == 4
+
+
+def test_decision_pick_reward():
+    """Decision-step actions are picks; earlier messages do not count as picks."""
+    env = make_env("card-game", {"max_steps": 2, "shuffle": False})
+    key = jax.random.PRNGKey(13)
+    obs, state = env.reset(key)
+
+    key, subkey = jax.random.split(key)
+    msg = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}
+    obs, state, _, dones, _ = env.step(subkey, state, msg)
+    assert not dones["__all__"]
+
+    key, subkey = jax.random.split(key)
+    actions = {"agent_0": jnp.int32(3), "agent_1": jnp.int32(3)}
+    obs, state, reward, dones, _ = env.step(subkey, state, actions)
+    assert dones["__all__"]
+    assert float(reward["agent_0"]) == 1.0
 
 
 def test_auto_reset():
@@ -151,146 +175,6 @@ def test_auto_reset():
 
     # After auto-reset, step count should be 0
     assert int(state.env_state.step_count) == 0
-
-
-def test_comm_action_space_is_unified():
-    """Unified intent-expression layout: Discrete(NUM_CARDS) at every step.
-
-    All cards are always legal; the env's `is_decision` flag routes the
-    same emitted card to either `messages` (deliberation) or `agent_choices`
-    (decision).
-    """
-    env = make_env("card-game", {"max_steps": 3, "communication": True, "shuffle": False})
-    assert env.action_space("agent_0").n == NUM_CARDS
-
-    key = jax.random.PRNGKey(5)
-    obs, state = env.reset(key)
-
-    expected_mask = jnp.ones(NUM_CARDS, dtype=jnp.float32)
-    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
-
-    key, subkey = jax.random.split(key)
-    actions = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(1)}
-    obs, state, _, dones, _ = env.step(subkey, state, actions)
-    assert not dones["__all__"]
-    assert jnp.array_equal(env.get_avail_actions(state)["agent_0"], expected_mask)
-
-
-def test_comm_message_updates_state():
-    """Deliberation-step actions populate the messages field."""
-    env = make_env("card-game", {"max_steps": 3, "communication": True, "shuffle": False})
-    key = jax.random.PRNGKey(11)
-    obs, state = env.reset(key)
-
-    key, subkey = jax.random.split(key)
-    actions = {"agent_0": jnp.int32(2), "agent_1": jnp.int32(4)}
-    obs, state, _, dones, _ = env.step(subkey, state, actions)
-    assert not dones["__all__"]
-    assert int(state.env_state.messages[0]) == 2
-    assert int(state.env_state.messages[1]) == 4
-
-
-def test_comm_decision_pick_reward():
-    """Decision-step actions are picks under the unified layout."""
-    env = make_env("card-game", {"max_steps": 2, "communication": True, "shuffle": False})
-    key = jax.random.PRNGKey(13)
-    obs, state = env.reset(key)
-
-    key, subkey = jax.random.split(key)
-    msg = {"agent_0": jnp.int32(0), "agent_1": jnp.int32(0)}
-    obs, state, _, dones, _ = env.step(subkey, state, msg)
-    assert not dones["__all__"]
-
-    key, subkey = jax.random.split(key)
-    actions = {"agent_0": jnp.int32(3), "agent_1": jnp.int32(3)}
-    obs, state, reward, dones, _ = env.step(subkey, state, actions)
-    assert dones["__all__"]
-    assert float(reward["agent_0"]) == 1.0
-
-
-def test_following_partner_message_is_chance_without_follow_reward():
-    """Following partner messages can yield 0.2 return without any shaping.
-
-    Protocol:
-    - step 1: each agent sends an arbitrary color message
-    - step 2: each agent picks the partner's previous message
-
-    With zero communication shaping, this still succeeds exactly when the two
-    messages matched, i.e. 5 successes out of 25 message pairs.
-    """
-    env = make_env(
-        "card-game",
-        {
-            "max_steps": 2,
-            "communication": True,
-            "shuffle": False,
-            "match_coef": 0.0,
-            "follow_coef": 0.0,
-        },
-    )
-
-    reward_sum = 0.0
-    num_pairs = 0
-    key = jax.random.PRNGKey(123)
-
-    for msg_0 in range(NUM_CARDS):
-        for msg_1 in range(NUM_CARDS):
-            key, reset_key, step1_key, step2_key = jax.random.split(key, 4)
-            _, state = env.reset(reset_key)
-
-            _, state, step1_reward, step1_dones, step1_info = env.step(
-                step1_key,
-                state,
-                {
-                    "agent_0": jnp.int32(msg_0),
-                    "agent_1": jnp.int32(msg_1),
-                },
-            )
-            assert not step1_dones["__all__"]
-            assert float(step1_reward["agent_0"]) == 0.0
-            assert float(step1_info["comm_reward_follow"][0]) == 0.0
-
-            _, _, step2_reward, step2_dones, step2_info = env.step(
-                step2_key,
-                state,
-                {
-                    "agent_0": jnp.int32(msg_1),
-                    "agent_1": jnp.int32(msg_0),
-                },
-            )
-            assert step2_dones["__all__"]
-            assert float(step2_info["comm_reward_follow"][0]) == 0.0
-            assert float(step2_info["comm_reward"][0]) == 0.0
-
-            reward_sum += float(step2_reward["agent_0"])
-            num_pairs += 1
-
-    assert num_pairs == NUM_CARDS * NUM_CARDS
-    assert reward_sum == float(NUM_CARDS)
-    assert reward_sum / num_pairs == 1.0 / NUM_CARDS
-
-
-def test_communication_dot_makes_agent_obs_differ():
-    """The only per-agent difference in the observation is the partner-message
-    dot: with communication off both agents see the same frame; with it on,
-    the frames diverge once the agents have sent distinct messages."""
-    key = jax.random.PRNGKey(0)
-
-    env_off = make_env("card-game", {"max_steps": 10, "shuffle": False})
-    obs_off, _ = env_off.reset(key)
-    assert jnp.array_equal(obs_off["agent_0"], obs_off["agent_1"])
-
-    env_on = make_env(
-        "card-game", {"max_steps": 10, "shuffle": False, "communication": True}
-    )
-    obs, state = env_on.reset(key)
-    assert jnp.array_equal(obs["agent_0"], obs["agent_1"])  # no message sent yet
-
-    key, subkey = jax.random.split(key)
-    obs, state, _, _, _ = env_on.step(
-        subkey, state, {"agent_0": jnp.int32(0), "agent_1": jnp.int32(3)}
-    )
-    assert not jnp.array_equal(obs["agent_0"], obs["agent_1"])
 
 
 def test_save_observations():

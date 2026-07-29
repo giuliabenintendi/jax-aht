@@ -1,0 +1,23 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# IPPO / OP baseline for OvercookedV2: identical PPO settings to
+# demo_cook_simple-mate, with both MATE components off. The IPPO and OP bars
+# differ only in the task (demo_cook_simple-ego vs -op-ego), not here.
+# For the HE IPPO bar, override ENT_COEF on the command line.
+TOTAL_TIMESTEPS: 3e7
+NUM_ENVS: 192
+NUM_SEEDS: 1
+NUM_MINIBATCHES: 16
+LR: 4e-4
+ANNEAL_LR: true
+GAE_LAMBDA: 0.8
+ENT_COEF: 0.02
+MAX_GRAD_NORM: 0.5
+# Constant shaping weight (~1.0); see demo_cook_simple-mate.yaml.
+REW_SHAPING_HORIZON: 1000000000000
+
+CHECKPOINT_FREQ_TIMESTEPS: 1000000
+
+FEED_OTHER_ATTN: false

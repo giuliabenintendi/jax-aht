@@ -12,12 +12,23 @@ notebooks/*
 
 results*/
 results*/*
+# Keep the small JSON result files the figure scripts read as input.
+!results/
+!results/**/
+!results/**/*.json
 eval_teammates/
 eval_teammates/*
 Eval/
 Eval/*
 .vscode/
 .vscode/*
+
+# virtualenvs and tool caches
+.venv/
+venv/
+.uv-cache/
+.ruff_cache/
+.mypy_cache/
 
 # pycache
 **/__pycache__/
@@ -40,10 +51,9 @@ __pycache__/
 *.pyc
 dist/
 build/
-tests/*
-**/tests/*
-**/test_*.py
-**/*_test.py
 
 *logs/*
 xp_matrices/
+# Keep the XP score matrices the bar/significance scripts read.
+!xp_matrices/
+!xp_matrices/*.csv

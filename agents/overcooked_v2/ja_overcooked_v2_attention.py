@@ -53,24 +53,15 @@ class TaskObject(IntEnum):
     RECIPE_INDICATOR = 6
 
 
-def _static_to_task(obj: int, include_recipe_indicator: bool = False) -> int | None:
+def _static_to_task(obj: int) -> int | None:
     """Map a `StaticObject` value to its `TaskObject` category, or None for
-    non-interactable cells (walls, empty). The button recipe indicator is treated
-    as a recipe indicator so button-variant layouts detect it too.
-
-    Recipe indicators are excluded by default (see `detect_task_objects`); pass
-    `include_recipe_indicator=True` to add them as `RECIPE_INDICATOR` objects."""
+    non-interactable cells (walls, empty)."""
     if obj == StaticObject.POT:
         return int(TaskObject.POT)
     if obj == StaticObject.GOAL:
         return int(TaskObject.GOAL)
     if obj == StaticObject.PLATE_PILE:
         return int(TaskObject.PLATE_PILE)
-    if include_recipe_indicator and obj in (
-        int(StaticObject.RECIPE_INDICATOR),
-        int(StaticObject.BUTTON_RECIPE_INDICATOR),
-    ):
-        return int(TaskObject.RECIPE_INDICATOR)
     if obj >= _INGREDIENT_BASE:
         return int(TaskObject.INGREDIENT_PILE)
     return None
@@ -78,7 +69,6 @@ def _static_to_task(obj: int, include_recipe_indicator: bool = False) -> int | N
 
 def detect_task_objects(
     static_grid: np.ndarray,
-    include_recipe_indicator: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Detect task-object cells in a `StaticObject`-encoded `(H, W)` grid.
 
@@ -107,7 +97,7 @@ def detect_task_objects(
     for row in range(height):
         for col in range(width):
             obj = int(grid[row, col])
-            cat = _static_to_task(obj, include_recipe_indicator)
+            cat = _static_to_task(obj)
             if cat is None:
                 continue
             positions.append((row, col))
@@ -202,62 +192,6 @@ def object_feature_masks_from_tiles(
     return masks * visible[..., None, None].astype(jnp.float32)
 
 
-def crop_local_object_feature_masks(
-    object_pos,
-    agent_rows,
-    agent_cols,
-    dirs,
-    *,
-    view_size,
-    crop_size,
-    rotate_obs,
-    tile_size,
-    feat_h,
-    feat_w,
-    img_h,
-    img_w,
-):
-    """Object tile-footprint masks in each actor's crop-local feature grid."""
-    obj_r = object_pos[:, 0][None, :]
-    obj_c = object_pos[:, 1][None, :]
-
-    local_r = obj_r - agent_rows[:, None] + view_size
-    local_c = obj_c - agent_cols[:, None] + view_size
-    visible = (
-        (local_r >= 0)
-        & (local_r < crop_size)
-        & (local_c >= 0)
-        & (local_c < crop_size)
-    )
-
-    if rotate_obs:
-        k = jnp.array([0, 2, 1, 3])[dirs]
-
-        def _rot_one(r, c, kk):
-            return jax.lax.switch(
-                kk,
-                (
-                    lambda x: x,
-                    lambda x: (crop_size - 1 - x[1], x[0]),
-                    lambda x: (crop_size - 1 - x[0], crop_size - 1 - x[1]),
-                    lambda x: (x[1], crop_size - 1 - x[0]),
-                ),
-                (r, c),
-            )
-
-        local_r, local_c = jax.vmap(_rot_one)(local_r, local_c, k)
-
-    masks = object_feature_masks_from_tiles(
-        local_r,
-        local_c,
-        visible,
-        tile_size=tile_size,
-        feat_h=feat_h,
-        feat_w=feat_w,
-        img_h=img_h,
-        img_w=img_w,
-    )
-    return masks, visible.astype(jnp.float32)
 
 
 def _unwrap_env_state(state):
@@ -351,9 +285,6 @@ def reframe_partner_attention_for_eval(
     agent_fov_size = int(ctx["agent_fov_size"])
     tile_size = int(ctx["tile_size"])
     rotate_obs = bool(ctx.get("rotate_obs", False))
-    grid_h = int(ctx["grid_h"])
-    grid_w = int(ctx["grid_w"])
-    border_project = bool(ctx.get("feed_border_project", False))
 
     rows_t, cols_t = agent_tiles_from_state(env_state)
     rows_n, cols_n = agent_tiles_from_state(new_env_state)
@@ -411,24 +342,12 @@ def reframe_partner_attention_for_eval(
         raw_c = cc + sc - view_size
         dst_r = raw_r - dr + view_size
         dst_c = raw_c - dc + view_size
-        if border_project:
-            # Mirror of the training-side JA_FEED_BORDER_PROJECT branch: keep all
-            # real-world mass, clamp out-of-window cells onto the receiver border.
-            valid = (
-                (raw_r >= 0)
-                & (raw_r < grid_h)
-                & (raw_c >= 0)
-                & (raw_c < grid_w)
-            )
-            dst_r = jnp.clip(dst_r, 0, agent_fov_size - 1)
-            dst_c = jnp.clip(dst_c, 0, agent_fov_size - 1)
-        else:
-            valid = (
-                (dst_r >= 0)
-                & (dst_r < agent_fov_size)
-                & (dst_c >= 0)
-                & (dst_c < agent_fov_size)
-            )
+        valid = (
+            (dst_r >= 0)
+            & (dst_r < agent_fov_size)
+            & (dst_c >= 0)
+            & (dst_c < agent_fov_size)
+        )
         if rotate_obs:
             dst_r, dst_c = _fwd_rot(dst_r, dst_c, dd)
         centre_r = dst_r * tile_size + tile_size // 2
@@ -555,10 +474,7 @@ def overcooked_v2_object_ctx(config, env) -> dict:
     raw = get_inner_env(env)
     grid_h, grid_w = int(raw.height), int(raw.width)
     tile_size = img_h // grid_h
-    obj_pos, obj_cat, obj_ing = detect_task_objects(
-        raw.layout.static_objects,
-        include_recipe_indicator=bool(config.get("JA_INCLUDE_RECIPE_INDICATOR", False)),
-    )
+    obj_pos, obj_cat, obj_ing = detect_task_objects(raw.layout.static_objects)
     grid_pos = np.array(
         [(r, c) for r in range(grid_h) for c in range(grid_w)],
         dtype=np.int32,
@@ -584,7 +500,6 @@ def overcooked_v2_object_ctx(config, env) -> dict:
         "grid_h": grid_h,
         "grid_w": grid_w,
         "agent_view_size": raw.agent_view_size,  # None = fully observable
-        "feed_border_project": bool(config.get("JA_FEED_BORDER_PROJECT", False)),
         "egocentric": bool(getattr(wrapper, "egocentric", False)),
         "agent_fov_size": int(getattr(wrapper, "agent_fov_size", 0) or 0),
         "agent_fov_centered": bool(getattr(wrapper, "agent_fov_centered", True)),

@@ -73,7 +73,7 @@ JA_SCALAR_KEYS = [
 ]
 
 
-IMAGE_IPPO_SCALAR_KEYS = [
+BASE_SCALAR_KEYS = [
     ("loss_total", "Losses"),
     ("loss_value", "Losses"),
     ("loss_policy", "Losses"),

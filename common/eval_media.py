@@ -83,26 +83,18 @@ def render_and_log_video(inner_env, env_name, ep_states, tag, savedir, logger, *
                          ep_obs=None, ep_actions=None, fps=10):
     """Render `ep_states` to an mp4 (via the env-render registry) and log it to W&B.
 
-    Overcooked is special-cased: its visualizer writes the mp4 directly.
     Returns the written video path.
     """
     os.makedirs(savedir, exist_ok=True)
     video_path = os.path.join(savedir, tag.replace("/", "_") + ".mp4")
 
-    if env_name == "overcooked-v1":
-        from envs.overcooked.adhoc_overcooked_visualizer import AdHocOvercookedVisualizer
-        AdHocOvercookedVisualizer().animate_mp4(
-            [s.env_state for s in ep_states], inner_env.agent_view_size,
-            filename=video_path, pixels_per_tile=32, fps=fps,
-        )
-    else:
-        frames = get_eval_frames(
-            env_name, inner_env, ep_states, ep_obs=ep_obs, ep_actions=ep_actions,
-        )
-        from moviepy import ImageSequenceClip
-        ImageSequenceClip(list(frames), fps=fps).write_videofile(
-            video_path, fps=fps, codec="libx264", audio=False, preset="ultrafast",
-        )
+    frames = get_eval_frames(
+        env_name, inner_env, ep_states, ep_obs=ep_obs, ep_actions=ep_actions,
+    )
+    from moviepy import ImageSequenceClip
+    ImageSequenceClip(list(frames), fps=fps).write_videofile(
+        video_path, fps=fps, codec="libx264", audio=False, preset="ultrafast",
+    )
 
     if logger is not None and getattr(logger, "run", None) is not None:
         logger.log_video(tag, video_path, commit=False)

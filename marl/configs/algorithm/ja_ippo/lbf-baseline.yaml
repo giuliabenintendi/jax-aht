@@ -1,0 +1,16 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# IPPO / OP baseline for LBF: identical PPO settings to lbf-mate, with both MATE
+# components off. The IPPO and OP bars differ only in the task (OP is the
+# other_play_mirror flag on the task config), not here.
+TOTAL_TIMESTEPS: 3e6
+NUM_ENVS: 128
+NUM_SEEDS: 12
+NUM_MINIBATCHES: 32
+ANNEAL_LR: true
+NORMALIZE_REWARDS: false
+
+FEED_OTHER_ATTN: false
+JA_OBJECT_AUX_COEF: 0.0

@@ -1,0 +1,112 @@
+{
+  "0.25": {
+    "n": 48,
+    "_run": "cg_hentd_a025_1M_48s",
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.189,
+    "xp_greedy_sem": 0.0078,
+    "sp_samp": 0.7907,
+    "sp_samp_sem": 0.0387,
+    "xp_samp": 0.1948,
+    "xp_samp_sem": 0.0059
+  },
+  "0.5": {
+    "n": 48,
+    "_run": "cg_hentd_a050_1M_48s",
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.1968,
+    "xp_greedy_sem": 0.0074,
+    "sp_samp": 0.2215,
+    "sp_samp_sem": 0.0118,
+    "xp_samp": 0.1997,
+    "xp_samp_sem": 0.0005
+  },
+  "0.75": {
+    "n": 48,
+    "_run": "cg_hentd_a075_1M_48s",
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.2069,
+    "xp_greedy_sem": 0.0081,
+    "sp_samp": 0.2032,
+    "sp_samp_sem": 0.0035,
+    "xp_samp": 0.1997,
+    "xp_samp_sem": 0.0005
+  },
+  "1": {
+    "n": 48,
+    "_run": "cg_hentd_a100_1M_48s",
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.2114,
+    "xp_greedy_sem": 0.0082,
+    "sp_samp": 0.2033,
+    "sp_samp_sem": 0.0036,
+    "xp_samp": 0.1997,
+    "xp_samp_sem": 0.0005
+  },
+  "100000": {
+    "n": 48,
+    "_run": "cg_hentd_a1e5_1M_48s",
+    "_note": "off-grid point for the 10^5 text claim, not drawn on the curve",
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.1938,
+    "xp_greedy_sem": 0.0083,
+    "sp_samp": 0.203,
+    "sp_samp_sem": 0.0036,
+    "xp_samp": 0.1996,
+    "xp_samp_sem": 0.0005
+  },
+  "1.25": {
+    "n": 48,
+    "_run": "cg_hentd_a125_1M_48s",
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.2003,
+    "xp_greedy_sem": 0.0078,
+    "sp_samp": 0.2033,
+    "sp_samp_sem": 0.0035,
+    "xp_samp": 0.1998,
+    "xp_samp_sem": 0.0005
+  },
+  "1.5": {
+    "n": 48,
+    "_run": "cg_hentd_a150_1M_48s",
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.2099,
+    "xp_greedy_sem": 0.0083,
+    "sp_samp": 0.2035,
+    "sp_samp_sem": 0.0036,
+    "xp_samp": 0.1997,
+    "xp_samp_sem": 0.0005
+  },
+  "1.75": {
+    "n": 48,
+    "_run": "cg_hentd_a175_1M_48s",
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.2137,
+    "xp_greedy_sem": 0.008,
+    "sp_samp": 0.2039,
+    "sp_samp_sem": 0.0036,
+    "xp_samp": 0.1997,
+    "xp_samp_sem": 0.0005
+  },
+  "2": {
+    "n": 48,
+    "_run": "cg_hentd_a200_1M_48s",
+    "sp_greedy": 1.0,
+    "sp_greedy_sem": 0.0,
+    "xp_greedy": 0.2097,
+    "xp_greedy_sem": 0.0084,
+    "sp_samp": 0.2037,
+    "sp_samp_sem": 0.0036,
+    "xp_samp": 0.1998,
+    "xp_samp_sem": 0.0005
+  },
+  "_note": "live-deliberation task (card-game-delib-noop), 48 seeds; XP = ALL-PAIRS mean (disjoint is degenerate on near-binary card matrices, Giulia 2026-07-27); COMPLETE 2026-07-27 night - all 8 grid points + 10^5 real runs"
+}

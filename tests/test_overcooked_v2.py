@@ -204,79 +204,8 @@ def test_overcooked_v2_op_agents_see_permuted_views():
     assert not (np.abs(sw_tile - c0).max(axis=-1) < 1.0).any()
 
 
-def test_ocv2_op_vertical_flip_mirrors_swapped_agents():
-    # flip-swap OP: agents whose ingredients are swapped ALSO see a vertically
-    # mirrored world and have up/down actions swapped; identity agents untouched.
-    # The mirror is input-side (grid rows + agent poses fed to the renderer), so
-    # tile POSITIONS swap rows while within-tile artwork stays upright -- a
-    # pixel-level flip of the frame would mirror pot rims/timers and recipe dots,
-    # betraying the flipped lens.
-    kw = dict(layout="demo_cook_simple", obs_type="image", agent_view_size=2,
-              random_agent_positions=False, op_ingredient_permutations=[0, 1])
-    flip_env = make_env("overcooked-v2", {**kw, "op_vertical_flip": True})
-    ref_env = make_env("overcooked-v2", {**kw, "op_vertical_flip": False})
-
-    _, state = flip_env.reset(jax.random.PRNGKey(0))
-    # Agent 0 swapped (perm [1,0,2]) -> flipped; agent 1 identity -> untouched.
-    perm = jnp.array([[1, 0, 2], [0, 1, 2]])
-    state = state.replace(env_state=state.env_state.replace(ingredient_permutations=perm))
-
-    ts = flip_env.tile_size
-    h = flip_env.grid_height * ts
-    w = flip_env.grid_width * ts
-    obs_flip = flip_env._make_obs(state.env_state)
-    obs_ref = ref_env._make_obs(state.env_state)
-    a0, a1 = flip_env.agents
-    f0 = obs_flip[a0].reshape(h, w, 3)
-    r0 = obs_ref[a0].reshape(h, w, 3)
-
-    def tile(img, row, col):
-        return img[row * ts : (row + 1) * ts, col * ts : (col + 1) * ts]
-
-    # Positions mirror: the visible ingredient piles at (0,8)/(4,8) hold
-    # different ingredients, so their pixel-exact swap checks a real row swap.
-    assert bool(jnp.array_equal(tile(f0, 0, 8), tile(r0, 4, 8)))
-    assert bool(jnp.array_equal(tile(f0, 4, 8), tile(r0, 0, 8)))
-    assert not bool(jnp.array_equal(tile(r0, 0, 8), tile(r0, 4, 8)))
-    # Artwork stays upright: the pot sits ON the mirror axis (2,7), so its tile
-    # must be untouched, not a pixel mirror of itself.
-    assert bool(jnp.array_equal(tile(f0, 2, 7), tile(r0, 2, 7)))
-    assert not bool(jnp.array_equal(tile(f0, 2, 7), jnp.flip(tile(r0, 2, 7), axis=0)))
-    # Identity agent 1 is unchanged.
-    assert bool(jnp.allclose(obs_flip[a1], obs_ref[a1]))
-
-    # The lens state mirrors poses and facing: UP<->DOWN, RIGHT/LEFT unchanged.
-    m = flip_env._mirrored_state(state.env_state)
-    dir_flip = jnp.array([1, 0, 2, 3])  # Direction UP, DOWN, RIGHT, LEFT
-    assert bool(jnp.array_equal(m.agents.dir, dir_flip[state.env_state.agents.dir]))
-    assert bool(jnp.array_equal(
-        m.agents.pos.y, flip_env.grid_height - 1 - state.env_state.agents.pos.y
-    ))
-
-    # Action remap: flipped agent 0 issuing 'up' reaches the env as 'down'.
-    up = {a0: jnp.array(int(Actions.up)), a1: jnp.array(int(Actions.stay))}
-    down = {a0: jnp.array(int(Actions.down)), a1: jnp.array(int(Actions.stay))}
-    _, flip_after, *_ = flip_env.step(jax.random.PRNGKey(1), state, up)
-    _, ref_after, *_ = ref_env.step(jax.random.PRNGKey(1), state, down)
-    assert int(flip_after.env_state.agents.dir[0]) == int(ref_after.env_state.agents.dir[0])
-    # Sanity: without the remap, 'up' and 'down' would differ.
-    _, ref_up, *_ = ref_env.step(jax.random.PRNGKey(1), state, up)
-    assert int(flip_after.env_state.agents.dir[0]) != int(ref_up.env_state.agents.dir[0])
-
-
-def test_ocv2_op_vertical_flip_off_is_noop():
-    kw = dict(layout="demo_cook_simple", obs_type="image", agent_view_size=2,
-              random_agent_positions=False, op_ingredient_permutations=[0, 1])
-    flip_off = make_env("overcooked-v2", {**kw, "op_vertical_flip": False})
-    _, state = flip_off.reset(jax.random.PRNGKey(0))
-    perm = jnp.array([[1, 0, 2], [0, 1, 2]])
-    state = state.replace(env_state=state.env_state.replace(ingredient_permutations=perm))
-    # With the flag off, flip bits are all False regardless of the swap.
-    assert not bool(flip_off._flip_bits(state.env_state).any())
-
-
 def _make_mate_mechanism(gating):
-    from agents.overcooked_v2.ja_overcooked_v2_dense_occupancy import (
+    from agents.overcooked_v2.ja_overcooked_v2_mate import (
         OvercookedV2DenseObjectOccupancyMechanism,
     )
     env = make_env(
@@ -352,47 +281,6 @@ def test_ocv2_mate_partner_aux_supervises_hidden_footprint():
     )
     _, occ_blind = mech._occupancy_targets(traj2)
     assert float(occ_blind[:, 0].sum()) < 1e-3
-
-
-def test_ocv2_mate_aux_visible_only_masks_hidden_partner_steps():
-    # With JA_AUX_PARTNER_VISIBLE_ONLY, steps where the partner is hidden carry
-    # no aux gradient: supervision exists only while the feed lights the target.
-    from types import SimpleNamespace
-    from agents.overcooked_v2.ja_overcooked_v2_dense_occupancy import (
-        OvercookedV2DenseObjectOccupancyMechanism,
-    )
-
-    env = make_env(
-        "overcooked-v2",
-        {"layout": "demo_cook_simple", "obs_type": "image", "agent_view_size": 2,
-         "random_agent_positions": False},
-    )
-    def mk(flag):
-        return OvercookedV2DenseObjectOccupancyMechanism(
-            {"ROLLOUT_LENGTH": 4, "NUM_ENVS": 1, "FEED_OTHER_ATTN": True,
-             "JA_VISIBILITY_GATING": True, "JA_OBJECT_AUX_COEF": 1e-4,
-             "JA_AUX_PARTNER_VISIBLE_ONLY": flag}, env)
-
-    mech_gated, mech_plain = mk(True), mk(False)
-    fh, fw = mech_gated.feat_h, mech_gated.feat_w
-    T, A = 2, 1
-    target = jnp.zeros((T, A, fh, fw)).at[:, :, 5, 12].set(1.0)
-    # Step 0: attention on the target (low NLL). Step 1: attention elsewhere
-    # (high NLL), partner hidden.
-    attn = jnp.full((T, A, fh, fw), 1e-8).at[0, 0, 5, 12].set(1.0).at[1, 0, 0, 0].set(1.0)
-    traj = SimpleNamespace(
-        done=jnp.zeros((T, A), dtype=bool),
-        extras={
-            "ja_future_partner_occ": target,
-            "ja_partner_visible": jnp.array([[1.0], [0.0]]),
-        },
-    )
-    _, loss_gated = mech_gated.aux_loss(attn, traj, None)
-    _, loss_plain = mech_plain.aux_loss(attn, traj, None)
-    # Gated: only the visible step counts -> near-zero NLL. Plain: the hidden
-    # high-NLL step is averaged in.
-    assert float(loss_gated) < 1e-4
-    assert float(loss_plain) > 5.0
 
 
 def test_ocv2_mate_allocentric_event_visibility_is_attender_view():
@@ -476,43 +364,6 @@ def test_ocv2_mate_mask_event_shadows_future_object():
     assert float(target[0, 0, 1, 2]) > 0.49
 
 
-def test_ocv2_mate_occ_future_blend_mixes_later_foci():
-    # JA_OCC_FUTURE_BLEND restores the LBF per-cell rule: the target is the
-    # LIST of upcoming foci with gamma-per-step relative weights. Events at
-    # t=0 (two cells) and t=2, nothing at t=1: the t=0 target keeps the t=2
-    # focus at gamma^2 = 0.64 against 1 per current-focus cell.
-    from agents.overcooked_v2.ja_overcooked_v2_dense_occupancy import (
-        OvercookedV2DenseObjectOccupancyMechanism,
-    )
-
-    env = make_env(
-        "overcooked-v2",
-        {"layout": "demo_cook_simple", "obs_type": "image", "agent_view_size": 2,
-         "random_agent_positions": False},
-    )
-    mech = OvercookedV2DenseObjectOccupancyMechanism(
-        {"ROLLOUT_LENGTH": 4, "NUM_ENVS": 1, "FEED_OTHER_ATTN": True,
-         "JA_VISIBILITY_GATING": False, "JA_OCC_FUTURE_BLEND": True,
-         "JA_FUTURE_GAMMA_OCC": 0.8}, env)
-    T, A = 3, 1
-    current = jnp.zeros((T, A, mech.feat_h, mech.feat_w), dtype=jnp.float32)
-    current = current.at[0, 0, 1, 1].set(1.0)
-    current = current.at[0, 0, 1, 2].set(1.0)
-    current = current.at[2, 0, 7, 7].set(1.0)
-    target = mech._attended_mask_occupancy(
-        current, jnp.zeros((T, A), dtype=bool),
-    ).reshape(T, A, mech.feat_h, mech.feat_w)
-
-    s = 1.0 + 1.0 + 0.64
-    assert abs(float(target[0, 0, 1, 1]) - 1.0 / s) < 1e-5
-    assert abs(float(target[0, 0, 1, 2]) - 1.0 / s) < 1e-5
-    assert abs(float(target[0, 0, 7, 7]) - 0.64 / s) < 1e-5
-    assert abs(float(target.reshape(T, -1)[0].sum()) - 1.0) < 1e-5
-    # A lone upcoming focus renormalizes to full strength (as in LBF): the
-    # discount weights objects against each other, not overall confidence.
-    assert abs(float(target[1, 0, 7, 7]) - 1.0) < 1e-5
-
-
 def test_ocv2_mate_feed_mask_keeps_unmasked_peak_scale():
     mech = _make_mate_mechanism(gating=True)
     A, fh, fw = 2, mech.feat_h, mech.feat_w
@@ -541,7 +392,7 @@ def test_ocv2_full_map_feed_mask_is_partner_visibility_gate():
             "random_agent_positions": False,
         },
     )
-    from agents.overcooked_v2.ja_overcooked_v2_dense_occupancy import (
+    from agents.overcooked_v2.ja_overcooked_v2_mate import (
         OvercookedV2DenseObjectOccupancyMechanism,
     )
     mech = OvercookedV2DenseObjectOccupancyMechanism(
@@ -622,7 +473,7 @@ def test_ocv2_full_map_feed_augmentation_preserves_off_view_attention():
 
 
 def _make_ego_mate_mechanism(border_project):
-    from agents.overcooked_v2.ja_overcooked_v2_dense_occupancy import (
+    from agents.overcooked_v2.ja_overcooked_v2_mate import (
         OvercookedV2DenseObjectOccupancyMechanism,
     )
     env = make_env(
@@ -661,125 +512,3 @@ def _delta_attn_on_world_tile(mech, actor, world_r, world_c, agent_r, agent_c):
 def _batch1(state):
     """Add the NUM_ENVS=1 leading axis the training mechanism expects."""
     return jax.tree.map(lambda x: x[None] if hasattr(x, "ndim") else x, state)
-
-
-def test_ocv2_feed_border_project_direction_and_mass():
-    # demo_cook_simple fixed starts: agent_0 (x=6, y=2), agent_1 (x=8, y=2).
-    # Agent_0 attends the westmost column of ITS crop (x=4) at the onion-route
-    # row (1) then the broccoli-route row (3) — inside agent_0's view, outside
-    # agent_1's window (x in 6..10). Legacy drops the mass entirely; border
-    # projection lands it on agent_1's west border at the SAME ROW, so direction
-    # (= flavor) survives the reframe.
-    env, mech = _make_ego_mate_mechanism(border_project=True)
-    _, state = env.reset(jax.random.PRNGKey(0))
-    for route_y in (1, 3):
-        attn = _delta_attn_on_world_tile(mech, 0, route_y, 4, 2, 6)
-        out = mech._reframe_partner_attention(attn, _batch1(state), _batch1(state), 2)
-        rec = out[1]  # agent_1 receives agent_0's map
-        assert abs(float(rec.sum()) - 1.0) < 1e-5  # in-grid mass conserved
-        fr = (route_y * mech.tile_size + mech.tile_size // 2) * mech.feat_h // mech.img_h
-        fc = (0 * mech.tile_size + mech.tile_size // 2) * mech.feat_w // mech.img_w
-        assert float(rec[fr, fc]) > 0.99  # west border, row = route row
-
-    env2, mech_off = _make_ego_mate_mechanism(border_project=False)
-    _, state2 = env2.reset(jax.random.PRNGKey(0))
-    attn = _delta_attn_on_world_tile(mech_off, 0, 1, 4, 2, 6)
-    out_off = mech_off._reframe_partner_attention(attn, _batch1(state2), _batch1(state2), 2)
-    assert float(out_off[1].sum()) < 1e-6  # legacy: out-of-window mass dropped
-
-
-def test_ocv2_feed_border_project_in_window_unchanged():
-    # Attention on the pot column (x=7, inside both windows) must reframe
-    # identically with the flag on and off.
-    env, mech_on = _make_ego_mate_mechanism(border_project=True)
-    _, mech_off = _make_ego_mate_mechanism(border_project=False)
-    _, state = env.reset(jax.random.PRNGKey(0))
-    attn = _delta_attn_on_world_tile(mech_on, 0, 2, 7, 2, 6)
-    out_on = mech_on._reframe_partner_attention(attn, _batch1(state), _batch1(state), 2)
-    out_off = mech_off._reframe_partner_attention(attn, _batch1(state), _batch1(state), 2)
-    assert bool(jnp.allclose(out_on, out_off, atol=1e-6))
-    assert float(out_on[1].sum()) > 0.99
-
-
-def test_ocv2_border_project_object_masks():
-    # With the flag on, out-of-crop objects get border-clamped masks in the
-    # receiver frame while `visible` still reports TRUE in-crop visibility
-    # (selection/event-validity semantics unchanged). Object 2 = left onion
-    # pile (1,0); blue (actor 1) starts at (8,2) and can never see it.
-    env, mech_on = _make_ego_mate_mechanism(border_project=True)
-    _, mech_off = _make_ego_mate_mechanism(border_project=False)
-    _, state = env.reset(jax.random.PRNGKey(0))
-    masks_on, vis_on = mech_on._object_frame(_batch1(state), 2)
-    masks_off, vis_off = mech_off._object_frame(_batch1(state), 2)
-
-    assert float(vis_on[1, 2]) == 0.0 and float(vis_off[1, 2]) == 0.0
-    assert float(masks_off[1, 2].sum()) == 0.0          # legacy: no mask
-    assert float(masks_on[1, 2].sum()) > 0.0            # border blob exists
-    # Blob sits on blue's west border at the pile's row (world (1,0) -> blue
-    # local tile (1,0)).
-    fr = (1 * mech_on.tile_size + mech_on.tile_size // 2) * mech_on.feat_h // mech_on.img_h
-    assert float(masks_on[1, 2, fr, 0]) > 0.0
-    # In-crop objects unchanged: pot (obj 4) identical masks on/off.
-    assert bool(jnp.allclose(masks_on[1, 4], masks_off[1, 4], atol=1e-6))
-
-
-def test_ocv2_border_project_partner_target_without_receiver_visibility():
-    # Partner-attended events whose CELL the receiver cannot see must supervise
-    # the aux when the flag is on (witness = partner visible), and must NOT when
-    # off (legacy receiver-visibility kill).
-    from types import SimpleNamespace
-
-    def traj(mech):
-        T, A, M = 2, 2, 2
-        mask_all = jnp.zeros((T, A, M, mech.feat_h, mech.feat_w), dtype=jnp.float32)
-        mask_all = mask_all.at[:, :, 0, 1, 1].set(1.0)   # obj 0: both see it
-        mask_all = mask_all.at[:, :, 1, 3, 0].set(1.0)   # obj 1: border blob in receiver frame
-        vis = jnp.ones((T, A, M), dtype=jnp.float32)
-        vis = vis.at[:, 0, 1].set(0.0)  # receiver (actor 0) can NOT see obj 1
-        sel = jnp.zeros((T, A), dtype=jnp.int32).at[:, 1].set(1)  # partner attends obj 1
-        extras = {
-            "ja_future_object_mask_all": mask_all,
-            "ja_future_object_visible_all": vis,
-            "ja_future_object_idx": sel,
-            "ja_partner_visible": jnp.ones((T, A), dtype=jnp.float32),
-        }
-        return SimpleNamespace(done=jnp.zeros((T, A), dtype=bool), extras=extras)
-
-    _, mech_on = _make_ego_mate_mechanism(border_project=True)
-    _, mech_off = _make_ego_mate_mechanism(border_project=False)
-    _, occ_on = mech_on._occupancy_targets(traj(mech_on))
-    _, occ_off = mech_off._occupancy_targets(traj(mech_off))
-    # Receiver = actor 0: border-projected event supervises with flag on only.
-    assert float(occ_on[:, 0, 3, 0].sum()) > 1.9
-    assert float(occ_off[:, 0].sum()) < 1e-3
-    # Attender-side visibility still required: making the ATTENDER blind to its
-    # own object kills the event even with the flag on.
-    t2 = traj(mech_on)
-    t2.extras["ja_future_object_visible_all"] = (
-        t2.extras["ja_future_object_visible_all"].at[:, 1, 1].set(0.0)
-    )
-    _, occ_dead = mech_on._occupancy_targets(t2)
-    assert float(occ_dead[:, 0].sum()) < 1e-3
-
-
-def test_ocv2_feed_border_project_eval_parity():
-    # The eval-path duplicate must match the training reframe with the flag on.
-    from agents.overcooked_v2.ja_overcooked_v2_attention import (
-        overcooked_v2_object_ctx,
-        reframe_partner_attention_for_eval,
-    )
-    env, mech = _make_ego_mate_mechanism(border_project=True)
-    ctx = overcooked_v2_object_ctx(
-        {"ROLLOUT_LENGTH": 4, "NUM_ENVS": 1, "JA_FEED_BORDER_PROJECT": True}, env
-    )
-    assert ctx["feed_border_project"] is True
-    _, state = env.reset(jax.random.PRNGKey(0))
-    attn = jnp.zeros((2, mech.feat_h, mech.feat_w))
-    attn = attn.at[0, 2, 3].set(0.7).at[0, 8, 1].set(0.3)
-    attn = attn.at[1, 4, 4].set(1.0)
-    mech_out = mech._reframe_partner_attention(attn, _batch1(state), _batch1(state), 2)
-    eval_0, eval_1 = reframe_partner_attention_for_eval(
-        attn[0], attn[1], state, state, ctx
-    )
-    assert bool(jnp.allclose(mech_out[0], eval_0, atol=1e-6))
-    assert bool(jnp.allclose(mech_out[1], eval_1, atol=1e-6))

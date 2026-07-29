@@ -53,8 +53,6 @@ CONV_STRIDE: 2
 CONV_PADDING: SAME
 
 # JA intrinsic reward (paper Appendix A)
-JA_BETA_MAX: 0.0           # raw spatial JSD reward (Lee et al.); meaningless under OP — leave 0 for card-game
-JA_WARMUP_ENV_STEPS: 3500000
 FEED_OTHER_ATTN: false          # feed other agent's previous attention map as 4th image channel
 QUERY_PARTNER_LSTM: false       # feed partner's actor LSTM h into spatial attention query
 JA_CARD_ATTN: false             # OP-corrected card-level joint attention

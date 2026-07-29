@@ -168,7 +168,7 @@ class CardGameRecolouringWrapper:
     """Per-agent independent color permutation.
 
     Each agent sees a recoloured version of the cards (S5 = 120 permutations).
-    Actions (color indices, and messages when communication is enabled) are
+    Actions (color indices, recorded as messages) are
     inverse-mapped back to ground truth before reaching the env.
     """
 

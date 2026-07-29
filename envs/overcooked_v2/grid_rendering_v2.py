@@ -51,37 +51,6 @@ def rotate_fn(fin, cx, cy, theta):
     return fout
 
 
-def point_in_line(x0, y0, x1, y1, r):
-    p0 = jnp.array([x0, y0])
-    p1 = jnp.array([x1, y1])
-    dir = p1 - p0
-    dist = jnp.linalg.norm(dir)
-    dir = dir / dist
-
-    xmin = min(x0, x1) - r
-    xmax = max(x0, x1) + r
-    ymin = min(y0, y1) - r
-    ymax = max(y0, y1) + r
-
-    def fn(x, y):
-        # Fast, early escape test
-        if x < xmin or x > xmax or y < ymin or y > ymax:
-            return False
-
-        q = jnp.array([x, y])
-        pq = q - p0
-
-        # Closest point on line
-        a = jnp.dot(pq, dir)
-        a = jnp.clip(a, 0, dist)
-        p = p0 + a * dir
-
-        dist_to_line = jnp.linalg.norm(q - p)
-        return dist_to_line <= r
-
-    return fn
-
-
 def point_in_circle(cx, cy, r):
     def fn(x, y):
         return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r
@@ -122,13 +91,3 @@ def point_in_triangle(a, b, c):
         return (u >= 0) & (v >= 0) & (u + v < 1)
 
     return fn
-
-
-def highlight_img(img, color=(255, 255, 255), alpha=0.30):
-    """
-    Add highlighting to an image
-    """
-    blend_img = img + alpha * (jnp.array(color, dtype=jnp.uint8) - img)
-    res_img = jnp.clip(blend_img, 0, 255).astype(jnp.uint8)
-
-    return res_img

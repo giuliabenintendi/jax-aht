@@ -1,6 +1,7 @@
 defaults:
-  - task: lbf # task configs
-  - algorithm@algorithm: ippo/${task} # task-specific algorithm configs
+  # Defaults only; every command in the README overrides both.
+  - task: card-game-op-delib-actions
+  - algorithm@algorithm: ja_ippo/card-game-mate
   - hydra: hydra_simple
   - _self_
 
@@ -21,8 +22,8 @@ name: ${TASK_NAME}/${algorithm.ALG}/${label}
 
 # wandb settings
 logger:
-  project: aht-benchmark
-  entity: g-benintendi-university-of-brescia
+  project: mate
+  entity: null   # null uses the default entity of whoever runs this
   mode: online # options: online, offline, disabled
   verbose: false
   log_train_out: true # whether to log the out dictionary

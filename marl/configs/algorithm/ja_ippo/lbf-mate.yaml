@@ -1,0 +1,21 @@
+defaults:
+  - ja_ippo/_base_
+  - _self_
+
+# MATE on LBF. Pair with task=lbf-image-12x12-8food-50steps.
+TOTAL_TIMESTEPS: 3e6
+NUM_ENVS: 128
+NUM_SEEDS: 12
+NUM_MINIBATCHES: 32
+ANNEAL_LR: true
+NORMALIZE_REWARDS: false
+
+# Select the partner-attended apple, build an eta-discounted future-occupancy blob
+# at it, and train the full spatial attention map against it with cross-entropy.
+# Attention-only: no partner actions or positions enter the target.
+FEED_OTHER_ATTN: true
+SAVE_CKPT_VIDEOS: true
+
+JA_OBJECT_AUX_COEF: 1e-4    # lambda_MATE
+JA_FUTURE_GAMMA_OCC: 0.95   # eta
+JA_OBJECT_ROI_RADIUS: 1     # 3x3 region R(e) per apple

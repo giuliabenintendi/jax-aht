@@ -3,14 +3,6 @@
 import numpy as np
 
 
-def _draw_box(cell, row, col, tile_h, tile_w, color, thickness):
-    """Draw a thick border around a tile at grid (row, col) on an upscaled frame."""
-    y0 = row * tile_h
-    x0 = col * tile_w
-    cell[y0:y0 + thickness, x0:x0 + tile_w] = color
-    cell[y0 + tile_h - thickness:y0 + tile_h, x0:x0 + tile_w] = color
-    cell[y0:y0 + tile_h, x0:x0 + thickness] = color
-    cell[y0:y0 + tile_h, x0 + tile_w - thickness:x0 + tile_w] = color
 
 
 def _draw_choice_on_cell(cell, choice_pos, agent_idx, scale, card_row=1, card_col=None,

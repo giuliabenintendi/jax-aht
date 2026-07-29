@@ -8,12 +8,6 @@ def tree_stack(trees):
     '''Stacks a list of trees.'''
     return jax.tree.map(lambda *v: jnp.stack(v), *trees)
 
-def tree_unstack(tree):
-    '''Unstacks a tree into a list of trees.'''
-    leaves, treedef = jax.tree.flatten(tree)
-    return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
-
-
 if __name__ == "__main__":
     '''Testing the tree_stack and tree_unstack functions.'''
     def make_tree():

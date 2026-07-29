@@ -1,6 +1,6 @@
 """Shared checkpoint cadence + best-checkpoint selection for the IPPO trainers.
 
-Both `ja_ippo` and `image_ippo` save a checkpoint at each chunk boundary, score
+`ja_ippo` saves a checkpoint at each chunk boundary, scores
 each one by the mean episodic return over the chunk that produced it, and emit
 per-checkpoint folders plus a `chunk_scores.json` so downstream eval can load
 the best checkpoint per seed. This module holds that machinery so the two

@@ -1,4 +1,14 @@
-"""Joint Attention actor-critic modules."""
+"""Joint-attention actor-critic (paper Appendix A.1, "Network Architecture").
+
+Shared by every method in the paper. Observations go through a four-block
+residual CNN (32 filters, 3x3, stride 2, ReLU), then the spatial-attention layer
+adapted from Lee et al. (2021), an LSTM of hidden size 128, and two fully
+connected layers of size 256 for both actor and critic. The attention layer emits
+the map A_t^i that MATE shares with the partner and grounds in objects.
+
+The dataclass defaults below are placeholders; the paper's sizes come from
+marl/configs/algorithm/ja_ippo/_base_.yaml (CONV_*, LSTM_HIDDEN_DIM, FC_HIDDEN_DIM).
+"""
 import functools
 
 import distrax
@@ -266,6 +276,10 @@ class JAScannedLSTM(nn.Module):
         attended = jnp.einsum("bnm,bnmc->bmc", attn_weights, values)
         attended_flat = attended.reshape(batch_size, m * cm)
 
+        # A_t^i: the single h x w spatial attention map, obtained by averaging the
+        # m heads' attention (Preliminaries, "Joint Attention for Social Learning").
+        # This is what MATE feeds to the partner (Sec. 4.1) and pools onto objects
+        # to form p_t^i (Sec. 4.2).
         attn_map = attn_weights.mean(axis=-1).reshape(
             batch_size,
             self._spatial_h,

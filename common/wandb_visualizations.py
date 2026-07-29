@@ -26,7 +26,7 @@ def _format_timesteps(n: float) -> str:
 def _get_layout_short(config) -> str:
     """Extract short layout name from task config."""
     task = str(config.get("TASK_NAME", ""))
-    # e.g. "overcooked-v1/cramped_room" → "cramped_room"
+    # e.g. "overcooked-v2/demo_cook_simple" -> "demo_cook_simple"
     return task.split("/")[-1] if "/" in task else task
 
 
@@ -157,14 +157,11 @@ def _build_tags(config) -> list[str]:
         f"seed/{alg_config.get('TRAIN_SEED', 0)}",
         f"date/{date}",
     ]
-    # Layout tag only when it adds info beyond the env (e.g. overcooked-v1/cramped_room).
+    # Layout tag only when it adds info beyond the env (e.g. overcooked-v2/demo_cook_simple).
     if layout and layout != env_name:
         tags.append(f"layout/{layout}")
     if "ENT_COEF" in alg_config:
         tags.append(f"ent/{alg_config['ENT_COEF']}")
-    if "JA_BETA_MAX" in alg_config:
-        tags.append(f"beta/{alg_config['JA_BETA_MAX']}")
-    tags.append("comm/on" if alg_config.get("COMMUNICATION", False) else "comm/off")
 
     op_on = bool(
         env_kwargs.get("other_play_position_shuffle")
@@ -179,12 +176,6 @@ def _build_tags(config) -> list[str]:
     if alg_config.get("QUERY_PARTNER_LSTM", False):
         tags.append("qplstm/on")
 
-    follow_coef = env_kwargs.get("follow_coef", 0.0)
-    if follow_coef > 0:
-        tags.append(f"follow/{follow_coef}")
-    match_coef = env_kwargs.get("match_coef", 0.0)
-    if match_coef > 0:
-        tags.append(f"match/{match_coef}")
 
     label = str(config.get("label", "default_label"))
     if label.lower().startswith("sweep"):
@@ -199,8 +190,6 @@ def _build_group(config) -> str:
     """
     alg_config = config["algorithm"]
     parts = [str(config["TASK_NAME"]), str(alg_config["ALG"])]
-    if "JA_BETA_MAX" in alg_config:
-        parts.append(f"b{alg_config['JA_BETA_MAX']}")
     label = config.get("label", "default_label")
     if label != "default_label":
         parts.append(str(label))

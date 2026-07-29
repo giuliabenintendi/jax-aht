@@ -19,10 +19,11 @@ Two differences from the LBF mechanism:
     (`read_op_elems` / `transform_feat_maps`) drops out entirely — attention,
     occupancy and the partner feed all live directly in the shared feature grid.
 
-Overcooked V2 also needs the JaxMARL-style reward-shaping anneal that
-`JSDMechanism` applies (folding the decaying `info["shaped_reward"]` into the
-learning reward); without it V2 self-play collapses. It is reproduced here so
-the mechanism is self-contained.
+Overcooked V2 also needs the shaped reward that `BaselineMechanism` folds in
+(the task sets `do_reward_shaping: false`, so the wrapper only exposes
+`info["shaped_reward"]`); without it V2 self-play collapses. It is reproduced
+here so the mechanism is self-contained. `REW_SHAPING_HORIZON` is set far beyond
+the training length in the released configs, so the weight is constant at ~1.0.
 
 Visibility gating (`JA_VISIBILITY_GATING`, gaze following): V2 image obs are
 full-map but zero-masked outside the receiver's view radius. When the partner
@@ -57,18 +58,11 @@ def _as_spatial_attention(attn_map):
     raise ValueError(f"Unexpected attention map rank: {attn_map.ndim}")
 
 
-def _overlap(p, q):
-    """Distribution overlap sum_cells(p * q) over the last axis. (..., C) -> (...)."""
-    return (p * q).sum(axis=-1)
-
-
 class OvercookedV2DenseObjectOccupancyMechanism:
     """Dense future-occupancy of the partner-attended task object, attention-only (MATE)."""
 
     name = "overcooked-v2-ja-dense-object-occupancy"
     scalar_keys = [
-        ("ja_future_partner_overlap", "JA"),
-        ("ja_future_self_overlap", "JA"),
         ("aux_partner_occ_loss", "Losses"),
         ("aux_partner_occ_weighted", "Losses"),
         ("aux_to_policy_loss_abs", "Losses"),
@@ -117,10 +111,6 @@ class OvercookedV2DenseObjectOccupancyMechanism:
                 "JA_VISIBILITY_GATING needs a partially observable env "
                 "(agent_view_size set); with full observability there is nothing to gate."
             )
-        # Legacy egocentric-only option: project off-crop partner attention onto
-        # the receiver crop border. Full-map observations ignore this because the
-        # partner feed already lives in the same allocentric frame as RGB obs.
-        self.feed_border_project = bool(config.get("JA_FEED_BORDER_PROJECT", False))
         # Fixed feature-grid cell (fr, fc) of each detected task object. Constant
         # across steps and episodes for static objects. Dynamic slots are fixed
         # candidate cells/inventory slots whose validity is recomputed per state.
@@ -134,39 +124,20 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         self.inventory_num_objects = int(ctx["inventory_num_objects"])
         self.num_objects = ctx["num_objects"]
 
-        self.partner_coef = float(config.get("JA_FUTURE_PARTNER_COEF", 0.0))
-        self.self_coef = float(config.get("JA_FUTURE_SELF_COEF", 0.0))
+        # eta in Eq. 10: discount on the partner's future focus.
         self.gamma_occ = float(config.get("JA_FUTURE_GAMMA_OCC", 0.95))
-        self.warmup_env_steps = float(config.get("JA_FUTURE_WARMUP_ENV_STEPS", 0.0))
-        self.ramp_env_steps = float(config.get("JA_FUTURE_RAMP_ENV_STEPS", 1.0))
         self.feed_other_attn = bool(config.get("FEED_OTHER_ATTN", False))
 
-        self.aux_occ_coef = float(config.get("JA_OBJECT_AUX_COEF", 0.005))
+        # lambda_MATE in Eq. 11.
+        self.aux_occ_coef = float(config.get("JA_OBJECT_AUX_COEF", 1e-4))
         self.aux_coef = self.aux_occ_coef
         self.aux_active = self.aux_occ_coef > 0.0
-        # Supervise attention only at steps where the partner is currently
-        # visible (the only steps where the feed lights up the target cells);
-        # off = also supervise anticipatorily toward the next witnessed event.
-        self.aux_visible_only = bool(config.get("JA_AUX_PARTNER_VISIBLE_ONLY", False))
-        # LBF-style per-cell discounted first-occupancy (Algorithm-1 line 14):
-        # current focus cells get 1, every other cell keeps gamma-per-step
-        # decayed future mass, so the target is the LIST of upcoming witnessed
-        # objects at discounted relative weights. Off = replace: the next
-        # witnessed event's footprint is the whole target.
-        self.occ_future_blend = bool(config.get("JA_OCC_FUTURE_BLEND", False))
         self.vf_coef = float(config.get("VF_COEF", 0.5))
 
         # JaxMARL-style linear shaped-reward anneal (1 -> 0 over REW_SHAPING_HORIZON
         # env steps). 0 disables it (shaping then comes from the wrapper's
         # do_reward_shaping fold). Required to keep V2 self-play from collapsing.
         self.rew_shaping_horizon = float(config.get("REW_SHAPING_HORIZON", 0.0))
-        # Hold shaping at full strength for the first REW_SHAPING_HOLD_STEPS env
-        # steps, THEN anneal 1 -> 0 over the horizon. This is "ignite-then-anneal":
-        # keeps early shaping strong through the ignition-critical phase (the
-        # collapse the anneal-from-zero risks), and only removes it in the final
-        # part of training, so the blind-pour incentive is withdrawn once the
-        # policy is competent. 0 = anneal from step 0 (legacy behaviour).
-        self.rew_shaping_hold = float(config.get("REW_SHAPING_HOLD_STEPS", 0.0))
         self.env_steps_per_update = int(config["ROLLOUT_LENGTH"]) * int(config["NUM_ENVS"])
 
     def entity_feed_dim(self) -> int:
@@ -270,17 +241,7 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             & (local_c < self.agent_fov_size)
             & valid.astype(bool)
         )
-        # Border projection: every valid object gets a mask in this actor's frame,
-        # out-of-crop ones clamped onto the border cell in their direction —
-        # matching the whole-map feed so the aux can supervise toward the same
-        # border spikes the feed transmits. `visible` keeps TRUE in-crop
-        # visibility (attended-object selection and event validity still use it).
-        if self.feed_border_project:
-            local_r = jnp.clip(local_r, 0, self.agent_fov_size - 1)
-            local_c = jnp.clip(local_c, 0, self.agent_fov_size - 1)
-            mask_exists = valid.astype(bool)
-        else:
-            mask_exists = visible
+        mask_exists = visible
 
         if self.rotate_obs:
             k = jnp.array([0, 2, 1, 3])[actor_dirs]
@@ -424,25 +385,12 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             raw_c = cc + sc - self.view_size
             dst_r = raw_r - dr + self.view_size
             dst_c = raw_c - dc + self.view_size
-            if self.feed_border_project:
-                # Keep all real-world mass; out-of-window cells clamp onto the
-                # receiver's border in the target's direction. Attention on the
-                # partner's off-grid crop padding is still dropped.
-                valid = (
-                    (raw_r >= 0)
-                    & (raw_r < self.grid_h)
-                    & (raw_c >= 0)
-                    & (raw_c < self.grid_w)
-                )
-                dst_r = jnp.clip(dst_r, 0, self.agent_fov_size - 1)
-                dst_c = jnp.clip(dst_c, 0, self.agent_fov_size - 1)
-            else:
-                valid = (
-                    (dst_r >= 0)
-                    & (dst_r < self.agent_fov_size)
-                    & (dst_c >= 0)
-                    & (dst_c < self.agent_fov_size)
-                )
+            valid = (
+                (dst_r >= 0)
+                & (dst_r < self.agent_fov_size)
+                & (dst_c >= 0)
+                & (dst_c < self.agent_fov_size)
+            )
             if self.rotate_obs:
                 dst_r, dst_c = _fwd_rot(dst_r, dst_c, dd)
             centre_r = dst_r * self.tile_size + self.tile_size // 2
@@ -499,8 +447,7 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         if self.rew_shaping_horizon > 0.0 and "shaped_reward" in info:
             shaped_actors = info["shaped_reward"].swapaxes(0, 1).reshape(-1)
             env_steps = update_steps * self.env_steps_per_update
-            annealed = jnp.maximum(env_steps - self.rew_shaping_hold, 0.0)
-            shaping_frac = jnp.clip(1.0 - annealed / self.rew_shaping_horizon, 0.0, 1.0)
+            shaping_frac = jnp.clip(1.0 - env_steps / self.rew_shaping_horizon, 0.0, 1.0)
             shaped_total = shaping_frac * shaped_actors
 
         extras = {
@@ -542,13 +489,7 @@ class OvercookedV2DenseObjectOccupancyMechanism:
             box_t, done_t = x_t
             m_next = jnp.where(done_t[..., None], 0.0, m_next)
             event_t = box_t.sum(axis=-1, keepdims=True) > 0.0
-            if self.occ_future_blend:
-                # Same line as the LBF mechanism: witnessed-focus cells get 1,
-                # everything else decays by gamma per STEP (non-witnessed steps
-                # are pure decay), so relative weights encode time-to-focus.
-                m_t = jnp.where(box_t > 0.0, 1.0, self.gamma_occ * m_next)
-            else:
-                m_t = jnp.where(event_t, box_t, self.gamma_occ * m_next)
+            m_t = jnp.where(event_t, box_t, self.gamma_occ * m_next)
             return m_t, m_t
 
         init = jnp.zeros(box.shape[1:], dtype=jnp.float32)
@@ -585,7 +526,7 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         # Allocentric aux supervises the object's full footprint even when the
         # receiver cannot see it: with the partner in view, the feed channel
         # lights up those cells, so the target is inferable from input.
-        if self.egocentric and not self.feed_border_project:
+        if self.egocentric:
             p_event_valid = p_event_valid_src * p_visible_receiver
         else:
             p_event_valid = p_event_valid_src
@@ -606,42 +547,16 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         half = num_actors // self.num_agents
         return jnp.concatenate([x[half:], x[:half]], axis=0)
 
-    def _warmup_scale(self, config, update_steps):
-        env_steps = update_steps.astype(jnp.float32) * float(config["ROLLOUT_LENGTH"] * config["NUM_ENVS"])
-        return jnp.clip(
-            (env_steps - self.warmup_env_steps) / max(self.ramp_env_steps, 1.0),
-            0.0,
-            1.0,
-        )
-
     def postprocess_trajectory(self, traj_batch, config, update_steps):
-        self_occ, partner_occ = self._occupancy_targets(traj_batch)
-        attn = traj_batch.extras["ja_future_attn_2d"]
-        valid = (~traj_batch.done).astype(jnp.float32)
+        """Attach the eta-discounted partner-occupancy target q consumed by aux_loss.
 
-        partner_overlap = _overlap(attn.reshape(*attn.shape[:2], -1),
-                                   partner_occ.reshape(*partner_occ.shape[:2], -1)) * valid
-        self_overlap = _overlap(attn.reshape(*attn.shape[:2], -1),
-                                self_occ.reshape(*self_occ.shape[:2], -1)) * valid
-        warm = self._warmup_scale(config, update_steps)
-        ja_reward = warm * (
-            self.partner_coef * partner_overlap
-            + self.self_coef * self_overlap
-        )
-
+        MATE is loss-only (Eq. 11): the reward stream is left untouched.
+        """
+        del config, update_steps
+        _self_occ, partner_occ = self._occupancy_targets(traj_batch)
         extras = dict(traj_batch.extras)
-        extras.update({
-            "ja_future_self_occ": self_occ,
-            "ja_future_partner_occ": partner_occ,
-            "ja_future_partner_overlap": partner_overlap,
-            "ja_future_self_overlap": self_overlap,
-            "ja_future_reward": ja_reward,
-            "ja_future_warmup_scale": jnp.broadcast_to(warm, traj_batch.reward.shape),
-        })
-        return traj_batch._replace(
-            reward=traj_batch.reward + ja_reward,
-            extras=extras,
-        )
+        extras["ja_future_partner_occ"] = partner_occ
+        return traj_batch._replace(extras=extras)
 
     def aux_loss(self, attn_map_apply, traj_batch, config):
         del config
@@ -651,8 +566,6 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         attn = _as_spatial_attention(attn_map_apply)  # (T, A, fh, fw); shared frame
         nll = -(target * jnp.log(attn + 1e-8)).sum(axis=(-2, -1))
         valid = (~traj_batch.done).astype(jnp.float32)
-        if self.aux_visible_only:
-            valid = valid * traj_batch.extras["ja_partner_visible"]
         loss = (nll * valid).sum() / jnp.maximum(valid.sum(), 1e-8)
         return self.aux_occ_coef, loss
 
@@ -662,8 +575,6 @@ class OvercookedV2DenseObjectOccupancyMechanism:
         weighted_aux = self.aux_occ_coef * aux_loss
         eps = jnp.float32(1e-8)
         return {
-            "ja_future_partner_overlap": ex["ja_future_partner_overlap"].mean(),
-            "ja_future_self_overlap": ex["ja_future_self_overlap"].mean(),
             "aux_partner_occ_loss": aux_loss,
             "aux_partner_occ_weighted": weighted_aux,
             "aux_to_policy_loss_abs": weighted_aux / (jnp.abs(loss_info.policy_loss.mean()) + eps),
@@ -683,12 +594,12 @@ class OvercookedV2DenseObjectOccupancyMechanism:
 
     def report(self, config, out, logger):
         from common.train_logging import (
-            IMAGE_IPPO_SCALAR_KEYS,
+            BASE_SCALAR_KEYS,
             report_basic_training_outputs,
         )
         report_basic_training_outputs(
             config, out, logger,
-            scalar_keys=list(IMAGE_IPPO_SCALAR_KEYS) + list(self.scalar_keys),
+            scalar_keys=list(BASE_SCALAR_KEYS) + list(self.scalar_keys),
             print_prefix="ja_ippo:overcooked_v2_dense_object_occupancy",
         )
 
@@ -743,7 +654,6 @@ class OvercookedV2DenseObjectOccupancyMechanism:
                     "agent_fov_size": self.agent_fov_size,
                     "rotate_obs": self.rotate_obs,
                     "egocentric": self.egocentric,
-                    "feed_border_project": self.feed_border_project,
                 }
 
                 def feed_reframe_fn(a0, a1, s0, s1):

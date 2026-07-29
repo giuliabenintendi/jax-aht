@@ -18,7 +18,6 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from agents.ja_utils import jsd_divergence
 from agents.lbf.ja_lbf_attention import (
     as_spatial_attention,
     food_state_from_log_state,
@@ -32,21 +31,13 @@ from agents.lbf.op_equivariance import (
 )
 
 
-def _overlap(p, q):
-    """Distribution overlap sum_cells(p * q) over the last axis. (..., C) -> (...)."""
-    return (p * q).sum(axis=-1)
-
-
 class LBFDenseObjectOccupancyMechanism:
     """Dense future-occupancy of the partner-attended apple, attention-only (MATE)."""
 
     name = "lbf-ja-dense-object-occupancy"
     scalar_keys = [
-        ("ja_future_partner_overlap", "JA"),
-        ("ja_future_self_overlap", "JA"),
         ("aux_partner_occ_loss", "Losses"),
         ("ja_obj_on_mass", "JA"),
-        ("ja_lbf_jsd", "JA"),
     ]
 
     def __init__(self, config, env):
@@ -58,11 +49,8 @@ class LBFDenseObjectOccupancyMechanism:
         self.feat_h, self.feat_w = ctx["feat_h"], ctx["feat_w"]
         self.tile_size = ctx["tile_size"]
 
-        self.partner_coef = float(config.get("JA_FUTURE_PARTNER_COEF", 0.0))
-        self.self_coef = float(config.get("JA_FUTURE_SELF_COEF", 0.0))
+        # eta in Eq. 10: discount on the partner's future focus.
         self.gamma_occ = float(config.get("JA_FUTURE_GAMMA_OCC", 0.95))
-        self.warmup_env_steps = float(config.get("JA_FUTURE_WARMUP_ENV_STEPS", 0.0))
-        self.ramp_env_steps = float(config.get("JA_FUTURE_RAMP_ENV_STEPS", 1.0))
         self.feed_other_attn = bool(config.get("FEED_OTHER_ATTN", False))
 
         # Other-Play: align attention with its true-frame target. Reflection table
@@ -75,20 +63,10 @@ class LBFDenseObjectOccupancyMechanism:
         # cell (original dense variant); >0 -> a (2r+1)^2 box around the apple, so
         # the dense CE rewards attention NEAR the apple, not only on its centre.
         self.obj_target_radius = int(config.get("JA_OBJECT_TARGET_RADIUS", 0))
-        # Reuse the object aux coef name; fall back to the future-occupancy one.
-        self.aux_occ_coef = float(config.get(
-            "JA_OBJECT_AUX_COEF",
-            config.get("JA_FUTURE_AUX_PARTNER_OCC_COEF", 0.005),
-        ))
+        # lambda_MATE in Eq. 11.
+        self.aux_occ_coef = float(config.get("JA_OBJECT_AUX_COEF", 1e-4))
         self.aux_coef = self.aux_occ_coef
         self.aux_active = self.aux_occ_coef > 0.0
-
-        # Faithful Lee et al. (2021) JSD-intrinsic reward: r = r_env - beta*JSD(a0,a1)
-        # on the raw spatial attention (true frame; un-mirror is identity with OP off).
-        # Off by default (MATE uses the aux); set JA_LBF_JSD_COEF>0 with aux/feed off
-        # for the Lee ablation. Live even without OP because each LBF agent's obs
-        # differs (ego-highlight border), so a0 != a1 during self-play.
-        self.jsd_coef = float(config.get("JA_LBF_JSD_COEF", 0.0))
 
     def entity_feed_dim(self) -> int:
         return 0
@@ -179,17 +157,10 @@ class LBFDenseObjectOccupancyMechanism:
         attended_pos = jnp.take_along_axis(
             food_pos, sel[:, None, None], axis=1).squeeze(1)  # (A, 2) tile [row, col]
 
-        # Lee JSD penalty on the un-mirrored attention halves (identity with OP off).
-        half = num_actors // self.num_agents
-        jsd_env = jsd_divergence(attn_2d[:half], attn_2d[half:])  # (num_envs,)
-        jsd_actors = jnp.concatenate([jsd_env, jsd_env])          # (A,)
-        reward = env_reward - self.jsd_coef * jsd_actors
-
         extras = {
             "ja_future_attn_2d": jax.lax.stop_gradient(attn_2d.astype(jnp.float32)),
             "ja_future_pos_post": attended_pos.astype(jnp.int32),
             "ja_obj_on_mass": jax.lax.stop_gradient(on_mass),
-            "ja_lbf_jsd": jax.lax.stop_gradient(jsd_actors),
             "op_elem": op_elem,
         }
         swapped_attn = self._swap_partner(attn_2d, num_actors)
@@ -197,8 +168,8 @@ class LBFDenseObjectOccupancyMechanism:
             self.feat_h * self.feat_w
         )
         new_partner_attn = jnp.where(done_actors[:, None, None], uniform[None], swapped_attn)
-        return reward, {"partner_attn": jax.lax.stop_gradient(new_partner_attn),
-                        "op_elem": op_elem}, extras
+        return env_reward, {"partner_attn": jax.lax.stop_gradient(new_partner_attn),
+                            "op_elem": op_elem}, extras
 
     def _attended_box_occupancy(self, fr, fc, done, radius):
         """Discounted first-occupancy of a (2*radius+1)^2 box around the attended
@@ -248,42 +219,16 @@ class LBFDenseObjectOccupancyMechanism:
         half = num_actors // self.num_agents
         return jnp.concatenate([x[half:], x[:half]], axis=0)
 
-    def _warmup_scale(self, config, update_steps):
-        env_steps = update_steps.astype(jnp.float32) * float(config["ROLLOUT_LENGTH"] * config["NUM_ENVS"])
-        return jnp.clip(
-            (env_steps - self.warmup_env_steps) / max(self.ramp_env_steps, 1.0),
-            0.0,
-            1.0,
-        )
-
     def postprocess_trajectory(self, traj_batch, config, update_steps):
-        self_occ, partner_occ = self._occupancy_targets(traj_batch)
-        attn = traj_batch.extras["ja_future_attn_2d"]
-        valid = (~traj_batch.done).astype(jnp.float32)
+        """Attach the eta-discounted partner-occupancy target q consumed by aux_loss.
 
-        partner_overlap = _overlap(attn.reshape(*attn.shape[:2], -1),
-                                   partner_occ.reshape(*partner_occ.shape[:2], -1)) * valid
-        self_overlap = _overlap(attn.reshape(*attn.shape[:2], -1),
-                                self_occ.reshape(*self_occ.shape[:2], -1)) * valid
-        warm = self._warmup_scale(config, update_steps)
-        ja_reward = warm * (
-            self.partner_coef * partner_overlap
-            + self.self_coef * self_overlap
-        )
-
+        MATE is loss-only (Eq. 11): the reward stream is left untouched.
+        """
+        del config, update_steps
+        _self_occ, partner_occ = self._occupancy_targets(traj_batch)
         extras = dict(traj_batch.extras)
-        extras.update({
-            "ja_future_self_occ": self_occ,
-            "ja_future_partner_occ": partner_occ,
-            "ja_future_partner_overlap": partner_overlap,
-            "ja_future_self_overlap": self_overlap,
-            "ja_future_reward": ja_reward,
-            "ja_future_warmup_scale": jnp.broadcast_to(warm, traj_batch.reward.shape),
-        })
-        return traj_batch._replace(
-            reward=traj_batch.reward + ja_reward,
-            extras=extras,
-        )
+        extras["ja_future_partner_occ"] = partner_occ
+        return traj_batch._replace(extras=extras)
 
     def aux_loss(self, attn_map_apply, traj_batch, config):
         del config
@@ -305,21 +250,18 @@ class LBFDenseObjectOccupancyMechanism:
 
     def rollout_metrics(self, traj_batch, loss_info):
         return {
-            "ja_future_partner_overlap": traj_batch.extras["ja_future_partner_overlap"].mean(),
-            "ja_future_self_overlap": traj_batch.extras["ja_future_self_overlap"].mean(),
             "aux_partner_occ_loss": loss_info.aux_loss.mean(),
             "ja_obj_on_mass": traj_batch.extras["ja_obj_on_mass"].mean(),
-            "ja_lbf_jsd": traj_batch.extras["ja_lbf_jsd"].mean(),
         }
 
     def report(self, config, out, logger):
         from common.train_logging import (
-            IMAGE_IPPO_SCALAR_KEYS,
+            BASE_SCALAR_KEYS,
             report_basic_training_outputs,
         )
         report_basic_training_outputs(
             config, out, logger,
-            scalar_keys=list(IMAGE_IPPO_SCALAR_KEYS) + list(self.scalar_keys),
+            scalar_keys=list(BASE_SCALAR_KEYS) + list(self.scalar_keys),
             print_prefix="ja_ippo:lbf_dense_object_occupancy",
         )
 
